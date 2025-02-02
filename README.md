@@ -1,6 +1,10 @@
-# nf-cid plugin 
- 
-This project contains a Nextflow plugin called `nf-cid` which provides content-addressed storage capabilities for Nextflow workflows. The plugin uses Content Identifiers (CIDs) to track and store workflow data, including:
+# nf-blockstore plugin 
+
+> ⚠️ **IMPORTANT NOTICE** ⚠️
+> 
+> This plugin is currently under active development and is in an experimental state. It is **NOT** ready for production use. Features may change significantly, and there may be breaking changes without notice. Use at your own risk.
+
+This project contains a Nextflow plugin called `nf-blockstore` (formerly `nf-cid`) which provides content-addressed storage capabilities for Nextflow workflows. The plugin uses Content Identifiers (CIDs) to track and store workflow data, including:
 
 - Task inputs and outputs
 - Workflow run inputs and outputs
@@ -21,36 +25,36 @@ The plugin stores data blocks in `.nextflow/blocks` directory (relative to the w
     
     Gradle project settings. 
 
-- `plugins/nf-cid`
+- `plugins/nf-blockstore`
     
     The plugin implementation base directory.
 
-- `plugins/nf-cid/build.gradle` 
+- `plugins/nf-blockstore/build.gradle` 
     
     Plugin Gradle build file. Project dependencies should be added here.
 
-- `plugins/nf-cid/src/resources/META-INF/MANIFEST.MF` 
+- `plugins/nf-blockstore/src/resources/META-INF/MANIFEST.MF` 
     
     Manifest file defining the plugin attributes e.g. name, version, etc.
 
-- `plugins/nf-cid/src/resources/META-INF/extensions.idx`
+- `plugins/nf-blockstore/src/resources/META-INF/extensions.idx`
     
     This file declares the extension classes provided by the plugin.
 
-- `plugins/nf-cid/src/main` 
+- `plugins/nf-blockstore/src/main` 
 
     The plugin implementation sources.
 
-- `plugins/nf-cid/src/test` 
+- `plugins/nf-blockstore/src/test` 
 
     The plugin unit tests. 
 
 ## Plugin classes
 
-- `CidPlugin`: the plugin entry point
-- `CidObserver`: handles workflow events and manages content addressing
-- `CidFactory`: creates and manages CIDs for workflow data
-- `CidExtension`: provides CID-related functionality to pipeline scripts
+- `BlockstorePlugin`: the plugin entry point
+- `BlockstoreObserver`: handles workflow events and manages content addressing
+- `CidLink`: handles CID linking and DAG-CBOR encoding
+- `BlockstoreExtension`: provides content-addressed storage functionality to pipeline scripts
 - `cbor/*`: CBOR encoding/decoding implementation for DAG-CBOR blocks
 
 ## Unit testing 
@@ -84,7 +88,7 @@ To build and test the plugin during development, configure a local Nextflow buil
 
 4. Run Nextflow with the plugin:
     ```bash
-    ./launch.sh run <pipeline> -plugins nf-cid
+    ./launch.sh run <pipeline> -plugins nf-blockstore
     ```
 
 ## Testing without Nextflow build
@@ -92,7 +96,7 @@ To build and test the plugin during development, configure a local Nextflow buil
 The plugin can be tested without using a local Nextflow build:
 
 1. Build the plugin: `make buildPlugins`
-2. Copy `build/plugins/nf-cid` to `$HOME/.nextflow/plugins`
+2. Copy `build/plugins/nf-blockstore` to `$HOME/.nextflow/plugins`
 3. Create a pipeline and run it: `nextflow run ./pipeline.nf`
 
 ## Package, upload, and publish
@@ -105,7 +109,7 @@ The plugin can be tested without using a local Nextflow build:
 
 2. Package and create a release:
     ```bash
-    ./gradlew :plugins:nf-cid:upload
+    ./gradlew :plugins:nf-blockstore:upload
     ```
 
 3. Create a pull request against [nextflow-io/plugins](https://github.com/nextflow-io/plugins/blob/main/plugins.json) to publish the plugin.
