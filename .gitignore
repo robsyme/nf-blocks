@@ -2,6 +2,8 @@
 .gradle
 .idea
 .nextflow*
+nextflow.config
+main.nf
 
 # Ignore Gradle build output directory
 build

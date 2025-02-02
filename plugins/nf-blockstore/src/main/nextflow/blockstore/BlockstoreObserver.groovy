@@ -10,6 +10,7 @@ import nextflow.trace.TraceObserver
  *
  * @author Rob Syme <rob.syme@gmail.com>
  */
+@Slf4j
 @CompileStatic
 class BlockstoreObserver implements TraceObserver {
     @Override

@@ -153,6 +153,43 @@ subprojects {
     }
     
     task upload(dependsOn: [uploadPlugin] ) { }
+    /*
+     * Task to install plugin to the Nextflow plugins directory for local testing and development.
+     * For production deployment, see "Package, upload, and publish" section in README.md.
+     */
+    task installPlugin(type: Copy, dependsOn: copyPluginZip) {
+        description = "Installs ${project.name} plugin to the Nextflow plugins directory"
+        group = 'Plugin Installation'
+
+        def pluginsDir = System.getenv('NXF_PLUGINS_DIR') ?:
+                        System.getenv('NXF_HOME') ? "${System.getenv('NXF_HOME')}/plugins" :
+                        "${System.getProperty('user.home')}/.nextflow/plugins"
+
+        // Use the subproject's name and version
+        def pluginZip = file("$rootProject.buildDir/plugins/${project.name}-${project.version}.zip")
+        def pluginDir = file("$pluginsDir/${project.name}-${project.version}")
+
+        doFirst {
+            println "Installing plugin ${project.name} version ${project.version} to: $pluginDir"
+            pluginDir.mkdirs()
+        }
+
+        from zipTree(pluginZip)
+        into pluginDir
+
+        doLast {
+            println "Plugin ${project.name} installed successfully!"
+            println "Installation location: $pluginDir"
+            println "Installation location determined by:"
+            if (System.getenv('NXF_PLUGINS_DIR')) {
+                println " - NXF_PLUGINS_DIR environment variable"
+            } else if (System.getenv('NXF_HOME')) {
+                println " - NXF_HOME environment variable"
+            } else {
+                println " - Default location (~/.nextflow/plugins)"
+            }
+        }
+    }
 }
 
 /*
