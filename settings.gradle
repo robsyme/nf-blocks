@@ -21,8 +21,7 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "0.7.0"
 }
 
-rootProject.name = 'nf-hello'
+rootProject.name = 'nf-blockstore'
 include('plugins')
-// include('plugins:nf-hello')
-include('plugins:nf-cid')
+include('plugins:nf-blockstore')
 includeBuild('../nextflow')

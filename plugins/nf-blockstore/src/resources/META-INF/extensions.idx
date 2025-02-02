@@ -1,0 +1,2 @@
+nextflow.blockstore.BlockstoreFactory
+nextflow.blockstore.BlockstoreExtension

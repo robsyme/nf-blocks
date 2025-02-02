@@ -21,17 +21,23 @@ class CborConverter {
         switch (obj) {
             case String:
                 return new CborObject.CborString(obj)
+            case Boolean:
+                return new CborObject.CborBoolean(obj)
             case Long:
             case Integer:
             case Short:
             case Byte:
                 return new CborObject.CborLong(obj as long)
+            case Float:
+            case Double:
+                return new CborObject.CborFloat(obj as double)
             case byte[]:
                 return new CborObject.CborByteArray(obj)
             case Map:
-                Map<CborObject, CborObject> cborMap = [:]
+                Map<CborObject.CborString, CborObject> cborMap = [:]
                 obj.each { k, v ->
-                    cborMap[toCbor(k)] = toCbor(v)
+                    def key = k.toString()  // Convert all keys to strings
+                    cborMap[new CborObject.CborString(key)] = toCbor(v)
                 }
                 return new CborObject.CborMap(cborMap)
             case List:

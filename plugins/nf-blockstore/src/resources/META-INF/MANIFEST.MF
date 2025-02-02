@@ -1,6 +1,6 @@
 Manifest-Version: 1.0
-Plugin-Id: nf-cid
+Plugin-Id: nf-blockstore
 Plugin-Version: 0.1.0
-Plugin-Class: nextflow.cid.CidPlugin
+Plugin-Class: nextflow.blockstore.BlockstorePlugin
 Plugin-Provider: nextflow
 Plugin-Requires: >=24.11.0-edge
