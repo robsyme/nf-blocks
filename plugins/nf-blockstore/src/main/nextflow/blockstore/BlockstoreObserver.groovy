@@ -1,6 +1,7 @@
 package nextflow.blockstore
 
 import groovy.transform.CompileStatic
+import groovy.util.logging.Slf4j
 import nextflow.Session
 import nextflow.trace.TraceObserver
 
@@ -13,11 +14,6 @@ import nextflow.trace.TraceObserver
 class BlockstoreObserver implements TraceObserver {
     @Override
     void onFlowCreate(Session session) {
-        // Implementation
-    }
-
-    @Override
-    void onFlowComplete() {
-        // Implementation
+        log.info "Pipeline is starting! 🚀"
     }
 } 

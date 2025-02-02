@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package nextflow.cid
+package nextflow.blockstore
 
 import nextflow.Session
 import spock.lang.Specification
@@ -23,14 +23,14 @@ import spock.lang.Specification
  *
  * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
  */
-class CidFactoryTest extends Specification {
+class BlockstoreFactoryTest extends Specification {
 
     def 'should return observer' () {
         when:
-        def result = new CidFactory().create(Mock(Session))
+        def result = new BlockstoreFactory().create(Mock(Session))
         then:
         result.size()==1
-        result[0] instanceof CidObserver
+        result[0] instanceof BlockstoreObserver
     }
 
 }
