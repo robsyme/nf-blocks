@@ -1,4 +1,4 @@
-package nextflow.blockstore
+package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import nextflow.Session
@@ -10,7 +10,7 @@ import nextflow.plugin.extension.PluginExtensionPoint
  * @author Rob Syme <rob.syme@gmail.com>
  */
 @CompileStatic
-class BlockstoreExtension extends PluginExtensionPoint {
+class BlocksExtension extends PluginExtensionPoint {
     /*
      * A session hold information about current execution of the script
      */

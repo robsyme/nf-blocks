@@ -1,4 +1,4 @@
-package nextflow.blockstore
+package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import nextflow.Session
@@ -11,11 +11,11 @@ import nextflow.trace.TraceObserverFactory
  * @author Rob Syme <rob.syme@gmail.com>
  */
 @CompileStatic
-class BlockstoreFactory implements TraceObserverFactory {
+class BlocksFactory implements TraceObserverFactory {
     @Override
     Collection<TraceObserver> create(Session session) {
         final result = new ArrayList()
-        result.add(new BlockstoreObserver())
+        result.add(new BlocksObserver())
         return result
     }
 } 

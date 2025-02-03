@@ -250,7 +250,7 @@ class CborObjectTest extends Specification {
         [:]                                                     | "oA=="
         ["object":["with":["4":"nested","objects":["!":"!"]]]]  | "oWZvYmplY3ShZHdpdGiiYTRmbmVzdGVkZ29iamVjdHOhYSFhIQ=="
         "Čaues ßvěte!"                                          | "b8SMYXVlcyDDn3bEm3RlIQ=="                
-        ["aaaaaa":6,"aaaaab":7,"aaaaac":8,"aaaabb":9,"bbbbb":5,"cccc":4,"ddd":3,"ee":2,"f":1]   | "qWFmAWJlZQJjZGRkA2RjY2NjBGViYmJiYgVmYWFhYWFhBmZhYWFhYWIHZmFhYWFhYwhmYWFhYWJiCQ=="
+        ["aaaaaa":6,"aaaaab":7,"aaaaac":8,"aaaabb":9,"bbbbb":5,"cccc":4,"ddd":3,"ee":2,"f":1] | "qWFmAWJlZQJjZGRkA2RjY2NjBGViYmJiYgVmYWFhYWFhBmZhYWFhYWIHZmFhYWFhYwhmYWFhYWJiCQ=="
     }
 
     def "should encode complex structures to known base64"() {

@@ -1,4 +1,4 @@
-package nextflow.blockstore
+package nextflow.blocks
 
 import groovy.util.logging.Slf4j
 import groovyx.gpars.dataflow.DataflowBroadcast

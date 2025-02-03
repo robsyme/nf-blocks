@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package nextflow.blockstore
+package nextflow.blocks
 
 import com.google.common.jimfs.Configuration
 import com.google.common.jimfs.Jimfs

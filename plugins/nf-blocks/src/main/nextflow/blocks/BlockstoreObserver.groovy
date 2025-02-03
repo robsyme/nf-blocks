@@ -1,4 +1,4 @@
-package nextflow.blockstore
+package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -12,7 +12,7 @@ import nextflow.trace.TraceObserver
  */
 @Slf4j
 @CompileStatic
-class BlockstoreObserver implements TraceObserver {
+class BlocksObserver implements TraceObserver {
     @Override
     void onFlowCreate(Session session) {
         log.info "Pipeline is starting! 🚀"

@@ -1,4 +1,4 @@
-package nextflow.blockstore
+package nextflow.blocks
 
 import io.ipfs.cid.Cid
 import io.ipfs.multibase.Multibase
