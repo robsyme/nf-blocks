@@ -1,10 +1,10 @@
-# nf-blockstore plugin 
+# nf-blocks plugin 
 
 > ⚠️ **IMPORTANT NOTICE** ⚠️
 > 
 > This plugin is currently under active development and is in an experimental state. It is **NOT** ready for production use. Features may change significantly, and there may be breaking changes without notice. Use at your own risk.
 
-This project contains a Nextflow plugin called `nf-blockstore` (formerly `nf-cid`) which provides content-addressed storage capabilities for Nextflow workflows. The plugin uses Content Identifiers (CIDs) to track and store workflow data, including:
+This project contains a Nextflow plugin called `nf-blocks` (formerly `nf-cid`) which provides content-addressed storage capabilities for Nextflow workflows. The plugin uses Content Identifiers (CIDs) to track and store workflow data, including:
 
 - Task inputs and outputs
 - Workflow run inputs and outputs
@@ -25,27 +25,27 @@ The plugin stores data blocks in `.nextflow/blocks` directory (relative to the w
     
     Gradle project settings. 
 
-- `plugins/nf-blockstore`
+- `plugins/nf-blocks`
     
     The plugin implementation base directory.
 
-- `plugins/nf-blockstore/build.gradle` 
+- `plugins/nf-blocks/build.gradle` 
     
     Plugin Gradle build file. Project dependencies should be added here.
 
-- `plugins/nf-blockstore/src/resources/META-INF/MANIFEST.MF` 
+- `plugins/nf-blocks/src/resources/META-INF/MANIFEST.MF` 
     
     Manifest file defining the plugin attributes e.g. name, version, etc.
 
-- `plugins/nf-blockstore/src/resources/META-INF/extensions.idx`
+- `plugins/nf-blocks/src/resources/META-INF/extensions.idx`
     
     This file declares the extension classes provided by the plugin.
 
-- `plugins/nf-blockstore/src/main` 
+- `plugins/nf-blocks/src/main` 
 
     The plugin implementation sources.
 
-- `plugins/nf-blockstore/src/test` 
+- `plugins/nf-blocks/src/test` 
 
     The plugin unit tests. 
 
@@ -88,7 +88,7 @@ To build and test the plugin during development, configure a local Nextflow buil
 
 4. Run Nextflow with the plugin:
     ```bash
-    ./launch.sh run <pipeline> -plugins nf-blockstore
+    ./launch.sh run <pipeline> -plugins nf-blocks
     ```
 
 ## Testing without Nextflow build
@@ -96,7 +96,7 @@ To build and test the plugin during development, configure a local Nextflow buil
 The plugin can be tested without using a local Nextflow build:
 
 1. Build the plugin: `make buildPlugins`
-2. Copy `build/plugins/nf-blockstore` to `$HOME/.nextflow/plugins`
+2. Copy `build/plugins/nf-blocks` to `$HOME/.nextflow/plugins`
 3. Create a pipeline and run it: `nextflow run ./pipeline.nf`
 
 ## Package, upload, and publish
@@ -109,7 +109,7 @@ The plugin can be tested without using a local Nextflow build:
 
 2. Package and create a release:
     ```bash
-    ./gradlew :plugins:nf-blockstore:upload
+    ./gradlew :plugins:nf-blocks:upload
     ```
 
 3. Create a pull request against [nextflow-io/plugins](https://github.com/nextflow-io/plugins/blob/main/plugins.json) to publish the plugin.
