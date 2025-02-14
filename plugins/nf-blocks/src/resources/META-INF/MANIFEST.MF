@@ -1,6 +1,0 @@
-Manifest-Version: 1.0
-Plugin-Id: nf-blocks
-Plugin-Version: 0.1.0
-Plugin-Class: nextflow.blocks.BlocksPlugin
-Plugin-Provider: nextflow
-Plugin-Requires: >=24.11.0-edge
