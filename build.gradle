@@ -1,0 +1,42 @@
+plugins {
+    id 'io.nextflow.nextflow-plugin' version '0.0.1-alpha'
+}
+
+// plugin version
+version = '1.0.1'
+
+nextflowPlugin {
+    // minimum nextflow version
+    nextflowVersion = '25.01.0-edge'
+
+    // plugin metadata
+    provider = 'nextflow'
+    className = 'nextflow.blocks.BlocksPlugin'
+    extensionPoints = [
+        'nextflow.blocks.BlocksFactory',
+        'nextflow.blocks.BlocksExtension'
+    ]
+
+    publishing {
+        github {
+            repository = 'robsyme/nf-blocks'
+            userName = project.findProperty('github_username')
+            authToken = project.findProperty('github_access_token')
+            email = project.findProperty('github_commit_email')
+
+            indexUrl = 'https://github.com/nextflow-io/plugins/blob/main/plugins.json'
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://jitpack.io' }
+    maven { url = 'https://s3-eu-west-1.amazonaws.com/maven.seqera.io/releases' }
+    maven { url = 'https://s3-eu-west-1.amazonaws.com/maven.seqera.io/snapshots' }
+}
+
+dependencies {
+    // add here plugins depepencies
+    implementation 'com.github.ipld:java-cid:1.3.8'
+}
