@@ -100,10 +100,6 @@ class MockExecutorFactory extends ExecutorFactory {
     }
 }
 
-/**
- *
- * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
- */
 class MockExecutor extends Executor {
 
     @Override
