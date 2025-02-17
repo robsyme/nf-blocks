@@ -6,6 +6,9 @@ import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceObserverFactory
 
+import java.nio.file.Path
+import java.nio.file.Paths
+
 /**
  * Implements the blockstore observer factory
  *
@@ -16,37 +19,26 @@ import nextflow.trace.TraceObserverFactory
 class BlocksFactory implements TraceObserverFactory {
     @Override
     Collection<TraceObserver> create(Session session) {
-        final observer = createBlocksObserver(session.config)
-        return observer ? [observer] : []
-    }
+        // Get the block store configuration from nextflow.config
+        Map config = session.config.navigate('blocks.store') as Map ?: [:]
+        String type = config.type as String ?: 'fs'
+        String pathStr = config.path as String ?: "${session.workDir}/blocks"
 
-    protected TraceObserver createBlocksObserver(Map config) {
-        // Check if blocks are enabled (default to true)
-        final enabled = config.navigate('blocks.enabled', true) as Boolean
-        if (!enabled) {
-            return null
+        // Create the appropriate block store
+        BlockStore blockStore
+        switch (type) {
+            case 'fs':
+                Path storePath = Paths.get(pathStr)
+                blockStore = new FileSystemBlockStore(storePath)
+                break
+            case 'ipfs':
+                blockStore = new IpfsBlockStore(pathStr)
+                break
+            default:
+                throw new IllegalArgumentException("Unknown block store type: ${type}")
         }
 
-        // Get block store configuration
-        final storeConfig = config.navigate('blocks.store', [:]) as Map
-        final storeType = storeConfig.type as String ?: 'fs'
-        
-        // For file system store, get path (default to .nextflow/blocks)
-        if (storeType == 'fs') {
-            final path = storeConfig.path as String ?: '.nextflow/blocks'
-            log.debug "Configuring file system block store at: ${path}"
-            
-            // Create FileSystemBlockStore instance
-            def blockStore = new FileSystemBlockStore(path)
-            return new BlocksObserver(blockStore)
-        }
-        
-        // For now, only support file system store
-        if (storeType != 'fs') {
-            log.warn "Unsupported block store type: ${storeType}"
-            return null
-        }
-
-        return null // Should not reach here
+        // Create and return the observer
+        return [new BlocksObserver(blockStore, session)]
     }
 } 

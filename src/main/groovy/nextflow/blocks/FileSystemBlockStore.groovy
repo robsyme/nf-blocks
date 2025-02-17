@@ -19,10 +19,22 @@ import java.security.NoSuchAlgorithmException
 @CompileStatic
 class FileSystemBlockStore implements BlockStore {
     private final Path storePath
-    
-    FileSystemBlockStore(String path) {
-        this.storePath = Paths.get(path).toAbsolutePath()
+
+    /**
+     * Create a new FileSystemBlockStore
+     * @param path Directory path where blocks will be stored
+     */
+    FileSystemBlockStore(Path path) {
+        this.storePath = path.toAbsolutePath()
         initializeStore()
+    }
+
+    /**
+     * Create a new FileSystemBlockStore
+     * @param path String path where blocks will be stored
+     */
+    FileSystemBlockStore(String path) {
+        this(Paths.get(path))
     }
 
     /**

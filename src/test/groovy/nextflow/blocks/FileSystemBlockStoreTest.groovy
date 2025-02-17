@@ -2,7 +2,8 @@ package nextflow.blocks
 
 import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
-import nextflow.cbor.CborConverter
+import io.ipfs.api.cbor.CborObject
+import io.ipfs.api.cbor.CborEncoder
 import spock.lang.Specification
 import spock.lang.TempDir
 import spock.lang.Unroll
@@ -59,7 +60,11 @@ class FileSystemBlockStoreTest extends Specification {
         given:
         def store = new FileSystemBlockStore(tempDir.toString())
         def data = [name: "test", value: 42]
-        def block = CborConverter.toCbor(data).toByteArray()
+        def cborMap = CborObject.CborMap.build([
+            name: new CborObject.CborString("test"),
+            value: new CborObject.CborLong(42)
+        ])
+        def block = cborMap.toByteArray()
         def cid = createCidForBlock(block, Multihash.Type.sha2_256, Cid.Codec.DagCbor)
 
         when:
