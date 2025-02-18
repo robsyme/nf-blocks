@@ -78,6 +78,16 @@ class FileSystemBlockStore implements BlockStore {
     }
 
     /**
+     * Get the block path for a given CID
+     */
+    private Path getBlockPath(Cid cid) {
+        // Use Base32 encoding of the multihash for the filename
+        def multihashBytes = new Multihash(cid.type, cid.hash).toBytes()
+        def encodedHash = io.ipfs.multibase.Multibase.encode(io.ipfs.multibase.Multibase.Base.Base32, multihashBytes)
+        return storePath.resolve(encodedHash)
+    }
+
+    /**
      * Store a block with its CID
      */
     @Override
@@ -93,10 +103,10 @@ class FileSystemBlockStore implements BlockStore {
             throw new IllegalArgumentException("Block content does not match CID hash")
         }
         
-        def blockPath = storePath.resolve(cid.toString())
+        def blockPath = getBlockPath(cid)
         if (!Files.exists(blockPath)) {
             Files.write(blockPath, block)
-            log.trace "Stored block at: ${blockPath}"
+            log.trace "Stored block: CID=${cid} size=${block.length}bytes path=${blockPath}"
         }
     }
 
@@ -105,7 +115,7 @@ class FileSystemBlockStore implements BlockStore {
      */
     @Override
     byte[] getBlock(Cid cid) {
-        def blockPath = storePath.resolve(cid.toString())
+        def blockPath = getBlockPath(cid)
         if (!Files.exists(blockPath)) {
             throw new NoSuchElementException("Block not found: ${cid}")
         }
@@ -117,6 +127,6 @@ class FileSystemBlockStore implements BlockStore {
      */
     @Override
     boolean hasBlock(Cid cid) {
-        return Files.exists(storePath.resolve(cid.toString()))
+        return Files.exists(getBlockPath(cid))
     }
 } 

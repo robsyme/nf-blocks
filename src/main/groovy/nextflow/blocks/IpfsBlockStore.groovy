@@ -120,7 +120,7 @@ class IpfsBlockStore implements BlockStore {
                 throw new IllegalStateException("Block was stored but cannot be retrieved with the specified CID")
             }
             
-            log.trace "Stored block with CID: ${cid}"
+            log.trace "Stored block: CID=${cid} size=${block.length}bytes store=ipfs"
         } catch (IOException e) {
             throw new IllegalStateException("Failed to store block in IPFS", e)
         }
