@@ -47,27 +47,27 @@ class BlocksObserver implements TraceObserver {
             // Session info
             sessionId: session.uniqueId,
             runName: session.runName,
-            profile: session.profile,
             commandLine: session.commandLine,
             scriptName: session.scriptName,
-            
-            // Workflow metadata
-            workflow: [
-                runName: metadata.runName,
-                scriptId: metadata.scriptId,
-                scriptFile: metadata.scriptFile?.toString(),
-                scriptName: metadata.scriptName,
-                repository: metadata.repository,
-                commitId: metadata.commitId,
-                revision: metadata.revision,
-                start: metadata.start?.toString(),
-                container: processContainerConfig(metadata.container)
-            ],
+            profile: session.profile,
             
             // Configuration
             config: session.config
-        ] as Map<String, Object>
+        ].findAll { k, v -> v != null } as Map<String, Object>
 
+        // Workflow metadata
+        runInfo.workflow = [
+            runName: metadata.runName,
+            scriptId: metadata.scriptId,
+            scriptFile: metadata.scriptFile?.toString(),
+            scriptName: metadata.scriptName,
+            repository: metadata.repository,
+            commitId: metadata.commitId,
+            revision: metadata.revision,
+            start: metadata.start?.toString(),
+            container: processContainerConfig(metadata.container)
+        ].findAll { k, v -> v != null }
+        
         // Convert to CBOR and store
         def cborMap = CborObject.CborMap.build(convertMapToCbor(runInfo))
         def block = cborMap.toByteArray()
