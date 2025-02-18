@@ -71,8 +71,8 @@ class BlocksObserver implements TraceObserver {
         // Convert to CBOR and store
         def cborMap = CborObject.CborMap.build(convertMapToCbor(runInfo))
         def block = cborMap.toByteArray()
-        workflowRunCid = createCid(block)
-        blockStore.putBlock(workflowRunCid, block)
+        def node = blockStore.put(block, [:])
+        workflowRunCid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
         log.trace "Stored workflow run block: CID=${workflowRunCid}"
     }
 
@@ -179,8 +179,8 @@ class BlocksObserver implements TraceObserver {
         def block = cborMap.toByteArray()
         
         // Create CID and store block
-        def cid = createCid(block)
-        blockStore.putBlock(cid, block)
+        def node = blockStore.put(block, [:])
+        def cid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
         log.trace "Stored task block: CID=${cid} size=${block.length}bytes task=${task.name}"
     }
 
@@ -237,11 +237,11 @@ class BlocksObserver implements TraceObserver {
             value: processPublishedValue(value)
         ] as Map<String, Object>
 
-        // Convert to CBOR and store - this will handle converting the Cid to a CborMerkleLink
+        // Convert to CBOR and store
         def cborMap = CborObject.CborMap.build(convertMapToCbor(publishInfo))
         def block = cborMap.toByteArray()
-        def cid = createCid(block)
-        blockStore.putBlock(cid, block)
+        def node = blockStore.put(block, [:])
+        def cid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
         log.trace "Stored publish block: CID=${cid}"
     }
 
@@ -305,9 +305,11 @@ class BlocksObserver implements TraceObserver {
             path: path.toString()
         ] as Map<String, Object>
 
-        def fileCid = blockStore.putPath(path)
+        byte[] fileBytes = path.toFile().bytes
+        def node = blockStore.put(fileBytes, [:])
+        def fileCid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
         result.put('content', [
-            '/': fileCid.toString()  // Use proper IPLD link format
+            '/': fileCid.toString()
         ])
 
         return result
