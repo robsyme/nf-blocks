@@ -25,10 +25,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.zip.GZIPInputStream
 
-/**
- *
- * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
- */
 class TestHelper {
 
     static private fs = Jimfs.newFileSystem(Configuration.unix());

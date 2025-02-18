@@ -53,8 +53,8 @@ The plugin stores data blocks in `.nextflow/blocks` directory (relative to the w
 
 - `BlockstorePlugin`: the plugin entry point
 - `BlockstoreObserver`: handles workflow events and manages content addressing
-- `CidLink`: handles CID linking and DAG-CBOR encoding
 - `BlockstoreExtension`: provides content-addressed storage functionality to pipeline scripts
+- `IPLDNode`: handles IPLD data structures and DAG-CBOR encoding (coming soon)
 - `cbor/*`: CBOR encoding/decoding implementation for DAG-CBOR blocks
 
 ## Unit testing 

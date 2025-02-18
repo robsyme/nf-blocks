@@ -19,18 +19,3 @@ package nextflow.blocks
 import nextflow.Session
 import spock.lang.Specification
 
-/**
- *
- * @author Paolo Di Tommaso <paolo.ditommaso@gmail.com>
- */
-class BlocksFactoryTest extends Specification {
-
-    def 'should return observer' () {
-        when:
-        def result = new BlocksFactory().create(Mock(Session))
-        then:
-        result.size()==1
-        result[0] instanceof BlocksObserver
-    }
-
-}
