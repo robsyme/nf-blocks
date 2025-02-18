@@ -3,12 +3,14 @@ package nextflow.blocks
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import io.ipfs.api.IPFS
+import io.ipfs.api.NamedStreamable
 import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
 import java.util.Arrays
 import java.util.Optional
+import java.nio.file.Path
 
 /**
  * Implements a block store that uses IPFS as the backend
@@ -152,5 +154,12 @@ class IpfsBlockStore implements BlockStore {
         } catch (IOException e) {
             return false
         }
+    }
+
+    @Override
+    Cid putFile(Path path) {
+        def file = new NamedStreamable.FileWrapper(path.toFile())
+        def result = ipfs.add(file).get(0)
+        return Cid.decode(result.hash.toBase58())
     }
 } 

@@ -129,4 +129,26 @@ class FileSystemBlockStore implements BlockStore {
     boolean hasBlock(Cid cid) {
         return Files.exists(getBlockPath(cid))
     }
+
+    /**
+     * Add a file to the blockstore and return its CID
+     * For now, this is a simple implementation that just copies the file
+     * and uses a raw codec. Later we can implement proper UnixFS format.
+     */
+    @Override
+    Cid putFile(Path path) {
+        // Read the file
+        byte[] fileBytes = Files.readAllBytes(path)
+        
+        // Create CID with raw codec
+        def digest = MessageDigest.getInstance("SHA-256")
+        def hash = digest.digest(fileBytes)
+        def mh = new Multihash(Multihash.Type.sha2_256, hash)
+        def cid = Cid.buildCidV1(Cid.Codec.Raw, mh.getType(), hash)
+        
+        // Store the block
+        putBlock(cid, fileBytes)
+        
+        return cid
+    }
 } 

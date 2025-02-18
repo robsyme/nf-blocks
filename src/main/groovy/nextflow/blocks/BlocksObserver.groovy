@@ -302,37 +302,18 @@ class BlocksObserver implements TraceObserver {
         def result = [
             type: 'path',
             exists: true,
-            path: path.toString(),
-            size: attrs.size(),
-            lastModified: attrs.lastModifiedTime()?.toMillis(),
-            isDirectory: attrs.isDirectory()
+            path: path.toString()
         ] as Map<String, Object>
 
-        // If it's a regular file, create a UnixFS block
+        // If it's a regular file, add it to the blockstore
         if (attrs.isRegularFile()) {
-            def fileBytes = Files.readAllBytes(path)
-            def fileCid = createUnixFsCid(fileBytes)
-            blockStore.putBlock(fileCid, fileBytes)
-            
-            // Create a map entry for the CID instead of direct assignment
+            def fileCid = blockStore.putFile(path)
             result.put('content', [
-                type: 'link',
-                codec: 'raw',
-                cid: fileCid.toString()
+                '/': fileCid.toString()  // Use proper IPLD link format
             ])
         }
 
         return result
-    }
-
-    /**
-     * Create a CID for a UnixFS block using SHA-256 and Raw codec
-     */
-    private Cid createUnixFsCid(byte[] block) {
-        def digest = MessageDigest.getInstance("SHA-256")
-        def hash = digest.digest(block)
-        def mh = new Multihash(Multihash.Type.sha2_256, hash)
-        return Cid.buildCidV1(Cid.Codec.Raw, mh.getType(), hash)
     }
 
     @Override
