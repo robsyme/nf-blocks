@@ -1,6 +1,7 @@
 package nextflow.blocks
 
 import io.ipfs.cid.Cid
+import java.nio.file.Path
 
 /**
  * Interface for block storage backends
@@ -22,4 +23,11 @@ interface BlockStore {
      * Check if a block exists
      */
     boolean hasBlock(Cid cid)
+
+    /**
+     * Add a file to the blockstore and return its CID
+     * The implementation should handle creating appropriate blocks
+     * (e.g. UnixFS for IPFS)
+     */
+    Cid putPath(Path path)
 } 
