@@ -305,13 +305,10 @@ class BlocksObserver implements TraceObserver {
             path: path.toString()
         ] as Map<String, Object>
 
-        // If it's a regular file, add it to the blockstore
-        if (attrs.isRegularFile()) {
-            def fileCid = blockStore.putFile(path)
-            result.put('content', [
-                '/': fileCid.toString()  // Use proper IPLD link format
-            ])
-        }
+        def fileCid = blockStore.putPath(path)
+        result.put('content', [
+            '/': fileCid.toString()  // Use proper IPLD link format
+        ])
 
         return result
     }

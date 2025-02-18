@@ -11,6 +11,8 @@ import java.security.NoSuchAlgorithmException
 import java.util.Arrays
 import java.util.Optional
 import java.nio.file.Path
+import java.nio.file.Files
+import java.util.stream.Collectors
 
 /**
  * Implements a block store that uses IPFS as the backend
@@ -157,9 +159,33 @@ class IpfsBlockStore implements BlockStore {
     }
 
     @Override
-    Cid putFile(Path path) {
-        def file = new NamedStreamable.FileWrapper(path.toFile())
-        def result = ipfs.add(file).get(0)
-        return Cid.decode(result.hash.toBase58())
+    Cid putPath(Path path) {
+        log.trace "Adding to IPFS: ${path} (${path.getClass()})"
+        
+        // Create appropriate wrapper based on whether it's a file or directory
+        def streamable = Files.isDirectory(path) 
+            ? createDirWrapper(path)
+            : new NamedStreamable.FileWrapper(path.toFile())
+            
+        // Add to IPFS - this will handle both files and directories
+        def result = ipfs.add(streamable).last()
+        def cid = Cid.decode(result.hash.toBase58())
+        log.trace "Added to IPFS: ${path} -> ${cid}"
+        
+        return cid
+    }
+
+    /**
+     * Create a DirWrapper for a directory path
+     */
+    private NamedStreamable.DirWrapper createDirWrapper(Path dirPath) {
+        log.trace "Creating DirWrapper for: ${dirPath}"
+        // Get all children as FileWrappers
+        List<NamedStreamable> children = Files.list(dirPath)
+            .map { path -> new NamedStreamable.FileWrapper(path.toFile()) as NamedStreamable }
+            .collect(Collectors.toList())
+
+        log.trace "Children: ${children}"
+        return new NamedStreamable.DirWrapper(dirPath.fileName.toString(), children)
     }
 } 

@@ -29,5 +29,5 @@ interface BlockStore {
      * The implementation should handle creating appropriate blocks
      * (e.g. UnixFS for IPFS)
      */
-    Cid putFile(Path path)
+    Cid putPath(Path path)
 } 

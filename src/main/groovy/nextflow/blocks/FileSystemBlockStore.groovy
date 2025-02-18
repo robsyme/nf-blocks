@@ -136,7 +136,7 @@ class FileSystemBlockStore implements BlockStore {
      * and uses a raw codec. Later we can implement proper UnixFS format.
      */
     @Override
-    Cid putFile(Path path) {
+    Cid putPath(Path path) {
         // Read the file
         byte[] fileBytes = Files.readAllBytes(path)
         
