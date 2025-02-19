@@ -1,8 +1,6 @@
 package nextflow.blocks
 
 import io.ipfs.api.MerkleNode
-import io.ipfs.api.NamedStreamable
-import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
 import java.nio.file.Path
 

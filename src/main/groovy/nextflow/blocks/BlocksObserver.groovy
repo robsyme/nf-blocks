@@ -2,15 +2,12 @@ package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
-import io.ipfs.api.cbor.CborEncoder
 import io.ipfs.api.cbor.CborObject
 import io.ipfs.api.MerkleNode
 import io.ipfs.cid.Cid
-import io.ipfs.multihash.Multihash
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import nextflow.file.FileHolder
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskPath
