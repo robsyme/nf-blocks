@@ -7,10 +7,10 @@ import io.ipfs.api.MerkleNode
 import io.ipfs.api.NamedStreamable
 import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
-import java.nio.file.Path
-import java.nio.file.Files
-import java.util.stream.Collectors
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.stream.Collectors
 
 /**
  * Implements a block store that uses IPFS as the backend
@@ -156,7 +156,8 @@ class IpfsBlockStore implements BlockStore {
         }
     }
 
-    MerkleNode put(byte[] data, Map options) {
+    @Override
+    MerkleNode add(byte[] data, Map options) {
         try {
             String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
             String outputFormat = options.getOrDefault('outputFormat', 'dag-cbor')
@@ -167,12 +168,11 @@ class IpfsBlockStore implements BlockStore {
     }
 
     @Override
-    MerkleNode putPath(Path path) {
+    MerkleNode addPath(Path path) {
         try {
             def streamable = Files.isDirectory(path) 
                 ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
                 : new NamedStreamable.FileWrapper(path.toFile())
-            // Add the streamable to IPFS and return the last CID (the root)
             def cids = ipfs.add(streamable)
             return cids.last()
         } catch (IOException e) {

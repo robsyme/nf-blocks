@@ -107,7 +107,7 @@ class BlocksObserver implements TraceObserver {
 
     private MerkleNode storeCborBlock(Object value) {
         Map<String, CborObject> cborMap = [(value instanceof Map ? "map" : "value"): convertToCbor(value)]
-        blockStore.put(CborObject.CborMap.build(cborMap).toByteArray(), [:])
+        blockStore.add(CborObject.CborMap.build(cborMap).toByteArray(), [:])
     }
 
     private Object processValue(Object value) {
@@ -169,10 +169,10 @@ class BlocksObserver implements TraceObserver {
 
         def fileName = path.fileName.toString()
         def node = Files.isDirectory(path) ? 
-            blockStore.putPath(path) :
-            blockStore.put(Files.readAllBytes(path), [:])
+            blockStore.addPath(path) :
+            blockStore.add(Files.readAllBytes(path), [:])
             
-        [fileName: node.hash]  // Convert hash to string
+        [fileName: node.hash]
     }
 
     Cid getWorkflowRunCid() { workflowRunCid }

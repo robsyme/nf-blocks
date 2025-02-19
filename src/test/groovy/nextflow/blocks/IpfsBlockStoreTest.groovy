@@ -175,7 +175,7 @@ class IpfsBlockStoreTest extends Specification {
         def data = "test data".bytes
         
         when:
-        def node = store.put(data, [:])
+        def node = store.add(data, [:])
         def retrieved = store.get(node.hash)
         
         then:
