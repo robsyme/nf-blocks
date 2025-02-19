@@ -2,12 +2,11 @@ package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import java.nio.file.Path
+import java.nio.file.Paths
 import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceObserverFactory
-
-import java.nio.file.Path
-import java.nio.file.Paths
 
 /**
  * Implements the blockstore observer factory
