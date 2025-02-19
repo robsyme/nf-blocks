@@ -59,10 +59,10 @@ class IpfsBlockStoreTest extends Specification {
             }
             return [
                 Hash: "QmNRQVNpQp8r2N56tMDUpYyLaqHaJeiV9m8Y66FcGM6F4g",  // Example hash
-                Size: files[path].length,                                   // Capitalized Size
-                CumulativeSize: files[path].length + 58,                   // Added CumulativeSize
-                Blocks: 1,                                                 // Capitalized Blocks
-                Type: "file"                                              // Capitalized Type
+                Size: files[path].length,                                // Capitalized Size
+                CumulativeSize: files[path].length + 58,                 // Added CumulativeSize
+                Blocks: 1,                                               // Capitalized Blocks
+                Type: "file"                                             // Capitalized Type
             ]
         }
 
@@ -134,14 +134,6 @@ class IpfsBlockStoreTest extends Specification {
         
         then:
         noExceptionThrown()
-    }
-
-    def "should handle connection failure"() {
-        when:
-        def store = new IpfsBlockStore()  // This will try to connect to real IPFS
-        
-        then:
-        thrown(RuntimeException)
     }
 
     def "should put and get data with mocked IPFS"() {

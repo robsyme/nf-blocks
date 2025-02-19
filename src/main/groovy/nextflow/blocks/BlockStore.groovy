@@ -25,4 +25,5 @@ interface BlockStore {
     // Block methods - aligning with IPFS.Dag API
     byte[] get(Multihash hash)
     MerkleNode put(byte[] data, Map options)
+    MerkleNode putPath(Path path)
 } 

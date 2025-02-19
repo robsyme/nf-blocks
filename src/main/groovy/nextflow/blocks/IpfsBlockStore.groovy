@@ -158,10 +158,33 @@ class IpfsBlockStore implements BlockStore {
 
     MerkleNode put(byte[] data, Map options) {
         try {
-            def streamable = new NamedStreamable.ByteArrayWrapper(data)
+            String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
+            String outputFormat = options.getOrDefault('outputFormat', 'dag-cbor')
+            return ipfs.dag.put(inputFormat, data, outputFormat)
+        } catch (IOException e) {
+            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+        }
+    }
+
+    @Override
+    MerkleNode putPath(Path path) {
+        try {
+            def streamable = Files.isDirectory(path) 
+                ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
+                : new NamedStreamable.FileWrapper(path.toFile())
             return ipfs.add(streamable)[0]
         } catch (IOException e) {
             throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }
+    }
+
+    private List<NamedStreamable> createDirWrappers(Path dirPath) {
+        return Files.list(dirPath)
+            .map { path ->
+                Files.isDirectory(path)
+                    ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
+                    : new NamedStreamable.FileWrapper(path.toFile())
+            }
+            .collect(Collectors.toList())
     }
 } 

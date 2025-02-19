@@ -72,8 +72,9 @@ class BlocksObserver implements TraceObserver {
         def cborMap = CborObject.CborMap.build(convertMapToCbor(runInfo))
         def block = cborMap.toByteArray()
         def node = blockStore.put(block, [:])
-        workflowRunCid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
-        log.trace "Stored workflow run block: CID=${workflowRunCid}"
+        
+        // Create CID directly from the hash string
+        log.trace "Stored workflow run block: CID=${node.hash}"
     }
 
     /**
@@ -178,10 +179,8 @@ class BlocksObserver implements TraceObserver {
         def cborMap = CborObject.CborMap.build(convertMapToCbor(inputs))
         def block = cborMap.toByteArray()
         
-        // Create CID and store block
         def node = blockStore.put(block, [:])
-        def cid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
-        log.trace "Stored task block: CID=${cid} size=${block.length}bytes task=${task.name}"
+        log.trace "Stored task block: CID=${node.hash} size=${block.length}bytes task=${task.name}"
     }
 
     /**
@@ -241,8 +240,7 @@ class BlocksObserver implements TraceObserver {
         def cborMap = CborObject.CborMap.build(convertMapToCbor(publishInfo))
         def block = cborMap.toByteArray()
         def node = blockStore.put(block, [:])
-        def cid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
-        log.trace "Stored publish block: CID=${cid}"
+        log.trace "Stored publish block: CID=${node.hash}"
     }
 
     /**
@@ -305,12 +303,18 @@ class BlocksObserver implements TraceObserver {
             path: path.toString()
         ] as Map<String, Object>
 
-        byte[] fileBytes = path.toFile().bytes
-        def node = blockStore.put(fileBytes, [:])
-        def fileCid = Cid.buildV0(Multihash.fromBase58(node.hash.toString()))
-        result.put('content', [
-            '/': fileCid.toString()
-        ])
+        if (attrs.directory) {
+            def node = blockStore.putPath(path)
+            result.put('content', [
+                '/': node.hash
+            ])
+        } else {
+            byte[] fileBytes = Files.readAllBytes(path)
+            def node = blockStore.put(fileBytes, [:])
+            result.put('content', [
+                '/': node.hash
+            ])
+        }
 
         return result
     }
