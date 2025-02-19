@@ -27,10 +27,6 @@ class BlocksFactory implements TraceObserverFactory {
         // Create the appropriate block store
         BlockStore blockStore
         switch (type) {
-            case 'fs':
-                Path storePath = Paths.get(pathStr)
-                blockStore = new FileSystemBlockStore(storePath)
-                break
             case 'ipfs':
                 blockStore = new IpfsBlockStore(pathStr)
                 break

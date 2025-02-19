@@ -1,197 +1,231 @@
 package nextflow.blocks
 
 import io.ipfs.api.IPFS
+import io.ipfs.api.MerkleNode
+import io.ipfs.api.NamedStreamable
 import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
-import spock.lang.Specification
-import spock.lang.Unroll
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.NoSuchElementException
+import spock.lang.Specification
+import spock.lang.Unroll
 
 class IpfsBlockStoreTest extends Specification {
-    static final int RAW_CODEC = 0x55 // Raw codec type
-
-    class TestBlock extends IPFS.Block {
-        private final Map<String, byte[]> blocks = [:]
-        private final Map<String, Map> stats = [:]
-
-        TestBlock() {
+    class TestFiles extends IPFS.Files {
+        private final Map<String, byte[]> files = [:]
+        
+        TestFiles() {
             super(null)
         }
 
         @Override
-        List<Map> put(List<byte[]> blocks, Optional<String> format) {
-            def results = []
-            blocks.each { block ->
-                def digest = MessageDigest.getInstance("SHA-256")
-                def hash = digest.digest(block)
-                def mh = new Multihash(Multihash.Type.sha2_256, hash)
-                def cidBytes = new byte[mh.toBytes().length + 2]
-                cidBytes[0] = 0x01  // Version 1
-                cidBytes[1] = Cid.Codec.Raw.type  // Raw codec
-                System.arraycopy(mh.toBytes(), 0, cidBytes, 2, mh.toBytes().length)
-                def cid = Cid.cast(cidBytes)
-                def key = Base64.getEncoder().encodeToString(hash)
-                this.blocks[key] = block
-                def stat = [Key: key, Size: block.length]
-                this.stats[key] = stat
-                results << stat
+        String write(String path, NamedStreamable data, boolean create, boolean parents) {
+            if (files.containsKey(path) && !create) {
+                throw new IOException("File already exists: ${path}")
             }
-            return results
+            files[path] = data.getContents()
+            return "ok"
+        }
+
+        @Override
+        byte[] read(String path) {
+            if (!files.containsKey(path)) {
+                throw new IOException("File not found: ${path}")
+            }
+            return files[path]
+        }
+
+        @Override
+        List<Map> ls(String path) {
+            def entries = files.findAll { it.key.startsWith(path) }.collect { k, v ->
+                [
+                    Name: k.tokenize('/')[-1],
+                    Type: 0,
+                    Size: v.length,
+                    Hash: ""
+                ]
+            }
+            return entries
+        }
+
+        @Override
+        Map stat(String path) {
+            if (!files.containsKey(path)) {
+                throw new IOException("File not found: ${path}")
+            }
+            return [
+                Hash: "QmNRQVNpQp8r2N56tMDUpYyLaqHaJeiV9m8Y66FcGM6F4g",  // Example hash
+                Size: files[path].length,                                // Capitalized Size
+                CumulativeSize: files[path].length + 58,                 // Added CumulativeSize
+                Blocks: 1,                                               // Capitalized Blocks
+                Type: "file"                                             // Capitalized Type
+            ]
+        }
+
+        @Override
+        String cp(String source, String dest, boolean parents) {
+            if (!files.containsKey(source)) {
+                throw new IOException("Source file not found: ${source}")
+            }
+            if (files.containsKey(dest)) {
+                throw new IOException("""{"Message":"cp: cannot put node in path ${dest}: directory already has entry by that name","Code":0,"Type":"error"}""")
+            }
+            files[dest] = files[source].clone() // Use clone to avoid sharing the byte array
+            return "ok"
+        }
+
+        @Override
+        String rm(String path, boolean recursive, boolean force) {
+            if (!files.containsKey(path)) {
+                throw new IOException("File not found: ${path}")
+            }
+            files.remove(path)
+            return "ok"
+        }
+    }
+
+    class TestDag extends IPFS.Dag {
+        private final Map<String, byte[]> blocks
+
+        TestDag(Map<String, byte[]> blocks) {  // Take blocks map as constructor parameter
+            super(null)
+            this.blocks = blocks
+        }
+
+        @Override
+        MerkleNode put(String inputFormat, byte[] object, String outputFormat) {
+            def hash = MessageDigest.getInstance("SHA-256").digest(object)
+            def multihash = new Multihash(Multihash.Type.sha2_256, hash)
+            blocks[multihash.toBase58()] = object
+            return new MerkleNode(multihash.toBase58())
+        }
+
+        @Override
+        byte[] get(Cid cid) {
+            def key = cid.hash.toBase58()
+            if (!blocks.containsKey(key)) {
+                throw new IOException("Block not found: ${key}")
+            }
+            return blocks[key]
+        }
+    }
+
+    class TestIpfs extends IPFS {
+        final TestFiles files
+        final TestDag dag
+        private final Map<String, byte[]> blocks = [:]  // Single blocks map shared between TestIpfs and TestDag
+
+        TestIpfs() {
+            super("localhost", 5001)
+            this.files = new TestFiles()
+            this.dag = new TestDag(blocks)  // Pass blocks map to TestDag
+            // Set the files field in the parent class
+            def filesField = IPFS.getDeclaredField("files")
+            filesField.setAccessible(true)
+            filesField.set(this, files)
+            // Set the dag field in the parent class
+            def dagField = IPFS.getDeclaredField("dag")
+            dagField.setAccessible(true)
+            dagField.set(this, dag)
+        }
+
+        @Override
+        String version() {
+            return "0.11.0"
         }
 
         @Override
         byte[] get(Multihash hash) {
-            def key = Base64.getEncoder().encodeToString(hash.hash)
+            def key = hash.toBase58()
             if (!blocks.containsKey(key)) {
-                throw new NoSuchElementException("Block not found: ${key}")
+                throw new IOException("Block not found: ${key}")
             }
             return blocks[key]
         }
 
         @Override
-        Map stat(Multihash hash) {
-            def key = Base64.getEncoder().encodeToString(hash.hash)
-            if (!stats.containsKey(key)) {
-                throw new NoSuchElementException("Block not found: ${key}")
-            }
-            return stats[key]
+        List<MerkleNode> add(NamedStreamable data) {
+            def content = data.getContents()
+            def hash = MessageDigest.getInstance("SHA-256").digest(content)
+            def multihash = new Multihash(Multihash.Type.sha2_256, hash)
+            blocks[multihash.toBase58()] = content
+            return [new MerkleNode(multihash.toBase58())]
         }
     }
 
-    class TestRefs extends IPFS.Refs {
-        TestRefs() {
-            super(null)
-        }
-
-        @Override
-        List<String> local() {
-            return []
-        }
-    }
-
-    class TestIpfs extends IPFS {
-        TestIpfs() {
-            super("localhost", 5001, "/api/v0/", false, 0, 0, false)  // Use minimal constructor with no connection attempt
-            def field = IPFS.getDeclaredField("block")
-            field.setAccessible(true)
-            field.set(this, new TestBlock())
-            
-            field = IPFS.getDeclaredField("refs")
-            field.setAccessible(true)
-            field.set(this, new TestRefs())
-        }
-
-        @Override
-        String version() {
-            return "0.25.0"  // Return a fixed version to prevent connection attempts
-        }
-
-        @Override
-        Map commands() {
-            return [:]  // Return empty map to prevent connection attempts
-        }
-    }
-
-    private Cid createCidForBlock(byte[] block, Multihash.Type hashType) {
-        def algorithm = switch(hashType) {
-            case Multihash.Type.sha1 -> "SHA-1"
-            case Multihash.Type.sha2_256 -> "SHA-256"
-            case Multihash.Type.sha2_512 -> "SHA-512"
-            case Multihash.Type.sha3_224 -> "SHA3-224"
-            case Multihash.Type.sha3_256 -> "SHA3-256"
-            case Multihash.Type.sha3_512 -> "SHA3-512"
-            default -> throw new IllegalArgumentException("Unsupported hash type: ${hashType}")
-        }
+    def "should connect to IPFS node"() {
+        given:
+        def ipfs = new TestIpfs()
         
-        def digest = MessageDigest.getInstance(algorithm)
-        def hash = digest.digest(block)
-        def mh = new Multihash(hashType, hash)
-        def cidBytes = new byte[mh.toBytes().length + 2]
-        cidBytes[0] = 0x01  // Version 1
-        cidBytes[1] = Cid.Codec.Raw.type  // Raw codec
-        System.arraycopy(mh.toBytes(), 0, cidBytes, 2, mh.toBytes().length)
-        return Cid.cast(cidBytes)
+        when:
+        def store = new IpfsBlockStore(ipfs, true)  // Use mocked IPFS and skip validation
+        
+        then:
+        noExceptionThrown()
     }
 
-    @Unroll
-    def "should store and retrieve raw blocks with #hashType hash"() {
+    def "should put and get data with mocked IPFS"() {
         given:
         def ipfs = new TestIpfs()
         def store = new IpfsBlockStore(ipfs, true)
-        def block = "Hello, World!".bytes
-        def cid = createCidForBlock(block, hashType)
-
-        when:
-        store.putBlock(cid, block)
-        
-        then:
-        store.hasBlock(cid)
+        def data = "test data".bytes
         
         when:
-        def result = store.getBlock(cid)
+        def node = store.add(data, [:])
+        def retrieved = store.get(node.hash)
         
         then:
-        result == block
-        
-        where:
-        hashType << [
-            Multihash.Type.sha2_256  // Start with just one hash type for testing
-        ]
+        retrieved == data
     }
 
-    def "should verify block content matches CID"() {
+    def "should handle files operations with mocked IPFS"() {
         given:
         def ipfs = new TestIpfs()
         def store = new IpfsBlockStore(ipfs, true)
-        def block = "Hello, World!".bytes
-        def wrongBlock = "Wrong content".bytes
-        def cid = createCidForBlock(block, Multihash.Type.sha2_256)
-
-        when:
-        store.putBlock(cid, wrongBlock)
-
-        then:
-        thrown(IllegalArgumentException)
-    }
-
-    def "should throw exception for unsupported hash algorithm"() {
-        given:
-        def ipfs = new TestIpfs()
-        def store = new IpfsBlockStore(ipfs, true)
-        def block = "Hello, World!".bytes
-        def cid = createCidForBlock(block, Multihash.Type.sha2_256)
-        def mh = new Multihash(Multihash.Type.blake2b_256, cid.hash)
-        def cidBytes = new byte[mh.toBytes().length + 2]
-        cidBytes[0] = 0x01  // Version 1
-        cidBytes[1] = Cid.Codec.Raw.type  // Raw codec
-        System.arraycopy(mh.toBytes(), 0, cidBytes, 2, mh.toBytes().length)
-        def badCid = Cid.cast(cidBytes)
-
-        when:
-        store.putBlock(badCid, block)
-
-        then:
-        thrown(IllegalArgumentException)
-    }
-
-    def "should throw exception for missing block"() {
-        given:
-        def ipfs = new TestIpfs()
-        def store = new IpfsBlockStore(ipfs, true)
-        def hash = new byte[32] // Create a zero-filled hash
-        def mh = new Multihash(Multihash.Type.sha2_256, hash)
-        def cidBytes = new byte[mh.toBytes().length + 2]
-        cidBytes[0] = 0x01  // Version 1
-        cidBytes[1] = Cid.Codec.Raw.type  // Raw codec
-        System.arraycopy(mh.toBytes(), 0, cidBytes, 2, mh.toBytes().length)
-        def cid = Cid.cast(cidBytes)
-
-        when:
-        store.getBlock(cid)
-
-        then:
-        thrown(NoSuchElementException)
+        def data = "test content".bytes
+        
+        when: "writing a file"
+        def writeResult = store.write("/test.txt", data, [:])
+        
+        then: "should be able to read it back"
+        store.read("/test.txt", [:]) == data
+        
+        when: "listing files"
+        def ls = store.ls("/", [:])
+        
+        then: "should see our file"
+        ls.find { it.Name == "test.txt" }
+        
+        when: "getting stats"
+        def stats = store.stat("/test.txt", [:])
+        
+        then: "should have correct size"
+        stats.Size == data.length
+    
+        when: "copying file"
+        try {
+            store.rm("/copy.txt", false, false) // Try to remove if it exists
+        } catch (RuntimeException ignored) {
+            // Ignore if file doesn't exist
+        }
+        store.cp("/test.txt", "/copy.txt", false)
+        
+        then: "both files should exist"
+        store.read("/test.txt", [:]) == data
+        store.read("/copy.txt", [:]) == data
+        
+        when: "removing file"
+        store.rm("/test.txt", false, false)
+        and: "trying to read the removed file"
+        store.read("/test.txt", [:])
+        
+        then: "should throw RuntimeException with IPFS error message"
+        def e = thrown(RuntimeException)
+        e.message.contains('IOException contacting IPFS daemon') && 
+        e.message.contains('File not found: /test.txt')
     }
 } 

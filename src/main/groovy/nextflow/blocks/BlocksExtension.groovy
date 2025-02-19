@@ -1,8 +1,8 @@
 package nextflow.blocks
 
 import groovy.transform.CompileStatic
-import nextflow.Session
 import nextflow.plugin.extension.PluginExtensionPoint
+import nextflow.Session
 
 /**
  * Implements the blockstore extension
