@@ -88,17 +88,49 @@ class IpfsBlockStoreTest extends Specification {
         }
     }
 
+    class TestDag extends IPFS.Dag {
+        private final Map<String, byte[]> blocks
+
+        TestDag(Map<String, byte[]> blocks) {  // Take blocks map as constructor parameter
+            super(null)
+            this.blocks = blocks
+        }
+
+        @Override
+        MerkleNode put(String inputFormat, byte[] object, String outputFormat) {
+            def hash = MessageDigest.getInstance("SHA-256").digest(object)
+            def multihash = new Multihash(Multihash.Type.sha2_256, hash)
+            blocks[multihash.toBase58()] = object
+            return new MerkleNode(multihash.toBase58())
+        }
+
+        @Override
+        byte[] get(Cid cid) {
+            def key = cid.hash.toBase58()
+            if (!blocks.containsKey(key)) {
+                throw new IOException("Block not found: ${key}")
+            }
+            return blocks[key]
+        }
+    }
+
     class TestIpfs extends IPFS {
-        private final TestFiles testFiles
-        private final Map<String, byte[]> blocks = [:]
+        final TestFiles files
+        final TestDag dag
+        private final Map<String, byte[]> blocks = [:]  // Single blocks map shared between TestIpfs and TestDag
 
         TestIpfs() {
             super("localhost", 5001)
-            this.testFiles = new TestFiles()
+            this.files = new TestFiles()
+            this.dag = new TestDag(blocks)  // Pass blocks map to TestDag
             // Set the files field in the parent class
-            def field = IPFS.getDeclaredField("files")
-            field.setAccessible(true)
-            field.set(this, testFiles)
+            def filesField = IPFS.getDeclaredField("files")
+            filesField.setAccessible(true)
+            filesField.set(this, files)
+            // Set the dag field in the parent class
+            def dagField = IPFS.getDeclaredField("dag")
+            dagField.setAccessible(true)
+            dagField.set(this, dag)
         }
 
         @Override

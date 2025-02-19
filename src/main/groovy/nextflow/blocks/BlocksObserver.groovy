@@ -6,6 +6,7 @@ import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
 import io.ipfs.api.cbor.CborObject
 import io.ipfs.api.cbor.CborEncoder
+import io.ipfs.api.MerkleNode
 import nextflow.processor.TaskHandler
 import nextflow.processor.TaskProcessor
 import nextflow.processor.TaskRun
@@ -14,7 +15,6 @@ import nextflow.trace.TraceObserver
 import nextflow.trace.TraceRecord
 import nextflow.processor.TaskPath
 import nextflow.file.FileHolder
-
 import java.security.MessageDigest
 import java.nio.file.Files
 import java.nio.file.Path
@@ -73,6 +73,9 @@ class BlocksObserver implements TraceObserver {
         def block = cborMap.toByteArray()
         def node = blockStore.put(block, [:])
         
+        // Create CID
+        def cid = Cid.build(1, Cid.Codec.DagCbor, node.hash)
+        this.workflowRunCid = cid
         // Create CID directly from the hash string
         log.trace "Stored workflow run block: CID=${node.hash}"
     }
@@ -202,6 +205,7 @@ class BlocksObserver implements TraceObserver {
             case Boolean:
                 return new CborObject.CborBoolean(value as boolean)
             case List:
+                // Create new CborList from collection
                 def list = (value as List).collect { convertToCborObject(it) }
                 return new CborObject.CborList(list)
             case Map:
@@ -212,6 +216,8 @@ class BlocksObserver implements TraceObserver {
                 return new CborObject.CborMerkleLink(value as Cid)
             case null:
                 return new CborObject.CborNull()
+            case Path:
+                return convertToCborObject(processPublishedPath(value as Path))
             default:
                 return new CborObject.CborString(value.toString())
         }
@@ -227,18 +233,15 @@ class BlocksObserver implements TraceObserver {
     @Override
     void onWorkflowPublish(Object value) {
         log.trace "Publishing workflow object: ${value} (${value.getClass()})"
+        if (value instanceof List) {
+            def classes = value.collect { it.getClass() }
+            log.trace "Classes: ${classes}"
+        }
 
-        // Create a block representing this published value
-        def publishInfo = [
-            type: 'publish',
-            timestamp: System.currentTimeMillis(),
-            workflowRun: workflowRunCid,  // Just use the Cid directly
-            value: processPublishedValue(value)
-        ] as Map<String, Object>
+        def cborObject = convertToCborObject(value)
+        log.trace "Publishing workflow object (CBOR): ${cborObject}"
 
-        // Convert to CBOR and store
-        def cborMap = CborObject.CborMap.build(convertMapToCbor(publishInfo))
-        def block = cborMap.toByteArray()
+        def block = cborObject.toByteArray()
         def node = blockStore.put(block, [:])
         log.trace "Stored publish block: CID=${node.hash}"
     }
@@ -286,37 +289,17 @@ class BlocksObserver implements TraceObserver {
     /**
      * Process a published Path, creating a UnixFS block if it exists
      */
-    private Object processPublishedPath(Path path) {
+    private Map<String, Object> processPublishedPath(Path path) {
+        log.trace "Processing published path: ${path}"
+
         if (!Files.exists(path)) {
-            return [
-                type: 'path',
-                exists: false,
-                path: path.toString()
-            ]
+            return [type: 'path', exists: false, path: path.toString()] as Map<String, Object>
         }
 
-        // Read file attributes
-        def attrs = Files.readAttributes(path, BasicFileAttributes)
-        def result = [
-            type: 'path',
-            exists: true,
-            path: path.toString()
-        ] as Map<String, Object>
-
-        if (attrs.directory) {
-            def node = blockStore.putPath(path)
-            result.put('content', [
-                '/': node.hash
-            ])
-        } else {
-            byte[] fileBytes = Files.readAllBytes(path)
-            def node = blockStore.put(fileBytes, [:])
-            result.put('content', [
-                '/': node.hash
-            ])
-        }
-
-        return result
+        def fileName = path.fileName.toString()
+        def node = blockStore.putPath(path)
+            
+        return [(fileName): node.hash] as Map<String, Object>
     }
 
     @Override

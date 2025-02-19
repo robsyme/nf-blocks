@@ -172,7 +172,9 @@ class IpfsBlockStore implements BlockStore {
             def streamable = Files.isDirectory(path) 
                 ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
                 : new NamedStreamable.FileWrapper(path.toFile())
-            return ipfs.add(streamable)[0]
+            // Add the streamable to IPFS and return the last CID (the root)
+            def cids = ipfs.add(streamable)
+            return cids.last()
         } catch (IOException e) {
             throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }
