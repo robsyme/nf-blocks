@@ -2,7 +2,7 @@ package nextflow.blocks
 
 import groovy.util.logging.Slf4j
 import groovyx.gpars.dataflow.DataflowBroadcast
-import nextflow.Session
+import java.nio.file.Paths
 import nextflow.executor.Executor
 import nextflow.executor.ExecutorFactory
 import nextflow.processor.TaskHandler
@@ -13,8 +13,7 @@ import nextflow.script.BaseScript
 import nextflow.script.ChannelOut
 import nextflow.script.ScriptRunner
 import nextflow.script.ScriptType
-
-import java.nio.file.Paths
+import nextflow.Session
 
 class MockScriptRunner extends ScriptRunner {
 

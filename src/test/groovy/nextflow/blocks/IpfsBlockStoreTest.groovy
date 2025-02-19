@@ -1,18 +1,18 @@
 package nextflow.blocks
 
 import io.ipfs.api.IPFS
+import io.ipfs.api.MerkleNode
+import io.ipfs.api.NamedStreamable
 import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
-import spock.lang.Specification
-import spock.lang.Unroll
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.NoSuchElementException
-import io.ipfs.api.MerkleNode
-import java.nio.file.Files
-import java.nio.file.Path
-import java.io.IOException
-import io.ipfs.api.NamedStreamable
+import spock.lang.Specification
+import spock.lang.Unroll
 
 class IpfsBlockStoreTest extends Specification {
     class TestFiles extends IPFS.Files {

@@ -20,7 +20,6 @@ package nextflow.blocks
 import com.google.common.jimfs.Configuration
 import com.google.common.jimfs.Jimfs
 import groovy.transform.Memoized
-
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.zip.GZIPInputStream
