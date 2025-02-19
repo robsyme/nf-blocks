@@ -41,120 +41,81 @@ class BlocksObserver implements TraceObserver {
     void onFlowCreate(Session session) {
         log.info "Pipeline is starting! 🚀"
         
-        // Collect workflow metadata
         def metadata = session.workflowMetadata
         def runInfo = [
-            // Session info
             sessionId: session.uniqueId,
             runName: session.runName,
             commandLine: session.commandLine,
             scriptName: session.scriptName,
             profile: session.profile,
-            
-            // Configuration
-            config: session.config
-        ].findAll { k, v -> v != null } as Map<String, Object>
+            config: session.config,
+            workflow: [
+                runName: metadata.runName,
+                scriptId: metadata.scriptId,
+                scriptFile: metadata.scriptFile?.toString(),
+                scriptName: metadata.scriptName,
+                repository: metadata.repository,
+                commitId: metadata.commitId,
+                revision: metadata.revision,
+                start: metadata.start?.toString(),
+                container: metadata.container instanceof Map ? 
+                    metadata.container.collectEntries { k, v -> [(k.toString()): v.toString()] } :
+                    metadata.container?.toString()
+            ].findAll { k, v -> v }
+        ].findAll { k, v -> v }
 
-        // Workflow metadata
-        runInfo.workflow = [
-            runName: metadata.runName,
-            scriptId: metadata.scriptId,
-            scriptFile: metadata.scriptFile?.toString(),
-            scriptName: metadata.scriptName,
-            repository: metadata.repository,
-            commitId: metadata.commitId,
-            revision: metadata.revision,
-            start: metadata.start?.toString(),
-            container: processContainerConfig(metadata.container)
-        ].findAll { k, v -> v != null }
-        
-        // Convert to CBOR and store
-        def cborMap = CborObject.CborMap.build(convertMapToCbor(runInfo))
-        def block = cborMap.toByteArray()
-        def node = blockStore.put(block, [:])
-        
-        // Create CID
-        def cid = Cid.build(1, Cid.Codec.DagCbor, node.hash)
-        this.workflowRunCid = cid
-        // Create CID directly from the hash string
+        def node = storeCborBlock(runInfo)
+        workflowRunCid = Cid.build(1, Cid.Codec.DagCbor, node.hash)
         log.trace "Stored workflow run block: CID=${node.hash}"
     }
 
-    /**
-     * Process container configuration which might be a single string or a map
-     */
-    private Object processContainerConfig(def container) {
-        if (container instanceof Map) {
-            return container.collectEntries { process, image ->
-                [(process.toString()): image.toString()]
-            }
-        }
-        return container?.toString()
-    }
+    @Override
+    void onProcessSubmit(TaskHandler handler, TraceRecord trace) {
+        final task = handler.task
+        log.trace "Creating DAG-CBOR block for task: ${task.name} [${task.hash}]"
 
-    /**
-     * Create a CID for a block using SHA-256 and DAG-CBOR codec
-     */
-    private Cid createCid(byte[] block) {
-        def digest = MessageDigest.getInstance("SHA-256")
-        def hash = digest.digest(block)
-        def mh = new Multihash(Multihash.Type.sha2_256, hash)
-        return Cid.buildCidV1(Cid.Codec.DagCbor, mh.getType(), hash)
-    }
-
-    /**
-     * Collect all task inputs that contribute to the task hash
-     */
-    private Map<String, Object> collectTaskInputs(TaskRun task) {
         def inputs = [
-            // Core task identity
             sessionId: session.uniqueId,
             name: task.name,
             script: task.source,
-
-            // Container configuration
             container: task.isContainerEnabled() ? task.getContainerFingerprint() : null,
-
-            // Task inputs - handle InParam interface
             inputs: task.inputs.collect { inParam, value ->
                 [
                     name: inParam.name,
                     index: inParam.index,
                     mapIndex: inParam.mapIndex,
-                    value: processInputValue(value)
+                    value: processValue(value)
                 ]
             },
-
-            // Environment configuration
             conda: task.getCondaEnv(),
             spack: task.getSpackEnv(),
             architecture: task.getConfig().getArchitecture(),
             modules: task.getConfig().getModule() as List,
-
-            // Execution mode
             stubRun: session.stubRun
-        ] as Map<String, Object>
+        ].findAll { k, v -> v }
 
-        // Remove null values to keep the block clean
-        return inputs.findAll { k, v -> v != null } as Map<String, Object>
+        MerkleNode node = storeCborBlock(inputs)
+        log.trace "Stored task block: CID=${node.hash} task=${task.name}"
     }
 
-    /**
-     * Process an input value, handling special cases like FileHolder, Lists, and Maps
-     */
-    private Object processInputValue(Object value) {
-        if (value == null) return null
-        
+    @Override
+    void onWorkflowPublish(Object value) {
+        log.trace "Publishing workflow object: ${value} (${value.getClass()})"
+        def node = storeCborBlock(value)
+        log.trace "Stored publish block: CID=${node.hash}"
+    }
+
+    private MerkleNode storeCborBlock(Object value) {
+        Map<String, CborObject> cborMap = [(value instanceof Map ? "map" : "value"): convertToCbor(value)]
+        blockStore.put(CborObject.CborMap.build(cborMap).toByteArray(), [:])
+    }
+
+    private Object processValue(Object value) {
         switch(value) {
-            case List:
-                return (value as List).collect { processInputValue(it) }
-            case Map:
-                return (value as Map).collect { entry -> 
-                    [
-                        name: entry.key,
-                        value: processInputValue(entry.value)
-                    ]
-                }
+            case List: 
+                return ((List)value).collect { processValue(it) }
+            case Map: 
+                return ((Map)value).collectEntries { k, v -> [k, processValue(v)] } as Map<String, Object>
             case FileHolder:
                 def path = (value as FileHolder).sourceObj as Path
                 def attrs = Files.readAttributes(path, BasicFileAttributes)
@@ -163,148 +124,56 @@ class BlocksObserver implements TraceObserver {
                     size: attrs.size(),
                     lastModified: attrs.lastModifiedTime()?.toMillis(),
                     isDirectory: attrs.isDirectory()
-                ]
-            default:
+                ] as Map<String, Object>
+            default: 
                 return value.toString()
         }
     }
 
-    /**
-     * Called before a task is submitted to the executor
-     */
-    @Override
-    void onProcessSubmit(TaskHandler handler, TraceRecord trace) {
-        final task = handler.task
-        log.trace "Creating DAG-CBOR block for task: ${task.name} [${task.hash}]"
-
-        // Collect all task inputs and convert to CBOR
-        def inputs = collectTaskInputs(task)
-        def cborMap = CborObject.CborMap.build(convertMapToCbor(inputs))
-        def block = cborMap.toByteArray()
-        
-        def node = blockStore.put(block, [:])
-        log.trace "Stored task block: CID=${node.hash} size=${block.length}bytes task=${task.name}"
-    }
-
-    /**
-     * Convert a Map to a Map<String, CborObject>
-     */
-    private Map<String, CborObject> convertMapToCbor(Map<String, Object> map) {
-        map.collectEntries { k, v -> [(k): convertToCborObject(v)] }
-    }
-
-    /**
-     * Convert a Groovy object to a CborObject
-     */
-    private CborObject convertToCborObject(Object value) {
-        switch (value) {
-            case String:
-                return new CborObject.CborString(value as String)
-            case Number:
-                return new CborObject.CborLong(value as Long)
-            case Boolean:
-                return new CborObject.CborBoolean(value as boolean)
-            case List:
-                // Create new CborList from collection
-                def list = (value as List).collect { convertToCborObject(it) }
+    private CborObject convertToCbor(Object value) {
+        switch(value) {
+            case String: 
+                return new CborObject.CborString((String)value)
+            case Number: 
+                return new CborObject.CborLong(((Number)value).longValue())
+            case Boolean: 
+                return new CborObject.CborBoolean((Boolean)value)
+            case List: 
+                List<CborObject> list = ((List)value).collect { convertToCbor(it) }
                 return new CborObject.CborList(list)
-            case Map:
-                return CborObject.CborMap.build(convertMapToCbor(value as Map))
-            case byte[]:
-                return new CborObject.CborByteArray(value as byte[])
-            case Cid:
-                return new CborObject.CborMerkleLink(value as Cid)
-            case null:
+            case Map: 
+                Map<String, CborObject> map = ((Map)value).collectEntries { k, v -> 
+                    [(k.toString()): convertToCbor(v)] 
+                } as Map<String, CborObject>
+                return CborObject.CborMap.build(map)
+            case byte[]: 
+                return new CborObject.CborByteArray((byte[])value)
+            case Cid: 
+                Cid cid = (Cid)value
+                return new CborObject.CborMerkleLink(cid)
+            case null: 
                 return new CborObject.CborNull()
             case Path:
-                return convertToCborObject(processPublishedPath(value as Path))
-            default:
+            case FileHolder:
+                def path = value instanceof Path ? value : (value as FileHolder).sourceObj
+                return convertToCbor(processPath(path as Path))
+            default: 
                 return new CborObject.CborString(value.toString())
         }
     }
 
-    /**
-     * Get the CID of the workflow run block
-     */
-    Cid getWorkflowRunCid() {
-        return workflowRunCid
-    }
-
-    @Override
-    void onWorkflowPublish(Object value) {
-        log.trace "Publishing workflow object: ${value} (${value.getClass()})"
-        if (value instanceof List) {
-            def classes = value.collect { it.getClass() }
-            log.trace "Classes: ${classes}"
-        }
-
-        def cborObject = convertToCborObject(value)
-        log.trace "Publishing workflow object (CBOR): ${cborObject}"
-
-        def block = cborObject.toByteArray()
-        def node = blockStore.put(block, [:])
-        log.trace "Stored publish block: CID=${node.hash}"
-    }
-
-    /**
-     * Process a published value, handling special cases like Paths, Lists, and Maps
-     */
-    private Object processPublishedValue(Object value) {
-        if (value == null) return null
-
-        switch(value) {
-            case Path:
-                return processPublishedPath(value as Path)
-            case FileHolder:
-                return processPublishedPath((value as FileHolder).sourceObj as Path)
-            case List:
-                return [
-                    type: 'list',
-                    items: (value as List).collect { processPublishedValue(it) }
-                ]
-            case Map:
-                return [
-                    type: 'map',
-                    entries: (value as Map).collect { k, v -> 
-                        [key: processPublishedValue(k), value: processPublishedValue(v)]
-                    }
-                ]
-            case Number:
-            case Boolean:
-            case String:
-                return [
-                    type: 'value',
-                    valueType: value.getClass().simpleName,
-                    value: value.toString()
-                ]
-            default:
-                return [
-                    type: 'value',
-                    valueType: value.getClass().name,
-                    value: value.toString()
-                ]
-        }
-    }
-
-    /**
-     * Process a published Path, creating a UnixFS block if it exists
-     */
-    private Map<String, Object> processPublishedPath(Path path) {
-        log.trace "Processing published path: ${path}"
-
+    private Map<String, Object> processPath(Path path) {
         if (!Files.exists(path)) {
-            return [type: 'path', exists: false, path: path.toString()] as Map<String, Object>
+            return [type: 'path', exists: false, path: path.toString()]
         }
 
         def fileName = path.fileName.toString()
-        def node = blockStore.putPath(path)
+        def node = Files.isDirectory(path) ? 
+            blockStore.putPath(path) :
+            blockStore.put(Files.readAllBytes(path), [:])
             
-        return [(fileName): node.hash] as Map<String, Object>
+        [fileName: node.hash]  // Convert hash to string
     }
 
-    @Override
-    void onFilePublish(Path destination, Path source) {
-        // Create new block for each published file
-        log.debug "Publishing file: ${source} -> ${destination}"
-    }    
+    Cid getWorkflowRunCid() { workflowRunCid }
 } 
