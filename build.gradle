@@ -1,5 +1,6 @@
 plugins {
     id 'io.nextflow.nextflow-plugin' version '0.0.1-alpha'
+    id 'com.google.protobuf' version '0.9.4'
 }
 
 // plugin version
@@ -40,4 +41,25 @@ dependencies {
     // add here plugins depepencies
     implementation 'com.github.ipld:java-cid:1.3.8'
     implementation 'com.github.ipfs:java-ipfs-http-client:1.4.4'
+    
+    // Add Protocol Buffers runtime
+    implementation 'com.google.protobuf:protobuf-java:3.24.0'
+}
+
+protobuf {
+    protoc {
+        // Download protoc from repositories
+        artifact = 'com.google.protobuf:protoc:3.24.0'
+    }
+    
+    generateProtoTasks {
+        all().configureEach { task ->
+            task.builtins {
+                java {
+                    // If you want any special options for Java code generation
+                    // option 'option1=value1'
+                }
+            }
+        }
+    }
 }
