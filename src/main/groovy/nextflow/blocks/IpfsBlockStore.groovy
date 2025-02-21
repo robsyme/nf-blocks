@@ -156,6 +156,11 @@ class IpfsBlockStore implements BlockStore {
     }
 
     @Override
+    MerkleNode add(byte[] data) {
+        return add(data, [:])
+    }
+
+    @Override
     MerkleNode add(byte[] data, Map options) {
         try {
             String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')

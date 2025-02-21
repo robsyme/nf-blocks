@@ -5,6 +5,7 @@ import groovy.util.logging.Slf4j
 import io.ipfs.api.cbor.CborObject
 import io.ipfs.api.MerkleNode
 import io.ipfs.cid.Cid
+import io.ipfs.multihash.Multihash
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.Files
 import java.nio.file.Path
@@ -16,6 +17,10 @@ import nextflow.processor.TaskRun
 import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceRecord
+import nextflow.script.WorkflowMetadata
+import nextflow.blocks.dagpb.DagPbNode
+import nextflow.blocks.dagpb.DagPbLink
+import nextflow.blocks.dagpb.DagPbCodec
 
 /**
  * Implements the blockstore observer
@@ -28,6 +33,7 @@ class BlocksObserver implements TraceObserver {
     private final BlockStore blockStore
     private final Session session
     private Cid workflowRunCid
+    private final List<Multihash> publishedBlocks = []
 
     BlocksObserver(BlockStore blockStore, Session session) {
         this.blockStore = blockStore
@@ -98,13 +104,21 @@ class BlocksObserver implements TraceObserver {
     @Override
     void onWorkflowPublish(Object value) {
         log.trace "Publishing workflow object: ${value} (${value.getClass()})"
-        def node = storeCborBlock(value)
+        MerkleNode node = storeCborBlock(value)
         log.trace "Stored publish block: CID=${node.hash}"
+        
+        publishedBlocks.add(node.hash)
+    }
+    
+    @Override
+    void onFlowComplete() {
+        MerkleNode rootNode = storeCborBlock(publishedBlocks)
+        log.info "Created root block with CID: ${rootNode.hash}"
     }
 
     private MerkleNode storeCborBlock(Object value) {
-        Map<String, CborObject> cborMap = [(value instanceof Map ? "map" : "value"): convertToCbor(value)]
-        blockStore.add(CborObject.CborMap.build(cborMap).toByteArray(), [:])
+        def block = convertToCbor(value)
+        blockStore.add(block.toByteArray())
     }
 
     private Object processValue(Object value) {
@@ -160,16 +174,15 @@ class BlocksObserver implements TraceObserver {
     }
 
     private Map<String, Object> processPath(Path path) {
+        log.trace "Processing path: ${path}"
         if (!Files.exists(path)) {
             return [type: 'path', exists: false, path: path.toString()]
         }
 
         def fileName = path.fileName.toString()
-        def node = Files.isDirectory(path) ? 
-            blockStore.addPath(path) :
-            blockStore.add(Files.readAllBytes(path), [:])
+        def node = blockStore.addPath(path)
             
-        [fileName: node.hash]
+        [(fileName): node.hash]
     }
 
     Cid getWorkflowRunCid() { workflowRunCid }
