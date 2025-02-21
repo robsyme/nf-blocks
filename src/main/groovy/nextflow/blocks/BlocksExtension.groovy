@@ -4,6 +4,7 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import groovyx.gpars.dataflow.DataflowWriteChannel
 import io.ipfs.api.cbor.CborObject
+import io.ipfs.api.MerkleNode
 import io.ipfs.cid.Cid
 import nextflow.Channel
 import nextflow.extension.CH
@@ -24,7 +25,9 @@ class BlocksExtension extends PluginExtensionPoint {
 
     @Override
     protected void init(Session session) {
+        log.info "Initializing BlocksExtension"
         this.session = session
+
         // Get the BlockStore instance from the session's container
         Map config = session.config.navigate('blocks.store') as Map ?: [:]
         String type = config.type as String ?: 'fs'
@@ -49,15 +52,16 @@ class BlocksExtension extends PluginExtensionPoint {
         
         session.addIgniter((action) -> {
             try {
-                // Handle both single CID and list of CIDs
-                List<String> cids = cidString instanceof List ? cidString : [cidString]
-                
-                for (String cidStr : cids) {
-                    Cid cid = Cid.decode(cidStr)
-                    byte[] bytes = blockStore.get(cid)
-                    def decodedValue = decodeCborValue(CborObject.fromByteArray(bytes))
-                    channel.bind(decodedValue)
-                }
+                Cid cid = Cid.decode(cidString)
+                log.info "CID: ${cid}"
+                MerkleNode block = blockStore.get(cid)
+                log.info "Block: ${block}"
+                byte[] blockData = block?.data?.orElseThrow { new RuntimeException("Block data is null for CID ${cidString}") }
+                def cbor = CborObject.fromByteArray(blockData)
+                log.info "CBOR: ${cbor}"
+                def decodedValue = decodeCborValue(cbor)
+                log.info "Decoded value: ${decodedValue}"
+                channel.bind(decodedValue)
                 
                 // Close the channel after processing all CIDs
                 channel.bind(Channel.STOP)
@@ -75,6 +79,7 @@ class BlocksExtension extends PluginExtensionPoint {
      * Helper method to decode CBOR values into native types
      */
     private Object decodeCborValue(CborObject cbor) {
+        log.info "Decoding CBOR value: ${cbor}"
         if (cbor instanceof CborObject.CborString) {
             return (cbor as CborObject.CborString).value
         }

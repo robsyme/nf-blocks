@@ -10,7 +10,11 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Collectors
-
+import io.ipfs.cid.Cid
+import io.ipfs.api.JSONParser
+import java.net.HttpURLConnection
+import java.util.Optional
+import java.util.Collections
 /**
  * Implements a block store that uses IPFS as the backend
  */
@@ -147,9 +151,40 @@ class IpfsBlockStore implements BlockStore {
         }
     }
 
-    byte[] get(Multihash hash) {
+    // This needs to be cleaned up a lot. Just a draft for now.
+    @Override
+    MerkleNode get(Multihash hash) {
+        log.trace "Getting block: ${hash}"
         try {
-            return ipfs.get(hash)
+            // Convert Multihash to Cid
+            Cid cid = Cid.build(1, Cid.Codec.DagCbor, hash)
+            
+            // Construct the URL
+            URL target = new URL(ipfs.protocol, ipfs.host, ipfs.port, 
+                "/api/v0/dag/get?arg=${cid}&output-codec=dag-cbor")
+            
+            // Make the HTTP request
+            HttpURLConnection conn = target.openConnection() as HttpURLConnection
+            conn.setRequestMethod("POST")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setDoOutput(true)
+            
+            // Write empty body (required for POST)
+            conn.getOutputStream().write(new byte[0])
+            
+            // Read response
+            byte[] data = conn.getInputStream().bytes
+            
+            // Create MerkleNode with the data using the correct constructor
+            return new MerkleNode(
+                hash.toString(),                  // hash as String
+                Optional.empty(),                 // name
+                Optional.empty(),                 // size
+                Optional.empty(),                 // largeSize
+                Optional.empty(),                 // type
+                Collections.emptyList(),          // links
+                Optional.of(data)                 // data
+            )
         } catch (IOException e) {
             throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }

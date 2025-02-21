@@ -21,7 +21,7 @@ interface BlockStore {
     String write(String path, byte[] data, Map options)
 
     // Block methods - aligning with IPFS API
-    byte[] get(Multihash hash)
+    MerkleNode get(Multihash hash)
     MerkleNode add(byte[] data)
     MerkleNode add(byte[] data, Map options)
     MerkleNode addPath(Path path)
