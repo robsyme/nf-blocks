@@ -1,0 +1,50 @@
+syntax = "proto2";
+
+package nextflow.blocks.unixfs.proto;
+
+// Data is the data structure stored in IPLD nodes that represent files in UnixFS.
+message Data {
+  enum DataType {
+    Raw = 0;
+    Directory = 1;
+    File = 2;
+    Metadata = 3;
+    Symlink = 4;
+    HAMTShard = 5;
+  }
+
+  required DataType Type = 1;
+  
+  // The data field contains the contents of the UnixFS object.
+  optional bytes Data = 2;
+  
+  // The filesize field only exists when the DataType is File or Raw.
+  optional uint64 filesize = 3;
+  
+  // blocksizes contains the sizes of each block under this node.
+  // Only exists when the DataType is File.
+  repeated uint64 blocksizes = 4;
+  
+  // hashType and fanout are exclusively used for HAMTShards.
+  optional uint64 hashType = 5;
+  optional uint64 fanout = 6;
+  
+  // mode contains the file mode as defined by POSIX.
+  optional uint32 mode = 7;
+  
+  // mtime contains the modification time as defined by POSIX. It is a 
+  // number of seconds since the Unix epoch.
+  optional UnixTime mtime = 8;
+}
+
+// UnixTime is a timestamp in the Unix format (seconds since Unix epoch)
+message UnixTime {
+  required int64 Seconds = 1;
+  optional fixed32 FractionalNanoseconds = 2;
+}
+
+// Metadata is stored in Metadata DataType nodes
+message Metadata {
+  // MimeType is an encoding of a MIME type as defined by RFC 6838.
+  optional string MimeType = 1;
+} 

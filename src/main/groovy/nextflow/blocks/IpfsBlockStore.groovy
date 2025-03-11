@@ -5,12 +5,15 @@ import groovy.util.logging.Slf4j
 import io.ipfs.api.IPFS
 import io.ipfs.api.MerkleNode
 import io.ipfs.api.NamedStreamable
-import io.ipfs.cid.Cid
 import io.ipfs.multihash.Multihash
-import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Collectors
+import io.ipfs.cid.Cid
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.util.Optional
+import java.util.Collections
 
 /**
  * Implements a block store that uses IPFS as the backend
@@ -148,9 +151,38 @@ class IpfsBlockStore implements BlockStore {
         }
     }
 
-    byte[] get(Multihash hash) {
+    @Override
+    MerkleNode get(Multihash hash) {
+        log.trace "Getting block: ${hash}"
         try {
-            return ipfs.get(hash)
+            byte[] data = ipfs.get(hash)
+            return new MerkleNode(
+                hash.toString(),                  // hash as String
+                Optional.empty(),                 // name
+                Optional.empty(),                 // size
+                Optional.empty(),                 // largeSize
+                Optional.empty(),                 // type
+                Collections.emptyList(),          // links
+                Optional.of(data)                 // data
+            )
+        } catch (IOException e) {
+            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+        }
+    }
+
+    @Override
+    MerkleNode add(byte[] data) {
+        return add(data, Cid.Codec.DagCbor)
+    }
+
+    @Override
+    MerkleNode add(byte[] data, Cid.Codec codec) {
+        try {
+            // Convert enum to string to avoid any type issues
+            String codecName = codec.toString()
+            // Use the same codec for input and output since the output format
+            // is just for this operation's return value, not storage
+            return ipfs.dag.put(codecName, data, codecName)
         } catch (IOException e) {
             throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }
@@ -158,13 +190,19 @@ class IpfsBlockStore implements BlockStore {
 
     @Override
     MerkleNode add(byte[] data, Map options) {
+        String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
+        
+        // Convert string format to Codec enum
+        Cid.Codec codec = null
+        
         try {
-            String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
-            String outputFormat = options.getOrDefault('outputFormat', 'dag-cbor')
-            return ipfs.dag.put(inputFormat, data, outputFormat)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+            codec = Cid.Codec.lookupIPLDName(inputFormat)
+        } catch (IllegalStateException e) {
+            log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
+            codec = Cid.Codec.DagCbor
         }
+        
+        return add(data, codec)
     }
 
     @Override
@@ -188,5 +226,10 @@ class IpfsBlockStore implements BlockStore {
                     : new NamedStreamable.FileWrapper(path.toFile())
             }
             .collect(Collectors.toList())
+    }
+    
+    @Override
+    void updateOptions(Map options) {
+        log.warn "IPFS block store does not support runtime configuration updates"
     }
 } 

@@ -120,9 +120,9 @@ class IpfsBlockStoreTest extends Specification {
         private final Map<String, byte[]> blocks = [:]  // Single blocks map shared between TestIpfs and TestDag
 
         TestIpfs() {
-            super("localhost", 5001)
+            super("", -1)  // Use invalid host/port to prevent real connection attempts
             this.files = new TestFiles()
-            this.dag = new TestDag(blocks)  // Pass blocks map to TestDag
+            this.dag = new TestDag(blocks)
             // Set the files field in the parent class
             def filesField = IPFS.getDeclaredField("files")
             filesField.setAccessible(true)
@@ -179,7 +179,21 @@ class IpfsBlockStoreTest extends Specification {
         def retrieved = store.get(node.hash)
         
         then:
-        retrieved == data
+        retrieved.data.get() == data
+    }
+
+    def "should put and get data with explicit codec"() {
+        given:
+        def ipfs = new TestIpfs()
+        def store = new IpfsBlockStore(ipfs, true)
+        def data = "test data with codec".bytes
+        
+        when:
+        def node = store.add(data, Cid.Codec.DagCbor)
+        def retrieved = store.get(node.hash)
+        
+        then:
+        retrieved.data.get() == data
     }
 
     def "should handle files operations with mocked IPFS"() {

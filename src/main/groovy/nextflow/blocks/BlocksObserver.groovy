@@ -2,7 +2,6 @@ package nextflow.blocks
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
-import io.ipfs.api.cbor.CborEncoder
 import io.ipfs.api.cbor.CborObject
 import io.ipfs.api.MerkleNode
 import io.ipfs.cid.Cid
@@ -10,12 +9,8 @@ import io.ipfs.multihash.Multihash
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.Files
 import java.nio.file.Path
-import java.security.MessageDigest
 import nextflow.file.FileHolder
 import nextflow.processor.TaskHandler
-import nextflow.processor.TaskPath
-import nextflow.processor.TaskProcessor
-import nextflow.processor.TaskRun
 import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceRecord
@@ -31,7 +26,8 @@ class BlocksObserver implements TraceObserver {
     private final BlockStore blockStore
     private final Session session
     private Cid workflowRunCid
-
+    private final List<Multihash> publishedBlocks = []
+    private final List<Multihash> taskBlocks = []
     BlocksObserver(BlockStore blockStore, Session session) {
         this.blockStore = blockStore
         this.session = session
@@ -59,7 +55,7 @@ class BlocksObserver implements TraceObserver {
                 revision: metadata.revision,
                 start: metadata.start?.toString(),
                 container: metadata.container instanceof Map ? 
-                    metadata.container.collectEntries { k, v -> [(k.toString()): v.toString()] } :
+                    (metadata.container as Map).collectEntries { k, v -> [(k.toString()): v.toString()] } :
                     metadata.container?.toString()
             ].findAll { k, v -> v }
         ].findAll { k, v -> v }
@@ -95,19 +91,33 @@ class BlocksObserver implements TraceObserver {
         ].findAll { k, v -> v }
 
         MerkleNode node = storeCborBlock(inputs)
+        taskBlocks.add(node.hash)
         log.trace "Stored task block: CID=${node.hash} task=${task.name}"
     }
 
     @Override
     void onWorkflowPublish(Object value) {
         log.trace "Publishing workflow object: ${value} (${value.getClass()})"
-        def node = storeCborBlock(value)
+        MerkleNode node = storeCborBlock(value)
         log.trace "Stored publish block: CID=${node.hash}"
+        
+        publishedBlocks.add(node.hash)
+    }
+    
+    @Override
+    void onFlowComplete() {
+        def root = [
+            outputs: publishedBlocks,
+            workflowRun: workflowRunCid,
+            tasks: taskBlocks
+        ]
+        MerkleNode rootNode = storeCborBlock(root)
+        log.info "Created root block with CID: ${rootNode.hash}"
     }
 
     private MerkleNode storeCborBlock(Object value) {
-        Map<String, CborObject> cborMap = [(value instanceof Map ? "map" : "value"): convertToCbor(value)]
-        blockStore.add(CborObject.CborMap.build(cborMap).toByteArray(), [:])
+        def block = convertToCbor(value)
+        blockStore.add(block.toByteArray())
     }
 
     private Object processValue(Object value) {
@@ -163,17 +173,15 @@ class BlocksObserver implements TraceObserver {
     }
 
     private Map<String, Object> processPath(Path path) {
+        log.trace "Processing path: ${path}"
         if (!Files.exists(path)) {
-            return [type: 'path', exists: false, path: path.toString()]
+            return [type: 'path', exists: false, path: path.toString()] as Map<String, Object>
         }
 
         def fileName = path.fileName.toString()
-        def node = Files.isDirectory(path) ? 
-            blockStore.addPath(path) :
-            blockStore.add(Files.readAllBytes(path), [:])
+        def node = blockStore.addPath(path)
             
-        [fileName: node.hash]
+        return [(fileName): node.hash] as Map<String, Object>
     }
-
     Cid getWorkflowRunCid() { workflowRunCid }
 } 
