@@ -6,15 +6,15 @@ import io.ipfs.api.IPFS
 import io.ipfs.api.MerkleNode
 import io.ipfs.api.NamedStreamable
 import io.ipfs.multihash.Multihash
-import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Collectors
 import io.ipfs.cid.Cid
-import io.ipfs.api.JSONParser
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.util.Optional
 import java.util.Collections
+
 /**
  * Implements a block store that uses IPFS as the backend
  */
@@ -151,31 +151,11 @@ class IpfsBlockStore implements BlockStore {
         }
     }
 
-    // This needs to be cleaned up a lot. Just a draft for now.
     @Override
     MerkleNode get(Multihash hash) {
         log.trace "Getting block: ${hash}"
         try {
-            // Convert Multihash to Cid
-            Cid cid = Cid.build(1, Cid.Codec.DagCbor, hash)
-            
-            // Construct the URL
-            URL target = new URL(ipfs.protocol, ipfs.host, ipfs.port, 
-                "/api/v0/dag/get?arg=${cid}&output-codec=dag-cbor")
-            
-            // Make the HTTP request
-            HttpURLConnection conn = target.openConnection() as HttpURLConnection
-            conn.setRequestMethod("POST")
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setDoOutput(true)
-            
-            // Write empty body (required for POST)
-            conn.getOutputStream().write(new byte[0])
-            
-            // Read response
-            byte[] data = conn.getInputStream().bytes
-            
-            // Create MerkleNode with the data using the correct constructor
+            byte[] data = ipfs.get(hash)
             return new MerkleNode(
                 hash.toString(),                  // hash as String
                 Optional.empty(),                 // name
@@ -192,18 +172,37 @@ class IpfsBlockStore implements BlockStore {
 
     @Override
     MerkleNode add(byte[] data) {
-        return add(data, [:])
+        return add(data, Cid.Codec.DagCbor)
+    }
+
+    @Override
+    MerkleNode add(byte[] data, Cid.Codec codec) {
+        try {
+            // Convert enum to string to avoid any type issues
+            String codecName = codec.toString()
+            // Use the same codec for input and output since the output format
+            // is just for this operation's return value, not storage
+            return ipfs.dag.put(codecName, data, codecName)
+        } catch (IOException e) {
+            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+        }
     }
 
     @Override
     MerkleNode add(byte[] data, Map options) {
+        String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
+        
+        // Convert string format to Codec enum
+        Cid.Codec codec = null
+        
         try {
-            String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
-            String outputFormat = options.getOrDefault('outputFormat', 'dag-cbor')
-            return ipfs.dag.put(inputFormat, data, outputFormat)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+            codec = Cid.Codec.lookupIPLDName(inputFormat)
+        } catch (IllegalStateException e) {
+            log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
+            codec = Cid.Codec.DagCbor
         }
+        
+        return add(data, codec)
     }
 
     @Override
@@ -227,5 +226,10 @@ class IpfsBlockStore implements BlockStore {
                     : new NamedStreamable.FileWrapper(path.toFile())
             }
             .collect(Collectors.toList())
+    }
+    
+    @Override
+    void updateOptions(Map options) {
+        log.warn "IPFS block store does not support runtime configuration updates"
     }
 } 

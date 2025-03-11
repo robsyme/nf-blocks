@@ -11,16 +11,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import nextflow.file.FileHolder
 import nextflow.processor.TaskHandler
-import nextflow.processor.TaskPath
-import nextflow.processor.TaskProcessor
-import nextflow.processor.TaskRun
 import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceRecord
-import nextflow.script.WorkflowMetadata
-import nextflow.blocks.dagpb.DagPbNode
-import nextflow.blocks.dagpb.DagPbLink
-import nextflow.blocks.dagpb.DagPbCodec
 
 /**
  * Implements the blockstore observer
@@ -34,7 +27,7 @@ class BlocksObserver implements TraceObserver {
     private final Session session
     private Cid workflowRunCid
     private final List<Multihash> publishedBlocks = []
-
+    private final List<Multihash> taskBlocks = []
     BlocksObserver(BlockStore blockStore, Session session) {
         this.blockStore = blockStore
         this.session = session
@@ -62,7 +55,7 @@ class BlocksObserver implements TraceObserver {
                 revision: metadata.revision,
                 start: metadata.start?.toString(),
                 container: metadata.container instanceof Map ? 
-                    metadata.container.collectEntries { k, v -> [(k.toString()): v.toString()] } :
+                    (metadata.container as Map).collectEntries { k, v -> [(k.toString()): v.toString()] } :
                     metadata.container?.toString()
             ].findAll { k, v -> v }
         ].findAll { k, v -> v }
@@ -98,6 +91,7 @@ class BlocksObserver implements TraceObserver {
         ].findAll { k, v -> v }
 
         MerkleNode node = storeCborBlock(inputs)
+        taskBlocks.add(node.hash)
         log.trace "Stored task block: CID=${node.hash} task=${task.name}"
     }
 
@@ -112,7 +106,12 @@ class BlocksObserver implements TraceObserver {
     
     @Override
     void onFlowComplete() {
-        MerkleNode rootNode = storeCborBlock(publishedBlocks)
+        def root = [
+            outputs: publishedBlocks,
+            workflowRun: workflowRunCid,
+            tasks: taskBlocks
+        ]
+        MerkleNode rootNode = storeCborBlock(root)
         log.info "Created root block with CID: ${rootNode.hash}"
     }
 
@@ -176,14 +175,13 @@ class BlocksObserver implements TraceObserver {
     private Map<String, Object> processPath(Path path) {
         log.trace "Processing path: ${path}"
         if (!Files.exists(path)) {
-            return [type: 'path', exists: false, path: path.toString()]
+            return [type: 'path', exists: false, path: path.toString()] as Map<String, Object>
         }
 
         def fileName = path.fileName.toString()
         def node = blockStore.addPath(path)
             
-        [(fileName): node.hash]
+        return [(fileName): node.hash] as Map<String, Object>
     }
-
     Cid getWorkflowRunCid() { workflowRunCid }
 } 
