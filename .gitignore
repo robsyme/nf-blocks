@@ -1,11 +1,17 @@
 # Ignore Gradle project-specific cache directory
 .gradle
 .idea
+
+# Ignore Nextflow files
 .nextflow*
 nextflow.config
 main.nf
 
+# AI configuration files
+.claude/settings.local.json
+
 # Ignore Gradle build output directory
+blocks-store
 build
 work
 out

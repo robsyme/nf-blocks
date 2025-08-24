@@ -1,3 +1,2 @@
 nextflow.blocks.BlocksFactory
 nextflow.blocks.BlocksExtension
-nextflow.blocks.BlocksPluginExtension 

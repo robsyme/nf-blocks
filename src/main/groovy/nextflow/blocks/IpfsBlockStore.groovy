@@ -14,6 +14,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.util.Optional
 import java.util.Collections
+import java.util.ArrayList
 
 /**
  * Implements a block store that uses IPFS as the backend
@@ -63,98 +64,138 @@ class IpfsBlockStore implements BlockStore {
      */
     private void validateConnection() {
         try {
-            ipfs.version()
-            log.debug "Successfully connected to IPFS node"
+            def version = ipfs.version()
+            String versionStr = version instanceof Map ? version.get('Version')?.toString() : version?.toString()
+            log.debug "Successfully connected to IPFS node, version: ${versionStr}"
+            
+            // Run diagnostics to check IPFS compatibility
+            runIpfsDiagnostics()
         } catch (Exception e) {
-            throw new RuntimeException("Failed to connect to IPFS node. Is IPFS daemon running?", e)
+            log.error "Failed to connect to IPFS node: ${e.message}"
+            if (e.getCause() instanceof java.net.ConnectException) {
+                log.error "Connection refused. Make sure the IPFS daemon is running with 'ipfs daemon'"
+                log.error getLocalBlockStoreInstructions()
+            } else if (e.getCause() instanceof java.net.ProtocolException) {
+                log.error "Protocol error. This may be due to an incompatible IPFS version or API change."
+                log.error getLocalBlockStoreInstructions()
+            }
+            throw new RuntimeException("Failed to connect to IPFS node. Is IPFS daemon running? Error: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Run diagnostics to check IPFS compatibility
+     */
+    private void runIpfsDiagnostics() {
+        log.debug "Running IPFS compatibility diagnostics..."
+        
+        // Define test cases with proper type information
+        def tests = [
+            [name: "Basic connectivity", test: { -> ipfs.id() } as Closure],
+            [name: "File operations", test: { -> 
+                byte[] testData = "nf-blocks-test".bytes
+                def streamable = new NamedStreamable.ByteArrayWrapper(testData)
+                ipfs.add(streamable)
+            } as Closure],
+            [name: "DAG operations", test: { ->
+                byte[] testData = '{"test":"data"}'.bytes
+                String codecName = formatCodecName(Cid.Codec.DagCbor)
+                ipfs.dag.put(codecName, testData, codecName)
+            } as Closure]
+        ]
+        
+        // Run each test
+        tests.each { testCase ->
+            try {
+                def testClosure = testCase.test as Closure
+                def result = testClosure.call()
+                log.debug "IPFS ${testCase.name} test successful"
+            } catch (Exception e) {
+                log.warn "IPFS ${testCase.name} test failed: ${e.message}"
+                if (testCase.name == "DAG operations") {
+                    log.error """
+                        |Critical IPFS functionality test failed: dag.put operations are not working.
+                        |This will prevent blocks from being stored correctly.
+                        |
+                        |Possible solutions:
+                        |1. Update your IPFS daemon to the latest version
+                        |2. Run IPFS with: ipfs daemon --enable-pubsub-experiment
+                        |3. ${getLocalBlockStoreInstructions()}
+                        """.stripMargin()
+                }
+            }
+        }
+    }
+
+    /**
+     * Get instructions for switching to the local block store
+     * @return String with instructions
+     */
+    private static String getLocalBlockStoreInstructions() {
+        return """Consider using the local file system block store instead by adding this to your nextflow.config file:
+                |
+                |blocks {
+                |    type = 'local'
+                |    // Optional: specify a directory for the local block store
+                |    // dir = '/path/to/blocks'
+                |}"""
+    }
+
+    private <T> T withIpfs(Closure<T> operation, String errorPrefix = "IOException contacting IPFS daemon") {
+        try {
+            return operation()
+        } catch (IOException e) {
+            throw new RuntimeException("${errorPrefix}.\n${e.message}", e)
         }
     }
 
     String chcid(String path, Map options) {
-        try {
-            return ipfs.files.chcid(path)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.chcid(path) }
     }
 
     String cp(String source, String dest, boolean parents) {
-        try {
-            return ipfs.files.cp(source, dest, parents)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.cp(source, dest, parents) }
     }
 
     Map flush(String path) {
-        try {
-            return path ? ipfs.files.flush(path) : ipfs.files.flush()
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { path ? ipfs.files.flush(path) : ipfs.files.flush() }
     }
 
     List<Map> ls(String path, Map options) {
-        try {
-            return path ? ipfs.files.ls(path) : ipfs.files.ls()
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { path ? ipfs.files.ls(path) : ipfs.files.ls() }
     }
 
     String mkdir(String path, boolean parents, Map options) {
-        try {
-            return ipfs.files.mkdir(path, parents)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.mkdir(path, parents) }
     }
 
     String mv(String source, String dest) {
-        try {
-            return ipfs.files.mv(source, dest)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.mv(source, dest) }
     }
 
     byte[] read(String path, Map options) {
-        try {
-            return ipfs.files.read(path)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.read(path) }
     }
 
     String rm(String path, boolean recursive, boolean force) {
-        try {
-            return ipfs.files.rm(path, recursive, force)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.rm(path, recursive, force) }
     }
 
     Map stat(String path, Map options) {
-        try {
-            return ipfs.files.stat(path)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
-        }
+        withIpfs { ipfs.files.stat(path) }
     }
 
     String write(String path, byte[] data, Map options) {
-        try {
+        withIpfs {
             def streamable = new NamedStreamable.ByteArrayWrapper(data)
             return ipfs.files.write(path, streamable, true, false)
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }
     }
 
     @Override
     MerkleNode get(Multihash hash) {
         log.trace "Getting block: ${hash}"
-        try {
+        withIpfs {
             byte[] data = ipfs.get(hash)
             return new MerkleNode(
                 hash.toString(),                  // hash as String
@@ -165,8 +206,6 @@ class IpfsBlockStore implements BlockStore {
                 Collections.emptyList(),          // links
                 Optional.of(data)                 // data
             )
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
         }
     }
 
@@ -178,54 +217,113 @@ class IpfsBlockStore implements BlockStore {
     @Override
     MerkleNode add(byte[] data, Cid.Codec codec) {
         try {
-            // Convert enum to string to avoid any type issues
-            String codecName = codec.toString()
-            // Use the same codec for input and output since the output format
-            // is just for this operation's return value, not storage
-            return ipfs.dag.put(codecName, data, codecName)
+            String codecName = formatCodecName(codec)
+            log.debug "Adding data with codec: ${codecName}"
+            
+            MerkleNode node = ipfs.dag.put(codecName, data, codecName)
+            
+            // Log the block addition
+            log.info "🔗 IPFS BLOCK STORE: Added raw data block"
+            log.info "   CID: ${node.hash}"
+            log.info "   Size: ${data.length} bytes"
+            log.info "   Codec: ${codecName}"
+            
+            return node
         } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+            handleIpfsError(e, "Failed to add data to IPFS")
+        } catch (Exception e) {
+            log.error "Unexpected error adding data to IPFS: ${e.message}"
+            throw new RuntimeException("Failed to add data to IPFS: ${e.message}", e)
         }
     }
 
-    @Override
-    MerkleNode add(byte[] data, Map options) {
-        String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
-        
-        // Convert string format to Codec enum
-        Cid.Codec codec = null
-        
-        try {
-            codec = Cid.Codec.lookupIPLDName(inputFormat)
-        } catch (IllegalStateException e) {
-            log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
-            codec = Cid.Codec.DagCbor
+    private void handleIpfsError(IOException e, String message) {
+        log.error "${message}: ${e.message}"
+        if (e.getCause() instanceof java.net.ProtocolException || 
+            e.message?.contains("Server rejected operation")) {
+            log.error """
+                |IPFS server rejected the operation. This may be due to:
+                |1. An incompatible IPFS version (try updating your IPFS daemon)
+                |2. IPFS API changes that require client library updates
+                |3. IPFS daemon configuration issues
+                |
+                |Try running IPFS with: ipfs daemon --enable-pubsub-experiment
+                |
+                |${getLocalBlockStoreInstructions()}
+                """.stripMargin()
         }
-        
-        return add(data, codec)
+        throw new RuntimeException("${message}: ${e.message}", e)
     }
+
+    private static final Map<Cid.Codec, String> CODEC_NAMES = [
+        (Cid.Codec.Cbor): "cbor",
+        (Cid.Codec.Raw): "raw",
+        (Cid.Codec.DagProtobuf): "dag-pb",
+        (Cid.Codec.DagCbor): "dag-cbor",
+        (Cid.Codec.Libp2pKey): "libp2p-key",
+        (Cid.Codec.EthereumBlock): "eth-block",
+        (Cid.Codec.EthereumTx): "eth-block-list",
+        (Cid.Codec.BitcoinBlock): "bitcoin-block",
+        (Cid.Codec.BitcoinTx): "bitcoin-tx",
+        (Cid.Codec.ZcashBlock): "zcash-block",
+        (Cid.Codec.ZcashTx): "zcash-tx"
+    ].asImmutable()
+
+    String formatCodecName(Cid.Codec codec) {
+        if (!CODEC_NAMES.containsKey(codec)) {
+            log.warn "Unknown codec: ${codec}, using dag-cbor instead"
+        }
+        return CODEC_NAMES.getOrDefault(codec, "dag-cbor")
+    }
+
+    // @Override
+    // MerkleNode add(byte[] data, Map options) {
+    //     String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
+        
+    //     // Convert string format to Codec enum
+    //     Cid.Codec codec = null
+        
+    //     try {
+    //         codec = Cid.Codec.lookupIPLDName(inputFormat)
+    //     } catch (IllegalStateException e) {
+    //         log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
+    //         codec = Cid.Codec.DagCbor
+    //     }
+        
+    //     return add(data, codec)
+    // }
 
     @Override
     MerkleNode addPath(Path path) {
-        try {
+        withIpfs {
             def streamable = Files.isDirectory(path) 
                 ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
                 : new NamedStreamable.FileWrapper(path.toFile())
             def cids = ipfs.add(streamable)
-            return cids.last()
-        } catch (IOException e) {
-            throw new RuntimeException("IOException contacting IPFS daemon.\n${e.message}", e)
+            MerkleNode node = cids.last()
+            
+            // Log the path addition
+            String type = Files.isDirectory(path) ? "directory" : "file"
+            log.info "🗂️  IPFS BLOCK STORE: Added ${type}"
+            log.info "   Path: ${path}"
+            log.info "   CID: ${node.hash}"
+            log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
+            log.info "   Links: ${node.links.size()}"
+            
+            return node
         }
     }
 
     private List<NamedStreamable> createDirWrappers(Path dirPath) {
-        return Files.list(dirPath)
-            .map { path ->
-                Files.isDirectory(path)
-                    ? new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path))
-                    : new NamedStreamable.FileWrapper(path.toFile())
+        List<NamedStreamable> result = new ArrayList<>()
+        Files.list(dirPath).forEach { Path path ->
+            if (Files.isDirectory(path)) {
+                result.add(new NamedStreamable.DirWrapper(path.fileName.toString(), createDirWrappers(path)))
+            } else {
+                result.add(new NamedStreamable.FileWrapper(path.toFile()))
             }
-            .collect(Collectors.toList())
+        }
+        return result
     }
     
     @Override

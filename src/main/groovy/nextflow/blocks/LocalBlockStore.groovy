@@ -128,6 +128,10 @@ class LocalBlockStore implements BlockStore {
             Files.write(blockPath, data)
             
             log.trace "Added block: ${cid} (${data.length} bytes)"
+            log.info "🔗 BLOCK STORE: Added raw data block"
+            log.info "   CID: ${cid}"
+            log.info "   Size: ${data.length} bytes"
+            log.info "   Codec: ${codec}"
             
             return new MerkleNode(
                 cid.toString(),                   // hash as String
@@ -142,24 +146,7 @@ class LocalBlockStore implements BlockStore {
             throw new RuntimeException("Error adding block", e)
         }
     }
-    
-    @Override
-    MerkleNode add(byte[] data, Map options) {
-        String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
         
-        // Convert string format to Codec enum
-        Cid.Codec codec = Cid.Codec.DagCbor // Default codec
-        
-        try {
-            codec = Cid.Codec.lookupIPLDName(inputFormat)
-        } catch (IllegalStateException e) {
-            log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
-            // Keep using the default codec
-        }
-        
-        return add(data, codec)
-    }
-    
     @Override
     MerkleNode addPath(Path path) {
         log.trace "Adding path: ${path}"
@@ -167,7 +154,17 @@ class LocalBlockStore implements BlockStore {
         try {
             // Use the UnixFS importer to handle the file or directory
             UnixFsImporter importer = new UnixFsImporter(this, chunkSize)
-            return importer.importFile(path)
+            MerkleNode node = importer.importFile(path)
+            
+            // Log the path addition
+            String type = Files.isDirectory(path) ? "directory" : "file"
+            log.info "🗂️  BLOCK STORE: Added ${type} via UnixFS"
+            log.info "   Path: ${path}"
+            log.info "   CID: ${node.hash}"
+            log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
+            log.info "   Links: ${node.links.size()}"
+            
+            return node
         } catch (IOException e) {
             throw new RuntimeException("Error importing file: ${path}", e)
         }

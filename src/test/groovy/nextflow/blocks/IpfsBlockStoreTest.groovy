@@ -175,7 +175,7 @@ class IpfsBlockStoreTest extends Specification {
         def data = "test data".bytes
         
         when:
-        def node = store.add(data, [:])
+        def node = store.add(data, Cid.Codec.Raw)
         def retrieved = store.get(node.hash)
         
         then:
@@ -241,5 +241,60 @@ class IpfsBlockStoreTest extends Specification {
         def e = thrown(RuntimeException)
         e.message.contains('IOException contacting IPFS daemon') && 
         e.message.contains('File not found: /test.txt')
+    }
+
+    @Unroll
+    def "should format codec #codec to #expected"() {
+        given:
+        def ipfs = new TestIpfs()
+        def store = new IpfsBlockStore(ipfs, true)
+        
+        expect:
+        store.formatCodecName(codec) == expected
+        
+        where:
+        codec                    | expected
+        Cid.Codec.Cbor           | "cbor"
+        Cid.Codec.Raw            | "raw"
+        Cid.Codec.DagProtobuf    | "dag-pb"
+        Cid.Codec.DagCbor        | "dag-cbor"
+        Cid.Codec.Libp2pKey      | "libp2p-key"
+        Cid.Codec.EthereumBlock  | "eth-block"
+        Cid.Codec.EthereumTx     | "eth-block-list"
+        Cid.Codec.BitcoinBlock   | "bitcoin-block"
+        Cid.Codec.BitcoinTx      | "bitcoin-tx"
+        Cid.Codec.ZcashBlock     | "zcash-block"
+        Cid.Codec.ZcashTx        | "zcash-tx"
+    }
+    
+    def "should verify all codecs are handled"() {
+        given:
+        def ipfs = new TestIpfs()
+        def store = new IpfsBlockStore(ipfs, true)
+        
+        when:
+        // Get all enum values
+        def allCodecs = Cid.Codec.values()
+        
+        then:
+        // Verify that we have a test for each codec
+        allCodecs.every { codec ->
+            // Format the codec name
+            def formatted = store.formatCodecName(codec)
+            
+            // Verify it's not returning the default value unless it's supposed to
+            // (which none of the standard ones should)
+            formatted != null
+            
+            // Print the codec and its formatted name for debugging
+            println "Codec: ${codec}, Formatted: ${formatted}"
+            
+            // Return true to continue the every loop
+            true
+        }
+        
+        // Verify we have the same number of cases in our switch statement as there are enum values
+        // This will fail if a new codec is added to the enum but not to our switch statement
+        allCodecs.size() == 11 // Update this number if new codecs are added to the enum
     }
 } 

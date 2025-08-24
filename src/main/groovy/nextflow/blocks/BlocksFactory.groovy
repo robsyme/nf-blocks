@@ -5,6 +5,10 @@ import groovy.util.logging.Slf4j
 import nextflow.Session
 import nextflow.trace.TraceObserver
 import nextflow.trace.TraceObserverFactory
+import nextflow.blocks.fs.BlocksFileSystemProvider
+import java.lang.reflect.Field
+import java.nio.file.spi.FileSystemProvider
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Implements the blockstore observer factory
@@ -16,34 +20,16 @@ import nextflow.trace.TraceObserverFactory
 class BlocksFactory implements TraceObserverFactory {
     @Override
     Collection<TraceObserver> create(Session session) {
-        // Get the block store configuration from nextflow.config
-        Map config = session.config.navigate('blocks.store') as Map ?: [:]
-        String type = config.type as String ?: 'local'
-        String pathStr = config.path as String ?: "${session.workDir}/blocks"
+        log.info "Creating blocks factory"
         
-        // Get UnixFS options if available
-        Map unixfsOptions = config.navigate('unixfs') as Map ?: [:]
-
-        // Create the appropriate block store
-        BlockStore blockStore
-        switch (type) {
-            case 'ipfs':
-                blockStore = new IpfsBlockStore(pathStr)
-                log.info "Using IPFS block store at: ${pathStr}"
-                break
-            case 'local':
-            case 'fs':
-                blockStore = new LocalBlockStore(pathStr, unixfsOptions)
-                log.info "Using local file system block store at: ${pathStr}"
-                if (unixfsOptions.chunkSize) {
-                    log.info "UnixFS chunk size: ${unixfsOptions.chunkSize} bytes"
-                }
-                break
-            default:
-                throw new IllegalArgumentException("Unknown block store type: ${type}. Supported types: 'ipfs', 'local', 'fs'")
-        }
-
-        // Create and return the observer
-        return [new BlocksObserver(blockStore, session)] as Collection<TraceObserver>
+        // With the new URI-based approach, we don't need to create block stores here
+        // Block stores are created dynamically based on the URI scheme
+        // For now, we can return an empty observer or skip block store creation
+        
+        // Create and return the observer without a specific block store
+        // The observer can be enhanced later to track publication events
+        return [new BlocksObserver(null, session)] as Collection<TraceObserver>
     }
+
+
 } 

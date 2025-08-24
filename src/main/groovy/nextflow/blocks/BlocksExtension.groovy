@@ -11,6 +11,11 @@ import nextflow.extension.CH
 import nextflow.plugin.extension.Factory
 import nextflow.plugin.extension.PluginExtensionPoint
 import nextflow.Session
+import nextflow.blocks.fs.BlocksFileSystemProvider
+
+import java.lang.reflect.Field
+import java.nio.file.spi.FileSystemProvider
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Implements the blockstore extension
@@ -26,63 +31,18 @@ class BlocksExtension extends PluginExtensionPoint {
     @Override
     protected void init(Session session) {
         this.session = session
-
-        // Get the BlockStore instance from the session's container
-        Map config = session.config.navigate('blocks.store') as Map ?: [:]
-        String type = config.type as String ?: 'local'
-        String pathStr = config.path as String ?: "${session.workDir}/blocks"
-        
-        // Get UnixFS options if available
-        Map unixfsOptions = config.navigate('unixfs') as Map ?: [:]
-
-        // Create the appropriate block store
-        switch (type) {
-            case 'ipfs':
-                this.blockStore = new IpfsBlockStore(pathStr)
-                log.info "Using IPFS block store at: ${pathStr}"
-                break
-            case 'local':
-            case 'fs':
-                this.blockStore = new LocalBlockStore(pathStr, unixfsOptions)
-                log.info "Using local file system block store at: ${pathStr}"
-                if (unixfsOptions.chunkSize) {
-                    log.info "UnixFS chunk size: ${unixfsOptions.chunkSize} bytes"
-                }
-                break
-            default:
-                throw new IllegalArgumentException("Unknown block store type: ${type}. Supported types: 'ipfs', 'local', 'fs'")
-        }
+        log.info "BlocksExtension initialized - using URI-based block stores"
     }
 
-    /**
-     * Creates a channel from a single CID
-     */
-    @Factory
-    DataflowWriteChannel fromCid(String cidString) {
-        final channel = CH.create()
-        
-        session.addIgniter((action) -> {
-            try {
-                Cid cid = Cid.decode(cidString)
-                // Since Cid extends Multihash, we can use it directly with blockStore.get()
-                MerkleNode block = blockStore.get(cid)
-                
-                byte[] blockData = block?.data?.orElseThrow { new RuntimeException("Block data is null for CID ${cidString}") }
-                def cbor = CborObject.fromByteArray(blockData)
-                def decodedValue = decodeCborValue(cbor)
-                channel.bind(decodedValue)
-                
-                // Close the channel after processing all CIDs
-                channel.bind(Channel.STOP)
-            }
-            catch (Exception e) {
-                log.error("Error processing CID(s) ${cidString}", e)
-                channel.bind(Channel.STOP)
-            }
-        })
-        
-        return channel
-    }
+
+    // TODO: Implement fromCid method for new URI-based approach
+    // /**
+    //  * Creates a channel from a single CID
+    //  */
+    // @Factory
+    // DataflowWriteChannel fromCid(String cidString) {
+    //     // Implementation needed for URI-based approach
+    // }
 
     /**
      * Helper method to decode CBOR values into native types
@@ -115,25 +75,7 @@ class BlocksExtension extends PluginExtensionPoint {
         }
         return cbor.toString()
     }
-    
-    /**
-     * Adds data to the block store and returns the CID
-     * 
-     * @param data The data to add to the block store
-     * @param options Optional parameters for adding the block (e.g., codec)
-     * @return The CID of the added data
-     */
-    @Factory
-    String addBlock(byte[] data, Map options = [:]) {
-        try {
-            MerkleNode node = blockStore.add(data, options)
-            return node.hash.toString()
-        } catch (Exception e) {
-            log.error("Error adding block to store", e)
-            throw e
-        }
-    }
-    
+        
     /**
      * Adds a file to the block store and returns the CID
      * 

@@ -60,26 +60,7 @@ class LocalBlockStoreTest extends Specification {
         retrievedNode.data.isPresent()
         retrievedNode.data.get() == data
     }
-    
-    def "should add a block with options"() {
-        given:
-        LocalBlockStore blockStore = new LocalBlockStore(tempDir)
-        byte[] data = "Hello, world!".getBytes()
         
-        when:
-        MerkleNode addedNode = blockStore.add(data, [inputFormat: 'raw'])
-        
-        then:
-        // Verify the CID format for Raw codec
-        addedNode.hash.toString().startsWith("baf")  // Raw codec CIDs typically start with "baf"
-        
-        and: "we can retrieve the block"
-        MerkleNode retrievedNode = blockStore.get(addedNode.hash)
-        // The hash formats may differ (CIDv1 vs CIDv0), so we only check the data
-        retrievedNode.data.isPresent()
-        retrievedNode.data.get() == data
-    }
-    
     def "should add a file"() {
         given:
         LocalBlockStore blockStore = new LocalBlockStore(tempDir)

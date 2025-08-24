@@ -25,7 +25,6 @@ interface BlockStore {
     MerkleNode get(Multihash hash)
     
     MerkleNode add(byte[] data)
-    MerkleNode add(byte[] data, Map options)
     MerkleNode add(byte[] data, Cid.Codec codec)
     MerkleNode addPath(Path path)
     
