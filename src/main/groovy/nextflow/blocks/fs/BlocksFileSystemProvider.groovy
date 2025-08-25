@@ -34,6 +34,7 @@ import java.nio.file.spi.FileSystemProvider
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.regex.Pattern
+import java.util.Set
 
 import io.ipfs.api.MerkleNode
 import nextflow.file.FileSystemTransferAware
@@ -52,6 +53,12 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     // Cache of block stores by backend URI
     private final Map<String, BlockStore> blockStores = new ConcurrentHashMap<>()
+    
+    // Set to track written files (simple fix for existence checking)
+    private final Set<String> writtenFiles = ConcurrentHashMap.newKeySet()
+    
+    // Map to track file path -> CID mappings (for content retrieval)
+    private final Map<String, String> fileCids = new ConcurrentHashMap<>()
     
     /**
      * Information extracted from a blocks+ URI
@@ -98,7 +105,11 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
      * Check if this provider supports the given scheme
      */
     boolean supportsScheme(String scheme) {
-        return scheme != null && scheme.startsWith(SCHEME_PREFIX)
+        if (scheme == null || !scheme.startsWith(SCHEME_PREFIX)) {
+            return false
+        }
+        String backend = scheme.substring(SCHEME_PREFIX.length())
+        return backend in ["file", "http"]
     }
     
     /**
@@ -598,19 +609,46 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     }
     
     /**
+     * Track that a file has been written to the filesystem
+     */
+    void trackWrittenFile(String filePath) {
+        writtenFiles.add(filePath)
+        log.debug "Tracked written file: ${filePath}"
+    }
+    
+    /**
+     * Track the CID for a written file
+     */
+    void trackFileCid(String filePath, String cid) {
+        fileCids.put(filePath, cid)
+        log.debug "Tracked file CID: ${filePath} -> ${cid}"
+    }
+    
+    /**
+     * Get the CID for a file path
+     */
+    String getFileCid(String filePath) {
+        return fileCids.get(filePath)
+    }
+    
+    /**
      * Checks if a path exists in the file system.
      */
     boolean exists(BlocksPath path) {
         log.debug "Checking if path exists: ${path}"
         
-        // For content-addressed file systems, we need to be careful about existence checks
-        // since they're used for both reading and writing operations
+        // First check if this file has been written
+        String pathStr = path.toString()
+        if (writtenFiles.contains(pathStr)) {
+            log.debug "File exists in written files cache: ${pathStr}"
+            return true
+        }
         
         // For directories or paths that look like they might be directories, return false
         // This allows Nextflow's PublishDir to create new directories without throwing FileAlreadyExistsException
-        if (path.toString().endsWith("/") || 
-            !path.toString().contains(".") ||  // Simple heuristic for directory-like paths
-            path.toString().equals("/mydata")) {
+        if (pathStr.endsWith("/") || 
+            !pathStr.contains(".") ||  // Simple heuristic for directory-like paths
+            pathStr.equals("/mydata")) {
             log.debug "Path appears to be a directory, returning false: ${path}"
             return false
         }

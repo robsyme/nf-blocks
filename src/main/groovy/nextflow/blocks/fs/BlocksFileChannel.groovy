@@ -430,6 +430,11 @@ class BlocksFileChannel extends FileChannel {
             byte[] data = writeBuffer.toByteArray()
             def node = blockStore.add(data)
             
+            // Track that this file has been written (for existence checks)
+            BlocksFileSystemProvider provider = (BlocksFileSystemProvider)path.getFileSystem().provider()
+            provider.trackWrittenFile(path.toString())
+            provider.trackFileCid(path.toString(), node.hash.toString())
+            
             log.debug "Added file ${path} to block store with CID: ${node.hash}"
         }
         

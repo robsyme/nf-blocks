@@ -316,6 +316,11 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
                     // Update the file system's directory structure
                     updateDirectoryStructure(node)
                     
+                    // Track that this file has been written (for existence checks)
+                    BlocksFileSystemProvider provider = (BlocksFileSystemProvider)path.getFileSystem().provider()
+                    provider.trackWrittenFile(path.toString())
+                    provider.trackFileCid(path.toString(), node.hash.toString())
+                    
                     log.debug "Stored file ${path} with root CID: ${node.hash}"
                 } finally {
                     // Delete the temporary file
@@ -492,25 +497,71 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
         log.debug "Retrieving content for ${path}"
         
         try {
-            // In a real implementation, we would:
-            // 1. Resolve the path to a CID
-            // 2. Retrieve the root node from the block store
-            // 3. If it's a file with data, return the data
-            // 4. If it's a file with links, retrieve and concatenate all chunks
+            // Get the provider to look up the file's CID
+            BlocksFileSystemProvider provider = (BlocksFileSystemProvider)path.getFileSystem().provider()
+            String cid = provider.getFileCid(path.toString())
             
-            // For now, we'll return an empty byte array
-            // TODO: Implement proper content retrieval
+            if (cid == null) {
+                throw new IOException("No CID found for file: ${path}")
+            }
             
-            // This is a placeholder implementation
-            // In a real system, we would have a way to resolve paths to CIDs
-            // and then retrieve the content from the block store
+            log.debug "Found CID for ${path}: ${cid}"
             
-            // For demonstration purposes, we'll create a simple file with some content
-            String content = "This is the content of ${path}\n"
-            content += "This is a placeholder until proper content retrieval is implemented.\n"
-            content += "In a real implementation, we would retrieve the actual content from the block store.\n"
+            // Parse the CID and retrieve the content from the block store
             
-            return content.getBytes()
+            Multihash multihash
+            if (cid.startsWith("Qm") || cid.startsWith("baf")) {
+                // This is a CID, parse it
+                Cid cidObj = Cid.decode(cid)
+                multihash = cidObj.bareMultihash()
+            } else {
+                // This might be a bare multihash
+                multihash = Multihash.fromBase58(cid)
+            }
+            
+            // Get the raw block content from the block store
+            def node = blockStore.get(multihash)
+            byte[] blockData = node.data.get()
+            
+            // If this is a DAG-PB node containing UnixFS data, decode it properly
+            try {
+                // First decode as DAG-PB to get the structured data
+                def dagNode = DagPbCodec.decode(blockData)
+                
+                if (dagNode.data && dagNode.data.length > 0) {
+                    // The data field should contain UnixFS metadata
+                    def unixFsData = UnixFsCodec.decode(dagNode.data)
+                    
+                    if (unixFsData.data && unixFsData.data.length > 0) {
+                        log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via DAG-PB/UnixFS"
+                        return unixFsData.data
+                    } else if (dagNode.links && !dagNode.links.isEmpty()) {
+                        log.debug "File ${path} has chunked content with ${dagNode.links.size()} chunks"
+                        // For chunked files, we'd need to retrieve and concatenate all chunks
+                        // For now, just return empty to indicate this needs more work
+                        return new byte[0]
+                    } else {
+                        log.debug "DAG-PB node has no data or links for ${path}"
+                        return new byte[0]
+                    }
+                } else {
+                    log.debug "DAG-PB node has no data field for ${path}"
+                    return new byte[0]
+                }
+            } catch (Exception e) {
+                // If DAG-PB decoding fails, try direct UnixFS decoding
+                log.debug "DAG-PB decoding failed, trying direct UnixFS decode: ${e.message}"
+                try {
+                    def unixFsData = UnixFsCodec.decode(blockData)
+                    if (unixFsData.data) {
+                        log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via direct UnixFS"
+                        return unixFsData.data
+                    }
+                } catch (Exception e2) {
+                    log.debug "Both DAG-PB and UnixFS decoding failed, returning raw block data: ${e2.message}"
+                }
+                return blockData
+            }
         } catch (Exception e) {
             log.error "Error retrieving content for ${path}: ${e.message}", e
             throw new IOException("Failed to retrieve file content: ${e.message}", e)
