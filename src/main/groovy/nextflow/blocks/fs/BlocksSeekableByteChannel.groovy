@@ -507,60 +507,77 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
             
             log.debug "Found CID for ${path}: ${cid}"
             
-            // Parse the CID and retrieve the content from the block store
+            // Parse the CID and use its codec information for proper decoding
             
+            Cid cidObj
             Multihash multihash
-            if (cid.startsWith("Qm") || cid.startsWith("baf")) {
-                // This is a CID, parse it
-                Cid cidObj = Cid.decode(cid)
+            
+            if (cid.startsWith("Qm")) {
+                // This is a CIDv0 (always dag-pb)
+                cidObj = Cid.decode(cid)
                 multihash = cidObj.bareMultihash()
+                log.debug "Found CIDv0 for ${path}: ${cid} (codec: dag-pb)"
+            } else if (cid.startsWith("baf") || cid.startsWith("b")) {
+                // This is a CIDv1, parse to get codec information
+                cidObj = Cid.decode(cid)
+                multihash = cidObj.bareMultihash()
+                log.debug "Found CIDv1 for ${path}: ${cid} (codec: ${cidObj.codec})"
             } else {
-                // This might be a bare multihash
+                // This might be a bare multihash - treat as raw data
                 multihash = Multihash.fromBase58(cid)
+                cidObj = null
+                log.debug "Found bare multihash for ${path}: ${cid}"
             }
             
             // Get the raw block content from the block store
             def node = blockStore.get(multihash)
             byte[] blockData = node.data.get()
             
-            // If this is a DAG-PB node containing UnixFS data, decode it properly
-            try {
-                // First decode as DAG-PB to get the structured data
-                def dagNode = DagPbCodec.decode(blockData)
-                
-                if (dagNode.data && dagNode.data.length > 0) {
-                    // The data field should contain UnixFS metadata
-                    def unixFsData = UnixFsCodec.decode(dagNode.data)
-                    
-                    if (unixFsData.data && unixFsData.data.length > 0) {
-                        log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via DAG-PB/UnixFS"
-                        return unixFsData.data
-                    } else if (dagNode.links && !dagNode.links.isEmpty()) {
-                        log.debug "File ${path} has chunked content with ${dagNode.links.size()} chunks"
-                        // For chunked files, we'd need to retrieve and concatenate all chunks
-                        // For now, just return empty to indicate this needs more work
-                        return new byte[0]
-                    } else {
-                        log.debug "DAG-PB node has no data or links for ${path}"
-                        return new byte[0]
-                    }
-                } else {
-                    log.debug "DAG-PB node has no data field for ${path}"
-                    return new byte[0]
-                }
-            } catch (Exception e) {
-                // If DAG-PB decoding fails, try direct UnixFS decoding
-                log.debug "DAG-PB decoding failed, trying direct UnixFS decode: ${e.message}"
-                try {
-                    def unixFsData = UnixFsCodec.decode(blockData)
-                    if (unixFsData.data) {
-                        log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via direct UnixFS"
-                        return unixFsData.data
-                    }
-                } catch (Exception e2) {
-                    log.debug "Both DAG-PB and UnixFS decoding failed, returning raw block data: ${e2.message}"
-                }
+            // Use the CID's codec to determine the correct decoding method
+            if (cidObj == null) {
+                // Bare multihash - return raw data
+                log.debug "Returning raw data for bare multihash ${path}"
                 return blockData
+            }
+            
+            switch (cidObj.codec) {
+                case Cid.Codec.Raw:
+                    log.debug "Retrieved ${blockData.length} bytes for ${path} via raw codec"
+                    return blockData
+                    
+                case Cid.Codec.DagProtobuf:
+                    // This should be a DAG-PB node, likely containing UnixFS data
+                    def dagNode = DagPbCodec.decode(blockData)
+                    
+                    if (dagNode.data && dagNode.data.length > 0) {
+                        // The data field should contain UnixFS metadata
+                        def unixFsData = UnixFsCodec.decode(dagNode.data)
+                        
+                        if (unixFsData.data && unixFsData.data.length > 0) {
+                            log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via DAG-PB/UnixFS"
+                            return unixFsData.data
+                        } else if (dagNode.links && !dagNode.links.isEmpty()) {
+                            log.debug "File ${path} has chunked content with ${dagNode.links.size()} chunks"
+                            // For chunked files, we'd need to retrieve and concatenate all chunks
+                            // For now, just return empty to indicate this needs more work
+                            return new byte[0]
+                        } else {
+                            log.debug "DAG-PB node has no data or links for ${path}"
+                            return new byte[0]
+                        }
+                    } else {
+                        log.debug "DAG-PB node has no data field for ${path}"
+                        return new byte[0]
+                    }
+                    
+                case Cid.Codec.DagCbor:
+                    // DAG-CBOR codec - would need a DAG-CBOR decoder
+                    log.warn "DAG-CBOR codec not yet supported for ${path}, returning raw data"
+                    return blockData
+                    
+                default:
+                    log.warn "Unsupported codec ${cidObj.codec} for ${path}, returning raw data"
+                    return blockData
             }
         } catch (Exception e) {
             log.error "Error retrieving content for ${path}: ${e.message}", e
