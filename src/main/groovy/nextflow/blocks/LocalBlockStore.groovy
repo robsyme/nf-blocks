@@ -146,6 +146,39 @@ class LocalBlockStore implements BlockStore {
             throw new RuntimeException("Error adding block", e)
         }
     }
+    
+    /**
+     * Add data to the block store with codec specified via options map.
+     * For LocalBlockStore, we need to parse codec names to Cid.Codec enum.
+     */
+    @Override
+    MerkleNode add(byte[] data, Map options) {
+        String codecName = options.getOrDefault('inputFormat', 'dag-cbor') as String
+        
+        // Simple codec name to enum mapping for LocalBlockStore
+        Cid.Codec codec
+        switch (codecName.toLowerCase()) {
+            case 'raw':
+                codec = Cid.Codec.Raw
+                break
+            case 'dag-pb':
+            case 'dag-protobuf':
+                codec = Cid.Codec.DagProtobuf
+                break
+            case 'dag-cbor':
+                codec = Cid.Codec.DagCbor
+                break
+            case 'cbor':
+                codec = Cid.Codec.Cbor
+                break
+            default:
+                log.warn "Unknown codec name: ${codecName}, using DagCbor instead"
+                codec = Cid.Codec.DagCbor
+        }
+        
+        log.debug "Parsed codec from options: ${codecName} → ${codec}"
+        return add(data, codec)
+    }
         
     @Override
     MerkleNode addPath(Path path) {

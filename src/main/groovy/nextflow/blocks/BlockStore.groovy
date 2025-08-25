@@ -26,6 +26,7 @@ interface BlockStore {
     
     MerkleNode add(byte[] data)
     MerkleNode add(byte[] data, Cid.Codec codec)
+    MerkleNode add(byte[] data, Map options)  // Codec specified via options map
     MerkleNode addPath(Path path)
     
     /**

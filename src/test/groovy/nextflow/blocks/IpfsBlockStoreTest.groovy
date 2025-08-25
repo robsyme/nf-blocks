@@ -297,4 +297,45 @@ class IpfsBlockStoreTest extends Specification {
         // This will fail if a new codec is added to the enum but not to our switch statement
         allCodecs.size() == 11 // Update this number if new codecs are added to the enum
     }
+    
+    def "should parse codec names back to enums correctly"() {
+        given:
+        def ipfs = new TestIpfs()
+        def store = new IpfsBlockStore(ipfs, true)
+        
+        expect:
+        store.parseCodecName("raw") == Cid.Codec.Raw
+        store.parseCodecName("dag-pb") == Cid.Codec.DagProtobuf
+        store.parseCodecName("dag-cbor") == Cid.Codec.DagCbor
+        store.parseCodecName("cbor") == Cid.Codec.Cbor
+        store.parseCodecName("unknown") == Cid.Codec.DagCbor // fallback
+    }
+    
+    def "should add data with codec specified via options map"() {
+        given:
+        def ipfs = new TestIpfs()
+        def store = new IpfsBlockStore(ipfs, true)
+        def data = "test data with options".bytes
+        
+        when:
+        def node = store.add(data, [inputFormat: 'raw'])
+        def retrieved = store.get(node.hash)
+        
+        then:
+        retrieved.data.get() == data
+        
+        when:
+        def node2 = store.add(data, [inputFormat: 'dag-pb'])
+        def retrieved2 = store.get(node2.hash)
+        
+        then:
+        retrieved2.data.get() == data
+        
+        when:
+        def node3 = store.add(data, [:]) // should default to dag-cbor
+        def retrieved3 = store.get(node3.hash)
+        
+        then:
+        retrieved3.data.get() == data
+    }
 } 

@@ -147,4 +147,64 @@ class LocalBlockStoreTest extends Specification {
         retrievedNode.data.isPresent()
         retrievedNode.data.get() == largeData
     }
+    
+    def "should add data with codec specified via options map"() {
+        given:
+        LocalBlockStore blockStore = new LocalBlockStore(tempDir)
+        byte[] data = "test data with options".getBytes()
+        
+        when:
+        MerkleNode rawNode = blockStore.add(data, [inputFormat: 'raw'])
+        MerkleNode dagPbNode = blockStore.add(data, [inputFormat: 'dag-pb'])
+        MerkleNode cborkNode = blockStore.add(data, [inputFormat: 'dag-cbor'])
+        MerkleNode defaultNode = blockStore.add(data, [:]) // should default to dag-cbor
+        
+        then:
+        // Verify CIDs are created correctly for different codecs
+        rawNode.hash.toString().startsWith("baf") // Raw codec CIDs typically start with "baf"
+        dagPbNode.hash.toString().startsWith("baf") // DAG-PB codec CIDs
+        cborkNode.hash.toString().startsWith("baf") // DAG-CBOR codec CIDs
+        defaultNode.hash.toString().startsWith("baf") // Default DAG-CBOR codec CIDs
+        
+        // Verify we can retrieve all of them
+        blockStore.get(rawNode.hash).data.get() == data
+        blockStore.get(dagPbNode.hash).data.get() == data
+        blockStore.get(cborkNode.hash).data.get() == data
+        blockStore.get(defaultNode.hash).data.get() == data
+        
+        // Verify different codecs produce different CIDs for the same data
+        rawNode.hash != dagPbNode.hash
+        rawNode.hash != cborkNode.hash
+        dagPbNode.hash != cborkNode.hash
+        cborkNode.hash == defaultNode.hash // These should be the same (both dag-cbor)
+    }
+    
+    def "should parse codec names correctly in LocalBlockStore"() {
+        given:
+        LocalBlockStore blockStore = new LocalBlockStore(tempDir)
+        byte[] data = "test data".getBytes()
+        
+        expect:
+        // Test various codec name formats
+        def rawNode = blockStore.add(data, [inputFormat: 'raw'])
+        def dagPbNode1 = blockStore.add(data, [inputFormat: 'dag-pb'])
+        def dagPbNode2 = blockStore.add(data, [inputFormat: 'dag-protobuf'])
+        def cborNode = blockStore.add(data, [inputFormat: 'cbor'])
+        def dagCborNode = blockStore.add(data, [inputFormat: 'dag-cbor'])
+        def unknownNode = blockStore.add(data, [inputFormat: 'unknown']) // should fallback to dag-cbor
+        
+        // All should create valid CIDs
+        rawNode.hash != null
+        dagPbNode1.hash != null
+        dagPbNode2.hash != null
+        cborNode.hash != null
+        dagCborNode.hash != null
+        unknownNode.hash != null
+        
+        // dag-pb and dag-protobuf should produce the same CID
+        dagPbNode1.hash == dagPbNode2.hash
+        
+        // dag-cbor and unknown (fallback) should produce the same CID  
+        dagCborNode.hash == unknownNode.hash
+    }
 } 

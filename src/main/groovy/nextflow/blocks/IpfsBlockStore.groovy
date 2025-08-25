@@ -275,23 +275,36 @@ class IpfsBlockStore implements BlockStore {
         }
         return CODEC_NAMES.getOrDefault(codec, "dag-cbor")
     }
+    
+    /**
+     * Convert codec name string back to Cid.Codec enum.
+     * This is the reverse of formatCodecName().
+     */
+    Cid.Codec parseCodecName(String codecName) {
+        // Create reverse mapping from codec names to enums
+        def reverseMapping = CODEC_NAMES.collectEntries { codec, name -> [name, codec] }
+        
+        if (!reverseMapping.containsKey(codecName)) {
+            log.warn "Unknown codec name: ${codecName}, using DagCbor instead"
+            return Cid.Codec.DagCbor
+        }
+        
+        return reverseMapping[codecName] as Cid.Codec
+    }
 
-    // @Override
-    // MerkleNode add(byte[] data, Map options) {
-    //     String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor')
+    /**
+     * Add data to the block store with codec specified via options map.
+     * This provides a flexible interface for specifying codecs by name.
+     */
+    MerkleNode add(byte[] data, Map options) {
+        String inputFormat = options.getOrDefault('inputFormat', 'dag-cbor') as String
         
-    //     // Convert string format to Codec enum
-    //     Cid.Codec codec = null
+        // Convert string format to Codec enum using our CID-aware parsing
+        Cid.Codec codec = parseCodecName(inputFormat)
         
-    //     try {
-    //         codec = Cid.Codec.lookupIPLDName(inputFormat)
-    //     } catch (IllegalStateException e) {
-    //         log.warn("Unknown codec: ${inputFormat}, using DagCbor instead")
-    //         codec = Cid.Codec.DagCbor
-    //     }
-        
-    //     return add(data, codec)
-    // }
+        log.debug "Parsed codec from options: ${inputFormat} → ${codec}"
+        return add(data, codec)
+    }
 
     @Override
     MerkleNode addPath(Path path) {
