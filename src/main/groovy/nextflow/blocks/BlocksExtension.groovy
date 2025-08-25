@@ -32,6 +32,10 @@ class BlocksExtension extends PluginExtensionPoint {
     protected void init(Session session) {
         this.session = session
         log.info "BlocksExtension initialized - using URI-based block stores"
+        
+        // Notify FileSystemProvider about the session
+        BlocksFileSystemProvider.setSession(session)
+        log.debug "Set session ${session.uniqueId} in BlocksFileSystemProvider"
     }
 
 

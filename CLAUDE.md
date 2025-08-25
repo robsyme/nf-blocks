@@ -51,9 +51,55 @@ This plugin provides **dual functionality**: a filesystem provider for storing f
 - **Block Persistence**: Blocks correctly stored in local filesystem or IPFS
 - **Content Addressing**: All published content becomes addressable by CID
 
-### Phase 3: Merkle Roots (Future)
-- **Root Creation**: Create new merkle root encompassing all published file CIDs
-- **Content Addressing**: Published datasets become addressable by single root CID
+### Phase 3: Global Filesystem Root CID ⚠️ IN PROGRESS
+**Current Status**: Write-only publication system implemented with basic directory folding, but only tracks individual directory roots separately.
+
+**Goal**: Implement a global filesystem root that starts as an empty DAG-PB directory and grows incrementally with each publication event, maintaining a single root CID representing the entire published dataset.
+
+#### Implementation Plan:
+
+**Step 1: Empty Root Creation**
+- Create initial DAG-PB empty directory structure
+- Store as the initial "filesystem root CID" 
+- This becomes the baseline for all subsequent publications
+
+**Step 2: Path-Aware Folding Algorithm**
+- Parse publication target paths to understand directory hierarchy (e.g., `/results/sample1/data.txt`)
+- Build nested directory structure by creating intermediate DAG-PB directory nodes
+- Handle deep paths: `/a/b/c/file.txt` requires creating directories for `a`, `a/b`, and `a/b/c`
+
+**Step 3: Directory Tree Merging**
+- Load current filesystem root DAG-PB node
+- Navigate/create directory tree to target location
+- Merge new file/directory into the correct location within the tree
+- Rebuild all affected ancestor directories up to root
+- Calculate and return new root CID
+
+**Step 4: Complex Scenarios**
+- **Multiple files in same directory**: `/results/sample1/file1.txt` + `/results/sample1/file2.txt`
+- **Overlapping directories**: `/results/sample1/data.txt` + `/results/sample2/data.txt`
+- **Deep nested paths**: `/results/analysis/2024/batch1/sample1/output.txt`
+- **File replacement**: Publishing to same path should replace existing file
+
+**Data Structures Needed**:
+```groovy
+class FilesystemRoot {
+    String rootCid                    // Current root CID of entire filesystem
+    BlockStore blockStore            // Where to store DAG-PB nodes
+    
+    String addFile(String path, String contentCid)
+    String addDirectory(String path, String directoryCid)
+    DagPbNode loadDirectory(String cid)
+    String createDirectory(Map<String, String> entries)  
+}
+```
+
+**Algorithm Complexity**:
+- Path parsing and validation
+- Directory tree navigation/creation
+- DAG-PB node construction for nested directories
+- Incremental updates without full filesystem reconstruction
+- Proper link ordering as required by DAG-PB specification
 
 ### Phase 4: Metadata Collections (Future)
 - **DAG-CBOR Metadata**: Create content-addressed collections of workflow metadata

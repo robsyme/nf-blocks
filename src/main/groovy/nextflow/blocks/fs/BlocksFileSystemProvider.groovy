@@ -6,6 +6,7 @@ import nextflow.blocks.BlockStore
 import nextflow.blocks.BlocksFactory
 import nextflow.blocks.LocalBlockStore
 import nextflow.blocks.IpfsBlockStore
+import nextflow.Session
 import nextflow.blocks.dagpb.DagPbCodec
 import nextflow.blocks.dagpb.DagPbLink
 import nextflow.blocks.dagpb.DagPbNode
@@ -62,8 +63,8 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     // Cache of block stores by backend URI
     private final Map<String, BlockStore> blockStores = new ConcurrentHashMap<>()
     
-    // Map to track directory paths -> root CID mappings for incremental updates
-    private final Map<String, String> directoryRootCids = new ConcurrentHashMap<>()
+    // Global filesystem root for each block store backend
+    private final Map<String, FilesystemRoot> filesystemRoots = new ConcurrentHashMap<>()
     
     /**
      * Information extracted from a blocks+ URI
@@ -334,17 +335,23 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
             MerkleNode contentNode = store.addPath(source)
             String contentCid = contentNode.hash.toString()
             
-            // Extract directory path and filename from target
+            // Get or create the filesystem root for this backend
+            BlocksUriInfo uriInfo = parseBlocksUri(target.toUri())
+            FilesystemRoot filesystemRoot = getOrCreateFilesystemRoot(uriInfo.cacheKey, store)
+            
+            // Add the content to the global filesystem root
             String targetPathStr = targetPath.toString()
-            String parentDir = getParentDirectory(targetPathStr)
-            String fileName = getFileName(targetPathStr)
+            String newRootCid
+            if (Files.isDirectory(source)) {
+                newRootCid = filesystemRoot.addDirectory(targetPathStr, contentCid)
+            } else {
+                newRootCid = filesystemRoot.addFile(targetPathStr, contentCid)
+            }
             
-            // Create or update the directory structure
-            String rootCid = foldIntoDirectory(store, parentDir, fileName, contentCid)
-            
-            // Log the publication result (block store already logged the content addition)
+            // Log the publication result with prominent root CID display
             String type = Files.isDirectory(source) ? "directory" : "file"
-            log.info "📁 PUBLICATION: Published ${type} to ${parentDir} → Root CID: ${rootCid}"
+            log.info "📁 PUBLICATION: Published ${type} to ${targetPathStr}"
+            log.info "🌳 FILESYSTEM ROOT CID: ${newRootCid}"
             log.debug "   Content CID: ${contentCid}, Target: ${targetPath}"
             
         } catch (Exception e) {
@@ -484,113 +491,12 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     }
     
     /**
-     * Extract parent directory from a path string
+     * Get or create a FilesystemRoot for the given backend
      */
-    private String getParentDirectory(String path) {
-        int lastSlash = path.lastIndexOf('/')
-        if (lastSlash <= 0) {
-            return "/"
-        }
-        return path.substring(0, lastSlash)
-    }
-    
-    /**
-     * Extract filename from a path string
-     */
-    private String getFileName(String path) {
-        int lastSlash = path.lastIndexOf('/')
-        if (lastSlash < 0) {
-            return path
-        }
-        return path.substring(lastSlash + 1)
-    }
-    
-    /**
-     * Fold a new file into a directory structure, creating DAG-PB directories as needed
-     */
-    private String foldIntoDirectory(BlockStore store, String directoryPath, String fileName, String contentCid) {
-        // Get the current root CID for this directory (if any)
-        String currentRootCid = directoryRootCids.get(directoryPath)
-        
-        // Create or update the directory structure with DAG-PB
-        String newRootCid = createDirectoryWithFile(store, currentRootCid, fileName, contentCid)
-        
-        // Update the tracked root CID
-        directoryRootCids.put(directoryPath, newRootCid)
-        
-        log.debug "Folded ${fileName} into ${directoryPath}: ${currentRootCid} → ${newRootCid}"
-        return newRootCid
-    }
-    
-    /**
-     * Create a new DAG-PB directory with the given file, optionally merging with existing directory
-     */
-    private String createDirectoryWithFile(BlockStore store, String existingRootCid, String fileName, String contentCid) {
-        log.debug "Creating directory with file: ${fileName} -> ${contentCid}, existing: ${existingRootCid}"
-        
-        List<DagPbLink> links = []
-        
-        // If there's an existing root CID, load it and merge its links
-        if (existingRootCid) {
-            try {
-                // Parse existing CID and retrieve the directory node
-                Multihash existingHash = Multihash.fromBase58(existingRootCid)
-                MerkleNode existingNode = store.get(existingHash)
-                
-                // Decode the existing DAG-PB node
-                DagPbNode existingDagNode = DagPbCodec.decode(existingNode.data.get())
-                
-                // Copy existing links, filtering out any with the same name
-                links.addAll(existingDagNode.links.findAll { it.name != fileName })
-                
-                log.debug "Merged ${existingDagNode.links.size()} existing links, filtered out duplicates"
-            } catch (Exception e) {
-                log.warn "Failed to load existing directory CID ${existingRootCid}: ${e.message}"
-                // Continue with empty links - will create a new directory
-            }
-        }
-        
-        // Add the new file link
-        byte[] contentCidBytes = parseContentCidToBytes(contentCid)
-        links.add(new DagPbLink(contentCidBytes, fileName, null))
-        
-        // Create UnixFS data for the directory
-        UnixFsData dirData = UnixFsData.directory()
-        dirData.mode = 0755 | 0040000  // drwxr-xr-x
-        dirData.mtime = Instant.now()
-        
-        // Encode the UnixFS data
-        byte[] unixfsData = UnixFsCodec.encode(dirData)
-        
-        // Create a DAG-PB node with UnixFS data and links
-        DagPbNode dagNode = new DagPbNode(links, unixfsData)
-        
-        // Add the directory node to the block store
-        MerkleNode directoryNode = store.add(DagPbCodec.encode(dagNode), Cid.Codec.DagProtobuf)
-        
-        String newRootCid = directoryNode.hash.toString()
-        log.debug "Created directory node with CID: ${newRootCid}, links: ${links.size()}"
-        
-        return newRootCid
-    }
-    
-    /**
-     * Parse a content CID string to bytes for use in DAG-PB links
-     */
-    private byte[] parseContentCidToBytes(String contentCid) {
-        try {
-            // Try to parse as CIDv1 first
-            if (contentCid.startsWith("baf")) {
-                Cid cid = Cid.decode(contentCid)
-                return cid.toBytes()
-            } else {
-                // Fallback to multihash parsing for CIDv0
-                Multihash multihash = Multihash.fromBase58(contentCid)
-                return multihash.toBytes()
-            }
-        } catch (Exception e) {
-            log.error "Failed to parse content CID: ${contentCid}", e
-            throw new RuntimeException("Invalid content CID: ${contentCid}", e)
+    private FilesystemRoot getOrCreateFilesystemRoot(String backendKey, BlockStore store) {
+        return filesystemRoots.computeIfAbsent(backendKey) { key ->
+            log.info "🌱 FILESYSTEM ROOT: Creating new global filesystem root for backend: ${key}"
+            return new FilesystemRoot(store)
         }
     }
     
@@ -652,8 +558,6 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     @Override
     void upload(Path source, Path target, CopyOption... options) throws IOException {
-        log.info "🚀 UPLOAD: ${source} → ${target}"
-        
         // This is the key method - called when copying FROM local filesystem TO blocks://
         BlocksPath targetPath = checkPath(target)
         BlockStore store = ((BlocksFileSystem)targetPath.getFileSystem()).getBlockStore()
@@ -661,7 +565,58 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
         try {
             // Add content to the block store - the block store will handle logging
             MerkleNode node = store.addPath(source)
-            log.debug "Upload complete: ${source} → ${target} (CID: ${node.hash})"
+            String contentCid = node.hash.toString()
+            String targetPathStr = target.toString()
+            
+            // Determine content type
+            String type = Files.isDirectory(source) ? "directory" : "file"
+            
+            // Log the publication result
+            log.info "📁 PUBLICATION: Published ${type} to ${targetPathStr} → CID: ${contentCid}"
+            
+            // Use appropriate filesystem root strategy based on backend type
+            try {
+                // Find the cache key by looking through existing file systems
+                String cacheKey = null
+                synchronized (fileSystems) {
+                    for (Map.Entry<String, BlocksFileSystem> entry : fileSystems.entrySet()) {
+                        if (entry.getValue().getBlockStore() == store) {
+                            cacheKey = entry.getKey()
+                            break
+                        }
+                    }
+                }
+                
+                if (cacheKey != null) {
+                    String newRootCid = null
+                    
+                    if (store.class.name.contains("LocalBlockStore")) {
+                        // Use our DAG-PB FilesystemRoot for local backends
+                        FilesystemRoot filesystemRoot = getOrCreateFilesystemRoot(cacheKey, store)
+                        
+                        if (Files.isDirectory(source)) {
+                            newRootCid = filesystemRoot.addDirectory(targetPathStr, contentCid)
+                        } else {
+                            newRootCid = filesystemRoot.addFile(targetPathStr, contentCid)
+                        }
+                    } else if (store.class.name.contains("IpfsBlockStore")) {
+                        // Use IPFS MFS for IPFS backends
+                        try {
+                            newRootCid = addToMfsRoot(store, targetPathStr, contentCid)
+                        } catch (Exception mfsError) {
+                            log.info "🗂️  MFS: Not available, using simple CID tracking for IPFS backend"
+                            log.info "🌳 PUBLISHED CID: ${contentCid} at ${targetPathStr}"
+                            // Don't set newRootCid so we skip the root CID logging
+                        }
+                    }
+                    
+                    if (newRootCid != null) {
+                        log.info "🌳 FILESYSTEM ROOT CID: ${newRootCid}"
+                    }
+                }
+            } catch (Exception rootException) {
+                log.debug "Failed to update filesystem root (non-critical): ${rootException.message}"
+            }
         } catch (Exception e) {
             log.error "Failed to upload ${source} to ${target}: ${e.message}", e
             throw new IOException("Failed to upload ${source} to ${target}: ${e.message}", e)
@@ -671,5 +626,175 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     @Override
     void download(Path source, Path target, CopyOption... options) throws IOException {
         throw new UnsupportedOperationException("Download not supported in write-only publication mode")
+    }
+    
+    // Track MFS run directories for each backend session
+    private static final Map<String, String> mfsRunDirectories = new ConcurrentHashMap<>()
+    
+    // Store the current Nextflow session
+    private static volatile Session currentSession
+    
+    /**
+     * Set the current Nextflow session (called by BlocksExtension)
+     */
+    static void setSession(Session session) {
+        currentSession = session
+        log.debug "BlocksFileSystemProvider: Set session ${session?.uniqueId}"
+    }
+    
+    /**
+     * Get or create a unique MFS run directory for the given backend (once per run)
+     */
+    private String getOrCreateMfsRunDirectory(nextflow.blocks.IpfsBlockStore ipfsStore, String cacheKey) {
+        synchronized (mfsRunDirectories) {
+            String existingRunDir = mfsRunDirectories.get(cacheKey)
+            if (existingRunDir != null) {
+                return existingRunDir // Already created for this backend
+            }
+            
+            try {
+                // Try to get session ID from various sources
+                String sessionId = null
+                
+                // First try the injected session
+                if (currentSession?.uniqueId) {
+                    sessionId = currentSession.uniqueId.toString()
+                    log.debug "🗂️  MFS: Using injected session ID: ${sessionId}"
+                }
+                
+                // Fallback: try to get from Global.session if available
+                if (!sessionId) {
+                    try {
+                        Class globalClass = Class.forName("nextflow.Global")
+                        def sessionField = globalClass.getDeclaredField("session")
+                        sessionField.setAccessible(true)
+                        Session globalSession = sessionField.get(null) as Session
+                        if (globalSession?.uniqueId) {
+                            sessionId = globalSession.uniqueId.toString()
+                            log.debug "🗂️  MFS: Using Global.session ID: ${sessionId}"
+                        }
+                    } catch (Exception e) {
+                        log.debug "🗂️  MFS: Could not access Global.session: ${e.message}"
+                    }
+                }
+                
+                // Final fallback: use timestamp
+                if (!sessionId) {
+                    sessionId = "unknown-${System.currentTimeMillis()}"
+                    log.debug "🗂️  MFS: Using timestamp-based ID: ${sessionId}"
+                }
+                
+                String runDirectory = "/nf-run-${sessionId}"
+                
+                log.info "🗂️  MFS: Creating isolated run directory for concurrent safety"
+                log.info "🗂️  MFS: Run directory → ${runDirectory}"
+                
+                // Create the run directory
+                try {
+                    ipfsStore.mkdir(runDirectory, true, [:])
+                    log.debug "🗂️  MFS: Created run directory ${runDirectory}"
+                } catch (Exception e) {
+                    log.debug "🗂️  MFS: Run directory creation failed: ${e.message}"
+                    throw e
+                }
+                
+                // Get the empty run directory CID
+                try {
+                    Map runDirStat = ipfsStore.stat(runDirectory, [:])
+                    String emptyRunDirCid = runDirStat.Hash as String
+                    log.info "🌱 MFS ROOT: Started with empty run directory CID → ${emptyRunDirCid}"
+                } catch (Exception e) {
+                    log.debug "🗂️  MFS: Failed to get initial run directory CID: ${e.message}"
+                }
+                
+                // Store the run directory for this backend session
+                mfsRunDirectories.put(cacheKey, runDirectory)
+                return runDirectory
+                
+            } catch (Exception e) {
+                log.warn "🗂️  MFS: Failed to create run directory: ${e.message}"
+                // Create a fallback directory name
+                String fallbackDir = "/nf-run-fallback-${System.currentTimeMillis()}"
+                mfsRunDirectories.put(cacheKey, fallbackDir)
+                return fallbackDir
+            }
+        }
+    }
+    
+    /**
+     * Add content to the global MFS root for IPFS backends
+     * @param store The IpfsBlockStore instance
+     * @param targetPath The target path in the filesystem (e.g. "/Ben-data")
+     * @param contentCid The CID of the content to add
+     * @return The new root CID after adding the content
+     */
+    private String addToMfsRoot(BlockStore store, String targetPath, String contentCid) {
+        if (!(store instanceof nextflow.blocks.IpfsBlockStore)) {
+            return null
+        }
+        
+        nextflow.blocks.IpfsBlockStore ipfsStore = (nextflow.blocks.IpfsBlockStore) store
+        
+        // Find the cache key for this backend
+        String cacheKey = null
+        synchronized (fileSystems) {
+            for (Map.Entry<String, BlocksFileSystem> entry : fileSystems.entrySet()) {
+                if (entry.getValue().getBlockStore() == store) {
+                    cacheKey = entry.getKey()
+                    break
+                }
+            }
+        }
+        
+        if (cacheKey == null) {
+            log.warn "🗂️  MFS: Could not find cache key for backend"
+            return null
+        }
+        
+        // Get or create unique MFS run directory for this run
+        String runDirectory = getOrCreateMfsRunDirectory(ipfsStore, cacheKey)
+        
+        try {
+            log.debug "🗂️  MFS: Attempting to add ${contentCid} to ${targetPath} in run directory ${runDirectory}"
+            
+            // Create the target path structure in MFS within the run directory
+            String fullMfsPath = runDirectory + targetPath  // e.g. "/nf-run-abc123-456789/Ben-data"
+            String parentDir = fullMfsPath.substring(0, fullMfsPath.lastIndexOf('/'))
+            
+            // Create parent directories if needed (only for nested paths beyond run directory)
+            if (parentDir != runDirectory) {
+                try {
+                    ipfsStore.mkdir(parentDir, true, [:])
+                    log.debug "🗂️  MFS: Created parent directory ${parentDir}"
+                } catch (Exception e) {
+                    log.debug "🗂️  MFS: Parent directory creation failed (may already exist): ${e.message}"
+                }
+            }
+            
+            // Copy the content into MFS using the IPFS path (/ipfs/<cid>)
+            String ipfsPath = "/ipfs/" + contentCid
+            try {
+                ipfsStore.cp(ipfsPath, fullMfsPath, true)
+                log.debug "🗂️  MFS: Copied ${ipfsPath} to ${fullMfsPath}"
+            } catch (Exception e) {
+                log.debug "🗂️  MFS: Copy operation failed: ${e.message}"
+                throw e
+            }
+            
+            // Get the run directory CID (this is our "root" for this run)
+            try {
+                Map runDirStat = ipfsStore.stat(runDirectory, [:])
+                String runDirCid = runDirStat.Hash as String
+                log.debug "🗂️  MFS: Run directory CID updated to ${runDirCid}"
+                return runDirCid
+            } catch (Exception e) {
+                log.debug "🗂️  MFS: Failed to get run directory CID: ${e.message}"
+                throw e
+            }
+            
+        } catch (Exception e) {
+            log.warn "🗂️  MFS: Failed to update MFS root: ${e.message}"
+            return null
+        }
     }
 }
