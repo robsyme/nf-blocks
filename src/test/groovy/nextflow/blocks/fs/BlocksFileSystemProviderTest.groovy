@@ -8,6 +8,7 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.nio.file.spi.FileSystemProvider
 
 class BlocksFileSystemProviderTest extends Specification {
@@ -109,22 +110,69 @@ class BlocksFileSystemProviderTest extends Specification {
         !provider.supportsScheme("file")
     }
 
-    def "should write and read file using blocks+file scheme"() {
+    def "should publish files using blocks+file scheme"() {
         given:
         def storeDir = tempDir.resolve("integration-test")
         Files.createDirectories(storeDir)
         def provider = createSchemeSpecificProvider("blocks+file")
-        def uri = URI.create("blocks+file:///integration-test/test.txt")
+        def uri = URI.create("blocks+file:///integration-test/results/data.txt")
         def content = "Hello, blocks!"
+        
+        // Create a source file to publish
+        def sourceFile = tempDir.resolve("source.txt")
+        Files.write(sourceFile, content.bytes)
         
         when:
         def fileSystem = provider.newFileSystem(uri, [:])
-        def path = fileSystem.getPath("/test.txt")
-        Files.write(path, content.bytes)
-        def readContent = new String(Files.readAllBytes(path))
+        def targetPath = fileSystem.getPath("/results/data.txt")
+        
+        // Test publication by copying from local filesystem to blocks://
+        Files.copy(sourceFile, targetPath, StandardCopyOption.REPLACE_EXISTING)
         
         then:
-        readContent == content
+        noExceptionThrown()
+        
+        cleanup:
+        fileSystem?.close()
+    }
+    
+    def "should reject read operations in write-only mode"() {
+        given:
+        def storeDir = tempDir.resolve("read-test")
+        Files.createDirectories(storeDir)
+        def provider = createSchemeSpecificProvider("blocks+file")
+        def uri = URI.create("blocks+file:///read-test/file.txt")
+        
+        when:
+        def fileSystem = provider.newFileSystem(uri, [:])
+        def path = fileSystem.getPath("/file.txt")
+        
+        // Try to read from blocks:// - should fail
+        Files.readAllBytes(path)
+        
+        then:
+        thrown(UnsupportedOperationException)
+        
+        cleanup:
+        fileSystem?.close()
+    }
+    
+    def "should reject directory listing in write-only mode"() {
+        given:
+        def storeDir = tempDir.resolve("list-test")
+        Files.createDirectories(storeDir)
+        def provider = createSchemeSpecificProvider("blocks+file")
+        def uri = URI.create("blocks+file:///list-test/")
+        
+        when:
+        def fileSystem = provider.newFileSystem(uri, [:])
+        def path = fileSystem.getPath("/")
+        
+        // Try to list directory - should fail
+        Files.list(path)
+        
+        then:
+        thrown(UnsupportedOperationException)
         
         cleanup:
         fileSystem?.close()

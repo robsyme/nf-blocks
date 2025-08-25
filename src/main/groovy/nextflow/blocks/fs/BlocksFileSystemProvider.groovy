@@ -6,6 +6,14 @@ import nextflow.blocks.BlockStore
 import nextflow.blocks.BlocksFactory
 import nextflow.blocks.LocalBlockStore
 import nextflow.blocks.IpfsBlockStore
+import nextflow.blocks.dagpb.DagPbCodec
+import nextflow.blocks.dagpb.DagPbLink
+import nextflow.blocks.dagpb.DagPbNode
+import nextflow.blocks.unixfs.UnixFsCodec
+import nextflow.blocks.unixfs.UnixFsData
+import io.ipfs.cid.Cid
+import io.ipfs.multihash.Multihash
+import java.time.Instant
 
 import java.nio.channels.AsynchronousFileChannel
 import java.nio.channels.FileChannel
@@ -54,11 +62,8 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     // Cache of block stores by backend URI
     private final Map<String, BlockStore> blockStores = new ConcurrentHashMap<>()
     
-    // Set to track written files (simple fix for existence checking)
-    private final Set<String> writtenFiles = ConcurrentHashMap.newKeySet()
-    
-    // Map to track file path -> CID mappings (for content retrieval)
-    private final Map<String, String> fileCids = new ConcurrentHashMap<>()
+    // Map to track directory paths -> root CID mappings for incremental updates
+    private final Map<String, String> directoryRootCids = new ConcurrentHashMap<>()
     
     /**
      * Information extracted from a blocks+ URI
@@ -261,53 +266,23 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     /**
      * Opens a file, returning a seekable byte channel to access the file.
+     * Since Nextflow only performs write operations, this is simplified for publication.
      */
     @Override
     SeekableByteChannel newByteChannel(Path path, Set<? extends OpenOption> options, FileAttribute<?>... attrs) throws IOException {
         BlocksPath blocksPath = checkPath(path)
         
-        // Check if the file exists
-        boolean exists = exists(blocksPath)
-        
-        // Check if we're trying to create a new file
-        boolean create = options.contains(StandardOpenOption.CREATE) || 
-                         options.contains(StandardOpenOption.CREATE_NEW);
-        
-        // If the file doesn't exist and we're not trying to create it, throw an exception
-        if (!exists && !create) {
-            throw new NoSuchFileException(blocksPath.toString());
-        }
-        
-        // If the file exists and we're trying to create a new file (CREATE_NEW), throw an exception
-        if (exists && options.contains(StandardOpenOption.CREATE_NEW)) {
-            throw new FileAlreadyExistsException(blocksPath.toString());
-        }
-        
-        // Check if we're trying to write to a read-only file system
-        if (options.contains(StandardOpenOption.WRITE) || 
-            options.contains(StandardOpenOption.APPEND) ||
-            options.contains(StandardOpenOption.DELETE_ON_CLOSE)) {
-            
-            // For now, we'll allow write operations, but they'll be buffered and only
-            // written to the block store when the channel is closed
-            log.debug "Opening writable channel for ${blocksPath} - writes will be buffered"
-        }
-        
-        // Create a channel to read/write the file
+        log.debug "Opening channel for publication: ${blocksPath} with options: ${options}"
         return new BlocksSeekableByteChannel(blocksPath, options, attrs)
     }
     
     /**
      * Opens a directory, returning a DirectoryStream to iterate over the entries in the directory.
+     * Not supported in write-only publication mode.
      */
     @Override
     DirectoryStream<Path> newDirectoryStream(Path dir, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        BlocksPath blocksPath = toBlocksPath(dir)
-        log.debug "Opening directory stream for: ${blocksPath}"
-        
-        // For now, create an empty directory stream implementation
-        // We'll implement this fully in a later phase
-        return new BlocksDirectoryStream(blocksPath, filter)
+        throw new UnsupportedOperationException("Directory listing not supported in write-only publication mode")
     }
     
     /**
@@ -338,76 +313,43 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     }
     
     /**
-     * Copy a file to a target file.
+     * Copy a file to a target file - implements DAG-PB directory folding for publication.
      */
     @Override
     void copy(Path source, Path target, CopyOption... options) throws IOException {
-        log.info "🚀 COPY METHOD CALLED: ${source} → ${target}"
+        log.info "🚀 PUBLICATION: ${source} → ${target}"
         
         // Check if the source is a blocks path
         if (source instanceof BlocksPath) {
-            // Internal copy within the blocks filesystem
-            // This is a no-op in a content-addressed filesystem
             log.debug "Internal copy within blocks filesystem - no action needed"
             return
         }
         
-        // External copy from another filesystem to blocks
+        // External copy from another filesystem to blocks (publication)
         BlocksPath targetPath = checkPath(target)
+        BlockStore store = ((BlocksFileSystem)targetPath.getFileSystem()).getBlockStore()
         
-        // We'll always allow copying to the blocks filesystem, even if the target "exists"
-        // since in a content-addressed filesystem, the same content would result in the same hash
-        
-        // Copy the file or directory to the blocks filesystem
         try {
-            // Get the block store from the file system
-            BlockStore store = ((BlocksFileSystem)targetPath.getFileSystem()).getBlockStore()
+            // Add the content to get its CID
+            MerkleNode contentNode = store.addPath(source)
+            String contentCid = contentNode.hash.toString()
             
-            if (Files.isDirectory(source)) {
-                log.debug "Copying directory ${source} to ${targetPath}"
-                
-                // Create a directory importer to handle the directory structure
-                try {
-                    // Add the directory and all its contents recursively
-                    MerkleNode node = store.addPath(source)
-                    
-                    // Log the file write with detailed MerkleNode information
-                    log.info "📁 BLOCKS WRITE: Directory ${source} → blocks://"
-                    log.info "   CID: ${node.hash}"
-                    log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
-                    log.info "   Links: ${node.links.size()}"
-                    log.info "   Target: ${targetPath}"
-                    
-                    // In a real implementation, we would update the file system's directory structure
-                    // to include the new directory at the target path
-                } catch (Exception e) {
-                    log.error "Failed to add directory ${source}: ${e.message}", e
-                    throw new IOException("Failed to add directory ${source}: ${e.message}", e)
-                }
-            } else {
-                log.debug "Copying file ${source} to ${targetPath}"
-                
-                // Add a regular file
-                try {
-                    MerkleNode node = store.addPath(source)
-                    
-                    // Log the file write with detailed MerkleNode information
-                    log.info "📄 BLOCKS WRITE: File ${source} → blocks://"
-                    log.info "   CID: ${node.hash}"
-                    log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
-                    log.info "   Links: ${node.links.size()}"
-                    log.info "   Target: ${targetPath}"
-                    
-                    // In a real implementation, we would update the file system's directory structure
-                    // to include the new file at the target path
-                } catch (Exception e) {
-                    log.error "Failed to add file ${source}: ${e.message}", e
-                    throw new IOException("Failed to add file ${source}: ${e.message}", e)
-                }
-            }
+            // Extract directory path and filename from target
+            String targetPathStr = targetPath.toString()
+            String parentDir = getParentDirectory(targetPathStr)
+            String fileName = getFileName(targetPathStr)
+            
+            // Create or update the directory structure
+            String rootCid = foldIntoDirectory(store, parentDir, fileName, contentCid)
+            
+            // Log the publication result (block store already logged the content addition)
+            String type = Files.isDirectory(source) ? "directory" : "file"
+            log.info "📁 PUBLICATION: Published ${type} to ${parentDir} → Root CID: ${rootCid}"
+            log.debug "   Content CID: ${contentCid}, Target: ${targetPath}"
+            
         } catch (Exception e) {
-            log.error "Failed to copy ${source} to ${target}: ${e.message}", e
-            throw new IOException("Failed to copy ${source} to ${target}: ${e.message}", e)
+            log.error "Failed to publish ${source} to ${target}: ${e.message}", e
+            throw new IOException("Failed to publish ${source} to ${target}: ${e.message}", e)
         }
     }
     
@@ -463,21 +405,16 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     /**
      * Checks access to a file.
+     * In write-only publication mode, only WRITE access is supported.
      */
     @Override
     void checkAccess(Path path, AccessMode... modes) throws IOException {
         BlocksPath blocksPath = checkPath(path)
         
-        // Check if path exists
-        if (!exists(blocksPath)) {
-            throw new NoSuchFileException(blocksPath.toString())
-        }
-        
         // Check access modes
         for (AccessMode mode : modes) {
-            if (mode == AccessMode.WRITE) {
-                // Currently, blocks:// is read-only
-                throw new IOException("Read-only file system")
+            if (mode == AccessMode.READ || mode == AccessMode.EXECUTE) {
+                throw new UnsupportedOperationException("Write-only filesystem - only WRITE access supported")
             }
         }
     }
@@ -499,82 +436,20 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     /**
      * Reads a file's attributes as a bulk operation.
+     * Not supported in write-only publication mode.
      */
     @Override
     <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
-        BlocksPath blocksPath = checkPath(path)
-        
-        // Check if path exists
-        if (!exists(blocksPath)) {
-            throw new NoSuchFileException(blocksPath.toString())
-        }
-        
-        // Only support basic attributes for now
-        if (type == BasicFileAttributes.class) {
-            return (A) new BlocksBasicFileAttributes(blocksPath)
-        }
-        
-        throw new UnsupportedOperationException("Attribute type not supported: " + type.getName())
+        throw new UnsupportedOperationException("Reading attributes not supported in write-only publication mode")
     }
     
     /**
      * Reads a set of file attributes as a bulk operation.
+     * Not supported in write-only publication mode.
      */
     @Override
     Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        BlocksPath blocksPath = checkPath(path)
-        
-        // Check if path exists
-        if (!exists(blocksPath)) {
-            throw new NoSuchFileException(blocksPath.toString())
-        }
-        
-        // Parse the attributes string
-        String[] parts = attributes.split(":")
-        String view = (parts.length > 1) ? parts[0] : "basic"
-        String attrs = (parts.length > 1) ? parts[1] : parts[0]
-        
-        // Only support basic attributes for now
-        if (view.equals("basic")) {
-            // Read basic attributes
-            BasicFileAttributes basicAttrs = readAttributes(path, BasicFileAttributes.class, options)
-            
-            // Create the map
-            Map<String, Object> result = new HashMap<>()
-            
-            // Handle "*" which means all basic attributes
-            if (attrs.equals("*")) {
-                result.put("lastModifiedTime", basicAttrs.lastModifiedTime())
-                result.put("lastAccessTime", basicAttrs.lastAccessTime())
-                result.put("creationTime", basicAttrs.creationTime())
-                result.put("size", basicAttrs.size())
-                result.put("isRegularFile", basicAttrs.isRegularFile())
-                result.put("isDirectory", basicAttrs.isDirectory())
-                result.put("isSymbolicLink", basicAttrs.isSymbolicLink())
-                result.put("isOther", basicAttrs.isOther())
-                result.put("fileKey", basicAttrs.fileKey())
-            } else {
-                // Handle specific attributes
-                for (String attr : attrs.split(",")) {
-                    switch (attr) {
-                        case "lastModifiedTime": result.put(attr, basicAttrs.lastModifiedTime()); break
-                        case "lastAccessTime": result.put(attr, basicAttrs.lastAccessTime()); break
-                        case "creationTime": result.put(attr, basicAttrs.creationTime()); break
-                        case "size": result.put(attr, basicAttrs.size()); break
-                        case "isRegularFile": result.put(attr, basicAttrs.isRegularFile()); break
-                        case "isDirectory": result.put(attr, basicAttrs.isDirectory()); break
-                        case "isSymbolicLink": result.put(attr, basicAttrs.isSymbolicLink()); break
-                        case "isOther": result.put(attr, basicAttrs.isOther()); break
-                        case "fileKey": result.put(attr, basicAttrs.fileKey()); break
-                        default: throw new IllegalArgumentException("Unknown attribute: " + attr)
-                    }
-                }
-            }
-            
-            return result
-        }
-        
-        throw new UnsupportedOperationException("Attribute view not supported: " + view)
+        throw new UnsupportedOperationException("Reading attributes not supported in write-only publication mode")
     }
     
     /**
@@ -609,54 +484,122 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     }
     
     /**
-     * Track that a file has been written to the filesystem
+     * Extract parent directory from a path string
      */
-    void trackWrittenFile(String filePath) {
-        writtenFiles.add(filePath)
-        log.debug "Tracked written file: ${filePath}"
+    private String getParentDirectory(String path) {
+        int lastSlash = path.lastIndexOf('/')
+        if (lastSlash <= 0) {
+            return "/"
+        }
+        return path.substring(0, lastSlash)
     }
     
     /**
-     * Track the CID for a written file
+     * Extract filename from a path string
      */
-    void trackFileCid(String filePath, String cid) {
-        fileCids.put(filePath, cid)
-        log.debug "Tracked file CID: ${filePath} -> ${cid}"
+    private String getFileName(String path) {
+        int lastSlash = path.lastIndexOf('/')
+        if (lastSlash < 0) {
+            return path
+        }
+        return path.substring(lastSlash + 1)
     }
     
     /**
-     * Get the CID for a file path
+     * Fold a new file into a directory structure, creating DAG-PB directories as needed
      */
-    String getFileCid(String filePath) {
-        return fileCids.get(filePath)
+    private String foldIntoDirectory(BlockStore store, String directoryPath, String fileName, String contentCid) {
+        // Get the current root CID for this directory (if any)
+        String currentRootCid = directoryRootCids.get(directoryPath)
+        
+        // Create or update the directory structure with DAG-PB
+        String newRootCid = createDirectoryWithFile(store, currentRootCid, fileName, contentCid)
+        
+        // Update the tracked root CID
+        directoryRootCids.put(directoryPath, newRootCid)
+        
+        log.debug "Folded ${fileName} into ${directoryPath}: ${currentRootCid} → ${newRootCid}"
+        return newRootCid
+    }
+    
+    /**
+     * Create a new DAG-PB directory with the given file, optionally merging with existing directory
+     */
+    private String createDirectoryWithFile(BlockStore store, String existingRootCid, String fileName, String contentCid) {
+        log.debug "Creating directory with file: ${fileName} -> ${contentCid}, existing: ${existingRootCid}"
+        
+        List<DagPbLink> links = []
+        
+        // If there's an existing root CID, load it and merge its links
+        if (existingRootCid) {
+            try {
+                // Parse existing CID and retrieve the directory node
+                Multihash existingHash = Multihash.fromBase58(existingRootCid)
+                MerkleNode existingNode = store.get(existingHash)
+                
+                // Decode the existing DAG-PB node
+                DagPbNode existingDagNode = DagPbCodec.decode(existingNode.data.get())
+                
+                // Copy existing links, filtering out any with the same name
+                links.addAll(existingDagNode.links.findAll { it.name != fileName })
+                
+                log.debug "Merged ${existingDagNode.links.size()} existing links, filtered out duplicates"
+            } catch (Exception e) {
+                log.warn "Failed to load existing directory CID ${existingRootCid}: ${e.message}"
+                // Continue with empty links - will create a new directory
+            }
+        }
+        
+        // Add the new file link
+        byte[] contentCidBytes = parseContentCidToBytes(contentCid)
+        links.add(new DagPbLink(contentCidBytes, fileName, null))
+        
+        // Create UnixFS data for the directory
+        UnixFsData dirData = UnixFsData.directory()
+        dirData.mode = 0755 | 0040000  // drwxr-xr-x
+        dirData.mtime = Instant.now()
+        
+        // Encode the UnixFS data
+        byte[] unixfsData = UnixFsCodec.encode(dirData)
+        
+        // Create a DAG-PB node with UnixFS data and links
+        DagPbNode dagNode = new DagPbNode(links, unixfsData)
+        
+        // Add the directory node to the block store
+        MerkleNode directoryNode = store.add(DagPbCodec.encode(dagNode), Cid.Codec.DagProtobuf)
+        
+        String newRootCid = directoryNode.hash.toString()
+        log.debug "Created directory node with CID: ${newRootCid}, links: ${links.size()}"
+        
+        return newRootCid
+    }
+    
+    /**
+     * Parse a content CID string to bytes for use in DAG-PB links
+     */
+    private byte[] parseContentCidToBytes(String contentCid) {
+        try {
+            // Try to parse as CIDv1 first
+            if (contentCid.startsWith("baf")) {
+                Cid cid = Cid.decode(contentCid)
+                return cid.toBytes()
+            } else {
+                // Fallback to multihash parsing for CIDv0
+                Multihash multihash = Multihash.fromBase58(contentCid)
+                return multihash.toBytes()
+            }
+        } catch (Exception e) {
+            log.error "Failed to parse content CID: ${contentCid}", e
+            throw new RuntimeException("Invalid content CID: ${contentCid}", e)
+        }
     }
     
     /**
      * Checks if a path exists in the file system.
+     * In write-only publication mode, always returns false to allow publication.
      */
     boolean exists(BlocksPath path) {
-        log.debug "Checking if path exists: ${path}"
-        
-        // First check if this file has been written
-        String pathStr = path.toString()
-        if (writtenFiles.contains(pathStr)) {
-            log.debug "File exists in written files cache: ${pathStr}"
-            return true
-        }
-        
-        // For directories or paths that look like they might be directories, return false
-        // This allows Nextflow's PublishDir to create new directories without throwing FileAlreadyExistsException
-        if (pathStr.endsWith("/") || 
-            !pathStr.contains(".") ||  // Simple heuristic for directory-like paths
-            pathStr.equals("/mydata")) {
-            log.debug "Path appears to be a directory, returning false: ${path}"
-            return false
-        }
-        
-        // In a real implementation, we would check if the file exists in the block store
-        // For now, we'll return false for all paths to allow writing
-        // This is safer than returning true, which would prevent writing to paths
-        log.debug "Returning false for existence check on: ${path}"
+        log.debug "Existence check for write-only filesystem: ${path} -> false"
         return false
     }
     
@@ -716,23 +659,9 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
         BlockStore store = ((BlocksFileSystem)targetPath.getFileSystem()).getBlockStore()
         
         try {
-            if (Files.isDirectory(source)) {
-                log.info "📁 BLOCKS UPLOAD: Directory ${source} → blocks://"
-                MerkleNode node = store.addPath(source)
-                
-                log.info "   CID: ${node.hash}"
-                log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
-                log.info "   Links: ${node.links.size()}"
-                log.info "   Target: ${targetPath}"
-            } else {
-                log.info "📄 BLOCKS UPLOAD: File ${source} → blocks://"
-                MerkleNode node = store.addPath(source)
-                
-                log.info "   CID: ${node.hash}" 
-                log.info "   Size: ${node.size.present ? node.size.get() : 'unknown'} bytes"
-                log.info "   Links: ${node.links.size()}"
-                log.info "   Target: ${targetPath}"
-            }
+            // Add content to the block store - the block store will handle logging
+            MerkleNode node = store.addPath(source)
+            log.debug "Upload complete: ${source} → ${target} (CID: ${node.hash})"
         } catch (Exception e) {
             log.error "Failed to upload ${source} to ${target}: ${e.message}", e
             throw new IOException("Failed to upload ${source} to ${target}: ${e.message}", e)
@@ -741,10 +670,6 @@ class BlocksFileSystemProvider extends FileSystemProvider implements FileSystemT
     
     @Override
     void download(Path source, Path target, CopyOption... options) throws IOException {
-        log.info "⬇️ DOWNLOAD: ${source} → ${target}"
-        
-        // This would be called when copying FROM blocks:// TO local filesystem
-        // For now, we'll implement a basic version that just throws an exception
-        throw new UnsupportedOperationException("Download from blocks:// not yet implemented")
+        throw new UnsupportedOperationException("Download not supported in write-only publication mode")
     }
 }

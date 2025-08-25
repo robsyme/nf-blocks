@@ -53,7 +53,7 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
     private static final Map<String, Object> FILE_LOCKS = new ConcurrentHashMap<>()
     
     /**
-     * Creates a new BlocksSeekableByteChannel.
+     * Creates a new BlocksSeekableByteChannel for write-only publication.
      *
      * @param path The path to the file
      * @param options The open options
@@ -62,38 +62,13 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
     BlocksSeekableByteChannel(BlocksPath path, Set<? extends OpenOption> options, FileAttribute<?>... attrs) {
         this.path = path
         
-        // Parse the options
-        readable = !options.contains(StandardOpenOption.WRITE) || options.contains(StandardOpenOption.READ)
-        writable = options.contains(StandardOpenOption.WRITE) || 
-                   options.contains(StandardOpenOption.APPEND) ||
-                   options.contains(StandardOpenOption.CREATE) ||
-                   options.contains(StandardOpenOption.CREATE_NEW)
+        // Write-only mode - no reading supported
+        readable = false
+        writable = true
+        content = new byte[0]
+        writeBuffer = new ByteArrayOutputStream()
         
-        if (writable) {
-            log.debug "Opening writable channel for ${path}"
-            writeBuffer = new ByteArrayOutputStream()
-        }
-        
-        // Read the file content if readable
-        if (readable) {
-            try {
-                // Get the block store from the file system
-                BlocksFileSystem fs = (BlocksFileSystem)path.getFileSystem()
-                BlockStore blockStore = fs.getBlockStore()
-                
-                // Retrieve the file content from the block store
-                content = retrieveFileContent(blockStore)
-                
-                log.debug "Read ${content.length} bytes from ${path}"
-            } catch (Exception e) {
-                log.warn "Failed to read content for ${path}: ${e.message}", e
-                content = new byte[0]
-            }
-        } else {
-            content = new byte[0]
-        }
-        
-        log.debug "Opened channel for ${path} (readable: ${readable}, writable: ${writable})"
+        log.debug "Opened write-only channel for publication: ${path}"
     }
     
     /**
@@ -101,33 +76,7 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
      */
     @Override
     int read(ByteBuffer dst) throws IOException {
-        lock.readLock().lock()
-        try {
-            checkClosed()
-            
-            if (!readable) {
-                throw new IOException("Channel not open for reading")
-            }
-            
-            // Check if we've reached the end of the file
-            if (position >= size()) {
-                return -1
-            }
-            
-            // Calculate the number of bytes to read
-            int remaining = dst.remaining()
-            int available = (int) Math.min(remaining, size() - position)
-            
-            // Copy the bytes from the content to the buffer
-            dst.put(content, (int) position, available)
-            
-            // Update the position
-            position += available
-            
-            return available
-        } finally {
-            lock.readLock().unlock()
-        }
+        throw new UnsupportedOperationException("Reading not supported in write-only publication mode")
     }
     
     /**
@@ -316,10 +265,7 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
                     // Update the file system's directory structure
                     updateDirectoryStructure(node)
                     
-                    // Track that this file has been written (for existence checks)
-                    BlocksFileSystemProvider provider = (BlocksFileSystemProvider)path.getFileSystem().provider()
-                    provider.trackWrittenFile(path.toString())
-                    provider.trackFileCid(path.toString(), node.hash.toString())
+                    // File written successfully - nothing more to track in write-only mode
                     
                     log.debug "Stored file ${path} with root CID: ${node.hash}"
                 } finally {
@@ -494,95 +440,7 @@ class BlocksSeekableByteChannel implements SeekableByteChannel {
      * @return The file content as a byte array
      */
     private byte[] retrieveFileContent(BlockStore blockStore) throws IOException {
-        log.debug "Retrieving content for ${path}"
-        
-        try {
-            // Get the provider to look up the file's CID
-            BlocksFileSystemProvider provider = (BlocksFileSystemProvider)path.getFileSystem().provider()
-            String cid = provider.getFileCid(path.toString())
-            
-            if (cid == null) {
-                throw new IOException("No CID found for file: ${path}")
-            }
-            
-            log.debug "Found CID for ${path}: ${cid}"
-            
-            // Parse the CID and use its codec information for proper decoding
-            
-            Cid cidObj
-            Multihash multihash
-            
-            if (cid.startsWith("Qm")) {
-                // This is a CIDv0 (always dag-pb)
-                cidObj = Cid.decode(cid)
-                multihash = cidObj.bareMultihash()
-                log.debug "Found CIDv0 for ${path}: ${cid} (codec: dag-pb)"
-            } else if (cid.startsWith("baf") || cid.startsWith("b")) {
-                // This is a CIDv1, parse to get codec information
-                cidObj = Cid.decode(cid)
-                multihash = cidObj.bareMultihash()
-                log.debug "Found CIDv1 for ${path}: ${cid} (codec: ${cidObj.codec})"
-            } else {
-                // This might be a bare multihash - treat as raw data
-                multihash = Multihash.fromBase58(cid)
-                cidObj = null
-                log.debug "Found bare multihash for ${path}: ${cid}"
-            }
-            
-            // Get the raw block content from the block store
-            def node = blockStore.get(multihash)
-            byte[] blockData = node.data.get()
-            
-            // Use the CID's codec to determine the correct decoding method
-            if (cidObj == null) {
-                // Bare multihash - return raw data
-                log.debug "Returning raw data for bare multihash ${path}"
-                return blockData
-            }
-            
-            switch (cidObj.codec) {
-                case Cid.Codec.Raw:
-                    log.debug "Retrieved ${blockData.length} bytes for ${path} via raw codec"
-                    return blockData
-                    
-                case Cid.Codec.DagProtobuf:
-                    // This should be a DAG-PB node, likely containing UnixFS data
-                    def dagNode = DagPbCodec.decode(blockData)
-                    
-                    if (dagNode.data && dagNode.data.length > 0) {
-                        // The data field should contain UnixFS metadata
-                        def unixFsData = UnixFsCodec.decode(dagNode.data)
-                        
-                        if (unixFsData.data && unixFsData.data.length > 0) {
-                            log.debug "Retrieved ${unixFsData.data.length} bytes for ${path} via DAG-PB/UnixFS"
-                            return unixFsData.data
-                        } else if (dagNode.links && !dagNode.links.isEmpty()) {
-                            log.debug "File ${path} has chunked content with ${dagNode.links.size()} chunks"
-                            // For chunked files, we'd need to retrieve and concatenate all chunks
-                            // For now, just return empty to indicate this needs more work
-                            return new byte[0]
-                        } else {
-                            log.debug "DAG-PB node has no data or links for ${path}"
-                            return new byte[0]
-                        }
-                    } else {
-                        log.debug "DAG-PB node has no data field for ${path}"
-                        return new byte[0]
-                    }
-                    
-                case Cid.Codec.DagCbor:
-                    // DAG-CBOR codec - would need a DAG-CBOR decoder
-                    log.warn "DAG-CBOR codec not yet supported for ${path}, returning raw data"
-                    return blockData
-                    
-                default:
-                    log.warn "Unsupported codec ${cidObj.codec} for ${path}, returning raw data"
-                    return blockData
-            }
-        } catch (Exception e) {
-            log.error "Error retrieving content for ${path}: ${e.message}", e
-            throw new IOException("Failed to retrieve file content: ${e.message}", e)
-        }
+        throw new UnsupportedOperationException("Reading not supported in write-only publication mode")
     }
     
     /**
