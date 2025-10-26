@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Seqera Labs
+ * Copyright 2025, Rob Syme (rob.syme@gmail.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,15 +22,13 @@ import nextflow.trace.TraceObserver
 import nextflow.trace.TraceObserverFactory
 
 /**
- * Implements a factory object required to create
- * the {@link BlocksObserver} instance.
+ * Factory that creates {@link BlocksObserver} instances.
  */
 @CompileStatic
 class BlocksFactory implements TraceObserverFactory {
 
     @Override
     Collection<TraceObserver> create(Session session) {
-        return List.<TraceObserver>of(new BlocksObserver())
+        return List.<TraceObserver>of(new BlocksObserver(session))
     }
-
 }

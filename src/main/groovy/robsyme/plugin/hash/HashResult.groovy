@@ -14,32 +14,29 @@
  * limitations under the License.
  */
 
-package robsyme.plugin
+package robsyme.plugin.hash
 
 import groovy.transform.CompileStatic
-import nextflow.Session
-import nextflow.plugin.extension.Function
-import nextflow.plugin.extension.PluginExtensionPoint
+import groovy.transform.Immutable
 
 /**
- * Implements a custom function which can be imported by
- * Nextflow scripts.
+ * Result of computing a content hash and Bao outboard
  */
+@Immutable
 @CompileStatic
-class BlocksExtension extends PluginExtensionPoint {
-
-    @Override
-    protected void init(Session session) {
-    }
+class HashResult {
+    /**
+     * The BLAKE3 hash in hexadecimal format
+     */
+    String hash
 
     /**
-     * Say hello to the given target.
-     *
-     * @param target
+     * The Bao outboard data
      */
-    @Function
-    void sayHello(String target) {
-        println "Hello, ${target}!"
-    }
+    byte[] outboard
 
+    /**
+     * File size in bytes
+     */
+    long size
 }

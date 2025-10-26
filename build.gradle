@@ -13,5 +13,31 @@ nextflowPlugin {
         'robsyme.plugin.BlocksExtension',
         'robsyme.plugin.BlocksFactory'
     ]
+}
 
+repositories {
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+}
+
+dependencies {
+    // AWS SDK for S3 operations
+    implementation 'software.amazon.awssdk:s3:2.20.+'
+    implementation 'software.amazon.awssdk:sts:2.20.+'
+
+    // IPLD DAG-CBOR encoding (proper definite-length encoding)
+    implementation 'com.github.ipld:java-ipld-cbor:v0.1.0'
+
+    // JSON serialization (for intermediate representation)
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.+'
+
+    // Base32 encoding for CIDs
+    implementation 'commons-codec:commons-codec:1.15'
+
+    // Logging
+    implementation 'org.slf4j:slf4j-api:1.7.+'
+
+    // Testing
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.9.+'
 }

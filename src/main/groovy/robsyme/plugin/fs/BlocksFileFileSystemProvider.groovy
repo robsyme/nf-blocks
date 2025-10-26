@@ -14,32 +14,18 @@
  * limitations under the License.
  */
 
-package robsyme.plugin
+package robsyme.plugin.fs
 
 import groovy.transform.CompileStatic
-import nextflow.Session
-import nextflow.plugin.extension.Function
-import nextflow.plugin.extension.PluginExtensionPoint
 
 /**
- * Implements a custom function which can be imported by
- * Nextflow scripts.
+ * FileSystemProvider for blocks+file:// URIs
  */
 @CompileStatic
-class BlocksExtension extends PluginExtensionPoint {
+class BlocksFileFileSystemProvider extends BlocksFileSystemProvider {
 
     @Override
-    protected void init(Session session) {
+    String getScheme() {
+        return 'blocks+file'
     }
-
-    /**
-     * Say hello to the given target.
-     *
-     * @param target
-     */
-    @Function
-    void sayHello(String target) {
-        println "Hello, ${target}!"
-    }
-
 }
