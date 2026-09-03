@@ -2,51 +2,72 @@
 
 ## Summary
 
-`nf-blocks` is a Nextflow plugin scaffolded from the official plugin
-template. Out of the box it provides:
+`nf-blocks` is a Nextflow plugin that publishes pipeline outputs into a
+content-addressed store and records their lineage there.
 
-- A custom function `sayHello` that can be imported into Nextflow scripts.
-- A workflow observer that reacts to pipeline lifecycle events (start and
-  completion).
+It owns the `cas` URI scheme, so `outputDir = 'cas://lab'` sends every
+published file through the plugin instead of onto a `results/` tree, and it
+provides a lineage store for `lineage.store.location = 'cas://lab'`, so
+Nextflow's own `lid://` records live in the same store.
 
-Replace this section with a description of what your plugin actually does.
-
-Note: The **Summary**, **Get Started**, **Examples**, and **License** sections are
-mandatory: they are required by the Nextflow Registry, which uses this
-file as the plugin description. The **Plugin development** section below is
-guidance for working on the plugin and can be removed before publishing.
+This is the walking skeleton. The boundary with Nextflow is in place and
+proven on released Nextflow 26.04.6: the plugin loads, publishes through
+`cas://`, and keeps `lid://` reads working. The block store itself, the
+DAG-CBOR lineage records, the SQLite index and the `fromStore` channel factory
+arrive in the tasks that follow; see `DESIGN.md` for the contract they are
+built against.
 
 ## Get Started
 
-Enable the plugin in your pipeline `nextflow.config`:
+Enable the plugin and point both the lineage store and the output directory at
+the same store alias:
 
 ```groovy
 plugins {
     id 'nf-blocks@0.1.0'
 }
-```
 
-Nextflow downloads the plugin from the Nextflow Registry the first time
-the pipeline runs.
+lineage.enabled = true
+lineage.store.location = 'cas://lab'   // alias of the writable member
+outputDir = 'cas://lab'                // publish through the store
 
-## Examples
-
-Import and call the `sayHello` function from a Nextflow script:
-
-```nextflow
-include { sayHello } from 'plugin/nf-blocks'
-
-workflow {
-    channel.of('Mundo', 'World').map { target -> sayHello(target) }
+cas {
+    stores {
+        lab {
+            location = '/data/cas'     // the writable member
+        }
+    }
+    resolve = ['lab']                  // optional; default is every alias, writable first
+    asserted_by = 'anonymous'          // optional opaque label; never the OS user name
 }
 ```
 
-The bundled observer prints a message when the pipeline starts and completes,
-so running any pipeline with the plugin enabled produces:
+An alias matches `^[a-z][a-z0-9_-]{0,31}$` and must not parse as a content
+address. The alias in `outputDir` must be the same one as in
+`lineage.store.location`.
+
+Nextflow downloads the plugin from the Nextflow Registry the first time the
+pipeline runs.
+
+## Examples
+
+Any pipeline with a workflow `output` block publishes into the store. The
+pipeline used to exercise the plugin lives at
+`../.scratch/content-addressed-lineage/test-pipeline`; with the configuration
+above, running it writes each published path under the store's coordinate
+tree:
 
 ```
-Pipeline is starting! 🚀
-Pipeline complete! 👋
+/data/cas/coords/aligned/A/A.bam
+/data/cas/coords/qc/A/A_qc/summary.txt
+/data/cas/nf/<run hash>/aligned/A/A.bam/.data.json
+```
+
+and the lineage record for a published file names its coordinate rather than a
+work directory path:
+
+```json
+{"kind":"FileOutput","spec":{"path":"cas://lab/aligned/A/A.bam", ...}}
 ```
 
 ## Plugin development
@@ -55,18 +76,22 @@ This project was created from the [Nextflow plugin template](https://www.nextflo
 
 ### Building
 
-To build the plugin:
-
 ```bash
 make assemble
 ```
 
-### Testing with Nextflow
+### Testing
 
-The plugin can be tested without a local Nextflow installation:
+```bash
+make test    # unit tests
+make check   # unit tests plus the dependency check and the memory bound
+make smoke   # builds, installs into a temp NXF_PLUGINS_DIR and runs a real pipeline
+```
 
-1. Build and install the plugin to your local Nextflow installation: `make install`
-2. Run a pipeline with the plugin: `nextflow run hello -plugins nf-blocks@0.1.0`
+`make smoke` needs Nextflow 26.04.6 on the path; override the binary with
+`NEXTFLOW=/path/to/nextflow` and the pipeline with `PIPELINE_SRC=...`. It keeps
+its store, its config and its `.nextflow.log` under a temp directory and prints
+the path.
 
 ### Publishing
 
@@ -81,6 +106,3 @@ Follow these steps to publish the plugin to the Nextflow Registry:
 ## License
 
 Apache License 2.0. See the [`COPYING`](COPYING) file for details.
-
-Note: The above license is given for guidance only; however the Nextflow Registry
-requires the plugin to include an OSS (open source software) license.

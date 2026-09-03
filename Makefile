@@ -16,9 +16,18 @@ clean:
 test:
 	$(GRADLE) test
 
+# Unit tests plus the dependency check and the memory bound (DESIGN.md section 0)
+check:
+	$(GRADLE) check
+
+# Build, install into a temp NXF_PLUGINS_DIR and publish through cas:// for real.
+# Needs Nextflow 26.04.6; override with NEXTFLOW=/path/to/nextflow.
+smoke:
+	./gate/smoke.sh
+
 # Install the plugin into local nextflow plugins dir
 install:
-	$(GRADLE) install
+	$(GRADLE) installPlugin
 
 # Publish the plugin
 release:
