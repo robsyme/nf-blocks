@@ -281,6 +281,29 @@ when it lands (same bytes either way, because the maps are specified).
 - Test: `src/test/groovy/robsyme/cas/nio/CasPathTest.groovy`, `CasFileSystemProviderTest.groovy` (unit tests drive the provider directly with a `LocalBlockStore` in a temp dir; they do not go through `FileSystems`/`installedProviders`, which is the green-tests-broken-runtime trap; the Gate covers the real path)
 - Modify: `gate/smoke.sh` if the boundary stub's directory layout changed.
 
+**Carried in from the Task 1 review (fix here, the files are yours):**
+- The provider memoises `CasConfig` from `Global.session` on the JVM-singleton
+  provider and never invalidates it; a second `Session` in one JVM would write
+  into the first run's store. Reach state through `CasSession.of(session)`
+  (DESIGN §9) instead; keep a test seam that does not leak.
+- `robsyme.cas.CidSyntax` duplicates the §7 discriminator with a regex that
+  disagrees with `Cid.parse` on corrupt strings. Delete it; use
+  `robsyme.cas.core.Cid.isCid` in `CasConfig` and `CasPath`.
+- `CasPath.resolve`, `relativize`, `endsWith`, `compareTo` silently absorb a
+  foreign-filesystem or different-authority `Path` (`resolve` appends an
+  absolute foreign path as segments). Throw `ProviderMismatchException` /
+  `IllegalArgumentException` as `java.nio.file.Path` documents; `startsWith`
+  alone stays false-not-throw. `toAbsolutePath()` on a relative path must not
+  return a relative path.
+- `checkAccess` for `WRITE` on a Store URI must be `AccessDeniedException`
+  (the current branch is dead code).
+- `isSameFile` must compare `Coordinates.key` (or cid) rather than `Path.equals`.
+- `setAttribute` must throw `UnsupportedOperationException`, never pretend.
+- `CasConfig`: `resolve` given as a `String` must be rejected, not split
+  into characters.
+- Unit tests for the provider are required (the review reproduced both
+  load-bearing `upload()` behaviours in ten lines each against a test seam).
+
 **Steps:**
 1. `CasPathTest`: parse of Store URI vs Coordinate; `isCoordinate()`,
    `cid()`, `alias()`; `resolve`, `getParent`, `getFileName`, `relativize`,
@@ -316,6 +339,12 @@ when it lands (same bytes either way, because the maps are specified).
 - Create: `src/main/groovy/robsyme/cas/lineage/CasLinStore.groovy`
 - Modify: `src/main/groovy/robsyme/cas/lineage/CasLinStoreFactory.groovy`
 - Test: `src/test/groovy/robsyme/cas/lineage/CasLinStoreTest.groovy`
+
+**Carried in from the Task 1 review:** `CasLinStore` currently has no unit
+tests at all (`CasLinStoreFactoryTest` never calls `newInstance`). Every
+behaviour below gets a Spock test. Also guard `Makefile`'s `install` target so
+it refuses to write into the real `~/.nextflow/plugins` without an explicit
+`FORCE=1`.
 
 **Steps:**
 1. Test `open` creates `<writable>/nf`; `save`/`load` of a `TaskRun`
