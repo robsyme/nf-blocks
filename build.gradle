@@ -5,13 +5,81 @@ plugins {
 version = '0.1.0'
 
 nextflowPlugin {
-    nextflowVersion = '25.10.0'
+    nextflowVersion = '26.04.6'
 
     provider = 'robsyme'
-    className = 'robsyme.plugin.BlocksPlugin'
+    className = 'robsyme.cas.CasPlugin'
     extensionPoints = [
-        'robsyme.plugin.BlocksExtension',
-        'robsyme.plugin.BlocksFactory'
+        'robsyme.cas.lineage.CasLinStoreFactory',
+        'robsyme.cas.nio.CasPathFactory',
     ]
-
 }
+
+repositories {
+    mavenCentral()
+    // The only public source of io.nextflow:nf-lineage for stable releases.
+    maven { url = 'https://s3-eu-west-1.amazonaws.com/maven.seqera.io/releases' }
+}
+
+dependencies {
+    // Released Nextflow only. The nextflow-plugin Gradle plugin adds
+    // io.nextflow:nextflow:<nextflowVersion> as compileOnly; nf-lineage is not transitive.
+    compileOnly "io.nextflow:nf-lineage:${nextflowPlugin.nextflowVersion}"
+
+    // Bundled at runtime (lands in the plugin zip lib/).
+    implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
+
+    testImplementation "io.nextflow:nextflow:${nextflowPlugin.nextflowVersion}"
+    testImplementation "io.nextflow:nf-lineage:${nextflowPlugin.nextflowVersion}"
+    testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
+    testImplementation 'org.pf4j:pf4j:3.4.1'
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    testLogging { exceptionFormat = 'full'; events 'failed' }
+}
+
+// Ordinary unit tests: everything except the memory-bound test.
+test {
+    filter { excludeTestsMatching 'robsyme.cas.core.MemoryBoundTest' }
+}
+
+// The mechanised memory bound (DESIGN.md §0 rule 2): hash and store a 256 MiB
+// file in a JVM whose whole heap is smaller than the file.
+tasks.register('memoryBoundTest', Test) {
+    description = 'Runs MemoryBoundTest under a 48 MiB heap'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    maxHeapSize = '48m'
+    filter {
+        includeTestsMatching 'robsyme.cas.core.MemoryBoundTest'
+        failOnNoMatchingTests = false
+    }
+}
+
+// DESIGN.md §0 rule 1: never build against an unreleased Nextflow.
+tasks.register('dependencyCheck') {
+    description = 'Fails if the build depends on a local Nextflow checkout or an absolute path'
+    group = 'verification'
+    doLast {
+        def offenders = []
+        // Assembled so this task's own source does not trip the check.
+        def needles = ['include' + 'Build', 'files' + '(', '/Us' + 'ers/', '/ho' + 'me/']
+        ['build.gradle', 'settings.gradle'].each { name ->
+            def f = file(name)
+            if( !f.exists() ) return
+            f.readLines().eachWithIndex { line, i ->
+                needles.each { needle ->
+                    if( line.contains(needle) && !line.trim().startsWith('//') )
+                        offenders << "${name}:${i+1}: ${line.trim()}"
+                }
+            }
+        }
+        if( offenders )
+            throw new GradleException("Unreleased or machine-local dependency:\n  " + offenders.join('\n  '))
+    }
+}
+
+check.dependsOn memoryBoundTest, dependencyCheck
