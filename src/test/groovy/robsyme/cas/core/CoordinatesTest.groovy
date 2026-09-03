@@ -91,4 +91,77 @@ class CoordinatesTest extends Specification {
         where:
         text << [null, '', 'lab/a.txt', 'cas://']
     }
+
+    // ---- StoreRef: the text a Pointer File holds (DESIGN.md §7) ----
+
+    static Cid rawCid() { Hashing.hashRaw(new ByteArrayInputStream('hello\n'.bytes), new byte[1024]) }
+
+    static Cid manifestCid() { DagCbor.cidOf(DagCbor.encode([kind: 'DirectoryManifest', schema: 1, entries: []])) }
+
+    def 'a raw store reference stringifies as cas://cid/name'() {
+        given:
+        final Cid cid = rawCid()
+
+        expect:
+        new StoreRef(cid, 'A.bam').toString() == "cas://$cid/A.bam"
+    }
+
+    def 'a raw store reference must carry the name it was published under'() {
+        when:
+        new StoreRef(rawCid(), null)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('name')
+    }
+
+    def 'a directory reference may go without a name'() {
+        given:
+        final Cid cid = manifestCid()
+
+        expect:
+        new StoreRef(cid, null).toString() == "cas://$cid"
+        new StoreRef(cid, 'qc').toString() == "cas://$cid/qc"
+    }
+
+    def 'a store reference round-trips through its text form'() {
+        given:
+        final StoreRef ref = new StoreRef(cid, name)
+
+        expect:
+        StoreRef.parse(ref.toString()) == ref
+        StoreRef.parse(ref.toString()).cid == cid
+        StoreRef.parse(ref.toString()).name == name
+
+        where:
+        cid           | name
+        rawCid()      | 'A.bam'
+        rawCid()      | 'a b#c.txt'
+        manifestCid() | 'qc'
+        manifestCid() | null
+    }
+
+    def 'parsing rejects text that is not a store uri'() {
+        when:
+        StoreRef.parse(text)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        text << [
+            null,
+            '',
+            'cas://lab/A.bam',                        // an alias, not a content address
+            "cas://${rawCid()}/qc/A.bam".toString(),  // more than one segment
+            "cas://${rawCid()}".toString(),           // a raw block with no name
+            "file://${rawCid()}/A.bam".toString(),
+        ]
+    }
+
+    def 'a store reference knows whether it addresses a directory'() {
+        expect:
+        !new StoreRef(rawCid(), 'A.bam').isDirectory()
+        new StoreRef(manifestCid(), 'qc').isDirectory()
+    }
 }
