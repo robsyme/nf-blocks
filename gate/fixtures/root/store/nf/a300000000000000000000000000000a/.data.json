@@ -1,0 +1,9 @@
+{
+ "kind": "TaskRun",
+ "spec": {
+  "name": "TASK (10)",
+  "sessionId": "33333333-3333-3333-3333-333333333333",
+  "workflowRun": "lid://a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3"
+ },
+ "version": "lineage/v1beta1"
+}

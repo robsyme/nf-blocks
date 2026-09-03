@@ -32,3 +32,10 @@ install:
 # Publish the plugin
 release:
 	$(GRADLE) releasePlugin
+
+# The Gate (gate/README.md): build, run the Test Pipeline six ways against a
+# throwaway cas:// store, then assert over it from outside with gate/assert.py.
+# Set GATE_ROOT to reuse a root; NEXTFLOW to pick the 26.04.6 binary.
+gate:
+	python3 -m unittest discover -s gate
+	./gate/gate.sh

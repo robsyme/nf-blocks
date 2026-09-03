@@ -1,0 +1,18 @@
+{
+ "kind": "FileOutput",
+ "spec": {
+  "checksum": {
+   "algorithm": "nextflow",
+   "mode": "standard",
+   "value": "4c6f4ec7e803eaa25c679724be1edead"
+  },
+  "labels": [
+   "stats"
+  ],
+  "path": "work/B.stats",
+  "size": 31,
+  "taskRun": "lid://05cbcbcbcbcbcbcbcbcbcbcbcbcbcbcb",
+  "workflowRun": "lid://a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2"
+ },
+ "version": "lineage/v1beta1"
+}
