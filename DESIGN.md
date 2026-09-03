@@ -158,8 +158,12 @@ interface BlockStore {
 
 ```
 blocks/<xx>/<cid>       xx = last two characters of the cid string. Files are chmod 0444.
-                        Write = temp file in blocks/<xx>/.tmp-<random>, fsync, rename.
-                        If the target exists after a failed rename, that is success.
+                        Write = temp file (blocks/<xx>/.tmp-<random> when the cid is known up
+                        front; blocks/.tmp-<random> for putStreaming, whose shard is unknown until
+                        the hash completes), fsync the file, then link it into place with an
+                        atomic create-if-absent (Files.createLink; never a rename that can replace
+                        an existing block and move its mtime), then fsync the directory.
+                        "Target already exists" is success.
 runs/<rts>-<cid>        Run Log: empty file per RunCompletion. rts = String.format('%013d', 9999999999999L - finishedAtMillis)
                         so lexicographic order is newest first. cid = the RunCompletion cid.
 coords/<publish path>   Publish Coordinate tree (§7). Real directories; leaves are Pointer Files.
