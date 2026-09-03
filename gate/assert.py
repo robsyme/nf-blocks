@@ -722,17 +722,17 @@ def assert_ten(gate):
     user = os.environ.get("USER")
     if user:
         needles["the OS user name"] = user
+    # No exemptions. DESIGN section 6 scrubs RunManifest params and config for
+    # portability (dropping the cas, lineage, workDir, outputDir, launchDir,
+    # projectDir, homeDir, configFiles, scriptFile, commandLine, runName and
+    # resume scopes, and replacing absolute paths and non-lid/cas URIs with
+    # "[redacted-location]" and the OS user name with "[redacted-user]"), so
+    # every dag-cbor block is scanned whole.
     leaks = []
     for cid, block in gate.blocks.items():
         kind = block.get("kind") if isinstance(block, dict) else None
-        subject = block
-        if kind == "RunManifest":
-            # DESIGN section 6 has RunManifest carry session.params and
-            # session.config verbatim; everything else in it must be portable.
-            subject = {k: v for k, v in block.items()
-                       if k not in ("params", "config")}
         for what, needle in needles.items():
-            where = _find_string(subject, needle)
+            where = _find_string(block, needle)
             if where:
                 leaks.append("%s block %s contains %s at %s"
                              % (kind, cid[:16] + "...", what, where))
@@ -742,9 +742,9 @@ def assert_ten(gate):
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("%d OutputItem and %d DirectoryManifest addresses identical "
-                  "across pipeline-a and pipeline-b; no block names the launch "
-                  "path or %r (RunManifest params/config exempt per DESIGN 6)"
-                  % (len(a_items), len(a_manifests), user))
+                  "across pipeline-a and pipeline-b; none of the %d dag-cbor "
+                  "blocks names the launch path or %r anywhere"
+                  % (len(a_items), len(a_manifests), len(gate.blocks), user))
 
 
 def _closure(gate, run):

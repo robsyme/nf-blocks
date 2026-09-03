@@ -179,8 +179,17 @@ def main():
             "commit_id": None, "run_name": name, "nf_run_hash": nf_hash,
             "session_id": session, "resumed": resumed,
             "nextflow_version": "26.04.6",
-            "params": {"fail": status == "failed", "qc_mode": "copy"},
-            "config": {"outputDir": "cas://lab"},
+            # params and config as DESIGN section 6's portability scrub leaves
+            # them: the cas, lineage, workDir, outputDir, launchDir, projectDir,
+            # homeDir, configFiles, scriptFile, commandLine, runName and resume
+            # scopes dropped, absolute paths and non-lid/cas URIs replaced with
+            # "[redacted-location]", the OS user name with "[redacted-user]".
+            "params": {"fail": status == "failed", "qc_mode": "copy",
+                       "refdir": "[redacted-location]"},
+            "config": {"manifest": {"name": PIPELINE},
+                       "process": {"executor": "local"},
+                       "env": {"HOME": "[redacted-location]",
+                               "SAMPLE_OWNER": "[redacted-user]"}},
             "script": None,
             "started_at": "2026-01-01T00:00:00.000Z",
         }

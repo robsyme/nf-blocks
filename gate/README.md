@@ -111,18 +111,23 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 5 | the published directory is a Directory Manifest matching an independent walk, with the internal symlink recorded as a link | walks `pipeline-a/work/**/A_qc` and compares names, modes, sizes and per-file raw CIDs, recursing into `nested/`; `alias.txt` must be `mode: symlink`, `target: summary.txt` |
 | 6 | `lid://` and `cas://` each stage into a second pipeline and hash to the expected address | compares the consumer's `hashes/` output against its own sha256 of `A.bam` |
 | 7 | `fromStore` with `where: [sample: 'B']` returns exactly one item; `fromLineage` still works | compares against its own sha256 of `B.bam`; reads `logs/consumer/lineage-find.txt` |
-| 10 | two launch directories give identical Output Item and Directory Manifest addresses, and nothing store-local leaks into a block | compares the two closures; searches every decoded `bafy…` block for the `GATE_ROOT` path and `$USER` |
+| 10 | two launch directories give identical Output Item and Directory Manifest addresses, and nothing store-local leaks into a block | compares the two closures; searches every decoded `bafy…` block, whole and without exemption, for the `GATE_ROOT` path and `$USER`, and names the JSON path of any hit |
 | 8, 9, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
-Two readings worth knowing about, both chosen for consistency with `DESIGN.md`:
+Assertion 10's leak scan has **no exemptions**: every dag-cbor block is searched
+whole, `RunManifest.params` and `RunManifest.config` included. DESIGN §6
+specifies a portability scrub for those two — it drops the `cas`, `lineage`,
+`workDir`, `outputDir`, `launchDir`, `projectDir`, `homeDir`, `configFiles`,
+`scriptFile`, `commandLine`, `runName` and `resume` scopes, replaces
+absolute-path and non-`lid`/`cas` URI strings with `[redacted-location]`, and
+replaces the OS user name with `[redacted-user]` — so a launch path surviving
+into a block is a scrub bug, and the assertion reports it as
+`RunManifest block bafy… contains the GATE_ROOT path at $.config.env.HOME`.
+The fixture's RunManifests carry a scrubbed config, so the fixture exercises the
+shape the scrub is meant to produce.
 
-- **Assertion 10's leak scan exempts `RunManifest.params` and
-  `RunManifest.config`.** DESIGN §6 forbids store-local strings in blocks but
-  the RunManifest schema in the same section carries `session.params` and
-  `session.config` verbatim, and the config necessarily holds
-  `cas.stores.lab.location`, which is inside `GATE_ROOT`. Every other field of
-  every other block — OutputItem, DirectoryManifest, OutputCollection,
-  RunCompletion — is scanned in full.
+One reading worth knowing about:
+
 - **Assertion 6 covers two of the three URI shapes.** The run-rooted
   `cas://<runCid>/aligned/A/A.bam` and the glob over a manifest are stubbed in
   the skeleton (DESIGN §7), so the assertion says so in its message rather than
