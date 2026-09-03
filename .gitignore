@@ -6,3 +6,6 @@
 # Ignore Gradle build output directory
 build
 work
+
+# Python bytecode from the Gate harness
+__pycache__/

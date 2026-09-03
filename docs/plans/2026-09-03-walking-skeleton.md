@@ -341,8 +341,8 @@ when it lands (same bytes either way, because the maps are specified).
 ### Task 8: Observer and `fromStore`
 
 **Files:**
-- Create: `src/main/groovy/robsyme/cas/trace/CasObserverFactory.groovy`, `CasObserver.groovy`, `src/main/groovy/robsyme/cas/trace/Join.groovy` (pure function: captured `WorkflowOutputEvent`s + `publishes` → items, collections, anomaly counts), `src/main/groovy/robsyme/cas/ext/CasExtension.groovy`
-- Modify: `build.gradle` (`extensionPoints` += `robsyme.cas.trace.CasObserverFactory`, `robsyme.cas.ext.CasExtension`)
+- Create: `src/main/groovy/robsyme/cas/trace/CasObserverFactory.groovy`, `CasObserver.groovy`, `src/main/groovy/robsyme/cas/trace/Join.groovy` (pure function: captured `WorkflowOutputEvent`s + `publishes` → items, collections, anomaly counts), `src/main/groovy/robsyme/cas/ext/CasExtension.groovy`, `src/main/groovy/robsyme/cas/CasConfigScope.groovy` (a `@ScopeName("cas")` `ConfigScope` declaring `stores`, `resolve`, `asserted_by`, `pipeline`, `index.path`, so `ConfigValidator` stops warning `Unrecognized config option`; see DESIGN §2)
+- Modify: `build.gradle` (`extensionPoints` += `robsyme.cas.trace.CasObserverFactory`, `robsyme.cas.ext.CasExtension`, `robsyme.cas.CasConfigScope`)
 - Test: `src/test/groovy/robsyme/cas/trace/JoinTest.groovy`, `CasObserverTest.groovy` (Spock `Mock(Session)`), `src/test/groovy/robsyme/cas/ext/CasExtensionTest.groovy`
 
 **Facts:** `WorkflowOutputEvent.value` for a channel output is a `List` of
@@ -402,6 +402,11 @@ publishes to `cas://out`). Commit after each fix. Final commit:
   `gate/gate.sh` runs unchanged inside it. `make gate-docker`.
 - `.github/workflows/gate.yml`: `gradle check` then the Docker Gate on every
   push and pull request, required to merge.
+- Bound `Plugin-Requires` above as well as below (`>=26.04.0, <26.05.0`),
+  because Nextflow accepts an unbounded lower bound on any later release and
+  the store then fails at runtime with `AbstractMethodError` (this is what
+  killed nf-lineage-h2). The Gradle plugin generates `>=<nextflowVersion>`;
+  override the manifest attribute.
 - Commit: `ci: gate runs real nextflow in docker on every commit`.
 
 ---

@@ -75,6 +75,12 @@ cas {
 }
 ```
 
+- The `cas` scope must be declared as a `nextflow.config.schema.ConfigScope`
+  class annotated `@ScopeName("cas")` and listed in `extensionPoints`, or
+  `ConfigValidator` warns `Unrecognized config option` for every key on every
+  run (`modules/nextflow/src/main/groovy/nextflow/config/ConfigValidator.groovy:75,152`
+  at v26.04.6). Owned by Task 8.
+- `cas.pipeline` (optional string) overrides the Pipeline Identity.
 - An alias matches `^[a-z][a-z0-9_-]{0,31}$` and must not parse as a CID.
 - `CasLinStoreFactory.canOpen(config)` is `config?.store?.location?.startsWith('cas://') ?: false`.
   It must be total over every config, including `lineage.store.location` unset (null).
@@ -223,15 +229,27 @@ reference and no publish path.
 ### RunManifest
 ```
 { kind: "RunManifest", schema: 1, asserted_by: string,
-  pipeline: string,             // Pipeline Identity: cas.pipeline config if set, else session.workflowMetadata.projectName
+  pipeline: string,             // Pipeline Identity, first non-null of: cas.pipeline, manifest.name, session.workflowMetadata.projectName
+                                // (measured: projectName is the literal "main.nf" for `nextflow run .`, so a local pipeline should set manifest.name)
   repository: string|null, revision: string|null, commit_id: string|null,
   run_name: string, nf_run_hash: string,   // Nextflow's WorkflowRun lid key (LinObserver.executionHash)
   session_id: string, resumed: bool,
   nextflow_version: string,
-  params: Map, config: Map,     // session.params and session.config with values of type Path converted to string; Nextflow already redacts secrets
+  params: Map, config: Map,     // scrubbed, see below
   script: Cid|null,             // raw block of the main script
   started_at: string }
 ```
+
+**Portability scrub for `params` and `config`** (one function,
+`Records.scrub(Object)`, unit-tested): drop the top-level config scopes
+`cas`, `lineage`, `workDir`, `outputDir`, `launchDir`, `projectDir`, `homeDir`,
+`configFiles`, `scriptFile`, `commandLine`, `runName` and `resume`; convert
+`Path` values to strings; then replace every string value that starts with `/`
+or with a `<scheme>://` other than `lid://`/`cas://` by `"[redacted-location]"`,
+and every string equal to the OS user name by `"[redacted-user]"`. Measured at
+v26.04.6: `session.config` contains `cas.stores.<alias>.location` (an absolute
+host path), `outputDir` (a member alias) and `workDir`, so an unscrubbed copy
+breaks §6's rule and Gate assertion 10.
 
 ### RunCompletion
 ```
@@ -294,10 +312,15 @@ Install with `nextflow.file.FileHelper.getOrInstallProvider(CasFileSystemProvide
 from `CasPlugin.start()` (the idiom `nf-google` and the probe used). Scheme
 `cas`. One `CasFileSystem` per JVM, backed by the `CompositeStore` from config.
 
-`CasPath`: immutable, holds `authority` (alias or cid string) and a normalised
-segment list. `toUri()` yields the canonical form. `startsWith(otherFs)`
-returns false rather than throwing. `equals`/`hashCode` on
-`(authority, segments)`. `toString()` = the URI string.
+`CasPath`: immutable, holds `authority` (alias or cid string, null for a
+relative path) and a normalised segment list. `toUri()` yields the canonical
+form. `startsWith(otherFs)` returns false rather than throwing.
+`equals`/`hashCode` on `(authority, segments)`. `toString()` of an
+**absolute** path is the URI string; a **relative** path (what `getFileName()`,
+`getName(i)`, `subpath` and `relativize` return) stringifies as its bare
+`/`-joined segments, because Nextflow uses `getFileName().toString()` as a
+file name. A store root stringifies as `cas://<authority>` with no trailing
+slash in both `toString()` and `toUri()`.
 
 Read side (Store URIs and Coordinates alike), all must tell the truth:
 - `readAttributes` (both overloads): size from the block or manifest entry,
