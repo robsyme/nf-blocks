@@ -100,10 +100,12 @@ cas {
   `of(codec, byte[] sha256)`, `toString()`, `bytes()`, `codec`, `digest`.
 - Known vectors the tests must pass:
   - raw, empty input: `bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku`
-  - raw, bytes `hello\n`: `bafkreigyhb6gpc5d2r4d2atx2qusiajjw5kmubu3z4njhaacinvyc5qmga`
+  - raw, bytes `hello\n`: `bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am`
     (sha256 = `5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03`)
   - dag-cbor of the empty map (`0xa0`): `bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua`
-    (sha256 of `a0` = `c19a7817da1fd2c0cd2e5db41d3caf25c70a3d3f4e2ff32be5ba7de9ed45a583`)
+    (sha256 of `a0` = `c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a0`)
+  - (All three recomputed independently with Python `hashlib` on 2026-09-03
+    after an earlier revision of this file carried two wrong values.)
 - Streaming hasher `robsyme.cas.core.Hashing`:
   `static Cid hashRaw(InputStream in, byte[] buffer)` using exactly the given
   1 MiB buffer; `static Cid hashRaw(Path file)` borrows a buffer from
