@@ -3,6 +3,7 @@ package robsyme.cas.nio
 import java.nio.file.Path
 
 import groovy.transform.CompileStatic
+import nextflow.file.FileSystemPathFactory
 import robsyme.cas.CasPlugin
 
 /**
@@ -13,7 +14,7 @@ import robsyme.cas.CasPlugin
  * for `outputDir = 'cas://lab'`.
  */
 @CompileStatic
-class CasPathFactory extends nextflow.file.FileSystemPathFactory {
+class CasPathFactory extends FileSystemPathFactory {
 
     private static final String PREFIX = "${CasPath.SCHEME}://"
 
