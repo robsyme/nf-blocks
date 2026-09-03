@@ -23,25 +23,21 @@ import cas  # noqa: E402
 RAW = 0x55
 DAG_CBOR = 0x71
 
-# Vectors from DESIGN.md section 3. Two of the three are verified correct
-# against the digest they encode; one is not, see below.
-#
-#   raw of b""        digest e3b0c442...b855 == sha256(b"")        -> vector OK
-#   dag-cbor of 0xa0  digest c19a797f...56a0 == sha256(b"\xa0")    -> vector OK
-#     (DESIGN's parenthetical hex "c19a7817da1fd2c0..." for this one is a
-#      garbled transcription of c19a797fa1fd590c...; the CID string is right)
-#   raw of b"hello\n"  DESIGN's string bafkreigyhb6gpc... decodes to digest
-#     d8387c678ba3d4783d0277d429240129b754ca069bcf1a938002436b81760c30, which
-#     is not sha256(b"hello\n"). DESIGN's own parenthetical, 5891b5b522d5df08
-#     6d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03, IS sha256(b"hello\n")
-#     (confirmed with `printf 'hello\n' | shasum -a 256`), and encodes to
-#     bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am. The Gate
-#     hashes bytes rather than trusting a transcribed string, so it asserts the
-#     digest-derived value. Reported for correction in DESIGN.md section 3.
-CID_RAW_EMPTY = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
-CID_RAW_HELLO = "bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am"
-CID_RAW_HELLO_DESIGN_TYPO = "bafkreigyhb6gpc5d2r4d2atx2qusiajjw5kmubu3z4njhaacinvyc5qmga"
-SHA256_HELLO_HEX = ("5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03")
+# Vectors fixed by DESIGN.md section 3, each paired with the digest it must
+# encode. test_every_vector_encodes_the_digest_it_claims re-derives all three
+# with hashlib, so a transcription error in either file cannot survive: an
+# earlier revision of DESIGN carried a CID string for b"hello\n" that decoded
+# to a digest nothing hashes to, and that is exactly the check that caught it.
+VECTORS = [
+    (b"", RAW, "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"),
+    (b"hello\n", RAW, "bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am"),
+    (bytes.fromhex("a0"), DAG_CBOR,
+     "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua"),
+]
+SHA256_HELLO_HEX = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+SHA256_A0_HEX = "c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a0"
+CID_RAW_EMPTY = VECTORS[0][2]
+CID_RAW_HELLO = VECTORS[1][2]
 CID_DAGCBOR_EMPTY_MAP = "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua"
 
 
@@ -53,12 +49,20 @@ class TestCidEncoder(unittest.TestCase):
         self.assertEqual(hashlib.sha256(b"hello\n").hexdigest(), SHA256_HELLO_HEX)
         self.assertEqual(cas.cid_raw(b"hello\n"), CID_RAW_HELLO)
 
-    def test_designs_hello_string_encodes_a_different_digest(self):
-        """Pins the DESIGN.md section 3 transcription error so it is not lost."""
-        self.assertNotEqual(cas.cid_digest(CID_RAW_HELLO_DESIGN_TYPO),
-                            hashlib.sha256(b"hello\n").digest())
-        self.assertEqual(cas.cid_digest(CID_RAW_HELLO_DESIGN_TYPO).hex(),
-                         "d8387c678ba3d4783d0277d429240129b754ca069bcf1a938002436b81760c30")
+    def test_every_vector_encodes_the_digest_it_claims(self):
+        """A CID text form nothing hashes to is a transcription error."""
+        for data, codec, text in VECTORS:
+            digest = hashlib.sha256(data).digest()
+            self.assertEqual(cas.cid_digest(text), digest,
+                             "%r: the CID decodes to a digest that is not "
+                             "sha256(%r)" % (text, data))
+            self.assertEqual(cas.cid_codec(text), codec, text)
+            self.assertEqual(cas.cid_from_sha256(digest, codec), text)
+
+    def test_designs_parenthetical_digests(self):
+        self.assertEqual(hashlib.sha256(b"hello\n").hexdigest(), SHA256_HELLO_HEX)
+        self.assertEqual(hashlib.sha256(bytes.fromhex("a0")).hexdigest(),
+                         SHA256_A0_HEX)
 
     def test_dagcbor_cid_of_empty_map(self):
         self.assertEqual(cas.cid_dagcbor(bytes.fromhex("a0")), CID_DAGCBOR_EMPTY_MAP)

@@ -147,25 +147,13 @@ The fixture is generated with `cas.py`'s own encoder, which the unit tests pin
 to the published CID vectors, so it cannot drift away from the real format
 without `test_cas.py` noticing.
 
-## A correction to DESIGN.md section 3
+## The CID vectors
 
-Two of the three CID vectors in DESIGN §3 are correct. The third is not:
-
-- `raw` of `b""` → `bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku`
-  decodes to digest `e3b0c442…b855`, which is `sha256(b"")`. Correct.
-- `dag-cbor` of `0xa0` → `bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua`
-  decodes to `c19a797fa1fd590cd2e5b42d1cf5f246e29b91684e2f87404b81dc345c7a56a0`,
-  which is `sha256(b"\xa0")`. Correct — but DESIGN's parenthetical hex for it,
-  `c19a7817da1fd2c0…`, is a garbled transcription of that same digest.
-- `raw` of `b"hello\n"` → DESIGN gives
-  `bafkreigyhb6gpc5d2r4d2atx2qusiajjw5kmubu3z4njhaacinvyc5qmga`, which decodes
-  to `d8387c678ba3d4783d0277d429240129b754ca069bcf1a938002436b81760c30`. That is
-  not `sha256(b"hello\n")`. DESIGN's own parenthetical for the same vector,
-  `5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03`, *is*
-  `sha256(b"hello\n")` (`printf 'hello\n' | shasum -a 256`), and it encodes to
-  **`bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am`**.
-
-`test_cas.py` asserts the digest-derived value and pins the bad string in
-`test_designs_hello_string_encodes_a_different_digest`, so the discrepancy
-cannot be quietly lost. Any Java test that hardcodes DESIGN's string will fail
-against a correct implementation.
+`test_cas.py` pins the three vectors from DESIGN.md §3 and, in
+`test_every_vector_encodes_the_digest_it_claims`, re-derives each one from the
+bytes with `hashlib` rather than comparing string to string. That check earned
+its place: an earlier revision of DESIGN gave `raw` of `b"hello\n"` as
+`bafkreigyhb6gpc…`, which decodes to
+`d8387c678ba3d4783d0277d429240129b754ca069bcf1a938002436b81760c30` — a digest
+nothing hashes to. The correct value, and the one DESIGN now carries, is
+`bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am`.
