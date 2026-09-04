@@ -48,7 +48,15 @@ class CasLinStore implements LinStore {
 
     private CasConfig casConfig
 
+    /** The writable member's records, where every save lands. */
     private DefaultLinStore delegate
+
+    /**
+     * Every member's records in resolve order, writable first. A `lid://` from a
+     * run recorded in a read-only member (a producer store mounted here) resolves
+     * because reads consult them all, first hit wins (DESIGN.md §12).
+     */
+    private List<DefaultLinStore> readers
 
     CasConfig getCasConfig() { casConfig }
 
@@ -64,9 +72,26 @@ class CasLinStore implements LinStore {
         catch( IOException e ) {
             throw new AbortOperationException("Unable to create lineage store directory: ${records} -- cause: ${e.message}", e)
         }
-        this.delegate = new DefaultLinStore().open(new LineageConfig([enabled: true, store: [location: records.toString()]]))
-        log.debug "Lineage records for store '${casConfig.writableAlias}' at ${records}"
+        this.delegate = openRecords(records)
+        // Build the reader chain: the writable member, then every other member
+        // that already holds an nf/ tree. A member with none contributes no
+        // records and is skipped, so we never write into a read-only member.
+        final List<DefaultLinStore> chain = new ArrayList<DefaultLinStore>()
+        chain.add(delegate)
+        for( String alias : casConfig.members ) {
+            if( alias == casConfig.writableAlias )
+                continue
+            final Path memberRecords = casConfig.locationOf(alias).resolve(NEXTFLOW_RECORDS)
+            if( Files.isDirectory(memberRecords) )
+                chain.add(openRecords(memberRecords))
+        }
+        this.readers = Collections.unmodifiableList(chain)
+        log.debug "Lineage records for store '${casConfig.writableAlias}' at ${records}; ${readers.size()} member(s) readable"
         return this
+    }
+
+    private static DefaultLinStore openRecords(Path location) {
+        return new DefaultLinStore().open(new LineageConfig([enabled: true, store: [location: location.toString()]]))
     }
 
     private static Map sessionConfig() {
@@ -150,26 +175,41 @@ class CasLinStore implements LinStore {
 
     @Override
     LinSerializable load(String key) {
-        return delegate.load(key)
+        for( DefaultLinStore reader : readers ) {
+            final LinSerializable found = reader.load(key)
+            if( found != null )
+                return found
+        }
+        return null
     }
 
     @Override
     LinHistoryLog getHistoryLog() {
+        // The launching user's own history is the writable member's.
         return delegate.getHistoryLog()
     }
 
     @Override
     Stream<String> search(Map<String, List<String>> params) {
-        return delegate.search(params)
+        Stream<String> all = Stream.<String>empty()
+        for( DefaultLinStore reader : readers )
+            all = Stream.concat(all, reader.search(params))
+        // A block that is present in several members shares one key; one hit is enough.
+        return all.distinct()
     }
 
     @Override
     Stream<String> getSubKeys(String parentKey) {
-        return delegate.getSubKeys(parentKey)
+        Stream<String> all = Stream.<String>empty()
+        for( DefaultLinStore reader : readers )
+            all = Stream.concat(all, reader.getSubKeys(parentKey))
+        return all.distinct()
     }
 
     @Override
     void close() throws IOException {
-        delegate?.close()
+        // Nextflow never calls this, but a member store may hold resources.
+        for( DefaultLinStore reader : (readers ?: Collections.<DefaultLinStore>emptyList()) )
+            reader.close()
     }
 }

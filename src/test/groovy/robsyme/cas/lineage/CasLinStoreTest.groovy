@@ -188,6 +188,42 @@ class CasLinStoreTest extends Specification {
         children.contains('run-7f3a/out')
     }
 
+    def 'load resolves a record held only in a read-only composition member'() {
+        given: 'a producer record sitting in a second member store, mounted read-only'
+        Path sharedRoot = tempDir.resolve('shared-store')
+        Path sharedRecords = sharedRoot.resolve('nf')
+        Files.createDirectories(sharedRecords)
+        final producerRecords = new DefaultLinStore().open(
+            new LineageConfig([enabled: true, store: [location: sharedRecords.toString()]]))
+        producerRecords.save('producer-run', new WorkflowRun(name: 'producer'))
+
+        and: 'a fresh session whose store composes the writable member over the shared one'
+        Session s2 = Mock(Session) {
+            getConfig() >> [
+                lineage: [store: [location: 'cas://lab']],
+                cas: [
+                    stores: [lab: [location: tempDir.resolve('lab2').toString()], shared: [location: sharedRoot.toString()]],
+                    resolve: ['lab', 'shared'],
+                ],
+            ]
+        }
+        Global.session = s2
+        CasSession.of(s2)
+        CasLinStore composed = new CasLinStore().open(new LineageConfig([store: [location: 'cas://lab']]))
+
+        expect: 'a lid:// read finds the producer record through the read-only member'
+        (composed.load('producer-run') as WorkflowRun)?.name == 'producer'
+
+        and: 'writes still land only in the writable member'
+        composed.save('consumer-run', new WorkflowRun(name: 'consumer'))
+        Files.exists(tempDir.resolve('lab2/nf/consumer-run/.data.json'))
+        !Files.exists(sharedRecords.resolve('consumer-run/.data.json'))
+
+        cleanup:
+        CasSession.unbind(s2)
+        Global.session = session
+    }
+
     def 'an io error from the delegate surfaces as an abort'() {
         given: 'a delegate that fails every save'
         store.@delegate = new DefaultLinStore() {
