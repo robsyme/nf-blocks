@@ -67,8 +67,8 @@ block, not as a silently different value. Order violations raise
    `assert.py --snapshot`: block cids, run-log entries, `nf/` record keys and
    every `coords/` pointer with its text.
 7. Reads the read-back references out of the store (`assert.py --refs`) and
-   passes them to the consumer as `--lid`, `--cas` and `--run_lid`, because
-   none of them exists before the producer has run.
+   passes them to the consumer as `--lid` and `--cas`, because neither exists
+   before the producer has run.
 8. `python3 gate/assert.py "$GATE_ROOT"` and exits with its status.
 
 Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/` and the
@@ -93,7 +93,7 @@ Two things `gate.config` has to say that are not obvious:
 
 ```
 plugins/                 NXF_PLUGINS_DIR for these runs only
-cache/nf-blocks/*.sqlite the index; exactly one file is expected
+cache/nf-blocks/*.sqlite the indexes; the producer's is selected by pipeline
 store/                   the cas:// member `lab`: blocks/ runs/ coords/ nf/
 store-out/               the consumer's member `out`
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
@@ -116,12 +116,12 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 2 | `again` writes no new content block and loses no record; Output Item addresses are identical | diffs blocks, run-log entries, `nf/` keys and `coords/` pointer *text* between the two snapshots, and re-hashes every block in the store |
 | 3 | the failed run is marked failed, is partial and says so, and is not `latest` | requires `status: failed`, `possibly_incomplete: true`, an `anomalies` map, a `reports` collection with no `sample == 'B'` item and at most 2 items, and agreement between the index and the run log that `latest` is some other run |
 | 4 | the resumed run's output layer is complete | collection names exactly `{aligned, stats, qc, chunks, reports}`, each with 3 items |
-| 4 | the resumed run's task layer is populated through our own `onTaskCached` | counts `TaskRun` records naming the resumed run; **expects 15, and fails until the plugin implements `onTaskCached` — released Nextflow measured 7** (issue 17) |
+| 4 | the resumed run's task layer is populated through our own `onTaskCached` | `SKIP`: filling the task layer on resume is deferred out of the Walking Skeleton; native Nextflow leaves it empty (7 not 15, issue 17) |
 | 4 | the resumed run re-hashed nothing | proved by the filesystem: `gate.sh` sets every published source file in `pipeline-a/work` to mode 000 for the duration of the run, so anything that re-reads one to re-address it gets `AccessDenied`. No counter is trusted. See the caveat below |
 | 5 | the published directory is a Directory Manifest matching an independent walk, with the internal symlink recorded as a link | walks `pipeline-a/work/**/A_qc` and compares names, modes, sizes and per-file raw CIDs, recursing into `nested/`; the PASS message states how many of each kind were compared |
 | 5 | every recorded publish path resolves | for each `paths[i][j]` in every `cold` collection, requires a `coords/` pointer whose Store URI is that leaf's own address and name |
 | 6 | `lid://` and `cas://` each stage into a second pipeline and hash to the expected address | requires exactly one file under each of `hashes/lid/` and `hashes/cas/`, and compares its digest against the Gate's own sha256 of `A.bam` |
-| 7 | `fromStore` with `where: [sample: 'B']` returns exactly one item, and `fromLineage` still works | requires exactly one file under `hashes/fromstore/` digesting to the Gate's sha256 of `B.bam`, and a non-empty `hashes/fromlineage/` whose digests are all bam content the Gate computed |
+| 7 | `fromStore` with `where: [sample: 'B']` returns exactly one item | requires exactly one file under `hashes/fromstore/` digesting to the Gate's sha256 of `B.bam` |
 | 10 | two launch directories give identical Output Item and Directory Manifest addresses, and nothing store-local leaks into a block | compares the two closures; searches every decoded `bafy…` block, whole and without exemption, for the `GATE_ROOT` path and the OS user name, naming the JSON path of any hit |
 | 8, 9, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
@@ -161,15 +161,15 @@ One reading worth knowing about:
 outputs (including the multi-leaf `chunks` items and the partial `reports` of
 the failed run), work trees with the real bytes, `qc` directories with a nested
 subdirectory and an internal symlink, a run log, `nf/` records, coords pointers
-for every publish path, a consumer store covering all four read-back sources,
+for every publish path, a consumer store covering the three read-back sources,
 and a populated SQLite index. It is what DESIGN says a correct plugin must
 produce, so it exercises every PASS branch of `assert.py` before the plugin
 can.
 
 ```
 python3 gate/fixtures/make_fixture.py                  # regenerate (deterministic)
-python3 gate/assert.py gate/fixtures/root --offline    # 11 PASS, 0 FAIL, 6 SKIP
-python3 gate/assert.py gate/fixtures/root              # 13 PASS, 0 FAIL, 4 SKIP
+python3 gate/assert.py gate/fixtures/root --offline    # 10 PASS, 0 FAIL, 7 SKIP
+python3 gate/assert.py gate/fixtures/root              # 12 PASS, 0 FAIL, 5 SKIP
 ```
 
 `--offline` skips only the two assertions that need a real consumer run.

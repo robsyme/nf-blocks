@@ -1,24 +1,28 @@
 // The Gate's second pipeline: read the Test Pipeline's outputs back out of
-// the store four ways and hash whatever Nextflow actually staged.
+// the store three ways and hash whatever Nextflow actually staged.
 //
-// It computes nothing. Each branch stages files and writes `sha256sum` of the
+// It computes nothing. Each branch stages a file and writes `sha256sum` of the
 // staged bytes to `hashes/<source>/<staged name>.sha256`. gate/assert.py
 // compares those digests against digests it computed itself from pipeline-a's
 // work directory, and counts the files under each source, so a wrong file, a
 // truncated file, an empty stage or the wrong number of items is caught by the
 // bytes rather than by a record.
 //
-//   fromstore     channel.fromStore(run: 'latest', ..., where: [sample: 'B'])
-//   lid           channel.fromPath('lid://<run>/aligned/A/A.bam')
-//   cas           channel.fromPath('cas://<cid>/A.bam')
-//   fromlineage   channel.fromLineage(workflowRun: '<run lid>', label: 'bam')
+//   fromstore  channel.fromStore(run: 'latest', ..., where: [sample: 'B'])
+//   lid        channel.fromPath('lid://<run>/aligned/A/A.bam')
+//   cas        channel.fromPath('cas://<cid>/A.bam')
 //
 // gate.sh discovers the URIs from the store after the producer has run and
-// passes them as --lid, --cas and --run_lid. The Pipeline Identity is fixed by
+// passes them as --lid and --cas. The Pipeline Identity is fixed by
 // `manifest.name` in gate/gate.config, so fromStore names it literally.
+//
+// channel.fromLineage over this store is a real product property, but it
+// cannot be exercised from here: declaring a custom `plugins { id 'nf-blocks' }`
+// block stops Nextflow auto-loading nf-lineage, so the call dies at launch with
+// "Cannot find latest version of nf-lineage plugin". It is left out of the
+// skeleton Gate deliberately.
 
 include { fromStore } from 'plugin/nf-blocks'
-include { fromLineage } from 'plugin/nf-lineage'
 
 process HASH {
     tag "${source}:${staged.name}"
@@ -42,8 +46,8 @@ process HASH {
 
 workflow {
     main:
-    if( !params.lid && !params.cas && !params.run_lid )
-        error "consumer needs --lid, --cas and --run_lid (gate.sh reads them from the store)"
+    if( !params.lid && !params.cas )
+        error "consumer needs --lid and --cas (gate.sh reads them from the store)"
 
     ch_lid = params.lid
         ? channel.fromPath(params.lid).map { f -> tuple('lid', f) }
@@ -60,14 +64,7 @@ workflow {
                    output: 'aligned', where: [sample: 'B'])
         .map { meta, bam -> tuple('fromstore', bam) }
 
-    // Native lineage read-back must keep working alongside ours.
-    ch_lineage = params.run_lid
-        ? channel.fromLineage(workflowRun: params.run_lid, label: 'bam')
-            .flatten()
-            .map { f -> tuple('fromlineage', f) }
-        : channel.empty()
-
-    HASH(ch_lid.mix(ch_cas, ch_store, ch_lineage))
+    HASH(ch_lid.mix(ch_cas, ch_store))
 
     publish:
     hashes = HASH.out.sha

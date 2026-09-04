@@ -338,11 +338,14 @@ class TestIndex(unittest.TestCase):
         self.dir = os.path.join(self.cache, "nf-blocks")
         os.makedirs(self.dir)
 
-    def _make_db(self, name):
+    def _make_db(self, name, pipelines=()):
         path = os.path.join(self.dir, name)
         con = sqlite3.connect(path)
         con.execute("CREATE TABLE producer (content_cid TEXT, item_cid TEXT, "
                     "collection_cid TEXT, completion_cid TEXT, filename TEXT)")
+        con.execute("CREATE TABLE run (completion_cid TEXT, pipeline TEXT)")
+        for i, pipeline in enumerate(pipelines):
+            con.execute("INSERT INTO run VALUES (?, ?)", ("run%d" % i, pipeline))
         con.commit()
         con.close()
         return path
@@ -363,6 +366,35 @@ class TestIndex(unittest.TestCase):
             cas.Index.locate(self.cache)
         self.assertIn("2", str(ctx.exception))
 
+    def test_locate_for_pipeline_selects_by_the_pipeline_column(self):
+        """Two composition indexes coexist; pick the one for this pipeline."""
+        producer = self._make_db("producer.sqlite", ["cas-test-pipeline"])
+        self._make_db("consumer.sqlite", ["cas-gate-consumer"])
+        self.assertEqual(
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline"),
+            producer)
+
+    def test_locate_for_pipeline_fails_when_none_match(self):
+        self._make_db("consumer.sqlite", ["cas-gate-consumer"])
+        with self.assertRaises(cas.IndexLocateError) as ctx:
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline")
+        self.assertIn("cas-test-pipeline", str(ctx.exception))
+
+    def test_locate_for_pipeline_fails_when_several_match(self):
+        self._make_db("one.sqlite", ["cas-test-pipeline"])
+        self._make_db("two.sqlite", ["cas-test-pipeline"])
+        with self.assertRaises(cas.IndexLocateError) as ctx:
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline")
+        self.assertIn("2", str(ctx.exception))
+
+    def test_locate_for_pipeline_ignores_a_file_without_a_run_table(self):
+        producer = self._make_db("producer.sqlite", ["cas-test-pipeline"])
+        bare = os.path.join(self.dir, "bare.sqlite")
+        sqlite3.connect(bare).close()          # no run table at all
+        self.assertEqual(
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline"),
+            producer)
+
     def test_query_returns_rows_as_dicts(self):
         path = self._make_db("one.sqlite")
         con = sqlite3.connect(path)
@@ -376,7 +408,7 @@ class TestIndex(unittest.TestCase):
     def test_has_table_reports_missing_tables(self):
         index = cas.Index(self._make_db("one.sqlite"))
         self.assertTrue(index.has_table("producer"))
-        self.assertFalse(index.has_table("run"))
+        self.assertFalse(index.has_table("collection"))
 
 
 if __name__ == "__main__":

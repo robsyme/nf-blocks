@@ -180,14 +180,13 @@ run "$GATE_ROOT/pipeline-b" elsewhere
 # --------------------------------------------------------------------------
 
 # The consumer needs references that only exist once the producer has run. Its
-# Pipeline Identity is fixed by manifest.name in gate.config, so only the run
-# lid and the two read-back URIs are read out of the store here.
-GATE_PIPELINE=''; GATE_RUN_LID=''; GATE_LID=''; GATE_CAS=''
+# Pipeline Identity is fixed by manifest.name in gate.config, so only the two
+# read-back URIs are read out of the store here.
+GATE_PIPELINE=''; GATE_LID=''; GATE_CAS=''
 refs="$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --refs 2> "$GATE_ROOT/logs/refs.log" || true)"
 eval "$refs"
 echo "--- refs from the store"
 echo "    pipeline=${GATE_PIPELINE:-<none>}"
-echo "    run_lid=${GATE_RUN_LID:-<none>}"
 echo "    lid=${GATE_LID:-<none>}"
 echo "    cas=${GATE_CAS:-<none>}"
 if [[ -s "$GATE_ROOT/logs/refs.log" ]]; then
@@ -197,7 +196,6 @@ fi
 consumer_args=()
 if [[ -n "$GATE_LID" ]]; then consumer_args+=(--lid "$GATE_LID"); fi
 if [[ -n "$GATE_CAS" ]]; then consumer_args+=(--cas "$GATE_CAS"); fi
-if [[ -n "$GATE_RUN_LID" ]]; then consumer_args+=(--run_lid "$GATE_RUN_LID"); fi
 
 log="$GATE_ROOT/logs/consumer"
 mkdir -p "$log"

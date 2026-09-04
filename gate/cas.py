@@ -525,10 +525,14 @@ class Index(object):
         self.con.row_factory = sqlite3.Row
 
     @staticmethod
+    def _sqlite_files(cache_home):
+        pattern = os.path.join(str(cache_home), "nf-blocks", "*.sqlite")
+        return pattern, sorted(glob.glob(pattern))
+
+    @staticmethod
     def locate(cache_home):
         """The one *.sqlite under <cache_home>/nf-blocks. Fails clearly otherwise."""
-        pattern = os.path.join(str(cache_home), "nf-blocks", "*.sqlite")
-        found = sorted(glob.glob(pattern))
+        pattern, found = Index._sqlite_files(cache_home)
         if not found:
             raise IndexLocateError("no index: nothing matches %s" % pattern)
         if len(found) > 1:
@@ -537,8 +541,47 @@ class Index(object):
         return found[0]
 
     @staticmethod
+    def locate_for_pipeline(cache_home, pipeline):
+        """The one index whose run table has a row for `pipeline`.
+
+        A composite store keeps its own per-composition index, so
+        <cache_home>/nf-blocks can hold several. Selecting by the pipeline
+        column picks the producer store's index and not, say, the consumer's.
+        """
+        pattern, found = Index._sqlite_files(cache_home)
+        if not found:
+            raise IndexLocateError("no index: nothing matches %s" % pattern)
+        matches = []
+        for path in found:
+            con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+            try:
+                row = con.execute("SELECT 1 FROM run WHERE pipeline = ? LIMIT 1",
+                                  (pipeline,)).fetchone()
+                if row is not None:
+                    matches.append(path)
+            except sqlite3.Error:
+                pass                       # no run table, or unreadable: not it
+            finally:
+                con.close()
+        if not matches:
+            raise IndexLocateError(
+                "no index under %s has a run table row with pipeline %r "
+                "(scanned %d file(s): %s)"
+                % (os.path.dirname(pattern), pipeline, len(found),
+                   ", ".join(os.path.basename(p) for p in found)))
+        if len(matches) > 1:
+            raise IndexLocateError(
+                "expected exactly 1 index for pipeline %r, found %d: %s"
+                % (pipeline, len(matches), ", ".join(matches)))
+        return matches[0]
+
+    @staticmethod
     def open(cache_home):
         return Index(Index.locate(cache_home))
+
+    @staticmethod
+    def open_for_pipeline(cache_home, pipeline):
+        return Index(Index.locate_for_pipeline(cache_home, pipeline))
 
     def query(self, sql, params=()):
         return [dict(row) for row in self.con.execute(sql, params).fetchall()]

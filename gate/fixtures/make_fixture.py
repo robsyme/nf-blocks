@@ -335,8 +335,7 @@ def main():
         fh.write("0\n")
 
     # ---- the consumer's own store ---------------------------------------
-    published = [("lid", ["A"]), ("cas", ["A"]), ("fromstore", ["B"]),
-                 ("fromlineage", ["A", "B", "C"])]
+    published = [("lid", ["A"]), ("cas", ["A"]), ("fromstore", ["B"])]
     for source, samples in published:
         for sample in samples:
             digest = hashlib.sha256(bam_bytes(sample)).hexdigest()
@@ -352,6 +351,7 @@ def main():
         gate_assert.write_snapshot(gate, os.path.join(ROOT, snapshot))
 
     build_index(store_root, per_run)
+    build_consumer_index()
     print("fixture written to %s" % ROOT)
 
 
@@ -441,6 +441,31 @@ def iso_utc(millis):
     """ISO-8601 UTC with millisecond precision, so finished_at sorts correctly."""
     base = datetime.datetime(1970, 1, 1) + datetime.timedelta(milliseconds=millis)
     return base.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (millis % 1000)
+
+
+def build_consumer_index():
+    """A second index, as the consumer's composite store [out, lab] would keep.
+
+    Its run table names the consumer pipeline, so Index.locate_for_pipeline
+    must select the producer's index over this one.
+    """
+    cache = os.path.join(ROOT, "cache", "nf-blocks")
+    # A different member composition hashes to a different file name.
+    digest = hashlib.sha256(b"out\nlab").hexdigest()[:16]
+    path = os.path.join(cache, digest + ".sqlite")
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA page_size = 512")
+    con.executescript(INDEX_SCHEMA)
+    con.execute("INSERT INTO schema_version VALUES (1)")
+    con.execute(
+        "INSERT INTO run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("bafyconsumer", "bafyconsumermanifest", "cas-gate-consumer", None, None,
+         "c" * 32, "cs", "consumer", ASSERTED_BY, "succeeded", 0,
+         "2026-01-01T00:02:00.000Z", "out"))
+    con.commit()
+    con.isolation_level = None
+    con.execute("VACUUM")
+    con.close()
 
 
 def flatten(value, prefix=""):
