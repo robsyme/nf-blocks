@@ -47,9 +47,16 @@ class Coordinates {
             throw new IllegalArgumentException('not a publish coordinate: null')
         if( !SCHEME.equalsIgnoreCase(uri.scheme ?: '') )
             throw new IllegalArgumentException("not a '$SCHEME' uri: '$uri'")
+        // A '#' or '?' in a file name is legal on disk, and java.net.URI reads
+        // an unescaped one as a fragment or a query. Refuse rather than key on
+        // the truncated name.
+        if( uri.fragment != null || uri.query != null )
+            throw new IllegalArgumentException("a publish coordinate has no fragment or query; is a file name unescaped? '$uri'")
+        if( uri.opaque || uri.path == null )
+            throw new IllegalArgumentException("publish coordinate has no path: '$uri'")
         // getAuthority()/getPath() decode percent escapes, which is what a
         // file name on disk looks like.
-        return canonical(uri.authority, uri.path ?: '', uri.toString())
+        return canonical(uri.authority, uri.path, uri.toString())
     }
 
     /** The canonical key for a coordinate that arrived as a {@code Path}. */

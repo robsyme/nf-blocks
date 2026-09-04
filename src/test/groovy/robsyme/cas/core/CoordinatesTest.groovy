@@ -70,6 +70,17 @@ class CoordinatesTest extends Specification {
         Coordinates.key('cas://lab/aligned/a b#c.txt') == 'cas://lab/aligned/a b#c.txt'
     }
 
+    def 'a uri whose file name was read as a fragment or query is refused'() {
+        when: 'java.net.URI split the name at the # or the ?, so the key would be wrong'
+        Coordinates.key(URI.create(text))
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        text << ['cas://lab/aligned/a#c.txt', 'cas://lab/aligned/a?c.txt', 'cas:lab/a.txt']
+    }
+
     def 'a path is accepted through its uri'() {
         given:
         final Path path = Paths.get('/data/a.txt')
