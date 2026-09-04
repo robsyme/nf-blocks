@@ -374,10 +374,32 @@ class TestIndex(unittest.TestCase):
             cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline"),
             producer)
 
+    def test_locate_for_pipeline_excludes_an_index_carrying_another_pipeline(self):
+        """The consumer's index ingests lab's producer runs, so it carries both.
+
+        Both index files then contain cas-test-pipeline; the producer-only one
+        is the file that does NOT also carry the consumer pipeline.
+        """
+        producer = self._make_db("producer.sqlite", ["cas-test-pipeline"])
+        self._make_db("consumer.sqlite",
+                      ["cas-test-pipeline", "cas-gate-consumer"])
+        self.assertEqual(
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline",
+                                          exclude="cas-gate-consumer"),
+            producer)
+
     def test_locate_for_pipeline_fails_when_none_match(self):
         self._make_db("consumer.sqlite", ["cas-gate-consumer"])
         with self.assertRaises(cas.IndexLocateError) as ctx:
             cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline")
+        self.assertIn("cas-test-pipeline", str(ctx.exception))
+
+    def test_locate_for_pipeline_fails_when_every_match_is_excluded(self):
+        self._make_db("consumer.sqlite",
+                      ["cas-test-pipeline", "cas-gate-consumer"])
+        with self.assertRaises(cas.IndexLocateError) as ctx:
+            cas.Index.locate_for_pipeline(self.cache, "cas-test-pipeline",
+                                          exclude="cas-gate-consumer")
         self.assertIn("cas-test-pipeline", str(ctx.exception))
 
     def test_locate_for_pipeline_fails_when_several_match(self):

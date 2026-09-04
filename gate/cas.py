@@ -541,33 +541,45 @@ class Index(object):
         return found[0]
 
     @staticmethod
-    def locate_for_pipeline(cache_home, pipeline):
-        """The one index whose run table has a row for `pipeline`.
+    def locate_for_pipeline(cache_home, pipeline, exclude=None):
+        """The one index whose run table has `pipeline` but not `exclude`.
 
         A composite store keeps its own per-composition index, so
-        <cache_home>/nf-blocks can hold several. Selecting by the pipeline
-        column picks the producer store's index and not, say, the consumer's.
+        <cache_home>/nf-blocks can hold several. The producer store's index and
+        the consumer's composite [out, lab] index both carry the producer's
+        runs (the consumer ingests the read-only member's run log), so the
+        pipeline column alone no longer disambiguates. The producer-only index
+        is the one carrying `pipeline` and NOT the consumer's `exclude`
+        pipeline.
         """
         pattern, found = Index._sqlite_files(cache_home)
         if not found:
             raise IndexLocateError("no index: nothing matches %s" % pattern)
-        matches = []
-        for path in found:
+
+        def pipelines_of(path):
             con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
             try:
-                row = con.execute("SELECT 1 FROM run WHERE pipeline = ? LIMIT 1",
-                                  (pipeline,)).fetchone()
-                if row is not None:
-                    matches.append(path)
+                return {row[0] for row in con.execute("SELECT DISTINCT pipeline "
+                                                      "FROM run")}
             except sqlite3.Error:
-                pass                       # no run table, or unreadable: not it
+                return None                # no run table, or unreadable
             finally:
                 con.close()
+
+        matches = []
+        for path in found:
+            pipelines = pipelines_of(path)
+            if pipelines is None or pipeline not in pipelines:
+                continue
+            if exclude is not None and exclude in pipelines:
+                continue
+            matches.append(path)
         if not matches:
+            note = "" if exclude is None else " and not %r" % exclude
             raise IndexLocateError(
-                "no index under %s has a run table row with pipeline %r "
+                "no index under %s has a run table with pipeline %r%s "
                 "(scanned %d file(s): %s)"
-                % (os.path.dirname(pattern), pipeline, len(found),
+                % (os.path.dirname(pattern), pipeline, note, len(found),
                    ", ".join(os.path.basename(p) for p in found)))
         if len(matches) > 1:
             raise IndexLocateError(
@@ -580,8 +592,8 @@ class Index(object):
         return Index(Index.locate(cache_home))
 
     @staticmethod
-    def open_for_pipeline(cache_home, pipeline):
-        return Index(Index.locate_for_pipeline(cache_home, pipeline))
+    def open_for_pipeline(cache_home, pipeline, exclude=None):
+        return Index(Index.locate_for_pipeline(cache_home, pipeline, exclude))
 
     def query(self, sql, params=()):
         return [dict(row) for row in self.con.execute(sql, params).fetchall()]

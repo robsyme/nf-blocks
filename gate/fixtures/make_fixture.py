@@ -351,7 +351,7 @@ def main():
         gate_assert.write_snapshot(gate, os.path.join(ROOT, snapshot))
 
     build_index(store_root, per_run)
-    build_consumer_index()
+    build_consumer_index(per_run)
     print("fixture written to %s" % ROOT)
 
 
@@ -443,11 +443,13 @@ def iso_utc(millis):
     return base.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (millis % 1000)
 
 
-def build_consumer_index():
+def build_consumer_index(per_run):
     """A second index, as the consumer's composite store [out, lab] would keep.
 
-    Its run table names the consumer pipeline, so Index.locate_for_pipeline
-    must select the producer's index over this one.
+    The consumer ingests the read-only lab member's run log, so this index
+    carries the producer's runs (cas-test-pipeline) AND the consumer's own run
+    (cas-gate-consumer). Index.locate_for_pipeline must therefore pick the
+    producer-only index by excluding cas-gate-consumer, not by pipeline alone.
     """
     cache = os.path.join(ROOT, "cache", "nf-blocks")
     # A different member composition hashes to a different file name.
@@ -457,6 +459,16 @@ def build_consumer_index():
     con.execute("PRAGMA page_size = 512")
     con.executescript(INDEX_SCHEMA)
     con.execute("INSERT INTO schema_version VALUES (1)")
+    # the producer runs, ingested from the read-only lab member
+    for name, info in sorted(per_run.items()):
+        m = info["manifest"]
+        con.execute(
+            "INSERT INTO run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (info["completion_cid"], info["manifest_cid"], m["pipeline"], None,
+             None, m["nf_run_hash"], m["session_id"], name, ASSERTED_BY,
+             info["status"], 1 if info["status"] == "failed" else 0,
+             iso_utc(info["finished"]), "lab"))
+    # the consumer's own run
     con.execute(
         "INSERT INTO run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         ("bafyconsumer", "bafyconsumermanifest", "cas-gate-consumer", None, None,

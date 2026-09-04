@@ -32,6 +32,11 @@ PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 # projectName; `nextflow run .` gives projectName the literal "main.nf", so the
 # Gate names the pipeline explicitly and checks the plugin recorded that name.
 PIPELINE_IDENTITY = "cas-test-pipeline"
+# The consumer pipeline's identity (manifest.name in gate/consumer). Its
+# composite [out, lab] index ingests the producer runs from the read-only lab
+# member, so both index files carry PIPELINE_IDENTITY; the producer-only index
+# is the one that does NOT also carry this.
+CONSUMER_IDENTITY = "cas-gate-consumer"
 
 # The Test Pipeline's five outputs, and how gate.sh drives it.
 OUTPUTS = {"aligned", "stats", "qc", "chunks", "reports"}
@@ -214,7 +219,8 @@ class Gate(object):
         """
         if self._index is None:
             self._index = cas.Index.open_for_pipeline(
-                os.path.join(self.root, "cache"), PIPELINE_IDENTITY)
+                os.path.join(self.root, "cache"), PIPELINE_IDENTITY,
+                exclude=CONSUMER_IDENTITY)
         return self._index
 
     # -- the bytes the pipeline produced --------------------------------
