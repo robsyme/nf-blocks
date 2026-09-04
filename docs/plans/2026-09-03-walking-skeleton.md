@@ -386,6 +386,17 @@ on a failed run; write the `RunCompletion` once. `session.isSuccess()` and
 `nextflow.version`) supply the RunManifest and RunCompletion fields. Read
 `LinObserver.groovy` at `v26.04.6` for how it walks the value.
 
+**Carried in from the Task 5 review (small, do them here):**
+- Add `PRAGMA busy_timeout=<a few seconds>` to `Index`'s connection setup so two
+  runs finishing at once wait rather than getting `SQLITE_BUSY` (the WAL choice
+  was made precisely so concurrent runs under one user do not contend; without
+  the pragma that is only half-delivered). Add a test that two threads each
+  ingesting a run against one index file both succeed. This is the one place in
+  `core/Index.groovy` Task 8 may touch; keep every signature.
+- Have `Index.rebuild` carry the run-log watermark forward (set it to the newest
+  entry seen) instead of leaving `meta` empty, so the next `catchUp` does not
+  re-scan the whole log. Correctness-safe either way; this avoids the re-read.
+
 **Steps:**
 1. `JoinTest`: given two captured outputs and a `publishes` map, produce
    items with Leaf maps (name from the last path segment, address/size/
