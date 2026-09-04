@@ -3,12 +3,13 @@ package robsyme.cas.nio
 import java.nio.file.FileSystem
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.ProviderMismatchException
 import java.nio.file.WatchEvent
 import java.nio.file.WatchKey
 import java.nio.file.WatchService
 
 import groovy.transform.CompileStatic
-import robsyme.cas.CidSyntax
+import robsyme.cas.core.Cid
 
 /**
  * A path in the `cas` scheme: an authority plus a normalised segment list
@@ -71,22 +72,37 @@ class CasPath implements Path {
 
     /** A Publish Coordinate, i.e. an authority that is a store alias rather than a content address. */
     boolean isCoordinate() {
-        return authority != null && !CidSyntax.looksLikeCid(authority)
+        return authority != null && !Cid.isCid(authority)
     }
 
     /** A location-free Store URI, i.e. an authority that is a content address. */
     boolean isStoreUri() {
-        return authority != null && CidSyntax.looksLikeCid(authority)
+        return authority != null && Cid.isCid(authority)
+    }
+
+    /** The content address of a Store URI; fails on a coordinate or a relative path. */
+    Cid cid() {
+        if( !isStoreUri() )
+            throw new IllegalStateException("not a Store URI, so it has no content address: '${this}'")
+        return Cid.parse(authority)
+    }
+
+    /** The store alias of a Publish Coordinate; fails on a Store URI or a relative path. */
+    String alias() {
+        if( !isCoordinate() )
+            throw new IllegalStateException("not a Publish Coordinate, so it has no store alias: '${this}'")
+        return authority
     }
 
     private CasPath with(String auth, List<String> segs) {
         return new CasPath(fs, auth, segs)
     }
 
-    private static List<String> segmentsOf(Path other) {
-        return other instanceof CasPath
-            ? ((CasPath)other).segments
-            : split(other.toString())
+    /** A cas path, or a {@link ProviderMismatchException} for anything else. */
+    private static CasPath cas(Path other) {
+        if( !(other instanceof CasPath) )
+            throw new ProviderMismatchException("not a '${SCHEME}' path: ${other} (${other?.getClass()?.name})")
+        return (CasPath)other
     }
 
     @Override FileSystem getFileSystem() { fs }
@@ -143,10 +159,14 @@ class CasPath implements Path {
 
     @Override
     boolean endsWith(Path other) {
-        final o = segmentsOf(other)
-        if( o.size() > segments.size() )
+        final o = cas(other)
+        // An absolute path ends only with an equal absolute path; a relative
+        // path is a tail match on segments. A foreign path already threw above.
+        if( o.authority != null )
+            return o.authority == authority && o.segments == segments
+        if( o.segments.size() > segments.size() )
             return false
-        return segments.subList(segments.size()-o.size(), segments.size()) == o
+        return segments.subList(segments.size()-o.segments.size(), segments.size()) == o.segments
     }
 
     @Override
@@ -158,10 +178,13 @@ class CasPath implements Path {
 
     @Override
     Path resolve(Path other) {
-        if( other instanceof CasPath && ((CasPath)other).authority != null )
-            return other
+        final o = cas(other)
+        if( o.authority != null )      // an absolute path replaces this one
+            return o
+        if( o.segments.isEmpty() )
+            return this
         final List<String> joined = new ArrayList<String>(segments)
-        joined.addAll(segmentsOf(other))
+        joined.addAll(o.segments)
         return with(authority, joined)
     }
 
@@ -183,9 +206,9 @@ class CasPath implements Path {
 
     @Override
     Path relativize(Path other) {
-        final o = other instanceof CasPath ? (CasPath)other : with(authority, split(other.toString()))
+        final o = cas(other)
         if( o.authority != authority )
-            throw new IllegalArgumentException("Cannot relativize '${other}' against '${this}'")
+            throw new IllegalArgumentException("Cannot relativize '${other}' against '${this}': different roots")
         int common = 0
         while( common < segments.size() && common < o.segments.size() && segments[common] == o.segments[common] )
             common++
@@ -210,7 +233,12 @@ class CasPath implements Path {
 
     @Override
     Path toAbsolutePath() {
-        return this
+        if( authority != null )
+            return this
+        // A cas path has no current-directory to anchor against, and inventing
+        // an authority would attach the wrong provenance. Returning a relative
+        // path would break the Path contract, so this is a caller error.
+        throw new IllegalStateException("a relative cas path has no absolute form without a store: '${this}'")
     }
 
     @Override
@@ -243,7 +271,7 @@ class CasPath implements Path {
 
     @Override
     int compareTo(Path other) {
-        return toString() <=> other.toString()
+        return toString() <=> cas(other).toString()
     }
 
     @Override

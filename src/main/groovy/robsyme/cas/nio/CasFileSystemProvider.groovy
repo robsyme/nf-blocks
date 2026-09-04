@@ -8,33 +8,57 @@ import java.nio.file.DirectoryStream
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileStore
 import java.nio.file.FileSystem
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
+import java.nio.file.NotDirectoryException
 import java.nio.file.OpenOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributeView
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.FileAttributeView
+import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.spi.FileSystemProvider
+import java.security.MessageDigest
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
-import nextflow.Global
-import nextflow.Session
+import nextflow.exception.AbortRunException
 import nextflow.file.FileSystemTransferAware
-import robsyme.cas.CasConfig
+import robsyme.cas.CasSession
+import robsyme.cas.core.BlockStore
+import robsyme.cas.core.Cid
+import robsyme.cas.core.CompositeStore
+import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.Coordinates
+import robsyme.cas.core.DagCbor
+import robsyme.cas.core.DirectoryManifest
+import robsyme.cas.core.DirectoryManifestBuilder
+import robsyme.cas.core.HashBufferPool
+import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.ManifestEntry
+import robsyme.cas.core.NoSuchBlockException
+import robsyme.cas.core.StoreRef
 
 /**
- * The `cas` scheme (DESIGN.md section 8).
+ * The `cas` scheme, for real (DESIGN.md section 8).
  *
- * This is the boundary as the walking skeleton needs it: a Publish Coordinate
- * `cas://<alias>/<a/b/c>` is mirrored onto the real directory
- * `<member location>/coords/<a/b/c>`, so a run publishes, reads back and
- * resumes through the scheme before any block store exists. Task 6 replaces
- * the body of these methods with the block store and the Pointer File tree;
- * the shape Nextflow sees does not change.
+ * A Publish Coordinate {@code cas://<alias>/<a/b/c>} is a write-side name that
+ * Nextflow's publisher hands us; a Store URI {@code cas://<cid>[/name]} names a
+ * block or a Directory Manifest and is immutable. This provider hashes a
+ * published file into the Block Store and leaves a Pointer File at the
+ * coordinate, and reads a block, a manifest, or a coordinate back.
+ *
+ * The provider is a JVM singleton but holds no run state: the store, the
+ * coordinate tree and the config all come from {@link CasSession}, keyed by the
+ * live {@link nextflow.Session}, so a second run in one JVM never writes into
+ * the first run's store.
  */
 @Slf4j
 @CompileStatic
@@ -42,65 +66,177 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
 
     static final String SCHEME = CasPath.SCHEME
 
-    /** Sub-directory of a member holding the Publish Coordinate tree. */
-    static final String COORDS = 'coords'
-
     private final CasFileSystem fileSystem = new CasFileSystem(this)
-
-    private volatile CasConfig casConfig
 
     @Override String getScheme() { SCHEME }
 
-    CasConfig getCasConfig() {
-        if( casConfig == null ) {
-            synchronized (this) {
-                if( casConfig == null ) {
-                    final session = Global.session as Session
-                    casConfig = CasConfig.fromSession(session?.config)
-                }
+    // --- run state, always via the session
+
+    protected CasSession session() { CasSession.current() }
+
+    protected BlockStore store() { session().store }
+
+    private CasPath cas(Path path) {
+        if( !(path instanceof CasPath) )
+            throw new java.nio.file.ProviderMismatchException("not a '${SCHEME}' path: ${path}")
+        return (CasPath)path
+    }
+
+    /** The coordinate tree of the member a coordinate names. */
+    private CoordinateTree coordsFor(CasPath p) {
+        final cfg = session().config
+        final alias = p.alias()
+        if( alias == cfg.writableAlias )
+            return session().coordinates
+        final location = cfg.locationOf(alias)
+        if( location == null )
+            throw new IllegalArgumentException("Unknown store alias '${alias}' -- configured stores: ${cfg.members.join(', ')}")
+        return new CoordinateTree(location.resolve('coords'))
+    }
+
+    /** The coordinate path relative to its coords root, i.e. the join tail. */
+    private static String relOf(CasPath p) {
+        return p.segments.join('/')
+    }
+
+    // ------------------------------------------------------------------ resolve
+
+    /** What a cas path names once followed: a block, a manifest, or nothing. */
+    @CompileStatic
+    private static class CasNode {
+        boolean present
+        boolean directory
+        boolean symlink
+        boolean executable
+        long size
+        long mtime
+        Cid content           // the raw block of a file, or the manifest of a directory
+        String linkTarget
+
+        static CasNode absent() { new CasNode(present: false) }
+    }
+
+    private CasNode resolve(CasPath p) {
+        if( !p.isAbsolute() )
+            throw new IllegalArgumentException("cannot resolve a relative cas path: '${p}'")
+        return p.isStoreUri() ? resolveStoreUri(p) : resolveCoordinate(p)
+    }
+
+    private CasNode resolveStoreUri(CasPath p) {
+        final Cid cid = p.cid()
+        final List<String> segs = p.segments
+        if( cid.isRaw() ) {
+            if( segs.size() > 1 )
+                throw new IOException("a raw Store URI carries at most one segment (the file name): '${p}'")
+            return fileNode(cid)
+        }
+        // a dag-cbor manifest
+        if( segs.isEmpty() )
+            return manifestNode(cid)
+        return traverse(cid, segs, p)
+    }
+
+    /** A raw block as a regular file node; absent when the store has no such block. */
+    private CasNode fileNode(Cid cid) {
+        if( !store().has(cid) )
+            return CasNode.absent()
+        return new CasNode(present: true, directory: false, size: store().size(cid),
+                mtime: store().lastModifiedMillis(cid), content: cid)
+    }
+
+    /** A manifest cid as a directory node; absent when the store has no such block. */
+    private CasNode manifestNode(Cid cid) {
+        if( !store().has(cid) )
+            return CasNode.absent()
+        return new CasNode(present: true, directory: true, size: 0L,
+                mtime: store().lastModifiedMillis(cid), content: cid)
+    }
+
+    /** Walks {@code segs} into the manifest {@code cid} by entry name. */
+    private CasNode traverse(Cid cid, List<String> segs, CasPath p) {
+        Cid here = cid
+        for( int i = 0; i < segs.size(); i++ ) {
+            final DirectoryManifest manifest = manifestOf(here)
+            final ManifestEntry entry = manifest.entry(segs[i])
+            if( entry == null )
+                return CasNode.absent()
+            final boolean last = i == segs.size() - 1
+            switch( entry.mode ) {
+                case ManifestEntry.DIRECTORY:
+                    if( last )
+                        return manifestNode(entry.address)
+                    here = entry.address
+                    break
+                case ManifestEntry.REGULAR:
+                case ManifestEntry.EXECUTABLE:
+                    if( !last )
+                        return CasNode.absent()   // cannot descend into a file
+                    return new CasNode(present: true, directory: false, size: entry.size,
+                            mtime: store().lastModifiedMillis(entry.address), content: entry.address,
+                            executable: entry.mode == ManifestEntry.EXECUTABLE)
+                case ManifestEntry.SYMLINK:
+                    if( !last )
+                        return CasNode.absent()
+                    return new CasNode(present: true, symlink: true, size: entry.size,
+                            mtime: store().lastModifiedMillis(here), linkTarget: entry.target)
+                default: // unresolvable
+                    return CasNode.absent()
             }
         }
-        return casConfig
+        return CasNode.absent()
     }
 
-    /** Test seam: bind the store configuration without a Nextflow session. */
-    void setCasConfig(CasConfig config) {
-        synchronized (this) {
-            this.casConfig = config
+    private CasNode resolveCoordinate(CasPath p) {
+        final CoordinateTree tree = coordsFor(p)
+        final String rel = relOf(p)
+        final Path pointer = tree.pointerPath(rel)
+        if( Files.isDirectory(pointer) ) {
+            long mtime
+            try { mtime = Files.getLastModifiedTime(pointer).toMillis() }
+            catch( IOException e ) { mtime = 0L }
+            return new CasNode(present: true, directory: true, size: 0L, mtime: mtime)
         }
+        final Optional<StoreRef> refOpt = tree.read(rel)   // throws if the pointer is corrupt
+        if( !refOpt.isPresent() )
+            return CasNode.absent()
+        final StoreRef ref = refOpt.get()
+        return ref.isDirectory() ? manifestNode(ref.cid) : fileNode(ref.cid)
     }
 
-    /**
-     * The real directory backing a Publish Coordinate.
-     */
-    protected Path real(Path path) {
-        if( !(path instanceof CasPath) )
-            throw new IllegalArgumentException("Not a cas:// path: ${path}")
-        final casPath = (CasPath)path
-        if( casPath.isStoreUri() )
-            throw new UnsupportedOperationException("Reading a Store URI is not implemented yet: ${casPath}")
-        if( !casPath.isAbsolute() )
-            throw new IllegalArgumentException("Cannot resolve a relative cas:// path: ${casPath}")
-        final location = getCasConfig().locationOf(casPath.authority)
-        if( location == null )
-            throw new IllegalArgumentException("Unknown store alias '${casPath.authority}' -- configured stores: ${getCasConfig().members.join(', ')}")
-        Path result = location.resolve(COORDS)
-        for( String segment : casPath.segments )
-            result = result.resolve(segment)
-        return result
+    // ------------------------------------------------------------- read helpers
+
+    /** Reads a DAG-CBOR metadata block. Bounded (never file content), so a small array is fine. */
+    private DirectoryManifest manifestOf(Cid cid) {
+        byte[] bytes = null
+        final InputStream input = store().open(cid)   // NoSuchBlockException names the cid
+        try { bytes = input.readAllBytes() }
+        finally { input.close() }
+        return DirectoryManifest.fromCbor((Map) DagCbor.decode(bytes))
+    }
+
+    private List<BlockStore> storeMembers() {
+        final BlockStore s = store()
+        return s instanceof CompositeStore ? ((CompositeStore)s).members : Collections.<BlockStore>singletonList(s)
+    }
+
+    /** The on-disk path of a block held by a local member, or null. */
+    private Path localBlockPath(Cid cid) {
+        for( BlockStore member : storeMembers() ) {
+            if( member instanceof LocalBlockStore && member.has(cid) )
+                return ((LocalBlockStore)member).blockPath(cid)
+        }
+        return null
+    }
+
+    private CasPath storeUriPath(Cid cid) {
+        return new CasPath(fileSystem, cid.toString(), Collections.<String>emptyList())
     }
 
     // --- file system lookup
 
-    @Override
-    FileSystem newFileSystem(URI uri, Map<String,?> env) {
-        return fileSystem
-    }
+    @Override FileSystem newFileSystem(URI uri, Map<String,?> env) { fileSystem }
 
-    @Override
-    FileSystem getFileSystem(URI uri) {
-        return fileSystem
-    }
+    @Override FileSystem getFileSystem(URI uri) { fileSystem }
 
     @Override
     Path getPath(URI uri) {
@@ -112,7 +248,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         return new CasPath(fileSystem, authority, CasPath.split(uri.path))
     }
 
-    // --- transfers
+    // ------------------------------------------------------------------ uploads
 
     @Override
     boolean canUpload(Path source, Path target) {
@@ -125,126 +261,306 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     }
 
     /**
-     * Nextflow hands us a directory as a single call and never recurses, so a
-     * directory is walked here. Returning normally with a child untransferred
-     * is a silent data loss, measured on the probe.
+     * Hashes a published file (or a whole directory) into the store and leaves
+     * a Pointer File at the coordinate. Nextflow hands a directory as one call
+     * and never recurses, so the directory is walked here; returning normally
+     * with a child untransferred would be silent data loss.
      */
     @Override
     void upload(Path source, Path target, CopyOption... options) throws IOException {
-        final dest = real(target)
-        final replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
-        if( !replace && Files.exists(dest) )
-            throw new FileAlreadyExistsException(target.toString())
-        if( dest.parent != null )
-            Files.createDirectories(dest.parent)
-        transfer(source, dest, replace)
+        final CasPath dest = cas(target)
+        if( dest.isStoreUri() )
+            throw new AccessDeniedException("a Store URI is immutable: '${dest}'")
+        final String key = Coordinates.key(target)
+        final CoordinateTree tree = coordsFor(dest)
+        final String rel = relOf(dest)
+        final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
+        // The existence check happens before a byte of the source is read: that
+        // is what makes -resume cheap and never re-hashes an unchanged output.
+        if( !replace && tree.exists(rel) )
+            throw new FileAlreadyExistsException(key)
+
+        final String name = dest.getFileName().toString()
+        if( Files.isDirectory(source) ) {
+            final DirectoryManifestBuilder.Result result = new DirectoryManifestBuilder(store()).build(source)
+            tree.write(rel, new StoreRef(result.cid, name))
+            session().recordPublish(key, new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), 'head-node'))
+            session().recordUploadAnomalies(key, result.anomalies)
+            log.debug "cas: published directory ${source} as manifest ${result.cid} at ${key} (${result.anomalies})"
+        }
+        else {
+            Cid cid = null
+            final InputStream input = Files.newInputStream(source)
+            try { cid = store().putStreaming(input) }
+            finally { input.close() }
+            tree.write(rel, new StoreRef(cid, name))
+            session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(source), 'head-node'))
+            log.debug "cas: published file ${source} as block ${cid} at ${key}"
+        }
     }
+
+    // ---------------------------------------------------------------- downloads
 
     @Override
     void download(Path source, Path target, CopyOption... options) throws IOException {
-        final src = real(source)
-        if( !Files.exists(src) )
-            throw new NoSuchFileException(source.toString())
-        final replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
+        final CasPath src = cas(source)
+        final CasNode node = resolve(src)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(src))
         if( target.parent != null )
             Files.createDirectories(target.parent)
-        transfer(src, target, replace)
+        final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
+        if( node.directory ) {
+            materialiseDirectory(node.content, target)
+        }
+        else if( node.symlink ) {
+            throw new AbortRunException("cas: cannot download a bare symlink '${src}' -> '${node.linkTarget}'")
+        }
+        else {
+            if( replace )
+                Files.deleteIfExists(target)
+            materialiseFile(node.content, target, node.executable, true)
+        }
     }
 
-    private static void transfer(Path source, Path target, boolean replace) throws IOException {
-        if( !Files.isDirectory(source) ) {
-            copyFile(source, target, replace)
+    /** A single raw block to {@code target}: a symlink to the read-only block on the same local fs, else stream-and-verify. */
+    private void materialiseFile(Cid cid, Path target, boolean executable, boolean allowSymlink) throws IOException {
+        final Path block = localBlockPath(cid)
+        if( allowSymlink && !executable && block != null && target.fileSystem == FileSystems.default ) {
+            // Blocks are stored read-only, so an in-place write by a task fails
+            // rather than corrupting the store. No hash is needed for a symlink.
+            Files.deleteIfExists(target)
+            Files.createSymbolicLink(target, block)
             return
         }
-        Files.createDirectories(target)
-        try( DirectoryStream<Path> children = Files.newDirectoryStream(source) ) {
-            for( Path child : children )
-                transfer(child, target.resolve(child.fileName.toString()), replace)
+        streamAndVerify(cid, target)
+        if( executable )
+            makeExecutable(target)
+    }
+
+    /** Streams a block to {@code target}, hashing in flight; a mismatch aborts and removes the partial file. */
+    private void streamAndVerify(Cid cid, Path target) throws IOException {
+        final InputStream input = store().open(cid)   // NoSuchBlockException names the cid
+        try {
+            final Cid actual = (Cid) HashBufferPool.shared().withBuffer { byte[] buffer ->
+                final MessageDigest digest = MessageDigest.getInstance('SHA-256')
+                final OutputStream out = Files.newOutputStream(target, StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+                try {
+                    int n
+                    while( (n = input.read(buffer, 0, buffer.length)) != -1 ) {
+                        if( n > 0 ) {
+                            digest.update(buffer, 0, n)
+                            out.write(buffer, 0, n)
+                        }
+                    }
+                }
+                finally { out.close() }
+                return Cid.of(Cid.RAW, digest.digest())
+            }
+            if( actual != cid ) {
+                Files.deleteIfExists(target)
+                throw new AbortRunException("cas: block ${cid} streamed as ${actual}; refusing to hand back corrupt provenance")
+            }
+        }
+        finally { input.close() }
+    }
+
+    /** Materialises a Directory Manifest under {@code dir}, recreating internal symlinks and failing on unresolvable entries. */
+    private void materialiseDirectory(Cid manifestCid, Path dir) throws IOException {
+        Files.createDirectories(dir)
+        final DirectoryManifest manifest = manifestOf(manifestCid)
+        for( ManifestEntry entry : manifest.entries ) {
+            final Path child = dir.resolve(entry.name)
+            switch( entry.mode ) {
+                case ManifestEntry.DIRECTORY:
+                    materialiseDirectory(entry.address, child)
+                    break
+                case ManifestEntry.EXECUTABLE:
+                    materialiseFile(entry.address, child, true, false)
+                    break
+                case ManifestEntry.REGULAR:
+                    materialiseFile(entry.address, child, false, false)
+                    break
+                case ManifestEntry.SYMLINK:
+                    // Recreated verbatim: the target text is relative and stays inside the tree.
+                    Files.deleteIfExists(child)
+                    Files.createSymbolicLink(child, child.fileSystem.getPath(entry.target))
+                    break
+                default: // unresolvable
+                    throw new AbortRunException("cas: manifest ${manifestCid} has an unresolvable entry '${entry.name}' (was '${entry.target}'); cannot materialise")
+            }
         }
     }
 
-    private static void copyFile(Path source, Path target, boolean replace) throws IOException {
-        if( replace )
-            Files.copy(source, target, StandardCopyOption.REPLACE_EXISTING)
-        else
-            Files.copy(source, target)
+    private static void makeExecutable(Path target) {
+        try {
+            final Set<PosixFilePermission> perms = Files.getPosixFilePermissions(target)
+            perms.add(PosixFilePermission.OWNER_EXECUTE)
+            perms.add(PosixFilePermission.GROUP_EXECUTE)
+            perms.add(PosixFilePermission.OTHERS_EXECUTE)
+            Files.setPosixFilePermissions(target, perms)
+        }
+        catch( UnsupportedOperationException e ) {
+            // A filesystem without POSIX permissions: nothing to set.
+        }
     }
 
-    // --- read side
+    private String namedAbsence(CasPath p) {
+        return p.isStoreUri() ? "no block for '${p.cid()}' (${p})".toString() : p.toString()
+    }
+
+    // ------------------------------------------------------------------ read side
 
     @Override
     SeekableByteChannel newByteChannel(Path path, Set<? extends OpenOption> options, FileAttribute<?>... attrs) throws IOException {
-        return Files.newByteChannel(real(path), options, attrs)
+        final CasPath p = cas(path)
+        if( isWrite(options) ) {
+            if( p.isStoreUri() )
+                throw new AccessDeniedException("a Store URI is read-only: '${p}'")
+            throw new UnsupportedOperationException("cas: a writable byte channel is not supported: '${p}'")
+        }
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        if( node.directory )
+            throw new IOException("is a directory: '${p}'")
+        final Path block = localBlockPath(node.content)
+        if( block != null )
+            return Files.newByteChannel(block, EnumSet.of(StandardOpenOption.READ))
+        return new InputStreamByteChannel(store().open(node.content), node.size)
     }
 
     @Override
     InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        return Files.newInputStream(real(path), options)
+        final CasPath p = cas(path)
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        if( node.directory )
+            throw new IOException("is a directory: '${p}'")
+        return store().open(node.content)   // streams the block, never buffers it
     }
 
     @Override
     OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        final target = real(path)
-        if( target.parent != null )
-            Files.createDirectories(target.parent)
-        return Files.newOutputStream(target, options)
+        final CasPath p = cas(path)
+        if( p.isStoreUri() )
+            throw new AccessDeniedException("a Store URI is immutable: '${p}'")
+        // Hash-on-close: Nextflow's transfer-aware path never lands here, but an
+        // incidental write must still hash into the store and leave a pointer.
+        final CoordinateTree tree = coordsFor(p)
+        final String rel = relOf(p)
+        final String key = Coordinates.key(path)
+        final String name = p.getFileName().toString()
+        final Path temp = Files.createTempFile('cas-out-', '.tmp')
+        final OutputStream out = Files.newOutputStream(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+        final CasFileSystemProvider self = this
+        return new FilterOutputStream(out) {
+            private boolean closed = false
+            @Override void write(byte[] b, int off, int len) throws IOException { out.write(b, off, len) }
+            @Override
+            void close() throws IOException {
+                if( closed ) return
+                closed = true
+                super.close()
+                try {
+                    Cid cid = null
+                    final InputStream input = Files.newInputStream(temp)
+                    try { cid = self.store().putStreaming(input) }
+                    finally { input.close() }
+                    tree.write(rel, new StoreRef(cid, name))
+                    self.session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(temp), 'head-node'))
+                }
+                finally { Files.deleteIfExists(temp) }
+            }
+        }
     }
 
     @Override
     DirectoryStream<Path> newDirectoryStream(Path dir, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        final backing = Files.newDirectoryStream(real(dir))
-        final casDir = (CasPath)dir
+        final CasPath p = cas(dir)
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        if( !node.directory )
+            throw new NotDirectoryException(p.toString())
+
+        final List<Path> children = new ArrayList<Path>()
+        if( node.content != null ) {
+            // A manifest, reached as a Store URI or through a coordinate pointer.
+            final CasPath base = p.isStoreUri() ? p : storeUriPath(node.content)
+            for( ManifestEntry entry : manifestOf(node.content).entries )
+                children.add(base.resolve(entry.name))
+        }
+        else {
+            // A real coordinate directory on the way to a pointer.
+            final CoordinateTree tree = coordsFor(p)
+            for( String childName : tree.children(relOf(p)) )
+                children.add(p.resolve(childName))
+        }
+
         return new DirectoryStream<Path>() {
             @Override
             Iterator<Path> iterator() {
                 final List<Path> out = new ArrayList<Path>()
-                for( Path p : backing ) {
-                    final child = casDir.resolve(p.fileName.toString())
+                for( Path child : children )
                     if( filter == null || filter.accept(child) )
                         out.add(child)
-                }
                 return out.iterator()
             }
-
-            @Override
-            void close() throws IOException { backing.close() }
+            @Override void close() throws IOException { }
         }
     }
 
     @Override
     void createDirectory(Path dir, FileAttribute<?>... attrs) throws IOException {
-        Files.createDirectories(real(dir))
+        final CasPath p = cas(dir)
+        if( p.isStoreUri() )
+            throw new AccessDeniedException("a Store URI has no directories to create: '${p}'")
+        Files.createDirectories(coordsFor(p).pointerPath(relOf(p)))
     }
 
     @Override
     void delete(Path path) throws IOException {
-        Files.delete(real(path))
+        final CasPath p = cas(path)
+        if( p.isStoreUri() )
+            throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
+        if( !coordsFor(p).delete(relOf(p)) )
+            throw new NoSuchFileException(p.toString())
     }
 
     @Override
     boolean deleteIfExists(Path path) throws IOException {
-        return Files.deleteIfExists(real(path))
+        final CasPath p = cas(path)
+        if( p.isStoreUri() )
+            throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
+        return coordsFor(p).delete(relOf(p))
     }
 
     @Override
     void copy(Path source, Path target, CopyOption... options) throws IOException {
-        final dest = real(target)
-        if( dest.parent != null )
-            Files.createDirectories(dest.parent)
-        Files.copy(real(source), dest, options)
+        throw new UnsupportedOperationException("cas: copy is not supported; publish goes through upload()/download()")
     }
 
     @Override
     void move(Path source, Path target, CopyOption... options) throws IOException {
-        final dest = real(target)
-        if( dest.parent != null )
-            Files.createDirectories(dest.parent)
-        Files.move(real(source), dest, options)
+        throw new UnsupportedOperationException("cas: move is not supported")
     }
 
     @Override
     boolean isSameFile(Path a, Path b) throws IOException {
-        return a == b
+        if( !(a instanceof CasPath) || !(b instanceof CasPath) )
+            return false
+        final CasPath pa = (CasPath)a
+        final CasPath pb = (CasPath)b
+        if( pa == pb )
+            return true
+        if( pa.isCoordinate() && pb.isCoordinate() )
+            return Coordinates.key(pa) == Coordinates.key(pb)
+        // Otherwise compare what they resolve to: same block or same manifest.
+        final CasNode na = resolve(pa)
+        final CasNode nb = resolve(pb)
+        return na.present && nb.present && na.content != null && na.content == nb.content
     }
 
     @Override
@@ -260,41 +576,96 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
 
     @Override
     void checkAccess(Path path, AccessMode... modes) throws IOException {
-        final target = real(path)
-        if( !Files.exists(target) )
-            throw new NoSuchFileException(path.toString())
-        if( AccessMode.WRITE in modes.toList() && ((CasPath)path).isStoreUri() )
-            throw new AccessDeniedException(path.toString())
+        final CasPath p = cas(path)
+        final List<AccessMode> asked = modes.toList()
+        if( AccessMode.WRITE in asked && p.isStoreUri() )
+            throw new AccessDeniedException("a Store URI is read-only: '${p}'")
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        // READ and EXECUTE are not refused: a block is world-readable, and a
+        // coordinate that resolves to a raw block cannot know its exec bit, so
+        // denying EXECUTE here would lie in the refusing direction.
     }
 
     @Override
     def <V extends FileAttributeView> V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
-        return Files.getFileAttributeView(real(path), type, options)
+        if( type != null && type.isAssignableFrom(BasicFileAttributeView) ) {
+            final CasFileSystemProvider self = this
+            return (V) new BasicFileAttributeView() {
+                @Override String name() { 'basic' }
+                @Override BasicFileAttributes readAttributes() throws IOException {
+                    return self.readAttributes(path, BasicFileAttributes, options)
+                }
+                @Override void setTimes(FileTime m, FileTime a, FileTime c) throws IOException {
+                    throw new UnsupportedOperationException("cas: attributes are facts about content, not settable")
+                }
+            }
+        }
+        return null
     }
 
     @Override
     def <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
-        try {
-            return Files.readAttributes(real(path), type, options)
-        }
-        catch( NoSuchFileException e ) {
-            throw new NoSuchFileException(path.toString())
-        }
+        if( type != null && !type.isAssignableFrom(CasAttributes) )
+            throw new UnsupportedOperationException("cas: unsupported attributes type ${type.name} for '${path}'")
+        final CasPath p = cas(path)
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        return (A) attributesOf(p, node)
     }
 
     @Override
     Map<String,Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        try {
-            return Files.readAttributes(real(path), attributes, options)
+        final CasPath p = cas(path)
+        final CasNode node = resolve(p)
+        if( !node.present )
+            throw new NoSuchFileException(namedAbsence(p))
+        final CasAttributes a = attributesOf(p, node)
+
+        String view = 'basic'
+        String names = attributes
+        final int colon = attributes.indexOf(':')
+        if( colon >= 0 ) {
+            view = attributes.substring(0, colon)
+            names = attributes.substring(colon + 1)
         }
-        catch( NoSuchFileException e ) {
-            throw new NoSuchFileException(path.toString())
+        final Map<String,Object> all = new LinkedHashMap<String,Object>()
+        all.put('size', a.size())
+        all.put('creationTime', a.creationTime())
+        all.put('lastAccessTime', a.lastAccessTime())
+        all.put('lastModifiedTime', a.lastModifiedTime())
+        all.put('isRegularFile', a.isRegularFile())
+        all.put('isDirectory', a.isDirectory())
+        all.put('isSymbolicLink', a.isSymbolicLink())
+        all.put('isOther', a.isOther())
+        all.put('fileKey', a.fileKey())
+        if( view == 'posix' || view == 'unix' ) {
+            all.put('permissions', a.isExecutable()
+                    ? PosixFilePermissions.fromString('r-xr-xr-x')
+                    : PosixFilePermissions.fromString('r--r--r--'))
         }
+        if( names == null || names == '*' )
+            return all
+        final Map<String,Object> out = new LinkedHashMap<String,Object>()
+        for( String n : names.split(',') ) {
+            final String k = n.trim()
+            if( all.containsKey(k) )
+                out.put(k, all.get(k))
+        }
+        return out
+    }
+
+    private CasAttributes attributesOf(CasPath p, CasNode node) {
+        final Object fileKey = node.content != null ? node.content.toString() : (p.isCoordinate() ? Coordinates.key(p) : null)
+        return new CasAttributes(node.size, !node.directory && !node.symlink, node.directory,
+                node.symlink, node.executable, node.mtime, fileKey)
     }
 
     @Override
     void setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
-        // attributes of a content-addressed object are facts about its content, not settable
+        throw new UnsupportedOperationException("cas: the attributes of a content-addressed object are facts about its content, not settable: '${path}' ${attribute}")
     }
 
     @Override
@@ -310,5 +681,13 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     @Override
     Path readSymbolicLink(Path link) throws IOException {
         throw new UnsupportedOperationException("${SCHEME}:// does not support symbolic links")
+    }
+
+    private static boolean isWrite(Set<? extends OpenOption> options) {
+        return options.any { OpenOption o ->
+            o == StandardOpenOption.WRITE || o == StandardOpenOption.APPEND ||
+            o == StandardOpenOption.CREATE || o == StandardOpenOption.CREATE_NEW ||
+            o == StandardOpenOption.DELETE_ON_CLOSE || o == StandardOpenOption.TRUNCATE_EXISTING
+        }
     }
 }

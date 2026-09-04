@@ -121,4 +121,60 @@ class CasPathTest extends Specification {
         path('cas://lab/aligned').isAbsolute()
         !path('cas://lab/aligned').fileName.isAbsolute()
     }
+
+    def 'exposes the content address of a Store URI and the alias of a Coordinate'() {
+        given:
+        def cid = 'bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am'
+
+        expect:
+        path("cas://$cid/A.bam").cid().toString() == cid
+        path('cas://lab/aligned/A').alias() == 'lab'
+
+        when:
+        path('cas://lab/aligned/A').cid()
+        then:
+        thrown(IllegalStateException)
+
+        when:
+        path("cas://$cid/A.bam").alias()
+        then:
+        thrown(IllegalStateException)
+    }
+
+    def 'resolve, endsWith, compareTo and relativize throw on a foreign path'() {
+        given:
+        Path foreign = Paths.get('/data/cas/coords/aligned')
+        def p = path('cas://lab/aligned/A')
+
+        when: p.resolve(foreign)
+        then: thrown(java.nio.file.ProviderMismatchException)
+
+        when: p.endsWith(foreign)
+        then: thrown(java.nio.file.ProviderMismatchException)
+
+        when: p.compareTo(foreign)
+        then: thrown(java.nio.file.ProviderMismatchException)
+
+        when: p.relativize(foreign)
+        then: thrown(java.nio.file.ProviderMismatchException)
+    }
+
+    def 'resolve of an empty path is this, of an absolute path is that'() {
+        given:
+        def base = path('cas://lab/aligned')
+
+        expect:
+        base.resolve(base.fileSystem.getPath('')) == base
+        base.resolve(path('cas://other/x')).toString() == 'cas://other/x'
+    }
+
+    def 'toAbsolutePath returns an absolute path or throws for a bare relative one'() {
+        expect:
+        path('cas://lab/aligned').toAbsolutePath().toString() == 'cas://lab/aligned'
+
+        when:
+        path('cas://lab/aligned/A/A.bam').fileName.toAbsolutePath()
+        then:
+        thrown(IllegalStateException)
+    }
 }

@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.util.regex.Pattern
 
 import groovy.transform.CompileStatic
+import robsyme.cas.core.Cid
 
 /**
  * The `cas` configuration scope, as specified in DESIGN.md section 2.
@@ -136,7 +137,7 @@ class CasConfig {
     }
 
     private static void checkAlias(String alias) {
-        if( CidSyntax.looksLikeCid(alias) )
+        if( Cid.isCid(alias) )
             throw new IllegalArgumentException("Store alias '${alias}' is a content address; an alias must not parse as one")
         if( !ALIAS.matcher(alias ?: '').matches() )
             throw new IllegalArgumentException("Invalid store alias '${alias}' -- an alias must match ${ALIAS.pattern()}")

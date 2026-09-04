@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference
 import groovy.transform.CompileStatic
 import nextflow.Global
 import nextflow.Session
+import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
@@ -75,6 +76,14 @@ class CasSession {
     /** join key -> the address, size and provider recorded when the file was published. */
     final ConcurrentHashMap<String, Publish> publishes = new ConcurrentHashMap<>()
 
+    /**
+     * join key -> what a published directory could not address (DESIGN §6).
+     * The provider's {@code upload()} records it here so the run's join
+     * ({@code onFlowComplete}) can fold directory anomalies into the
+     * RunCompletion without re-reading the manifest.
+     */
+    final ConcurrentHashMap<String, Anomalies> uploadAnomalies = new ConcurrentHashMap<>()
+
     /** Nextflow's own WorkflowRun key (LinObserver.executionHash), seen on the first save. */
     private final AtomicReference<String> nfRunKey = new AtomicReference<>()
 
@@ -114,6 +123,14 @@ class CasSession {
 
     Publish publishFor(String joinKey) {
         return publishes.get(joinKey)
+    }
+
+    void recordUploadAnomalies(String joinKey, Anomalies anomalies) {
+        uploadAnomalies.put(joinKey, anomalies)
+    }
+
+    Anomalies uploadAnomaliesFor(String joinKey) {
+        return uploadAnomalies.get(joinKey)
     }
 
     void setNextflowRunKey(String key) {
