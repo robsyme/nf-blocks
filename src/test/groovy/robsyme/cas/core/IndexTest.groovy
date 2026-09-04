@@ -94,6 +94,20 @@ class IndexTest extends Specification {
         finally { connection.close() }
     }
 
+    private void eachRow(String sql, Closure consume) {
+        final def connection = DriverManager.getConnection("jdbc:sqlite:${dbFile}".toString())
+        try {
+            final def statement = connection.createStatement()
+            try {
+                final def rs = statement.executeQuery(sql)
+                while( rs.next() )
+                    consume.call(rs)
+            }
+            finally { statement.close() }
+        }
+        finally { connection.close() }
+    }
+
     private long count(String table) {
         return ((Number) scalar("SELECT COUNT(*) FROM $table")).longValue()
     }
@@ -105,26 +119,57 @@ class IndexTest extends Specification {
 
     // ------------------------------------------------------------ the tests
 
-    def 'open creates the schema in WAL mode'() {
-        expect:
+    /** The schema of DESIGN §12, table by table, exactly as an `sqlite3` user would type it. */
+    static final Map<String, List<String>> SCHEMA = [
+        schema_version : ['version'],
+        run            : ['completion_cid', 'manifest_cid', 'pipeline', 'revision', 'commit_id',
+                          'nf_run_hash', 'session_id', 'run_name', 'asserted_by',
+                          'status', 'possibly_incomplete', 'finished_at', 'member'],
+        collection     : ['collection_cid', 'completion_cid', 'output_name'],
+        item           : ['item_cid'],
+        collection_item: ['collection_cid', 'item_cid'],
+        producer       : ['content_cid', 'item_cid', 'collection_cid', 'completion_cid', 'filename'],
+        consumer       : ['content_cid', 'completion_cid', 'name', 'how'],
+        item_attr      : ['item_cid', 'path', 'type', 'value', 'truncated'],
+        claim_current  : ['subject_cid', 'attribute', 'value', 'claim_cid', 'conflicted'],
+        missing        : ['have_cid', 'needed_cid'],
+        nf_record      : ['key', 'kind', 'workflow_run', 'task_run', 'labels_json', 'block_cid'],
+    ]
+
+    def 'open creates the schema of DESIGN 12 in WAL mode'() {
+        expect: 'WAL, so a run writing rows does not block a reader'
         scalar("PRAGMA journal_mode") == 'wal'
         scalar("SELECT version FROM schema_version") == Index.SCHEMA_VERSION
 
-        and: 'every table of DESIGN §12 exists'
-        ['schema_version', 'run', 'collection', 'item', 'collection_item', 'producer',
-         'consumer', 'item_attr', 'claim_current', 'missing', 'nf_record'].every {
-            count(it) >= 0
+        and: 'every table with exactly the specified columns'
+        SCHEMA.every { String table, List<String> columns ->
+            assert scalar("SELECT COUNT(*) FROM $table WHERE " + columns.collect { "$it IS NULL" }.join(' AND ')) == 0
+            assert columnsOf(table) == columns.toSet()
+            true
         }
 
-        and: 'with the column names an sqlite3 user would type'
-        scalar("SELECT COUNT(*) FROM run WHERE completion_cid IS NULL AND manifest_cid IS NULL " +
-               "AND pipeline IS NULL AND revision IS NULL AND commit_id IS NULL AND nf_run_hash IS NULL " +
-               "AND session_id IS NULL AND run_name IS NULL AND asserted_by IS NULL AND status IS NULL " +
-               "AND possibly_incomplete IS NULL AND finished_at IS NULL AND member IS NULL") == 0
-        scalar("SELECT COUNT(*) FROM producer WHERE content_cid IS NULL AND item_cid IS NULL " +
-               "AND collection_cid IS NULL AND completion_cid IS NULL AND filename IS NULL") == 0
-        scalar("SELECT COUNT(*) FROM item_attr WHERE item_cid IS NULL AND path IS NULL " +
-               "AND type IS NULL AND value IS NULL AND truncated IS NULL") == 0
+        and: 'the composite indexes the three queries lean on'
+        indexedColumns('run').contains(['pipeline', 'status', 'finished_at'])
+        indexedColumns('run').contains(['nf_run_hash'])
+        indexedColumns('run').contains(['manifest_cid'])
+        indexedColumns('producer').contains(['content_cid'])
+        indexedColumns('item_attr').contains(['path', 'type', 'value'])
+    }
+
+    private Set<String> columnsOf(String table) {
+        final Set<String> names = new HashSet<String>()
+        eachRow("PRAGMA table_info('$table')") { rs -> names.add(rs.getString('name')) }
+        return names
+    }
+
+    private List<List<String>> indexedColumns(String table) {
+        final List<String> indexes = []
+        eachRow("PRAGMA index_list('$table')") { rs -> indexes.add(rs.getString('name')) }
+        return indexes.collect { String name ->
+            final List<String> columns = []
+            eachRow("PRAGMA index_info('$name')") { rs -> columns.add(rs.getString('name')) }
+            return columns
+        }
     }
 
     def 'ingestRun writes every table of the run'() {
@@ -388,6 +433,27 @@ class IndexTest extends Specification {
         index.ingestRun(store, completion, 'lab')
         count('missing') == 0
         count('collection') == 2
+    }
+
+    def 'a run completion that has not arrived is recorded rather than rejected'() {
+        given: 'a completion known by address only, as a partial sync leaves it'
+        manifestCid = store.putDagCbor(Fixtures.runManifest())
+        def absent = Fixtures.cidOf(Fixtures.runCompletion(manifestCid, []))
+
+        when:
+        index.ingestRun(store, absent, 'lab')
+
+        then:
+        count('run') == 0
+        count('missing') == 1
+        scalar("SELECT have_cid FROM missing") == null
+        scalar("SELECT needed_cid FROM missing") == absent.toString()
+
+        and: 'once it arrives the run is indexed and the gap closes'
+        store.putDagCbor(Fixtures.runCompletion(manifestCid, []))
+        index.ingestRun(store, absent, 'lab')
+        count('run') == 1
+        count('missing') == 0
     }
 
     def 'an item whose block has not arrived is still known to be in the collection'() {

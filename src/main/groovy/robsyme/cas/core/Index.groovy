@@ -71,21 +71,24 @@ class Index implements Closeable {
     static Index open(Path sqliteFile) {
         if( sqliteFile.parent != null )
             Files.createDirectories(sqliteFile.parent)
-        Connection connection = null
-        try {
-            connection = connect(sqliteFile)
-            if( schemaVersionOf(connection) == SCHEMA_VERSION )
-                return new Index(sqliteFile, connection)
-            log.warn("index at $sqliteFile has schema version ${schemaVersionOf(connection)}, not $SCHEMA_VERSION; recreating it")
+        if( Files.exists(sqliteFile) ) {
+            Connection existing = null
+            try {
+                existing = connect(sqliteFile)
+                final int version = schemaVersionOf(existing)
+                if( version == SCHEMA_VERSION )
+                    return new Index(sqliteFile, existing)
+                log.warn("index at $sqliteFile has schema version $version, not $SCHEMA_VERSION; recreating it")
+            }
+            catch( SQLException e ) {
+                log.warn("index at $sqliteFile could not be opened (${e.message}); recreating it")
+            }
+            closeQuietly(existing)
+            deleteDatabase(sqliteFile)
         }
-        catch( SQLException e ) {
-            log.warn("index at $sqliteFile could not be opened (${e.message}); recreating it")
-        }
-        closeQuietly(connection)
-        deleteDatabase(sqliteFile)
-        connection = connect(sqliteFile)
-        createSchema(connection)
-        return new Index(sqliteFile, connection)
+        final Connection created = connect(sqliteFile)
+        createSchema(created)
+        return new Index(sqliteFile, created)
     }
 
     @Override
@@ -169,10 +172,17 @@ class Index implements Closeable {
         try {
             for( String sql : ddl )
                 statement.executeUpdate(sql)
-            statement.executeUpdate("INSERT INTO schema_version(version) VALUES ($SCHEMA_VERSION)")
         }
         finally {
             statement.close()
+        }
+        final PreparedStatement version = connection.prepareStatement('INSERT INTO schema_version(version) VALUES (?)')
+        try {
+            version.setInt(1, SCHEMA_VERSION)
+            version.executeUpdate()
+        }
+        finally {
+            version.close()
         }
     }
 
