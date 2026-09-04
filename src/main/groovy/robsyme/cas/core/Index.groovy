@@ -314,13 +314,21 @@ class Index implements Closeable {
      * first, then advances the watermark to the newest entry seen.
      */
     void catchUp(BlockStore store, RunLog log, String member) {
-        final List<RunLogEntry> entries = log.entriesAfter(meta(META_WATERMARK))
+        // The watermark is per member: in a composition each member's run log
+        // advances independently, and a single global watermark would let a
+        // newer member hide an older member's not-yet-seen runs (DESIGN.md §12).
+        final String key = watermarkKey(member)
+        final List<RunLogEntry> entries = log.entriesAfter(meta(key))
         if( !entries )
             return
         // entriesAfter is newest first; ingest in the order the runs finished.
         for( int i = entries.size() - 1; i >= 0; i-- )
             ingestRun(store, entries[i].cid, member)
-        setMeta(META_WATERMARK, entries[0].name)
+        setMeta(key, entries[0].name)
+    }
+
+    private static String watermarkKey(String member) {
+        return META_WATERMARK + ':' + member
     }
 
     /**
@@ -338,7 +346,7 @@ class Index implements Closeable {
             // Carry the run-log watermark forward to the newest logged entry, so
             // the next catchUp reads only what arrives after this rebuild rather
             // than re-scanning the whole log. Correctness-safe either way.
-            carryWatermark(fresh, store)
+            carryWatermark(fresh, store, member)
         }
         finally {
             fresh.close()
@@ -351,12 +359,12 @@ class Index implements Closeable {
         connection = connect(file)
     }
 
-    /** Sets the fresh index's watermark to the newest run-log entry, if any. */
-    private static void carryWatermark(Index fresh, BlockStore store) {
+    /** Sets the fresh index's watermark for this member to the newest run-log entry, if any. */
+    private static void carryWatermark(Index fresh, BlockStore store, String member) {
         try {
             final List<RunLogEntry> entries = RunLog.read(store)
             if( entries )
-                fresh.setMeta(META_WATERMARK, entries[0].name)
+                fresh.setMeta(watermarkKey(member), entries[0].name)
         }
         catch( Exception e ) {
             // The run log is derived; a store with no run-log storage just

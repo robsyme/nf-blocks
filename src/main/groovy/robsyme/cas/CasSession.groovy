@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 import groovy.transform.CompileStatic
+import groovy.util.logging.Slf4j
 import nextflow.Global
 import nextflow.Session
 import robsyme.cas.core.Anomalies
@@ -13,7 +14,9 @@ import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.RunLog
 import robsyme.cas.core.StoreRef
 
 /**
@@ -26,6 +29,7 @@ import robsyme.cas.core.StoreRef
  * is a JVM singleton but the state is per-session, which is why it is keyed by
  * {@link Session} rather than memoised on the provider (see the Task 1 review).
  */
+@Slf4j
 @CompileStatic
 class CasSession {
 
@@ -115,6 +119,30 @@ class CasSession {
             members.add(new LocalBlockStore(location, alias, alias == config.writableAlias))
         }
         return new CompositeStore(members)
+    }
+
+    /**
+     * Brings the index up to date from every store member's run log, so a read
+     * across a composition (a {@code fromStore} through {@code [out, lab]}) sees
+     * the runs recorded in a read-only member and not only the writable one
+     * (DESIGN.md §12). Each member advances its own watermark, so this is cheap
+     * to call before a query and idempotent. Derived, so a member whose log
+     * cannot be read is logged and skipped rather than failing the caller.
+     */
+    void catchUpIndex(Index index) {
+        for( BlockStore member : members() ) {
+            try {
+                index.catchUp(member, RunLog.of(member), member.alias())
+            }
+            catch( Exception e ) {
+                log.warn("could not catch up the index from store member '${member.alias()}'; it is derived: ${e.message}", e)
+            }
+        }
+    }
+
+    /** The store's members, writable first; a single-store session has one. */
+    List<BlockStore> members() {
+        return store instanceof CompositeStore ? ((CompositeStore) store).members : [store]
     }
 
     void recordPublish(String joinKey, Publish publish) {

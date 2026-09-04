@@ -510,6 +510,31 @@ class IndexTest extends Specification {
         count('collection_item') == 1
     }
 
+    def 'catchUp keeps a per-member watermark so a newer member never hides an older one'() {
+        given: 'the writable member has a newer run, a read-only member an older one'
+        def newerInWritable = buildOtherRun([finished_at: '2026-09-03T12:00:00.000Z'], 'newer')
+        RunLog.append(store, newerInWritable, 3_000_000L)
+
+        def sharedRoot = tempDir.resolve('shared')
+        def shared = new LocalBlockStore(sharedRoot, 'shared', true)
+        def olderInShared = shared.putDagCbor(Fixtures.runCompletion(
+            shared.putDagCbor(Fixtures.runManifest(run_name: 'older', nf_run_hash: 'hash-older')),
+            [shared.putDagCbor(Fixtures.outputCollection(
+                shared.putDagCbor(Fixtures.runManifest(run_name: 'older', nf_run_hash: 'hash-older')), 'aligned', []))],
+            [finished_at: '2026-09-03T09:00:00.000Z']))
+        RunLog.append(shared, olderInShared, 1_000_000L)   // an earlier reverse timestamp than the writable's
+
+        when: 'the writable member is caught up first, then the read-only member'
+        index.catchUp(store, RunLog.of(store), 'lab')
+        index.catchUp(shared, RunLog.of(shared), 'shared')
+
+        then: 'both runs are indexed; a single global watermark would have skipped the older shared run'
+        count('run') == 2
+        // the older shared run is present despite being logged before the writable's newer run
+        scalar("SELECT count(*) FROM run WHERE member = 'shared'") == 1
+        scalar("SELECT count(*) FROM run WHERE member = 'lab'") == 1
+    }
+
     def 'catchUp ingests only the run log entries past the watermark'() {
         given:
         def first = buildRun()

@@ -71,6 +71,10 @@ class CasExtension extends PluginExtensionPoint {
         Index index = null
         try {
             index = openIndex()
+            // Read across the whole composition: bring the index up to date from
+            // every member's run log, so a run recorded only in a read-only member
+            // (the producer's store, mounted read-only here) is visible to `latest`.
+            cas.catchUpIndex(index)
             final Cid completion = resolveRun(index, opts)
             final List<Object> items = new ArrayList<Object>()
             for( Cid itemCid : index.items(completion, output, where) ) {

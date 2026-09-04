@@ -202,6 +202,9 @@ class CasObserver implements TraceObserverV2 {
         try {
             index = openIndex()
             index.ingestRun(cas.store, completion, cas.config.writableAlias)
+            // Also fold in any read-only members' run logs, so this user's index
+            // reflects the whole composition and not only what this run wrote.
+            cas.catchUpIndex(index)
         }
         catch( Exception e ) {
             log.warn("the index could not be updated for run ${completion}; it is derived and can be rebuilt: ${e.message}", e)
