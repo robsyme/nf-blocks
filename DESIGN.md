@@ -197,10 +197,17 @@ yields one block regardless of who stored it: `DirectoryManifest` and
 ```
 Entries sorted ascending by the UTF-8 bytes of `name`. Rules for a symlink
 found while walking: if its target is relative and resolves inside the tree
-being published, record `mode: "symlink"` with `target`; otherwise follow it
-and store what it points at as regular/executable/directory; if it dangles,
-`mode: "unresolvable"` with `target`. Cycle detection and depth limit 64.
-Empty directory = `entries: []`.
+being published, record `mode: "symlink"` with `target` (the relative target
+string, which is portable and meaningful to a receiver); otherwise follow it
+and store what it points at as regular/executable/directory; if it dangles or
+cycles, `mode: "unresolvable"`. **A stored `target` is only ever a relative,
+in-tree path.** An absolute target, or one that escapes the tree, is never
+written into a block: the manifest carries no `asserted_by` and travels in a
+Bundle, so a host path there both violates the "nothing store-local" rule and
+makes the same tree hash differently under different launch prefixes. For such
+an entry `target` is `"[redacted-location]"` (the same marker `scrub` uses), so
+the fact of the broken link survives without its machine-local path. Cycle
+detection and depth limit 64. Empty directory = `entries: []`.
 
 ### OutputItem
 ```
