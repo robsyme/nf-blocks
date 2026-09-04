@@ -1,0 +1,139 @@
+package robsyme.cas
+
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+
+import groovy.transform.CompileStatic
+import nextflow.Global
+import nextflow.Session
+import robsyme.cas.core.BlockStore
+import robsyme.cas.core.Cid
+import robsyme.cas.core.CompositeStore
+import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.StoreRef
+
+/**
+ * The one per-run shared object (DESIGN.md section 9). Everything the provider,
+ * the lineage store, the observer and the channel factory need to agree on
+ * during a run lives here, keyed by the Nextflow {@link Session}.
+ *
+ * Nothing in this class survives the JVM: anything a later run or a later JVM
+ * needs is in the store (blocks, coords/, runs/, nf/), never here. The provider
+ * is a JVM singleton but the state is per-session, which is why it is keyed by
+ * {@link Session} rather than memoised on the provider (see the Task 1 review).
+ */
+@CompileStatic
+class CasSession {
+
+    /** One published path, recorded by the provider's {@code upload()} keyed by the join key. */
+    @groovy.transform.Canonical
+    static class Publish {
+        /** The Store URI the coordinate now resolves to. */
+        StoreRef ref
+        /** Byte size of the published content. */
+        long size
+        /** The Address Provider that produced the address, e.g. {@code head-node}. */
+        String provider
+    }
+
+    private static final ConcurrentHashMap<Session, CasSession> REGISTRY = new ConcurrentHashMap<>()
+
+    /**
+     * The {@link CasSession} for the given session, created once per session.
+     * Building the store touches the filesystem, so it is done under the map's
+     * per-key compute lock rather than racing across publish threads.
+     */
+    static CasSession of(Session session) {
+        if( session == null )
+            throw new IllegalStateException("No Nextflow session is bound; cannot resolve the cas store")
+        return REGISTRY.computeIfAbsent(session, { Session s -> new CasSession(CasConfig.fromSession(s.config)) })
+    }
+
+    /** The current session's {@link CasSession}, via {@link Global#session}. */
+    static CasSession current() {
+        return of(Global.session as Session)
+    }
+
+    /** Test seam: bind a prebuilt instance for a session without a real store config. */
+    static CasSession bind(Session session, CasSession instance) {
+        REGISTRY.put(session, instance)
+        return instance
+    }
+
+    static void unbind(Session session) {
+        REGISTRY.remove(session)
+    }
+
+    final CasConfig config
+    final BlockStore store
+    final CoordinateTree coordinates
+    final String assertedBy
+
+    /** join key -> the address, size and provider recorded when the file was published. */
+    final ConcurrentHashMap<String, Publish> publishes = new ConcurrentHashMap<>()
+
+    /** Nextflow's own WorkflowRun key (LinObserver.executionHash), seen on the first save. */
+    private final AtomicReference<String> nfRunKey = new AtomicReference<>()
+
+    /** Our RunManifest address, written once at onFlowBegin. */
+    private final AtomicReference<Cid> runManifest = new AtomicReference<>()
+
+    /** Fires once: the join at onFlowComplete, which runs twice on a failed run. */
+    private final AtomicBoolean completed = new AtomicBoolean(false)
+
+    CasSession(CasConfig config) {
+        this.config = config
+        this.assertedBy = config.assertedBy
+        this.store = buildStore(config)
+        this.coordinates = new CoordinateTree(config.writableLocation.resolve('coords'))
+    }
+
+    /** Test seam: an instance over an already-built store and coordinate tree. */
+    CasSession(CasConfig config, BlockStore store, CoordinateTree coordinates) {
+        this.config = config
+        this.assertedBy = config.assertedBy
+        this.store = store
+        this.coordinates = coordinates
+    }
+
+    private static BlockStore buildStore(CasConfig config) {
+        final List<BlockStore> members = new ArrayList<>()
+        for( String alias : config.members ) {
+            final Path location = config.locationOf(alias)
+            members.add(new LocalBlockStore(location, alias, alias == config.writableAlias))
+        }
+        return new CompositeStore(members)
+    }
+
+    void recordPublish(String joinKey, Publish publish) {
+        publishes.put(joinKey, publish)
+    }
+
+    Publish publishFor(String joinKey) {
+        return publishes.get(joinKey)
+    }
+
+    void setNextflowRunKey(String key) {
+        nfRunKey.compareAndSet(null, key)
+    }
+
+    String getNextflowRunKey() {
+        return nfRunKey.get()
+    }
+
+    void setRunManifest(Cid cid) {
+        runManifest.set(cid)
+    }
+
+    Cid getRunManifest() {
+        return runManifest.get()
+    }
+
+    /** True exactly once, for the first caller; the join is written only then. */
+    boolean claimCompletion() {
+        return completed.compareAndSet(false, true)
+    }
+}
