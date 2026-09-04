@@ -25,8 +25,15 @@ check:
 smoke:
 	./gate/smoke.sh
 
-# Install the plugin into local nextflow plugins dir
+# Install the plugin into the real ~/.nextflow/plugins. This writes outside the
+# project, so it is guarded: run `make install FORCE=1` to confirm. The Gate and
+# the smoke test never need this -- they install into a throwaway NXF_PLUGINS_DIR.
 install:
+ifndef FORCE
+	@echo "Refusing to write into ~/.nextflow/plugins without FORCE=1."
+	@echo "Use 'make smoke' or 'make gate' for a sandboxed install, or 'make install FORCE=1' to proceed."
+	@exit 1
+endif
 	$(GRADLE) installPlugin
 
 # Publish the plugin
