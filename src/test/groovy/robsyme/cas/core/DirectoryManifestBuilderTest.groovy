@@ -198,6 +198,75 @@ class DirectoryManifestBuilderTest extends Specification {
         result.anomalies.declined == 0
     }
 
+    def 'a dangling relative in-tree link keeps its real target'() {
+        given:
+        final Path tree = work.resolve('tree')
+        Files.createDirectories(tree)
+        Files.createSymbolicLink(tree.resolve('gone.txt'), Paths.get('missing/detail.txt'))
+
+        when:
+        final ManifestEntry entry = read(builder.build(tree).cid).entry('gone.txt')
+
+        then:
+        entry.mode == 'unresolvable'
+        entry.target == 'missing/detail.txt'
+    }
+
+    def 'a dangling absolute link is redacted, never the host path'() {
+        given:
+        final Path tree = work.resolve('tree')
+        Files.createDirectories(tree)
+        Files.createSymbolicLink(tree.resolve('gone.txt'), tree.resolve('nowhere').toAbsolutePath())
+
+        when:
+        final ManifestEntry entry = read(builder.build(tree).cid).entry('gone.txt')
+
+        then:
+        entry.mode == 'unresolvable'
+        entry.target == '[redacted-location]'
+        !entry.target.contains(work.toString())
+    }
+
+    def 'a dangling relative link escaping the tree is redacted'() {
+        given:
+        final Path tree = work.resolve('tree')
+        Files.createDirectories(tree)
+        Files.createSymbolicLink(tree.resolve('gone.txt'), Paths.get('../../secret'))
+
+        when:
+        final ManifestEntry entry = read(builder.build(tree).cid).entry('gone.txt')
+
+        then:
+        entry.mode == 'unresolvable'
+        entry.target == '[redacted-location]'
+    }
+
+    def 'an absolute broken link makes the same manifest under different parents'() {
+        given: 'the same tree built under two unrelated temp roots'
+        final Path treeA = work.resolve('a').resolve('tree')
+        final Path treeB = work.resolve('b').resolve('tree')
+        [treeA, treeB].each { Path t ->
+            file(t, 'a.txt', 'a')
+            Files.createSymbolicLink(t.resolve('gone'), t.resolve('nowhere').toAbsolutePath())
+        }
+
+        when:
+        final Cid cidA = builder.build(treeA).cid
+        final Cid cidB = builder.build(treeB).cid
+
+        then: 'the manifest carries neither launch path, so its address is the same'
+        cidA == cidB
+        read(cidA).entry('gone').target == '[redacted-location]'
+
+        and: 'no block in the store mentions either root path'
+        final String rootA = treeA.toString()
+        final String rootB = treeB.toString()
+        store.listBlocks().every { Cid c ->
+            final String text = new String(store.open(c).bytes, 'ISO-8859-1')
+            !text.contains(rootA) && !text.contains(rootB)
+        }
+    }
+
     @Timeout(30)
     def 'a link cycle does not hang'() {
         given:

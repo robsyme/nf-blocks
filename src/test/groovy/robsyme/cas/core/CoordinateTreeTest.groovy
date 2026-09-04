@@ -3,6 +3,7 @@ package robsyme.cas.core
 import java.nio.file.Files
 import java.nio.file.Path
 
+import spock.lang.Requires
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -153,6 +154,26 @@ class CoordinateTreeTest extends Specification {
         then:
         thrown(IllegalArgumentException)
         !Files.exists(root.resolve('outside.txt'))
+    }
+
+    @Requires({ System.getProperty('user.name') != 'root' })
+    def 'an unreadable pointer surfaces an error rather than reading as absent'() {
+        given:
+        final Path pointer = root.resolve('coords').resolve('aligned').resolve('A.bam')
+        Files.createDirectories(pointer.parent)
+        Files.writeString(pointer, new StoreRef(raw('one'), 'A.bam').toString() + '\n')
+        Files.setPosixFilePermissions(pointer, [] as Set)
+
+        when:
+        tree.read('aligned/A.bam')
+
+        then: 'a permission error is not the same as absent'
+        thrown(IOException)
+
+        cleanup:
+        Files.setPosixFilePermissions(
+            root.resolve('coords').resolve('aligned').resolve('A.bam'),
+            java.nio.file.attribute.PosixFilePermissions.fromString('rw-------'))
     }
 
     def 'a pointer file holding nonsense is reported with its path'() {

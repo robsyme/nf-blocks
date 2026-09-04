@@ -292,6 +292,22 @@ class RecordsTest extends Specification {
         OutputCollection.fromCbor(roundTrip(collection.toCbor())) == collection
     }
 
+    def 'items sharing a cid break the tie by their path list, not by arrival'() {
+        given: 'the same content published twice under different paths, in two orders'
+        final Cid shared = dag([n: 1])
+        final List<List<String>> earlyFirst = [['aligned/a.bam'], ['aligned/b.bam']]
+        final List<List<String>> lateFirst = [['aligned/b.bam'], ['aligned/a.bam']]
+
+        when:
+        final OutputCollection one = new OutputCollection('gate', dag([:]), 'aligned', [shared, shared], earlyFirst)
+        final OutputCollection two = new OutputCollection('gate', dag([:]), 'aligned', [shared, shared], lateFirst)
+
+        then: 'both settle on the same order, so the collection address is reproducible'
+        one.paths == [['aligned/a.bam'], ['aligned/b.bam']]
+        two.paths == [['aligned/a.bam'], ['aligned/b.bam']]
+        dag(one.toCbor()) == dag(two.toCbor())
+    }
+
     def 'a hole keeps its place in the sort rather than being compacted away'() {
         given:
         final OutputCollection collection = new OutputCollection(

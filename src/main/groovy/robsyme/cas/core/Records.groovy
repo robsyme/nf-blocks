@@ -584,7 +584,7 @@ class OutputCollection {
         if( givenItems.size() != givenPaths.size() )
             throw new IllegalArgumentException("output collection '$name' has ${givenItems.size()} items and ${givenPaths.size()} path lists")
         final List<Integer> order = (0..<givenItems.size()).toList()
-        order.sort { Integer a, Integer b -> compare(givenItems.get(a), givenItems.get(b)) }
+        order.sort { Integer a, Integer b -> compare(givenItems.get(a), givenPaths.get(a), givenItems.get(b), givenPaths.get(b)) }
         this.assertedBy = assertedBy
         this.run = run
         this.name = name
@@ -592,12 +592,28 @@ class OutputCollection {
         this.paths = Collections.unmodifiableList(order.collect { Integer i -> givenPaths.get(i) })
     }
 
-    /** A null item is a hole Nextflow handed us; holes sort first rather than being compacted away. */
-    private static int compare(Cid a, Cid b) {
-        if( a == null && b == null ) return 0
+    /**
+     * Order by item address, then by the item's path list when two items share
+     * a cid (identical content published under different paths), so the order
+     * -- and therefore the collection address -- is reproducible rather than
+     * inheriting arrival order. A null item is a hole Nextflow handed us; holes
+     * sort first rather than being compacted away.
+     */
+    private static int compare(Cid a, List<String> pa, Cid b, List<String> pb) {
+        if( a == null && b == null ) return comparePaths(pa, pb)
         if( a == null ) return -1
         if( b == null ) return 1
-        return a.toString() <=> b.toString()
+        final int byCid = a.toString() <=> b.toString()
+        return byCid != 0 ? byCid : comparePaths(pa, pb)
+    }
+
+    /** Lexicographic over the joined path lists; a null path list sorts first. */
+    private static int comparePaths(List<String> a, List<String> b) {
+        return key(a) <=> key(b)
+    }
+
+    private static String key(List<String> paths) {
+        return paths == null ? '' : paths.collect { String p -> p == null ? '' : p }.join(' ')
     }
 
     Map<String, Object> toCbor() {

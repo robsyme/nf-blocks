@@ -4,6 +4,7 @@ import java.nio.file.DirectoryStream
 import java.nio.file.Files
 import java.nio.file.NotDirectoryException
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
@@ -24,9 +25,11 @@ import groovy.transform.CompileStatic
  *
  * Symlinks follow DESIGN.md §6: a relative target that resolves inside the
  * tree stays a link, anything else is followed and stored as what it points
- * at, and a link that does not resolve becomes an {@code unresolvable} entry
- * carrying its raw target text. Dangling links are counted, never dropped and
- * never fatal: real tools emit them.
+ * at, and a link that does not resolve becomes an {@code unresolvable} entry.
+ * A stored target is only ever a relative in-tree path; an absolute or
+ * escaping one is redacted, so a portable block never carries a launch path.
+ * Dangling links are counted, never dropped and never fatal: real tools emit
+ * them.
  */
 @CompileStatic
 class DirectoryManifestBuilder {
@@ -94,9 +97,12 @@ class DirectoryManifestBuilder {
         if( Files.isSymbolicLink(child) ) {
             final String target = Files.readSymbolicLink(child).toString()
             if( !Files.exists(child) ) {
-                // Dangling. Recorded with its target so a receiver knows what was meant.
+                // Dangling. The fact of the broken link is recorded, but the
+                // target is only ever a relative in-tree path: an absolute or
+                // escaping one would leak the launch path into a portable,
+                // asserted_by-free block (DESIGN.md §6).
                 unresolvable[0]++
-                return ManifestEntry.unresolvable(name, target)
+                return ManifestEntry.unresolvable(name, portableTarget(child, root, target))
             }
             if( !Files.readSymbolicLink(child).isAbsolute() && resolvesInside(child, root) )
                 return ManifestEntry.symlink(name, target)
@@ -113,9 +119,11 @@ class DirectoryManifestBuilder {
         if( attrs.isDirectory() ) {
             final Path real = path.toRealPath()
             if( ancestors.contains(real) ) {
-                // A link back into the tree we are already inside.
+                // A link back into the tree we are already inside. Only an
+                // absolute or escaping link reaches here, so its target is
+                // redacted rather than stored.
                 unresolvable[0]++
-                return ManifestEntry.unresolvable(name, linkTarget)
+                return ManifestEntry.unresolvable(name, portableTarget(path, root, linkTarget))
             }
             final LinkedHashSet<Path> deeper = new LinkedHashSet<Path>(ancestors)
             deeper.add(real)
@@ -124,7 +132,7 @@ class DirectoryManifestBuilder {
         if( !attrs.isRegularFile() ) {
             // A fifo, a socket, a device: real, and not something we can address.
             unresolvable[0]++
-            return ManifestEntry.unresolvable(name, linkTarget)
+            return ManifestEntry.unresolvable(name, portableTarget(path, root, linkTarget))
         }
         final Cid address = putFile(path)
         return isExecutable(path)
@@ -141,6 +149,22 @@ class DirectoryManifestBuilder {
         finally {
             input?.close()
         }
+    }
+
+    /**
+     * The target text safe to write into a portable block: a relative in-tree
+     * target unchanged, anything absolute or escaping the tree replaced by the
+     * same marker {@code scrub} uses. {@code null} (a non-link) stays null.
+     */
+    private static String portableTarget(Path link, Path root, String rawTarget) {
+        if( rawTarget == null )
+            return null
+        final Path targetPath = Paths.get(rawTarget)
+        if( targetPath.isAbsolute() )
+            return Records.REDACTED_LOCATION
+        final Path parent = link.parent ?: root
+        final Path resolved = parent.resolve(targetPath).normalize()
+        return resolved.startsWith(root) ? rawTarget : Records.REDACTED_LOCATION
     }
 
     /**

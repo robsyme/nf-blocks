@@ -47,8 +47,10 @@ class CoordinateTree {
         try {
             text = Files.readString(pointer, StandardCharsets.UTF_8)
         }
-        catch( NoSuchFileException | java.nio.file.FileSystemException e ) {
-            // absent, or a directory read as a file
+        catch( NoSuchFileException e ) {
+            // Absent is the only thing that reads as empty. A permission error
+            // or any other IOException is a real failure and propagates, so it
+            // is never mistaken for "no coordinate here".
             return Optional.empty()
         }
         try {
