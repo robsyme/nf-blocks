@@ -38,6 +38,80 @@ class Records {
         return kind instanceof String ? (String) kind : null
     }
 
+    /**
+     * Config scopes that describe the machine rather than the run, dropped
+     * from `params` and `config` before either reaches a block (DESIGN.md §6).
+     * Measured at v26.04.6: `session.config` carries
+     * `cas.stores.<alias>.location`, an absolute host path.
+     */
+    private static final Set<String> DROPPED_SCOPES = [
+        'cas', 'lineage', 'workDir', 'outputDir', 'launchDir', 'projectDir',
+        'homeDir', 'configFiles', 'scriptFile', 'commandLine', 'runName', 'resume',
+    ] as Set
+
+    /** Schemes that name content rather than a place, so they survive the scrub. */
+    private static final Set<String> PORTABLE_SCHEMES = ['lid', 'cas'] as Set
+
+    private static final java.util.regex.Pattern SCHEME = ~/^([A-Za-z][A-Za-z0-9+.-]*):\/\//
+
+    /**
+     * The portability scrub of DESIGN.md §6. Drops the store-local top-level
+     * scopes, turns Paths into strings, and replaces anything that names a
+     * place on some particular machine, or the person who ran the pipeline,
+     * with a fixed marker. Returns a new structure; the input is untouched.
+     *
+     * Idempotent, so a record may safely scrub what it is handed without
+     * knowing whether the caller already did.
+     */
+    static Object scrub(Object value) {
+        if( !(value instanceof Map) )
+            return scrubValue(value)
+        final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
+        for( Map.Entry entry : ((Map<?, ?>) value).entrySet() ) {
+            if( DROPPED_SCOPES.contains(String.valueOf(entry.key)) )
+                continue
+            out.put(entry.key, scrubValue(entry.value))
+        }
+        return out
+    }
+
+    private static Object scrubValue(Object value) {
+        if( value instanceof Path )
+            return scrubString(value.toString())
+        if( value instanceof CharSequence )
+            return scrubString(value.toString())
+        if( value instanceof Map ) {
+            final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
+            for( Map.Entry entry : ((Map<?, ?>) value).entrySet() )
+                out.put(entry.key, scrubValue(entry.value))
+            return out
+        }
+        if( value instanceof Collection ) {
+            final List<Object> out = new ArrayList<Object>()
+            for( Object item : (Collection) value )
+                out.add(scrubValue(item))
+            return out
+        }
+        if( value instanceof Object[] ) {
+            final List<Object> out = new ArrayList<Object>()
+            for( Object item : (Object[]) value )
+                out.add(scrubValue(item))
+            return out
+        }
+        return value
+    }
+
+    private static String scrubString(String text) {
+        if( text.startsWith('/') )
+            return REDACTED_LOCATION
+        final java.util.regex.Matcher matcher = SCHEME.matcher(text)
+        if( matcher.find() && !PORTABLE_SCHEMES.contains(matcher.group(1).toLowerCase()) )
+            return REDACTED_LOCATION
+        if( text == System.getProperty('user.name') )
+            return REDACTED_USER
+        return text
+    }
+
     // ---- helpers shared by the kinds ----
 
     static Map<String, Object> head(String kind) {
@@ -298,5 +372,433 @@ class Anomalies {
             (int) Records.number(Records.require(counts, 'unaddressed'), 'unaddressed'),
             (int) Records.number(Records.require(counts, 'declined'), 'declined'),
             (int) Records.number(Records.require(counts, 'never_published'), 'never_published'))
+    }
+}
+
+/**
+ * A file or directory inside an Output Item's structure (DESIGN.md §6).
+ *
+ * A leaf holds the name it was published under, because a raw block has no
+ * name of its own and a pipeline that is handed the item back stages the file
+ * under that name. An address and a reason are exclusive: exactly one of them
+ * is always set, and neither is ever an absent field.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class Leaf {
+
+    static final String DECLINED = 'declined'
+    static final String NEVER_PUBLISHED = 'never_published'
+    static final String UNRESOLVABLE = 'unresolvable'
+    static final String UNADDRESSED = 'unaddressed'
+
+    static final String HEAD_NODE = 'head-node'
+    static final String FUSION_NODE = 'fusion-node'
+
+    private static final Set<String> REASONS = [DECLINED, NEVER_PUBLISHED, UNRESOLVABLE, UNADDRESSED] as Set
+    private static final Set<String> PROVIDERS = [HEAD_NODE, FUSION_NODE] as Set
+
+    final String name
+    final Cid address
+    final Long size
+    final String provider
+    final String reason
+
+    Leaf(String name, Cid address, Long size, String provider, String reason) {
+        if( address == null && !reason )
+            throw new IllegalArgumentException("a leaf without an address needs a reason (${name ?: 'unnamed'})")
+        if( address != null && reason )
+            throw new IllegalArgumentException("a leaf addressed as $address cannot also carry the reason '$reason'")
+        if( reason && !REASONS.contains(reason) )
+            throw new IllegalArgumentException("unknown leaf reason '$reason'")
+        if( provider && !PROVIDERS.contains(provider) )
+            throw new IllegalArgumentException("unknown leaf provider '$provider'")
+        this.name = name
+        this.address = address
+        this.size = size
+        this.provider = provider
+        this.reason = reason
+    }
+
+    /** An addressed leaf: what publishing a file produced. */
+    static Leaf of(String name, Cid address, Long size, String provider) {
+        return new Leaf(name, address, size, provider, null)
+    }
+
+    /** A leaf with no address, and the reason there is none. */
+    static Leaf without(String name, String reason) {
+        return new Leaf(name, null, null, null, reason)
+    }
+
+    /** What Nextflow hands us as a null in place of a path. */
+    static Leaf declined() {
+        return without(null, DECLINED)
+    }
+
+    boolean isAddressed() { address != null }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = new LinkedHashMap<String, Object>()
+        map.put('kind', Records.LEAF)
+        map.put('name', name)
+        map.put('address', address)
+        map.put('size', size)
+        map.put('provider', provider)
+        map.put('reason', reason)
+        return map
+    }
+
+    /**
+     * True for a map that is a leaf rather than a Meta Map that happens to
+     * carry a {@code kind} of its own. DESIGN.md §6 keys the decoding rule on
+     * {@code kind == 'Leaf'}; the two exclusive fields are what tell an
+     * encoded leaf apart from a user map that borrowed the word.
+     */
+    static boolean isLeaf(Object value) {
+        if( !(value instanceof Map) )
+            return false
+        final Map map = (Map) value
+        return Records.kindOf(map) == Records.LEAF && map.containsKey('address') && map.containsKey('reason')
+    }
+
+    static Leaf fromCbor(Map map) {
+        Records.expectKind(map, Records.LEAF)
+        final Object size = Records.require(map, 'size')
+        return new Leaf(
+            Records.string(Records.require(map, 'name'), 'name'),
+            Records.cid(Records.require(map, 'address'), 'address'),
+            size == null ? null : (Long) Records.number(size, 'size'),
+            Records.string(Records.require(map, 'provider'), 'provider'),
+            Records.string(Records.require(map, 'reason'), 'reason'))
+    }
+}
+
+/**
+ * One entry of an Output Collection, as its own block (DESIGN.md §6).
+ *
+ * The value mirrors the channel item: a Map stays a map, a tuple stays a list,
+ * scalars keep their types, and every file leaf is a {@link Leaf}. The item
+ * carries no run reference and no publish path, so identical metadata over
+ * identical content is one block however many runs produce it -- which is the
+ * whole point of addressing items separately.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class OutputItem {
+
+    final Object value
+
+    OutputItem(Object value) {
+        this.value = value
+    }
+
+    static OutputItem of(Object value) {
+        return new OutputItem(value)
+    }
+
+    /** The leaves in the order a reader meets them, which is the order `paths` uses. */
+    List<Leaf> leaves() {
+        final List<Leaf> found = new ArrayList<Leaf>()
+        collect(value, found)
+        return found
+    }
+
+    private static void collect(Object value, List<Leaf> found) {
+        if( value instanceof Leaf )
+            found.add((Leaf) value)
+        else if( value instanceof Map )
+            ((Map) value).values().each { Object v -> collect(v, found) }
+        else if( value instanceof Collection )
+            ((Collection) value).each { Object v -> collect(v, found) }
+    }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = Records.head(Records.OUTPUT_ITEM)
+        map.put('value', encode(value))
+        return map
+    }
+
+    private static Object encode(Object value) {
+        if( value instanceof Leaf )
+            return ((Leaf) value).toCbor()
+        if( value instanceof Map ) {
+            final Map<String, Object> out = new LinkedHashMap<String, Object>()
+            ((Map<?, ?>) value).each { Object k, Object v -> out.put(String.valueOf(k), encode(v)) }
+            return out
+        }
+        if( value instanceof Collection )
+            return ((Collection) value).collect { Object v -> encode(v) }
+        return value
+    }
+
+    static OutputItem fromCbor(Map block) {
+        Records.expectKind(block, Records.OUTPUT_ITEM)
+        return new OutputItem(decode(Records.require(block, 'value')))
+    }
+
+    private static Object decode(Object value) {
+        if( Leaf.isLeaf(value) )
+            return Leaf.fromCbor((Map) value)
+        if( value instanceof Map ) {
+            final Map<String, Object> out = new LinkedHashMap<String, Object>()
+            ((Map<?, ?>) value).each { Object k, Object v -> out.put(String.valueOf(k), decode(v)) }
+            return out
+        }
+        if( value instanceof Collection )
+            return ((Collection) value).collect { Object v -> decode(v) }
+        return value
+    }
+}
+
+/**
+ * One named output of one run (DESIGN.md §6): links to its items, and the
+ * publish paths those items' leaves went to.
+ *
+ * Items are sorted by their address, because `publishedValues` is
+ * arrival-ordered and position is therefore not reproducible between runs.
+ * `paths` is re-aligned to that sort, so `paths[i]` always belongs to
+ * `items[i]`.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class OutputCollection {
+
+    final String assertedBy
+    final Cid run
+    final String name
+    final List<Cid> items
+    final List<List<String>> paths
+
+    OutputCollection(String assertedBy, Cid run, String name, List<Cid> items, List<List<String>> paths) {
+        if( !assertedBy )
+            throw new IllegalArgumentException('an output collection needs an asserted_by')
+        if( run == null )
+            throw new IllegalArgumentException("output collection '$name' needs its run manifest address")
+        if( !name )
+            throw new IllegalArgumentException('an output collection needs the name it was declared under')
+        final List<Cid> givenItems = items ?: Collections.<Cid> emptyList()
+        final List<List<String>> givenPaths = paths ?: Collections.<List<String>> emptyList()
+        if( givenItems.size() != givenPaths.size() )
+            throw new IllegalArgumentException("output collection '$name' has ${givenItems.size()} items and ${givenPaths.size()} path lists")
+        final List<Integer> order = (0..<givenItems.size()).toList()
+        order.sort { Integer a, Integer b -> compare(givenItems.get(a), givenItems.get(b)) }
+        this.assertedBy = assertedBy
+        this.run = run
+        this.name = name
+        this.items = Collections.unmodifiableList(order.collect { Integer i -> givenItems.get(i) })
+        this.paths = Collections.unmodifiableList(order.collect { Integer i -> givenPaths.get(i) })
+    }
+
+    /** A null item is a hole Nextflow handed us; holes sort first rather than being compacted away. */
+    private static int compare(Cid a, Cid b) {
+        if( a == null && b == null ) return 0
+        if( a == null ) return -1
+        if( b == null ) return 1
+        return a.toString() <=> b.toString()
+    }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = Records.head(Records.OUTPUT_COLLECTION)
+        map.put('asserted_by', assertedBy)
+        map.put('run', run)
+        map.put('name', name)
+        map.put('items', new ArrayList<Object>(items))
+        map.put('paths', paths.collect { List<String> p -> p == null ? null : new ArrayList<Object>(p) })
+        return map
+    }
+
+    static OutputCollection fromCbor(Map block) {
+        Records.expectKind(block, Records.OUTPUT_COLLECTION)
+        final List items = (List) Records.require(block, 'items')
+        final List paths = (List) Records.require(block, 'paths')
+        return new OutputCollection(
+            Records.string(Records.require(block, 'asserted_by'), 'asserted_by'),
+            Records.cid(Records.require(block, 'run'), 'run'),
+            Records.string(Records.require(block, 'name'), 'name'),
+            items.collect { Object c -> Records.cid(c, 'items') },
+            paths.collect { Object p -> p == null ? null : (List<String>) ((List) p).collect { Object s -> Records.string(s, 'paths') } })
+    }
+}
+
+/**
+ * What was run (DESIGN.md §6). Written at `onFlowBegin`, when the Nextflow run
+ * key is known. `params` and `config` are scrubbed here rather than by the
+ * caller, so a store-local path cannot reach a block by being forgotten.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class RunManifest {
+
+    final String assertedBy
+    final String pipeline
+    final String repository
+    final String revision
+    final String commitId
+    final String runName
+    final String nfRunHash
+    final String sessionId
+    final boolean resumed
+    final String nextflowVersion
+    final Map params
+    final Map config
+    final Cid script
+    final String startedAt
+
+    RunManifest(Map args) {
+        this.assertedBy = req(args, 'assertedBy')
+        this.pipeline = req(args, 'pipeline')
+        this.repository = (String) args.get('repository')
+        this.revision = (String) args.get('revision')
+        this.commitId = (String) args.get('commitId')
+        this.runName = req(args, 'runName')
+        this.nfRunHash = req(args, 'nfRunHash')
+        this.sessionId = req(args, 'sessionId')
+        this.resumed = args.get('resumed') as boolean
+        this.nextflowVersion = req(args, 'nextflowVersion')
+        this.params = (Map) Records.scrub((Map) (args.get('params') ?: [:]))
+        this.config = (Map) Records.scrub((Map) (args.get('config') ?: [:]))
+        this.script = (Cid) args.get('script')
+        this.startedAt = req(args, 'startedAt')
+    }
+
+    private static String req(Map args, String field) {
+        final Object value = args.get(field)
+        if( !value )
+            throw new IllegalArgumentException("a run manifest needs '$field'")
+        return value.toString()
+    }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = Records.head(Records.RUN_MANIFEST)
+        map.put('asserted_by', assertedBy)
+        map.put('pipeline', pipeline)
+        map.put('repository', repository)
+        map.put('revision', revision)
+        map.put('commit_id', commitId)
+        map.put('run_name', runName)
+        map.put('nf_run_hash', nfRunHash)
+        map.put('session_id', sessionId)
+        map.put('resumed', resumed)
+        map.put('nextflow_version', nextflowVersion)
+        map.put('params', params)
+        map.put('config', config)
+        map.put('script', script)
+        map.put('started_at', startedAt)
+        return map
+    }
+
+    static RunManifest fromCbor(Map block) {
+        Records.expectKind(block, Records.RUN_MANIFEST)
+        return new RunManifest([
+            assertedBy     : Records.string(Records.require(block, 'asserted_by'), 'asserted_by'),
+            pipeline       : Records.string(Records.require(block, 'pipeline'), 'pipeline'),
+            repository     : Records.string(Records.require(block, 'repository'), 'repository'),
+            revision       : Records.string(Records.require(block, 'revision'), 'revision'),
+            commitId       : Records.string(Records.require(block, 'commit_id'), 'commit_id'),
+            runName        : Records.string(Records.require(block, 'run_name'), 'run_name'),
+            nfRunHash      : Records.string(Records.require(block, 'nf_run_hash'), 'nf_run_hash'),
+            sessionId      : Records.string(Records.require(block, 'session_id'), 'session_id'),
+            resumed        : Records.require(block, 'resumed'),
+            nextflowVersion: Records.string(Records.require(block, 'nextflow_version'), 'nextflow_version'),
+            params         : (Map) Records.require(block, 'params'),
+            config         : (Map) Records.require(block, 'config'),
+            script         : Records.cid(Records.require(block, 'script'), 'script'),
+            startedAt      : Records.string(Records.require(block, 'started_at'), 'started_at'),
+        ])
+    }
+}
+
+/**
+ * How a run ended, and everything it produced (DESIGN.md §6). The Run Log
+ * points at this block; the index is built from it.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class RunCompletion {
+
+    static final String SUCCEEDED = 'succeeded'
+    static final String FAILED = 'failed'
+
+    private static final Set<String> STATUSES = [SUCCEEDED, FAILED] as Set
+
+    final String assertedBy
+    final Cid run
+    final List<Cid> collections
+    final Cid inputSet
+    final String status
+    final Integer exitStatus
+    final boolean possiblyIncomplete
+    final String startedAt
+    final String finishedAt
+    final Anomalies anomalies
+    final String error
+
+    RunCompletion(Map args) {
+        this.assertedBy = str(args, 'assertedBy')
+        this.run = (Cid) args.get('run')
+        if( run == null )
+            throw new IllegalArgumentException("a run completion needs its run manifest address")
+        this.collections = Collections.unmodifiableList(new ArrayList<Cid>((List<Cid>) (args.get('collections') ?: [])))
+        this.inputSet = (Cid) args.get('inputSet')
+        this.status = str(args, 'status')
+        if( !STATUSES.contains(status) )
+            throw new IllegalArgumentException("unknown run status '$status'")
+        final Object exit = args.get('exitStatus')
+        this.exitStatus = exit == null ? null : ((Number) exit).intValue()
+        this.possiblyIncomplete = args.get('possiblyIncomplete') as boolean
+        this.startedAt = str(args, 'startedAt')
+        this.finishedAt = str(args, 'finishedAt')
+        this.anomalies = (Anomalies) args.get('anomalies')
+        if( anomalies == null )
+            throw new IllegalArgumentException('a run completion needs its anomaly counters')
+        this.error = (String) args.get('error')
+    }
+
+    private static String str(Map args, String field) {
+        final Object value = args.get(field)
+        if( !value )
+            throw new IllegalArgumentException("a run completion needs '$field'")
+        return value.toString()
+    }
+
+    boolean isSuccessful() { status == SUCCEEDED && !possiblyIncomplete }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = Records.head(Records.RUN_COMPLETION)
+        map.put('asserted_by', assertedBy)
+        map.put('run', run)
+        map.put('collections', new ArrayList<Object>(collections))
+        map.put('input_set', inputSet)
+        map.put('status', status)
+        map.put('exit_status', exitStatus == null ? null : (long) exitStatus.intValue())
+        map.put('possibly_incomplete', possiblyIncomplete)
+        map.put('started_at', startedAt)
+        map.put('finished_at', finishedAt)
+        map.put('anomalies', anomalies.toCbor())
+        map.put('error', error)
+        return map
+    }
+
+    static RunCompletion fromCbor(Map block) {
+        Records.expectKind(block, Records.RUN_COMPLETION)
+        final List collections = (List) Records.require(block, 'collections')
+        return new RunCompletion([
+            assertedBy        : Records.string(Records.require(block, 'asserted_by'), 'asserted_by'),
+            run               : Records.cid(Records.require(block, 'run'), 'run'),
+            collections       : collections.collect { Object c -> Records.cid(c, 'collections') },
+            inputSet          : Records.cid(Records.require(block, 'input_set'), 'input_set'),
+            status            : Records.string(Records.require(block, 'status'), 'status'),
+            exitStatus        : Records.require(block, 'exit_status'),
+            possiblyIncomplete: Records.require(block, 'possibly_incomplete'),
+            startedAt         : Records.string(Records.require(block, 'started_at'), 'started_at'),
+            finishedAt        : Records.string(Records.require(block, 'finished_at'), 'finished_at'),
+            anomalies         : Anomalies.fromCbor((Map) Records.require(block, 'anomalies')),
+            error             : Records.string(Records.require(block, 'error'), 'error'),
+        ])
     }
 }
