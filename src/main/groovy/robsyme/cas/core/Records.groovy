@@ -112,6 +112,53 @@ class Records {
         return text
     }
 
+    /**
+     * Free-text scrub for a human message such as a failed run's error report,
+     * which unlike a config value can carry an absolute path or the user name
+     * embedded mid-sentence (`Failed to publish /work/x for rob`). Redacts token
+     * by token so the message keeps its shape without the machine-local parts,
+     * which a portable, `asserted_by`-free block must not carry (DESIGN.md §6).
+     * Returns null unchanged.
+     */
+    static String scrubText(String text) {
+        if( text == null )
+            return null
+        final String user = System.getProperty('user.name')
+        final StringBuilder out = new StringBuilder(text.length())
+        final int n = text.length()
+        int i = 0
+        while( i < n ) {
+            final int start = i
+            while( i < n && !Character.isWhitespace(text.charAt(i)) )
+                i++
+            if( i > start )
+                out.append(scrubToken(text.substring(start, i), user))
+            while( i < n && Character.isWhitespace(text.charAt(i)) ) {
+                out.append(text.charAt(i))
+                i++
+            }
+        }
+        return out.toString()
+    }
+
+    private static final String TRAILING_PUNCT = ':;,.)]}>\'"'
+
+    private static String scrubToken(String token, String user) {
+        int end = token.length()
+        while( end > 0 && TRAILING_PUNCT.indexOf((int) token.charAt(end - 1)) >= 0 )
+            end--
+        final String core = token.substring(0, end)
+        final String tail = token.substring(end)
+        if( core.startsWith('/') )
+            return REDACTED_LOCATION + tail
+        final java.util.regex.Matcher m = SCHEME.matcher(core)
+        if( m.find() && !PORTABLE_SCHEMES.contains(m.group(1).toLowerCase()) )
+            return REDACTED_LOCATION + tail
+        if( user != null && !user.isEmpty() && core == user )
+            return REDACTED_USER + tail
+        return token
+    }
+
     // ---- helpers shared by the kinds ----
 
     static Map<String, Object> head(String kind) {
@@ -772,7 +819,10 @@ class RunCompletion {
         this.anomalies = (Anomalies) args.get('anomalies')
         if( anomalies == null )
             throw new IllegalArgumentException('a run completion needs its anomaly counters')
-        this.error = (String) args.get('error')
+        // A failed run's error is free text from Nextflow, so it can carry an
+        // absolute path or user name mid-message; scrub it here so a RunCompletion
+        // never leaks the launch location into a portable block (DESIGN.md §6).
+        this.error = Records.scrubText((String) args.get('error'))
     }
 
     private static String str(Map args, String field) {

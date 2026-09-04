@@ -144,4 +144,41 @@ class ScrubTest extends Specification {
         Records.scrub(null) == null
         Records.scrub(7) == 7
     }
+
+    def 'scrubText redacts an absolute path or user name embedded mid-message'() {
+        given:
+        final String user = System.getProperty('user.name')
+
+        expect: 'a path token anywhere in the message goes, its trailing punctuation kept'
+        Records.scrubText("Failed to publish file: /scratch/run/work/ab/cd/A_qc; to: cas://lab/qc/A/A_qc [copy]") ==
+            "Failed to publish file: [redacted-location]; to: cas://lab/qc/A/A_qc [copy]"
+
+        and: 'a non-portable scheme token goes, a lid/cas token stays'
+        Records.scrubText("staged s3://bucket/x and cas://bafk/y") == "staged [redacted-location] and cas://bafk/y"
+
+        and: 'a standalone user token goes'
+        Records.scrubText("ran by ${user}".toString()) == 'ran by [redacted-user]'
+
+        and: 'a work-dir line leaks neither the path nor the user embedded in it'
+        final String msg = Records.scrubText("Work dir: /home/${user}/proj/work/xx".toString())
+        !msg.contains(user)
+        !msg.contains('/home/')
+
+        and: 'null passes through'
+        Records.scrubText(null) == null
+    }
+
+    def 'a RunCompletion scrubs its error field so a failed run never leaks the launch path'() {
+        given:
+        final Cid run = Cid.parse('bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua')
+        final RunCompletion rc = new RunCompletion(
+            assertedBy: 'gate', run: run, collections: [], status: RunCompletion.FAILED,
+            exitStatus: 7, possiblyIncomplete: true, startedAt: '2026-09-03T00:00:00.000Z',
+            finishedAt: '2026-09-03T00:00:01.000Z', anomalies: Anomalies.NONE,
+            error: "Process failed in /scratch/gate-root/work/ab/cd; exit 7")
+
+        expect:
+        rc.error == "Process failed in [redacted-location]; exit 7"
+        !rc.error.contains('/scratch')
+    }
 }
