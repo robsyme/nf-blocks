@@ -104,6 +104,10 @@ class Index implements Closeable {
             // WAL so a run writing its rows does not block another reading them.
             statement.execute('PRAGMA journal_mode=WAL')
             statement.execute('PRAGMA synchronous=NORMAL')
+            // WAL still serialises writers; without a busy timeout the second of
+            // two runs finishing at once gets SQLITE_BUSY instead of waiting its
+            // turn. A few seconds covers a run's ingest transaction.
+            statement.execute('PRAGMA busy_timeout=5000')
         }
         finally {
             statement.close()
@@ -331,6 +335,10 @@ class Index implements Closeable {
         try {
             for( Cid completion : runCompletionsIn(store) )
                 fresh.ingestRun(store, completion, member)
+            // Carry the run-log watermark forward to the newest logged entry, so
+            // the next catchUp reads only what arrives after this rebuild rather
+            // than re-scanning the whole log. Correctness-safe either way.
+            carryWatermark(fresh, store)
         }
         finally {
             fresh.close()
@@ -341,6 +349,20 @@ class Index implements Closeable {
         Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         deleteDatabase(temp)
         connection = connect(file)
+    }
+
+    /** Sets the fresh index's watermark to the newest run-log entry, if any. */
+    private static void carryWatermark(Index fresh, BlockStore store) {
+        try {
+            final List<RunLogEntry> entries = RunLog.read(store)
+            if( entries )
+                fresh.setMeta(META_WATERMARK, entries[0].name)
+        }
+        catch( Exception e ) {
+            // The run log is derived; a store with no run-log storage just
+            // leaves the watermark empty, which is correct, only slower.
+            log.debug("could not read the run log to carry the watermark forward: ${e.message}")
+        }
     }
 
     /** Every RunCompletion in the store, found by decoding each `bafy…` block. */

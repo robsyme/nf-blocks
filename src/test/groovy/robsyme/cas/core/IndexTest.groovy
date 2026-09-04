@@ -545,6 +545,43 @@ class IndexTest extends Specification {
         count('run') == 2
     }
 
+    def 'two threads ingesting concurrently against one index file both succeed'() {
+        given: 'two runs in the store and a second connection on the same index file'
+        final run1 = buildRun()
+        final run2 = buildOtherRun([finished_at: '2026-09-03T11:00:00.000Z'], 'other')
+        final index2 = Index.open(dbFile)
+
+        when: 'each connection ingests one run on its own thread'
+        final errors = Collections.synchronizedList(new ArrayList())
+        final t1 = Thread.start { try { index.ingestRun(store, run1, 'lab') } catch( Throwable e ) { errors << e } }
+        final t2 = Thread.start { try { index2.ingestRun(store, run2, 'lab') } catch( Throwable e ) { errors << e } }
+        t1.join()
+        t2.join()
+        index2.close()
+
+        then: 'busy_timeout made the second writer wait rather than fail'
+        errors.isEmpty()
+        count('run') == 2
+    }
+
+    def 'rebuild carries the run log watermark forward so catchUp does not re-scan'() {
+        given: 'a logged, ingested run'
+        final completion = buildRun()
+        RunLog.append(store, completion, 1_000_000L)
+        index.ingestRun(store, completion, 'lab')
+
+        when: 'the index is rebuilt from the store'
+        index.rebuild(store, 'lab')
+
+        and: 'catchUp runs against a store that records every read'
+        final counting = new Counting(store)
+        index.catchUp(counting, RunLog.of(store), 'lab')
+
+        then: 'the already-logged run is behind the carried watermark, so nothing is re-read'
+        counting.opens == 0
+        count('run') == 1
+    }
+
     /** Records which blocks the index actually reads. */
     static class Counting implements BlockStore {
         final BlockStore delegate

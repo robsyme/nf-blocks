@@ -12,6 +12,9 @@ nextflowPlugin {
     extensionPoints = [
         'robsyme.cas.lineage.CasLinStoreFactory',
         'robsyme.cas.nio.CasPathFactory',
+        'robsyme.cas.trace.CasObserverFactory',
+        'robsyme.cas.ext.CasExtension',
+        'robsyme.cas.CasConfigScope',
     ]
 }
 
