@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
@@ -63,7 +64,23 @@ class LocalBlockStore implements BlockStore {
 
     @Override
     boolean has(Cid cid) {
-        return Files.isRegularFile(blockPath(cid))
+        return present(blockPath(cid))
+    }
+
+    /**
+     * True if a block file is there, false only if it is genuinely missing.
+     * {@code Files.isRegularFile} swallows every IOException and answers
+     * false, so a permission error would read as absence and let a composite
+     * store fall through to another member; this lets anything but
+     * {@link NoSuchFileException} propagate instead.
+     */
+    private static boolean present(Path path) {
+        try {
+            return Files.readAttributes(path, BasicFileAttributes).isRegularFile()
+        }
+        catch( NoSuchFileException e ) {
+            return false
+        }
     }
 
     // Only a missing file is an absence. A permission error or a full disk
@@ -139,7 +156,7 @@ class LocalBlockStore implements BlockStore {
                 drainTo(input, temp, buffer, new long[1])
             } as byte[])
             final Path target = blockPath(cid)
-            if( !Files.isRegularFile(target) ) {
+            if( !present(target) ) {
                 Files.createDirectories(target.parent)
                 place(temp, target)
             }

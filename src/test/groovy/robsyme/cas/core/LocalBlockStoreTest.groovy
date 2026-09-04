@@ -231,6 +231,48 @@ class LocalBlockStoreTest extends Specification {
     }
 
     @Requires({ System.getProperty('user.name') != 'root' })
+    def 'has distinguishes an absent block from an unreachable one'() {
+        given:
+        def cid = store.putStreaming(stream('hello\n'))
+        def shard = store.blockPath(cid).parent
+
+        expect: 'a genuinely missing block is absent, no exception'
+        !store.has(Cid.parse('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'))
+
+        when: 'but a block behind an unreadable shard is unreachable, not absent'
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('---------'))
+        store.has(cid)
+
+        then:
+        def e = thrown(IOException)
+        !(e instanceof NoSuchBlockException)
+
+        cleanup:
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('rwxr-xr-x'))
+    }
+
+    @Requires({ System.getProperty('user.name') != 'root' })
+    def 'a composite does not serve a second member when the first holds an unreachable block'() {
+        given: 'both members hold the block; the writable member is member 0'
+        def cid = store.putStreaming(stream('hello\n'))
+        def bundleRoot = Files.createDirectories(root.resolveSibling('bundle'))
+        new LocalBlockStore(bundleRoot, 'bundle', true).putStreaming(stream('hello\n'))
+        def composite = new CompositeStore([store, new LocalBlockStore(bundleRoot, 'bundle', false)])
+        def shard = store.blockPath(cid).parent
+
+        when: "member 0's block becomes unreadable"
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('---------'))
+        composite.open(cid)
+
+        then: 'the failure surfaces; the composite must not quietly return the bundle copy'
+        def e = thrown(IOException)
+        !(e instanceof NoSuchBlockException)
+
+        cleanup:
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('rwxr-xr-x'))
+    }
+
+    @Requires({ System.getProperty('user.name') != 'root' })
     def 'a block that cannot be reached is not reported as absent'() {
         given:
         def cid = store.putStreaming(stream('hello\n'))
