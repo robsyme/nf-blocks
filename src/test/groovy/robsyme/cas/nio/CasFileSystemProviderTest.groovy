@@ -182,7 +182,7 @@ class CasFileSystemProviderTest extends Specification {
         a.lastModifiedTime() == provider.readAttributes(uri, BasicFileAttributes).lastModifiedTime()
     }
 
-    def 'readAttributes of a manifest cid is a directory, of a coordinate resolves through the pointer'() {
+    def 'a manifest Store URI is a directory, but a directory coordinate is a single pointer file'() {
         given:
         def dir = tmp.resolve('work/bundle2')
         Files.createDirectories(dir)
@@ -190,17 +190,61 @@ class CasFileSystemProviderTest extends Specification {
         provider.upload(dir, p('cas://lab/b/out'))
         def manifestCid = coords.read('b/out').get().cid
 
-        expect: 'the manifest cid is a directory'
+        expect: 'the manifest cid, addressed as a Store URI, is a directory'
         provider.readAttributes(p("cas://${manifestCid}"), BasicFileAttributes).isDirectory()
 
-        and: 'the coordinate resolves through the pointer to the same directory'
-        provider.readAttributes(p('cas://lab/b/out'), BasicFileAttributes).isDirectory()
+        and: 'the directory coordinate is a single pointer file, not a browsable directory'
+        // The published directory tree lives only under the Store URI. In the mutable
+        // coordinate namespace it is one indivisible pointer, so an overwrite deletes
+        // the pointer rather than recursing into immutable manifest blocks.
+        def da = provider.readAttributes(p('cas://lab/b/out'), BasicFileAttributes)
+        !da.isDirectory()
+        da.isRegularFile()
 
         and: 'a coordinate for a file resolves to the block'
         provider.upload(sourceFile('work/f.txt', 'data\n'), p('cas://lab/c/f.txt'))
         def fa = provider.readAttributes(p('cas://lab/c/f.txt'), BasicFileAttributes)
         fa.isRegularFile()
         fa.size() == 5
+    }
+
+    def 're-publishing a directory deletes only the pointer, never a block, so a second run survives'() {
+        given: 'a directory published once, as Nextflow does on the first run'
+        def dir = tmp.resolve('work/qc/A_qc')
+        Files.createDirectories(dir.resolve('nested'))
+        Files.writeString(dir.resolve('summary.txt'), 'summary\n')
+        Files.writeString(dir.resolve('nested/detail.txt'), 'detail\n')
+        Files.createSymbolicLink(dir.resolve('alias.txt'), Paths.get('summary.txt'))
+        provider.upload(dir, p('cas://lab/qc/A/A_qc'))
+        def manifestCid = coords.read('qc/A/A_qc').get().cid
+        def blocksBefore = store.listBlocks().collect { it.toString() }.toSet()
+
+        when: 'the second run publishes the same directory to the existing coordinate'
+        provider.upload(dir, p('cas://lab/qc/A/A_qc'))
+
+        then: 'the upload refuses before touching bytes, as it does for a file'
+        // Nextflow catches this and then runs its overwrite path (deletePath + re-copy).
+        thrown(FileAlreadyExistsException)
+
+        and: 'readAttributes reports a regular file, so deletePath will not recurse'
+        // A single Files.delete on the pointer -- the whole point of the fix; a
+        // directory here would recurse into the immutable manifest blocks and abort.
+        !provider.readAttributes(p('cas://lab/qc/A/A_qc'), BasicFileAttributes).isDirectory()
+
+        when: 'Nextflow deletes the existing directory coordinate before re-copying'
+        provider.delete(p('cas://lab/qc/A/A_qc'))
+
+        then: 'the pointer is gone but every content block survives'
+        !coords.exists('qc/A/A_qc')
+        store.listBlocks().collect { it.toString() }.toSet() == blocksBefore
+        store.has(manifestCid)
+
+        when: 're-publishing writes a fresh pointer to the same manifest'
+        provider.upload(dir, p('cas://lab/qc/A/A_qc'))
+
+        then: 'the pointer points at the same manifest and no block was added'
+        coords.read('qc/A/A_qc').get().cid == manifestCid
+        store.listBlocks().collect { it.toString() }.toSet() == blocksBefore
     }
 
     def 'newInputStream streams the exact block bytes'() {

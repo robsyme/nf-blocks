@@ -106,6 +106,10 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     private static class CasNode {
         boolean present
         boolean directory
+        // A directory coordinate: a single pointer file in the mutable coordinate
+        // namespace that dereferences to a manifest. Not a browsable directory here
+        // -- the tree lives under the Store URI cas://<manifest>. See DESIGN section 7.
+        boolean dirPointer
         boolean symlink
         boolean executable
         long size
@@ -200,7 +204,15 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         if( !refOpt.isPresent() )
             return CasNode.absent()
         final StoreRef ref = refOpt.get()
-        return ref.isDirectory() ? manifestNode(ref.cid) : fileNode(ref.cid)
+        if( ref.isDirectory() )
+            // A published directory is one indivisible pointer file in the coordinate
+            // namespace: it has no per-child coordinates to delete, so Nextflow's
+            // overwrite-on-republish must remove the whole pointer rather than recurse
+            // into the immutable manifest blocks. Present it as a file-like unit.
+            return new CasNode(present: true, directory: false, dirPointer: true,
+                    size: store().size(ref.cid), mtime: store().lastModifiedMillis(ref.cid),
+                    content: ref.cid)
+        return fileNode(ref.cid)
     }
 
     // ------------------------------------------------------------- read helpers
@@ -310,7 +322,9 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         if( target.parent != null )
             Files.createDirectories(target.parent)
         final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
-        if( node.directory ) {
+        // Content staging follows a directory coordinate's pointer to its manifest;
+        // only the delete/overwrite path treats it as a single pointer file.
+        if( node.directory || node.dirPointer ) {
             materialiseDirectory(node.content, target)
         }
         else if( node.symlink ) {
@@ -422,7 +436,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasNode node = resolve(p)
         if( !node.present )
             throw new NoSuchFileException(namedAbsence(p))
-        if( node.directory )
+        if( node.directory || node.dirPointer )
             throw new IOException("is a directory: '${p}'")
         final Path block = localBlockPath(node.content)
         if( block != null )
@@ -436,7 +450,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasNode node = resolve(p)
         if( !node.present )
             throw new NoSuchFileException(namedAbsence(p))
-        if( node.directory )
+        if( node.directory || node.dirPointer )
             throw new IOException("is a directory: '${p}'")
         return store().open(node.content)   // streams the block, never buffers it
     }
