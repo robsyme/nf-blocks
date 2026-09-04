@@ -77,6 +77,16 @@ class CasConfigTest extends Specification {
         e.message.contains('ghost')
     }
 
+    def 'rejects a resolve given as a String rather than a list'() {
+        when:
+        // 'lab' as List would char-split to ['l','a','b']; refuse it instead.
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], resolve: 'lab']], 'cas://lab')
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('cas.resolve must be a list')
+    }
+
     def 'accepts an alias matching the alias pattern'() {
         expect:
         CasConfig.from([cas: [stores: [(alias): [location: '/data/cas']]]], "cas://$alias").writableAlias == alias

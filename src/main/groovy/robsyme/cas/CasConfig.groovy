@@ -120,8 +120,10 @@ class CasConfig {
     }
 
     private static List<String> memberList(String writable, Object resolve, Set<String> known) {
+        if( resolve != null && !(resolve instanceof List) )
+            throw new IllegalArgumentException("cas.resolve must be a list of store aliases, e.g. ['lab', 'shared'] -- offending value: ${resolve}")
         final List<String> requested = resolve != null
-            ? (resolve as List).collect { it as String }
+            ? ((List) resolve).collect { it as String }
             : new ArrayList<String>(known)
         for( String name : requested ) {
             if( !known.contains(name) )

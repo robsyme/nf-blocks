@@ -93,14 +93,25 @@ check() {
     fi
 }
 
-check "published file at <store>/coords/aligned/A/A.bam" test -f "$STORE/coords/aligned/A/A.bam"
-check "published directory at <store>/coords/qc/A/A_qc/summary.txt" test -f "$STORE/coords/qc/A/A_qc/summary.txt"
-check "nested file in the published directory" test -f "$STORE/coords/qc/A/A_qc/nested/detail.txt"
+# The store holds real content-addressed blocks now, and a Publish Coordinate is
+# a one-line Pointer File naming the Store URI -- not a copied tree (DESIGN section 7).
+check "content-addressed blocks written under <store>/blocks" \
+    bash -c "find '$STORE/blocks' -type f -name 'bafk*' | grep -q ."
+check "metadata (dag-cbor) blocks written under <store>/blocks" \
+    bash -c "find '$STORE/blocks' -type f -name 'bafy*' | grep -q ."
+check "file coordinate is a pointer file at <store>/coords/aligned/A/A.bam" test -f "$STORE/coords/aligned/A/A.bam"
+check "the file pointer names a raw Store URI" \
+    bash -c "grep -qE '^cas://bafk[a-z2-7]+/A\\.bam$' '$STORE/coords/aligned/A/A.bam'"
+check "directory coordinate is a pointer file at <store>/coords/qc/A/A_qc" test -f "$STORE/coords/qc/A/A_qc"
+check "the directory pointer names a manifest Store URI" \
+    bash -c "grep -qE '^cas://bafy[a-z2-7]+' '$STORE/coords/qc/A/A_qc'"
 check "lineage records at <store>/nf" test -d "$STORE/nf"
 check "a WorkflowRun record in <store>/nf" \
     bash -c "find '$STORE/nf' -name .data.json -print0 | xargs -0 grep -lE '\"kind\"[[:space:]]*:[[:space:]]*\"WorkflowRun\"' | grep -q ."
-check "the coordinate recorded as a cas:// path in a FileOutput record" \
-    bash -c "find '$STORE/nf' -name .data.json -print0 | xargs -0 grep -l 'cas://lab/aligned/A/A.bam' | grep -q ."
+# save() rewrites FileOutput.path to the immutable Store URI, so a published
+# FileOutput names a cas://<cid> address rather than the mutable coordinate.
+check "a FileOutput record names a cas://<cid> Store URI" \
+    bash -c "find '$STORE/nf' -name .data.json -print0 | xargs -0 grep -lE 'cas://bafk[a-z2-7]+' | grep -q ."
 
 if [[ $failures -ne 0 ]]; then
     echo "smoke: FAIL -- $failures check(s) failed; log at $LOG" >&2
