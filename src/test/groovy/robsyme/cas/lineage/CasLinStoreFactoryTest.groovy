@@ -1,8 +1,14 @@
 package robsyme.cas.lineage
 
+import java.nio.file.Files
+import java.nio.file.Path
+
+import nextflow.Global
+import nextflow.Session
 import nextflow.lineage.config.LineageConfig
 import nextflow.plugin.Priority
 import spock.lang.Specification
+import spock.lang.TempDir
 
 /**
  * `canOpen` runs at Session.init for every lineage-enabled run, including runs
@@ -10,6 +16,9 @@ import spock.lang.Specification
  * config. DESIGN.md section 2.
  */
 class CasLinStoreFactoryTest extends Specification {
+
+    @TempDir
+    Path tempDir
 
     def 'claims a cas lineage store location'() {
         expect:
@@ -41,5 +50,26 @@ class CasLinStoreFactoryTest extends Specification {
         expect:
         priority != null
         priority.value() == -10
+    }
+
+    def 'newInstance opens a cas lineage store rooted at the writable member'() {
+        given:
+        def cfg = [
+            lineage: [store: [location: 'cas://lab']],
+            cas: [stores: [lab: [location: tempDir.toString()]]],
+        ]
+        final session = Mock(Session) { getConfig() >> cfg }
+        Global.session = session
+
+        when:
+        final store = new CasLinStoreFactory().newInstance(new LineageConfig([store: [location: 'cas://lab']]))
+
+        then:
+        store instanceof CasLinStore
+        Files.isDirectory((store as CasLinStore).recordsLocation)
+        (store as CasLinStore).recordsLocation.fileName.toString() == 'nf'
+
+        cleanup:
+        Global.session = null
     }
 }
