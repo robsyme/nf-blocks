@@ -2,12 +2,14 @@ package robsyme.cas.core
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.stream.Collectors
 
+import spock.lang.Requires
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -136,7 +138,7 @@ class LocalBlockStoreTest extends Specification {
         store.put(cid, stream('goodbye\n'), 8L)
 
         then:
-        thrown(IOException)
+        thrown(BlockMismatchException)
         !store.has(cid)
         tempFiles().isEmpty()
         store.listBlocks().withCloseable { it.count() } == 0L
@@ -150,7 +152,7 @@ class LocalBlockStoreTest extends Specification {
         store.put(cid, stream('hello\n'), 7L)
 
         then:
-        thrown(IOException)
+        thrown(BlockMismatchException)
         !store.has(cid)
         tempFiles().isEmpty()
     }
@@ -213,6 +215,138 @@ class LocalBlockStoreTest extends Specification {
 
         where:
         method << ['put', 'putStreaming', 'putDagCbor']
+    }
+
+    def 'a read-only store still reads'() {
+        given:
+        def cid = store.putStreaming(stream('hello\n'))
+        def readOnly = new LocalBlockStore(root, 'shared', false)
+
+        expect:
+        readOnly.has(cid)
+        readOnly.size(cid) == 6
+        readOnly.open(cid).withStream { it.text } == 'hello\n'
+        readOnly.lastModifiedMillis(cid) == store.lastModifiedMillis(cid)
+        readOnly.listBlocks().withCloseable { it.count() } == 1L
+    }
+
+    @Requires({ System.getProperty('user.name') != 'root' })
+    def 'a block that cannot be reached is not reported as absent'() {
+        given:
+        def cid = store.putStreaming(stream('hello\n'))
+        def shard = store.blockPath(cid).parent
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('---------'))
+
+        when:
+        store.size(cid)
+
+        then: 'a failure, not an absence, or a composite store falls through to another member'
+        def sizeError = thrown(IOException)
+        !(sizeError instanceof NoSuchBlockException)
+
+        when:
+        store.open(cid)
+
+        then:
+        def openError = thrown(IOException)
+        !(openError instanceof NoSuchBlockException)
+
+        when:
+        store.lastModifiedMillis(cid)
+
+        then:
+        def timeError = thrown(IOException)
+        !(timeError instanceof NoSuchBlockException)
+
+        cleanup:
+        Files.setPosixFilePermissions(shard, PosixFilePermissions.fromString('rwxr-xr-x'))
+    }
+
+    def 'a stream that returns zero bytes before its content is stored whole'() {
+        given: 'a stream whose first read yields nothing, which is legal'
+        def payload = 'hello\n'.getBytes('UTF-8')
+        def input = new InputStream() {
+            private final InputStream delegate = new ByteArrayInputStream(payload)
+            private int stalls = 2
+            int read() { delegate.read() }
+            int read(byte[] b, int off, int len) {
+                if( stalls > 0 ) { stalls--; return 0 }
+                return delegate.read(b, off, len)
+            }
+        }
+
+        when:
+        def cid = store.putStreaming(input)
+
+        then:
+        cid.toString() == 'bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am'
+        store.size(cid) == 6
+    }
+
+    def 'a mismatch between the bytes and the address is a named failure'() {
+        given:
+        def cid = Cid.parse('bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am')
+
+        when: 'the bytes hash to something else'
+        store.put(cid, stream('goodbye\n'), 8L)
+
+        then:
+        def digestError = thrown(BlockMismatchException)
+        digestError.cid == cid
+        digestError.message.contains(cid.toString())
+
+        when: 'the bytes are the right ones but the announced size is wrong'
+        store.put(cid, stream('hello\n'), 7L)
+
+        then:
+        def sizeError = thrown(BlockMismatchException)
+        sizeError.cid == cid
+
+        and: 'neither attempt left anything behind'
+        !store.has(cid)
+        tempFiles().isEmpty()
+    }
+
+    def 'a block that appears while another writer is streaming is never replaced'() {
+        given: 'a writer that has finished hashing but has not yet placed its block'
+        def cid = Cid.parse('bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am')
+        def written = new CountDownLatch(1)
+        def place = new CountDownLatch(1)
+        def slow = new InputStream() {
+            private final InputStream delegate = new ByteArrayInputStream('hello\n'.getBytes('UTF-8'))
+            private boolean paused = false
+            int read() { delegate.read() }
+            int read(byte[] b, int off, int len) {
+                int n = delegate.read(b, off, len)
+                if( n < 0 && !paused ) {
+                    paused = true
+                    written.countDown()
+                    place.await(10, TimeUnit.SECONDS)
+                }
+                return n
+            }
+        }
+        Throwable failure = null
+        def writer = Thread.start {
+            try { store.put(cid, slow, 6L) }
+            catch( Throwable t ) { failure = t }
+        }
+
+        when: 'another writer places the very same block first'
+        written.await(10, TimeUnit.SECONDS)
+        new LocalBlockStore(root, 'lab', true).put(cid, stream('hello\n'), 6L)
+        def block = store.blockPath(cid)
+        def identity = Files.readAttributes(block, BasicFileAttributes).fileKey()
+        def stamp = Files.getLastModifiedTime(block)
+        place.countDown()
+        writer.join(10000)
+
+        then: 'the late writer succeeds without touching the block that is already there'
+        failure == null
+        Files.readAttributes(block, BasicFileAttributes).fileKey() == identity
+        Files.getLastModifiedTime(block) == stamp
+        store.open(cid).withStream { it.text } == 'hello\n'
+        tempFiles().isEmpty()
     }
 
     def 'sixteen threads storing the same bytes leave exactly one block'() {

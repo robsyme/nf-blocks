@@ -5,16 +5,9 @@ import java.security.MessageDigest
 import spock.lang.Specification
 
 /**
- * DESIGN.md §3. Two of the vectors printed in DESIGN.md are internally
- * inconsistent; the values used here were recomputed from first principles
- * (sha256 + multiformats CIDv1) and cross-checked with shasum(1):
- *
- *   - raw `hello\n`: DESIGN gives sha256 5891b5b5…be03 (correct, the
- *     well-known digest) but the string bafkreigyhb…qmga, which decodes to
- *     the unrelated digest d8387c67…0c30. The string for the stated digest
- *     is bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am.
- *   - dag-cbor empty map: the string bafyreigbtj…swua is correct; the hex
- *     printed beside it is not. sha256(a0) is c19a797f…56a0.
+ * DESIGN.md §3: CIDv1 over a sha2-256 multihash, base32 lower, 59 characters.
+ * The vectors below are the ones in the contract, recomputed here from
+ * sha256 + the multiformats CIDv1 layout.
  */
 class CidTest extends Specification {
 
@@ -125,6 +118,25 @@ class CidTest extends Specification {
 
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def 'only the two codecs this store addresses are accepted'() {
+        when: 'dag-pb, a codec nf-blocks never writes'
+        Cid.of(0x70, sha256(new byte[0]))
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('112')      // 0x70 in decimal
+
+        when: 'and the same codec arriving as text'
+        Cid.parse('bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku')
+
+        then:
+        thrown(IllegalArgumentException)
+
+        and:
+        !Cid.isCid('bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku')
+        Cid.isCid('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku')
     }
 
     def 'equality and hashing are by content'() {

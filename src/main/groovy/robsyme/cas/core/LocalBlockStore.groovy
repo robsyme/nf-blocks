@@ -1,15 +1,16 @@
 package robsyme.cas.core
 
+import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.util.stream.Collectors
 import java.util.stream.Stream
 
 import groovy.transform.CompileStatic
@@ -21,10 +22,12 @@ import groovy.transform.CompileStatic
  * blocks/&lt;xx&gt;/&lt;cid&gt;   xx = the last two characters of the cid string
  * </pre>
  *
- * Every write streams through a fixed buffer into a temporary file next to
- * its destination, fsyncs it, makes it read-only and renames it into place.
- * A rename that fails because the block is already there is success: the
- * bytes are the same, that is what the address means.
+ * Every write streams through a fixed buffer into a temporary file, fsyncs
+ * it, makes it read-only and links it into place with an atomic
+ * create-if-absent, then fsyncs the directory. A link that fails because the
+ * block is already there is success: the bytes are the same, that is what the
+ * address means. Placement never replaces an existing block, so a block's
+ * mtime is stable per address as {@link BlockStore#lastModifiedMillis} says.
  */
 @CompileStatic
 class LocalBlockStore implements BlockStore {
@@ -63,12 +66,16 @@ class LocalBlockStore implements BlockStore {
         return Files.isRegularFile(blockPath(cid))
     }
 
+    // Only a missing file is an absence. A permission error or a full disk
+    // must not read as "not here", or a composite store would quietly fall
+    // through to another member and answer with the wrong provenance.
+
     @Override
     long size(Cid cid) {
         try {
             return Files.size(blockPath(cid))
         }
-        catch( IOException e ) {
+        catch( NoSuchFileException e ) {
             throw new NoSuchBlockException(cid, alias)
         }
     }
@@ -78,7 +85,7 @@ class LocalBlockStore implements BlockStore {
         try {
             return Files.newInputStream(blockPath(cid))
         }
-        catch( IOException e ) {
+        catch( NoSuchFileException e ) {
             throw new NoSuchBlockException(cid, alias)
         }
     }
@@ -88,7 +95,7 @@ class LocalBlockStore implements BlockStore {
         try {
             return Files.getLastModifiedTime(blockPath(cid)).toMillis()
         }
-        catch( IOException e ) {
+        catch( NoSuchFileException e ) {
             throw new NoSuchBlockException(cid, alias)
         }
     }
@@ -107,9 +114,9 @@ class LocalBlockStore implements BlockStore {
             final long written = count[0]
             final Cid actual = Cid.of(cid.codec, digest)
             if( actual != cid )
-                throw new IOException("block content hashes to $actual, not to $cid")
+                throw new BlockMismatchException(cid, "the bytes hash to $actual")
             if( expectedSize >= 0 && written != expectedSize )
-                throw new IOException("block $cid is $written bytes, not the announced $expectedSize")
+                throw new BlockMismatchException(cid, "$written bytes arrived, not the announced $expectedSize")
             place(temp, target)
         }
         finally {
@@ -120,6 +127,10 @@ class LocalBlockStore implements BlockStore {
     @Override
     Cid putStreaming(InputStream input) {
         checkWritable()
+        // The temp file lives at blocks/.tmp-<random> rather than in a shard,
+        // because the shard is the last two characters of the cid and the cid
+        // is only known once the whole stream has been hashed. The move into
+        // blocks/<xx>/ stays inside one filesystem, so the link is still atomic.
         final Path staging = root.resolve(BLOCKS)
         Files.createDirectories(staging)
         final Path temp = staging.resolve(TEMP_PREFIX + token())
@@ -166,40 +177,62 @@ class LocalBlockStore implements BlockStore {
      */
     private static byte[] drainTo(InputStream input, Path temp, byte[] buffer, long[] written) {
         final MessageDigest digest = MessageDigest.getInstance('SHA-256')
-        FileChannel channel = null
+        final ByteBuffer view = ByteBuffer.wrap(buffer)
+        final FileChannel channel = FileChannel.open(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
         try {
-            final OutputStream out = Files.newOutputStream(temp, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
-            try {
-                int n
-                while( (n = input.read(buffer, 0, buffer.length)) > 0 ) {
-                    digest.update(buffer, 0, n)
-                    out.write(buffer, 0, n)
-                    written[0] += n
-                }
+            int n
+            // A read may legally return 0 without being at the end.
+            while( (n = input.read(buffer, 0, buffer.length)) != -1 ) {
+                if( n == 0 ) continue
+                digest.update(buffer, 0, n)
+                view.limit(n).position(0)
+                while( view.hasRemaining() )
+                    channel.write(view)
+                written[0] += n
             }
-            finally {
-                out.close()
-            }
-            // fsync before the block becomes visible under its address
-            channel = FileChannel.open(temp, StandardOpenOption.READ)
+            // fsync the bytes before the block becomes visible under its address
             channel.force(true)
         }
         finally {
-            channel?.close()
+            channel.close()
         }
         return digest.digest()
     }
 
-    /** Makes the temp file read-only and moves it onto the address. */
+    /**
+     * Makes the temp file read-only and links it onto the address. A hard
+     * link is created only if nothing is there: unlike a rename, it can never
+     * replace a block another writer has just placed, so an existing block
+     * keeps its identity and its mtime.
+     */
     private static void place(Path temp, Path target) {
         Files.setPosixFilePermissions(temp, READ_ONLY)
         try {
-            Files.move(temp, target)
+            Files.createLink(target, temp)
         }
         catch( FileAlreadyExistsException e ) {
             // Another writer got there first with the same bytes. That is success.
             if( !Files.isRegularFile(target) )
                 throw e
+            return
+        }
+        syncDirectory(target.parent)
+    }
+
+    /** Makes the new directory entry itself durable, best effort. */
+    private static void syncDirectory(Path directory) {
+        try {
+            final FileChannel channel = FileChannel.open(directory, StandardOpenOption.READ)
+            try {
+                channel.force(true)
+            }
+            finally {
+                channel.close()
+            }
+        }
+        catch( IOException e ) {
+            // Not every filesystem lets a directory be opened and synced; the
+            // block itself is already on disk either way.
         }
     }
 

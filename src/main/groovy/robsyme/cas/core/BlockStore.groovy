@@ -2,10 +2,13 @@ package robsyme.cas.core
 
 import java.util.stream.Stream
 
+import groovy.transform.CompileStatic
+
 /**
  * A set of immutable blocks addressed by their content (DESIGN.md §5).
  * "Already present" is success for every write.
  */
+@CompileStatic
 interface BlockStore {
 
     String alias()

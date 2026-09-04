@@ -1,5 +1,11 @@
 package robsyme.cas.core
 
+import java.nio.ByteBuffer
+import java.nio.CharBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
+
 import groovy.transform.CompileStatic
 
 /**
@@ -26,6 +32,9 @@ class DagCbor {
 
     private static final BigInteger UINT64_MAX = new BigInteger('18446744073709551615')
 
+    /** The smallest argument each head width is allowed to carry. */
+    private static final long[] MINIMUM_FOR_WIDTH = [24L, 0x100L, 0x10000L, 0x100000000L] as long[]
+
     static byte[] encode(Object value) {
         def out = new ByteArrayOutputStream(256)
         writeValue(out, value)
@@ -44,6 +53,38 @@ class DagCbor {
 
     static Cid cidOf(byte[] encoded) {
         return Cid.of(Cid.DAG_CBOR, Hashing.sha256(encoded))
+    }
+
+    /**
+     * UTF-8 for a string that must be well-formed UTF-16. A lone surrogate
+     * would otherwise be written as '?', so two different keys could collide
+     * and a block would no longer say what it was given.
+     */
+    private static byte[] utf8(String text) {
+        try {
+            ByteBuffer buffer = StandardCharsets.UTF_8.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(text))
+            byte[] bytes = new byte[buffer.remaining()]
+            buffer.get(bytes)
+            return bytes
+        }
+        catch( CharacterCodingException e ) {
+            throw new IllegalArgumentException("dag-cbor cannot encode a string that is not valid unicode: ${e.message}")
+        }
+    }
+
+    private static String fromUtf8(byte[] bytes) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes)).toString()
+        }
+        catch( CharacterCodingException e ) {
+            throw new IllegalArgumentException("dag-cbor text is not valid utf-8: ${e.message}")
+        }
     }
 
     // ---------------------------------------------------------------- encode
@@ -79,15 +120,17 @@ class DagCbor {
             out.write(bytes, 0, bytes.length)
         }
         else if( value instanceof CharSequence ) {
-            byte[] bytes = value.toString().getBytes('UTF-8')
+            byte[] bytes = utf8(value.toString())
             writeHead(out, MAJOR_TEXT, bytes.length)
             out.write(bytes, 0, bytes.length)
         }
         else if( value instanceof Map ) {
             writeMap(out, (Map) value)
         }
-        else if( value instanceof Collection ) {
-            Collection items = (Collection) value
+        else if( value instanceof List ) {
+            // A List only: a Set or a Queue has no order the reader could
+            // reproduce, so it has no canonical encoding.
+            List items = (List) value
             writeHead(out, MAJOR_ARRAY, items.size())
             for( Object item : items )
                 writeValue(out, item)
@@ -98,8 +141,10 @@ class DagCbor {
     }
 
     private static void writeMap(ByteArrayOutputStream out, Map map) {
-        List<byte[]> keys = new ArrayList<>(map.size())
-        Map<String, Object> byKey = new HashMap<>(map.size())
+        // The pairs travel together through the sort: re-deriving a key from
+        // its bytes would lose the association if two keys ever encoded alike.
+        List<Object[]> pairs = new ArrayList<>(map.size())
+        Set<String> seen = new HashSet<>(map.size())
         for( Object entry : map.entrySet() ) {
             Object rawKey = ((Map.Entry) entry).key
             if( !(rawKey instanceof CharSequence) )
@@ -107,19 +152,19 @@ class DagCbor {
             String key = rawKey.toString()
             if( key == '/' )
                 throw new IllegalArgumentException('a dag-cbor map may not have the key "/"')
-            if( byKey.containsKey(key) )
+            if( !seen.add(key) )
                 throw new IllegalArgumentException("duplicate map key '$key'")
-            byKey.put(key, ((Map.Entry) entry).value)
-            keys.add(key.getBytes('UTF-8'))
+            pairs.add([utf8(key), ((Map.Entry) entry).value] as Object[])
         }
-        keys.sort(new Comparator<byte[]>() {
-            @Override int compare(byte[] a, byte[] b) { compareKeys(a, b) }
+        pairs.sort(new Comparator<Object[]>() {
+            @Override int compare(Object[] a, Object[] b) { compareKeys((byte[]) a[0], (byte[]) b[0]) }
         })
-        writeHead(out, MAJOR_MAP, keys.size())
-        for( byte[] key : keys ) {
+        writeHead(out, MAJOR_MAP, pairs.size())
+        for( Object[] pair : pairs ) {
+            byte[] key = (byte[]) pair[0]
             writeHead(out, MAJOR_TEXT, key.length)
             out.write(key, 0, key.length)
-            writeValue(out, byKey.get(new String(key, 'UTF-8')))
+            writeValue(out, pair[1])
         }
     }
 
@@ -222,7 +267,7 @@ class DagCbor {
                 case MAJOR_BYTES:
                     return readBytes(arg)
                 case MAJOR_TEXT:
-                    return new String(readBytes(arg), 'UTF-8')
+                    return fromUtf8(readBytes(arg))
                 case MAJOR_ARRAY:
                     return readArray(arg)
                 case MAJOR_MAP:
@@ -250,6 +295,11 @@ class DagCbor {
             long value = 0
             for( int i = 0; i < width; i++ )
                 value = (value << 8) | readByte()
+            // Canonical dag-cbor: the head must be the narrowest one that fits,
+            // or the same value would have more than one encoding.
+            final long floor = MINIMUM_FOR_WIDTH[info - 24]
+            if( Long.compareUnsigned(value, floor) < 0 )
+                throw new IllegalArgumentException("non-minimal cbor head: $value does not need ${width} byte(s)")
             return value
         }
 
@@ -290,7 +340,7 @@ class DagCbor {
                 if( previous != null && compareKeys(previous, key) >= 0 )
                     throw new IllegalArgumentException('dag-cbor map keys must be strictly ordered by length then bytes')
                 previous = key
-                String name = new String(key, 'UTF-8')
+                String name = fromUtf8(key)
                 if( name == '/' )
                     throw new IllegalArgumentException('a dag-cbor map may not have the key "/"')
                 map.put(name, readValue())

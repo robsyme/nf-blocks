@@ -116,8 +116,10 @@ class CompositeStoreTest extends Specification {
         when:
         store.open(absent)
 
-        then:
-        thrown(NoSuchBlockException)
+        then: 'and the failure names every member that was consulted'
+        def e = thrown(NoSuchBlockException)
+        e.message.contains('lab')
+        e.message.contains('bundle')
 
         when:
         store.size(absent)
@@ -138,9 +140,10 @@ class CompositeStoreTest extends Specification {
         written == cid
         writable.delegate.has(cid)
 
-        and: 'the same holds for the addressed and the metadata writes'
-        store.put(cid, stream('hello\n'), 6L)
-        store.putDagCbor(['kind': 'Test']) == writable.delegate.putDagCbor(['kind': 'Test'])
+        and: 'and for a metadata write, which also lands in member 0'
+        def meta = store.putDagCbor(['kind': 'Test'])
+        writable.delegate.has(meta)
+        !readOnly.delegate.has(meta)
     }
 
     def 'listBlocks unions the members without duplicates'() {

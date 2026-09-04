@@ -227,6 +227,102 @@ class DagCborTest extends Specification {
         'a truncated item'             | '1a0001'
     }
 
+    def 'map keys sort by utf-8 length then by unsigned bytes'() {
+        when: "'z' is one byte, 'zz' and 'e-acute' are two, and c3 sorts after 7a"
+        def encoded = DagCbor.encode(['\u00e9': 3, 'zz': 2, 'z': 1])
+
+        then:
+        hex(encoded) == 'a3' + '617a' + '01' + '627a7a' + '02' + '62c3a9' + '03'
+
+        and:
+        new ArrayList<String>(((Map) DagCbor.decode(encoded)).keySet()) == ['z', 'zz', '\u00e9']
+    }
+
+    def 'a key outside the basic plane keeps its own value'() {
+        given: 'a surrogate pair, one code point, four utf-8 bytes'
+        def grin = '\ud83d\ude00'
+
+        when:
+        def encoded = DagCbor.encode([(grin): 'x', 'a': 'y'])
+
+        then:
+        hex(encoded) == 'a2' + '6161' + '6179' + '64f09f9880' + '6178'
+
+        and:
+        DagCbor.decode(encoded) == [('a'): 'y', (grin): 'x']
+    }
+
+    def 'an unpaired surrogate is refused rather than silently mangled'() {
+        when: 'two distinct keys that both encode to "?" without the check'
+        DagCbor.encode(['\ud800': 'x', '\udc00': 'y'])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        DagCbor.encode(['a': '\ud800'])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        DagCbor.encode('\udfff')
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'decode rejects text that is not valid utf-8'() {
+        when: 'a one byte text string holding 0xff'
+        DagCbor.decode(bin('61ff'))
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when: 'and the same as a map key'
+        DagCbor.decode(bin('a161ff01'))
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'decode rejects a non-minimal head: #why'() {
+        when:
+        DagCbor.decode(bin(encoded))
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        why                                | encoded
+        'unsigned 5 in a one-byte head'    | '1805'
+        'unsigned 5 in a two-byte head'    | '190005'
+        'unsigned 5 in a four-byte head'   | '1a00000005'
+        'unsigned 5 in an eight-byte head' | '1b0000000000000005'
+        'unsigned 255 in a two-byte head'  | '1900ff'
+        'negative 5 in a one-byte head'    | '3805'
+        'a byte string length'             | '580105'
+        'a text string length'             | '780161'
+        'an array length'                  | '980100'
+        'a map length'                     | 'b801616100'
+        'a map value'                      | 'a161611805'
+        'a tag 42 in a two-byte head'      | 'd9002a5825' + '00' + '01551220' + ('00' * 32)
+    }
+
+    def 'encode takes a List but not any other collection'() {
+        given:
+        def set = new LinkedHashSet<Integer>([1, 2])
+
+        expect:
+        hex(DagCbor.encode(new LinkedList<Integer>([1, 2]))) == '820102'
+
+        when: 'a set has no defined order, so it has no canonical encoding'
+        DagCbor.encode(set)
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def 'encode rejects an unsupported value type'() {
         when:
         DagCbor.encode(new Object())

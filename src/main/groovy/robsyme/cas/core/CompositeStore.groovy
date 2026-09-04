@@ -31,7 +31,7 @@ class CompositeStore implements BlockStore {
         for( BlockStore member : members )
             if( member.has(cid) )
                 return member
-        throw new NoSuchBlockException(cid, alias())
+        throw new NoSuchBlockException(cid, members*.alias().join(', '))
     }
 
     @Override

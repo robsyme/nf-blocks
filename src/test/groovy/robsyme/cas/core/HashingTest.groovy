@@ -109,6 +109,86 @@ class HashingTest extends Specification {
         spy.calls >= 5
     }
 
+    /** Legal for an InputStream, and fatal to a loop that stops on n > 0. */
+    private static class SlowStart extends InputStream {
+        private final InputStream delegate
+        private int stalls
+
+        SlowStart(InputStream delegate, int stalls) {
+            this.delegate = delegate
+            this.stalls = stalls
+        }
+
+        @Override
+        int read() { delegate.read() }
+
+        @Override
+        int read(byte[] target, int off, int len) {
+            if( stalls > 0 ) {
+                stalls--
+                return 0
+            }
+            return delegate.read(target, off, len)
+        }
+    }
+
+    def 'a read that returns zero bytes does not end the stream'() {
+        given:
+        def bytes = 'hello\n'.getBytes('UTF-8')
+
+        expect:
+        Hashing.hashRaw(new SlowStart(new ByteArrayInputStream(bytes), 3), new byte[64]).toString() ==
+            'bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am'
+    }
+
+    def 'releasing a buffer the pool never lent is refused and does not create a permit'() {
+        given:
+        def pool = new HashBufferPool(1, 16)
+        def borrowed = pool.borrow()
+
+        when:
+        pool.release(new byte[16])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when: 'the single permit is still out on loan'
+        def waiting = new CountDownLatch(1)
+        def waiter = Thread.start { pool.borrow(); waiting.countDown() }
+
+        then:
+        !waiting.await(300, TimeUnit.MILLISECONDS)
+
+        cleanup:
+        pool.release(borrowed)
+        waiter?.join(2000)
+    }
+
+    def 'releasing the same buffer twice is refused and does not create a permit'() {
+        given:
+        def pool = new HashBufferPool(1, 16)
+        def borrowed = pool.borrow()
+        pool.release(borrowed)
+
+        when:
+        pool.release(borrowed)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when: 'the pool still holds exactly one buffer'
+        def first = pool.borrow()
+        def waiting = new CountDownLatch(1)
+        def waiter = Thread.start { pool.borrow(); waiting.countDown() }
+
+        then:
+        !waiting.await(300, TimeUnit.MILLISECONDS)
+
+        cleanup:
+        pool.release(first)
+        waiter?.join(2000)
+    }
+
     def 'the shared buffer pool holds 32 buffers of one mebibyte'() {
         expect:
         HashBufferPool.BUFFER_SIZE == 1024 * 1024

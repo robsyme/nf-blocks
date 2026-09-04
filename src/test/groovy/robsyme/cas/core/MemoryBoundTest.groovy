@@ -2,6 +2,7 @@ package robsyme.cas.core
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 
 import spock.lang.Shared
 import spock.lang.Specification
@@ -26,8 +27,9 @@ class MemoryBoundTest extends Specification {
     @Shared
     Path bigFile
 
+    /** Computed here, streamed through MessageDigest, so no feature depends on another. */
     @Shared
-    Cid bigFileCid
+    Cid expectedCid
 
     def setupSpec() {
         bigFile = tempDir.resolve('big.bin')
@@ -42,6 +44,14 @@ class MemoryBoundTest extends Specification {
         finally {
             raf.close()
         }
+        final MessageDigest digest = MessageDigest.getInstance('SHA-256')
+        final byte[] scratch = new byte[64 * 1024]
+        Files.newInputStream(bigFile).withCloseable { InputStream input ->
+            int n
+            while( (n = input.read(scratch, 0, scratch.length)) != -1 )
+                digest.update(scratch, 0, n)
+        }
+        expectedCid = Cid.of(Cid.RAW, digest.digest())
     }
 
     def 'the heap really is smaller than the file'() {
@@ -55,14 +65,15 @@ class MemoryBoundTest extends Specification {
         Runtime.runtime.maxMemory() < FILE_SIZE
 
         when:
-        bigFileCid = Hashing.hashRaw(bigFile)
+        def cid = Hashing.hashRaw(bigFile)
 
-        then:
-        bigFileCid.isRaw()
-        bigFileCid.toString().length() == 59
+        then: 'the same address MessageDigest gives for the same bytes'
+        cid == expectedCid
+        cid.isRaw()
+        cid.toString().length() == 59
 
         and: 'hashing it again gives the same address'
-        Hashing.hashRaw(bigFile) == bigFileCid
+        Hashing.hashRaw(bigFile) == cid
     }
 
     def 'storing a file larger than the heap succeeds'() {
@@ -75,8 +86,8 @@ class MemoryBoundTest extends Specification {
         when:
         Cid cid = Files.newInputStream(bigFile).withCloseable { store.putStreaming(it) }
 
-        then: 'the store computed the same address as the hasher'
-        cid == bigFileCid
+        then: 'the store computed the same address as the reference digest'
+        cid == expectedCid
 
         and: 'and the block holds every byte'
         store.has(cid)

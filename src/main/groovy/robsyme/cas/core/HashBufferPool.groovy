@@ -22,6 +22,9 @@ class HashBufferPool {
 
     private final Semaphore permits
     private final ConcurrentLinkedQueue<byte[]> free = new ConcurrentLinkedQueue<>()
+    /** The buffers currently out on loan, compared by identity. */
+    private final Set<byte[]> loaned = Collections.newSetFromMap(
+            Collections.synchronizedMap(new IdentityHashMap<byte[], Boolean>()))
     private final int bufferSize
 
     HashBufferPool(int capacity, int bufferSize) {
@@ -37,14 +40,28 @@ class HashBufferPool {
     byte[] borrow() {
         permits.acquire()
         byte[] buffer = free.poll()
-        return buffer != null ? buffer : new byte[bufferSize]
+        if( buffer == null )
+            buffer = new byte[bufferSize]
+        loaned.add(buffer)
+        return buffer
     }
 
+    /**
+     * Gives a buffer back. A buffer this pool never lent, or one that was
+     * already given back, is refused without inventing a permit; a buffer
+     * that was lent always returns its permit, even if the pool declines to
+     * keep it, because a lost permit shrinks the pool for the whole run.
+     */
     void release(byte[] buffer) {
-        if( buffer == null || buffer.length != bufferSize )
-            throw new IllegalArgumentException('released buffer does not belong to this pool')
-        free.offer(buffer)
-        permits.release()
+        if( buffer == null || !loaned.remove(buffer) )
+            throw new IllegalArgumentException('this buffer was not borrowed from this pool, or has already been released')
+        try {
+            if( buffer.length == bufferSize )
+                free.offer(buffer)
+        }
+        finally {
+            permits.release()
+        }
     }
 
     def <T> T withBuffer(Closure<T> action) {

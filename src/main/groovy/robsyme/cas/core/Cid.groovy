@@ -33,8 +33,7 @@ final class Cid implements Comparable<Cid> {
     static Cid of(int codec, byte[] sha256) {
         if( sha256 == null || sha256.length != DIGEST_LENGTH )
             throw new IllegalArgumentException("sha2-256 digest must be $DIGEST_LENGTH bytes, got ${sha256?.length}")
-        if( codec < 0 )
-            throw new IllegalArgumentException("codec must not be negative: $codec")
+        checkCodec(codec)
         return new Cid(codec, Arrays.copyOf(sha256, DIGEST_LENGTH))
     }
 
@@ -49,6 +48,7 @@ final class Cid implements Comparable<Cid> {
         if( version != VERSION )
             throw new IllegalArgumentException("unsupported cid version $version: '$text'")
         final long codec = Varint.read(bytes, pos)
+        checkCodec(codec)
         final long hashCode = Varint.read(bytes, pos)
         if( hashCode != SHA2_256 )
             throw new IllegalArgumentException("unsupported multihash code $hashCode: '$text'")
@@ -61,6 +61,12 @@ final class Cid implements Comparable<Cid> {
     }
 
     /** True when the argument is a well-formed cid text form. */
+    /** nf-blocks addresses file content and metadata blocks, and nothing else. */
+    private static void checkCodec(long codec) {
+        if( codec != RAW && codec != DAG_CBOR )
+            throw new IllegalArgumentException("unsupported cid codec $codec: nf-blocks addresses only raw ($RAW) and dag-cbor ($DAG_CBOR)")
+    }
+
     static boolean isCid(String text) {
         try {
             parse(text)

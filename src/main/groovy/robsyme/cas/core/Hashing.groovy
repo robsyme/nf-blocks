@@ -41,8 +41,8 @@ class Hashing {
             throw new IllegalArgumentException('a hash buffer is required')
         final MessageDigest digest = MessageDigest.getInstance('SHA-256')
         int n
-        while( (n = input.read(buffer, 0, buffer.length)) > 0 )
-            digest.update(buffer, 0, n)
+        while( (n = input.read(buffer, 0, buffer.length)) != -1 )
+            if( n > 0 ) digest.update(buffer, 0, n)
         return digest.digest()
     }
 }
