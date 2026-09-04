@@ -75,11 +75,16 @@ cas {
 }
 ```
 
-- The `cas` scope must be declared as a `nextflow.config.schema.ConfigScope`
-  class annotated `@ScopeName("cas")` and listed in `extensionPoints`, or
-  `ConfigValidator` warns `Unrecognized config option` for every key on every
-  run (`modules/nextflow/src/main/groovy/nextflow/config/ConfigValidator.groovy:75,152`
-  at v26.04.6). Owned by Task 8.
+- The `cas` scope must be declared as a `ConfigScope` class annotated
+  `@ScopeName("cas")` and listed in `extensionPoints`, or `ConfigValidator`
+  warns `Unrecognized config option` for every key on every run
+  (`modules/nextflow/src/main/groovy/nextflow/config/ConfigValidator.groovy:75,152`
+  at v26.04.6). **Measured at v26.04.6:** the live interfaces are in
+  `nextflow.config.spec` (`ConfigScope`, `ScopeName`, `ConfigOption`,
+  `PlaceholderName`); the `nextflow.config.schema` names are deprecated aliases
+  and `ConfigValidator` scans `config.spec`. `cas.stores.<alias>` is a
+  `@PlaceholderName Map<String, <store scope>>`; `cas.index` is a nested scope.
+  Implemented in `robsyme.cas.CasConfigScope`.
 - `cas.pipeline` (optional string) overrides the Pipeline Identity.
 - An alias matches `^[a-z][a-z0-9_-]{0,31}$` and must not parse as a CID.
 - `CasLinStoreFactory.canOpen(config)` is `config?.store?.location?.startsWith('cas://') ?: false`.
@@ -486,10 +491,16 @@ nf_record(key PK, kind, workflow_run, task_run, labels_json, block_cid)
 `channel.fromStore(run: <ref>, output: 'aligned', where: [sample: 'B'])`.
 `run` is a RunManifest or RunCompletion Store URI, a `lid://<runHash>`, or
 `'latest'` together with `pipeline: '<Pipeline Identity>'`. Emits each
-matching OutputItem restored to its published structure: Leaf → `CasPath`
-`cas://<cid>/<name>`; declined → `null`; an `unaddressed` leaf → error naming
-the item. A run without a RunCompletion → error. Implemented with
-`@Factory` on a method returning a `DataflowWriteChannel`, as `nf-sqldb` does.
+matching OutputItem restored to its published structure: a file leaf →
+`CasPath` `cas://<cid>/<name>`; a **directory leaf → `CasPath` `cas://<cid>`**
+(a dag-cbor manifest address the provider presents as a directory, per ticket
+08); declined → `null`; an `unaddressed` leaf → error naming the item. A run
+without a RunCompletion → error. Implemented with `@Factory`; resolve eagerly
+so a bad run reference or an unaddressed item fails fast, but bind onto the
+channel inside a `session.addIgniter` closure so a downstream subscriber is
+attached first. **Measured at v26.04.6:** there is no `NF.dsl2` (DSL1 is gone)
+and `CH.create()` is a non-buffering `DataflowBroadcast`, so eager binding
+without the igniter would drop items.
 
 ## 14. The Gate (`gate/`)
 
