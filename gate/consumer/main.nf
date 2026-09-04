@@ -1,45 +1,49 @@
 // The Gate's second pipeline: read the Test Pipeline's outputs back out of
-// the store three ways and hash whatever Nextflow actually staged.
+// the store four ways and hash whatever Nextflow actually staged.
 //
-// It computes nothing. Each branch stages one file and writes `sha256sum` of
-// the staged bytes. gate/assert.py compares those digests against digests it
-// computed itself from pipeline-a's work directory, so a wrong file, a
-// truncated file or an empty stage is caught by the bytes and not by a record.
+// It computes nothing. Each branch stages files and writes `sha256sum` of the
+// staged bytes to `hashes/<source>/<staged name>.sha256`. gate/assert.py
+// compares those digests against digests it computed itself from pipeline-a's
+// work directory, and counts the files under each source, so a wrong file, a
+// truncated file, an empty stage or the wrong number of items is caught by the
+// bytes rather than by a record.
 //
-//   fromstore  channel.fromStore(run: 'latest', ..., where: [sample: 'B'])
-//   lid        channel.fromPath('lid://<run>/aligned/A/A.bam')
-//   cas        channel.fromPath('cas://<cid>/A.bam')
+//   fromstore     channel.fromStore(run: 'latest', ..., where: [sample: 'B'])
+//   lid           channel.fromPath('lid://<run>/aligned/A/A.bam')
+//   cas           channel.fromPath('cas://<cid>/A.bam')
+//   fromlineage   channel.fromLineage(workflowRun: '<run lid>', label: 'bam')
 //
-// gate.sh discovers the two URIs from the store after the producer has run
-// and passes them as --lid and --cas. The Pipeline Identity is fixed by
-// `manifest.name` in gate/gate.config, so fromStore can name it literally.
+// gate.sh discovers the URIs from the store after the producer has run and
+// passes them as --lid, --cas and --run_lid. The Pipeline Identity is fixed by
+// `manifest.name` in gate/gate.config, so fromStore names it literally.
 
 include { fromStore } from 'plugin/nf-blocks'
+include { fromLineage } from 'plugin/nf-lineage'
 
 process HASH {
-    tag "${tag}"
+    tag "${source}:${staged.name}"
 
     input:
-    tuple val(tag), path(staged)
+    tuple val(source), path(staged)
 
     output:
-    tuple val(tag), path("${tag}.sha256"), emit: sha
+    tuple val(source), path("${staged.name}.sha256"), emit: sha
 
     script:
     // sha256sum on Linux, shasum -a 256 on macOS; identical output format.
     """
     if command -v sha256sum > /dev/null 2>&1; then
-        sha256sum ${staged} > ${tag}.sha256
+        sha256sum '${staged}' > '${staged.name}.sha256'
     else
-        shasum -a 256 ${staged} > ${tag}.sha256
+        shasum -a 256 '${staged}' > '${staged.name}.sha256'
     fi
     """
 }
 
 workflow {
     main:
-    if( !params.lid && !params.cas )
-        error "consumer needs --lid and --cas (gate.sh reads them from the store)"
+    if( !params.lid && !params.cas && !params.run_lid )
+        error "consumer needs --lid, --cas and --run_lid (gate.sh reads them from the store)"
 
     ch_lid = params.lid
         ? channel.fromPath(params.lid).map { f -> tuple('lid', f) }
@@ -56,7 +60,14 @@ workflow {
                    output: 'aligned', where: [sample: 'B'])
         .map { meta, bam -> tuple('fromstore', bam) }
 
-    HASH(ch_lid.mix(ch_cas, ch_store))
+    // Native lineage read-back must keep working alongside ours.
+    ch_lineage = params.run_lid
+        ? channel.fromLineage(workflowRun: params.run_lid, label: 'bam')
+            .flatten()
+            .map { f -> tuple('fromlineage', f) }
+        : channel.empty()
+
+    HASH(ch_lid.mix(ch_cas, ch_store, ch_lineage))
 
     publish:
     hashes = HASH.out.sha
@@ -64,7 +75,7 @@ workflow {
 
 output {
     hashes {
-        path { tag, _f -> "hashes/${tag}" }
+        path { source, _f -> "hashes/${source}" }
         mode 'copy'
     }
 }

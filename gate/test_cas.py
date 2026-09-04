@@ -88,9 +88,27 @@ class TestCidEncoder(unittest.TestCase):
         self.assertEqual(cas.cid_digest(CID_RAW_HELLO), digest)
 
     def test_parse_rejects_non_cid_text(self):
-        for bad in ["lab", "", "bafk", "zzzz", "lid://abc"]:
+        for bad in ["lab", "", "bafk", "zzzz", "lid://abc",
+                    CID_RAW_EMPTY.upper(), CID_RAW_EMPTY + "="]:
             self.assertFalse(cas.is_cid(bad), bad)
         self.assertTrue(cas.is_cid(CID_RAW_EMPTY))
+
+    def test_rejects_non_canonical_base32_padding_bits(self):
+        """The three neighbours of a valid CID decode to the same 36 bytes.
+
+        base32 leaves two spare bits in the last character of a 58-character
+        body; only the form whose spare bits are zero is the CID.
+        """
+        self.assertTrue(cas.is_cid(CID_RAW_HELLO))
+        for last in "nop":
+            neighbour = CID_RAW_HELLO[:-1] + last
+            self.assertFalse(cas.is_cid(neighbour), neighbour)
+
+    def test_rejects_a_non_minimal_codec_varint(self):
+        # codec 0x55 written as the two-byte varint d5 00
+        binary = bytes([0x01, 0xD5, 0x00, 0x12, 0x20]) + b"\x00" * 32
+        text = "b" + __import__("base64").b32encode(binary).decode().lower().rstrip("=")
+        self.assertFalse(cas.is_cid(text))
 
 
 class TestDagCborDecoder(unittest.TestCase):
@@ -334,14 +352,14 @@ class TestIndex(unittest.TestCase):
         self.assertEqual(cas.Index.locate(self.cache), path)
 
     def test_locate_fails_clearly_when_absent(self):
-        with self.assertRaises(cas.IndexError) as ctx:
+        with self.assertRaises(cas.IndexLocateError) as ctx:
             cas.Index.locate(self.cache)
         self.assertIn("no", str(ctx.exception).lower())
 
     def test_locate_fails_clearly_when_several(self):
         self._make_db("one.sqlite")
         self._make_db("two.sqlite")
-        with self.assertRaises(cas.IndexError) as ctx:
+        with self.assertRaises(cas.IndexLocateError) as ctx:
             cas.Index.locate(self.cache)
         self.assertIn("2", str(ctx.exception))
 

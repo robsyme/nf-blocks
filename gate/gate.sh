@@ -29,6 +29,12 @@ export XDG_CACHE_HOME="$GATE_ROOT/cache"
 export GATE_STORE="$GATE_ROOT/store"
 export GATE_STORE_OUT="$GATE_ROOT/store-out"
 export NXF_ANSI_LOG=false
+
+# A reused GATE_ROOT must not carry a previous attempt's store, index, logs or
+# snapshots: every one of them is evidence, and stale evidence is worse than
+# none. The built plugin is the one thing worth keeping.
+rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/cache" \
+       "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/logs"
 
@@ -36,14 +42,17 @@ mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
 # Preconditions
 # --------------------------------------------------------------------------
 
-if ! command -v python3 > /dev/null 2>&1; then
-    echo "gate: python3 is required" >&2
-    exit 2
-fi
+for tool in python3 unzip find; do
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        echo "gate: $tool is required" >&2
+        exit 2
+    fi
+done
 python3 --version
 
+# Escape the dots: 26.04.6 as a regex would also match 26x04x6.
 version_line="$("$NEXTFLOW" -version 2>&1 || true)"
-if ! grep -q "version $REQUIRED_VERSION\b" <<< "$version_line"; then
+if ! grep -qE "version ${REQUIRED_VERSION//./\\.}([^0-9]|$)" <<< "$version_line"; then
     echo "gate: need Nextflow $REQUIRED_VERSION, \`$NEXTFLOW -version\` said:" >&2
     echo "$version_line" >&2
     exit 2
@@ -90,7 +99,7 @@ for launch in pipeline-a pipeline-b; do
     mkdir -p "$GATE_ROOT/$launch"
     cp "$PIPELINE_SRC/main.nf" "$PIPELINE_SRC/nextflow.config" "$GATE_ROOT/$launch/"
 done
-rm -rf "$GATE_ROOT/consumer"
+rm -rf "${GATE_ROOT:?}/consumer"
 mkdir -p "$GATE_ROOT/consumer"
 cp "$REPO/gate/consumer/main.nf" "$REPO/gate/consumer/nextflow.config" \
    "$GATE_ROOT/consumer/"
@@ -119,41 +128,66 @@ run() {
 }
 
 snapshot() {
-    # An empty or missing blocks/ is a real, reportable state: never abort here.
-    ( cd "$GATE_STORE" && find blocks -type f 2> /dev/null | sort ) \
-        > "$GATE_ROOT/$1" || true
-    echo "    $(wc -l < "$GATE_ROOT/$1" | tr -d ' ') blocks -> $1"
+    echo -n "    snapshot $1: "
+    python3 "$REPO/gate/assert.py" "$GATE_ROOT" "$GATE_ROOT/$1" --snapshot
+}
+
+# Every published source file in pipeline-a's work directory. Directories and
+# .command.*/.exitcode are deliberately not listed: Nextflow reads those to
+# satisfy the resume cache, and locking them would prove nothing about us.
+published_sources() {
+    find "$GATE_ROOT/pipeline-a/work" -type f \
+        \( -name '*.bam' -o -name '*.stats' -o -name '*.report' \
+           -o -name 'chunk_*.txt' -o -path '*_qc/*' \) 2> /dev/null | sort
 }
 
 run "$GATE_ROOT/pipeline-a" cold
 snapshot blocks-after-cold.txt
 
 run "$GATE_ROOT/pipeline-a" again
-# assertion 2 compares this against the snapshot above: `again` must add no
-# content block and lose no record.
+# assertion 2 diffs this against the snapshot above: `again` must add no
+# content block and lose no record, run-log entry, nf record or coordinate.
 snapshot blocks-after-again.txt
 
 # Expected to exit non-zero: MAYBE_FAIL exits 7 for sample B.
 run "$GATE_ROOT/pipeline-a" fail --fail
 
+# Assertion 4c, "re-hashed nothing", proved by the filesystem rather than by a
+# counter: make every published source file unreadable for the duration of the
+# resumed run. -resume needs only the directory entries and .command.*, so a
+# run that touches no content byte succeeds; anything that re-reads a published
+# file to re-address it gets AccessDenied and the run fails.
+mkdir -p "$GATE_ROOT/logs/resumed"
+published_sources > "$GATE_ROOT/logs/resumed/sources-locked"
+locked_count=$(wc -l < "$GATE_ROOT/logs/resumed/sources-locked" | tr -d ' ')
+echo "--- locking $locked_count published source file(s) at mode 000"
+while IFS= read -r f; do [[ -n "$f" ]] && chmod 000 "$f"; done \
+    < "$GATE_ROOT/logs/resumed/sources-locked"
+unlock() {
+    while IFS= read -r f; do [[ -n "$f" ]] && chmod 644 "$f" 2> /dev/null || true; done \
+        < "$GATE_ROOT/logs/resumed/sources-locked"
+}
+trap unlock EXIT
 run "$GATE_ROOT/pipeline-a" resumed -resume cold
+unlock
+trap - EXIT
 
 # A second launch directory into the same store: same bytes, same addresses.
 run "$GATE_ROOT/pipeline-b" elsewhere
 
 # --------------------------------------------------------------------------
-# The consumer, reading back three ways
+# The consumer, reading back four ways
 # --------------------------------------------------------------------------
 
-# The consumer needs a lid:// and a cas:// reference that only exist once the
-# producer has run. Its Pipeline Identity is fixed by manifest.name in
-# gate.config, so the consumer names it literally and only these two are read
-# back out of the store here.
-GATE_PIPELINE=''; GATE_LID=''; GATE_CAS=''
+# The consumer needs references that only exist once the producer has run. Its
+# Pipeline Identity is fixed by manifest.name in gate.config, so only the run
+# lid and the two read-back URIs are read out of the store here.
+GATE_PIPELINE=''; GATE_RUN_LID=''; GATE_LID=''; GATE_CAS=''
 refs="$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --refs 2> "$GATE_ROOT/logs/refs.log" || true)"
 eval "$refs"
 echo "--- refs from the store"
 echo "    pipeline=${GATE_PIPELINE:-<none>}"
+echo "    run_lid=${GATE_RUN_LID:-<none>}"
 echo "    lid=${GATE_LID:-<none>}"
 echo "    cas=${GATE_CAS:-<none>}"
 if [[ -s "$GATE_ROOT/logs/refs.log" ]]; then
@@ -163,6 +197,7 @@ fi
 consumer_args=()
 if [[ -n "$GATE_LID" ]]; then consumer_args+=(--lid "$GATE_LID"); fi
 if [[ -n "$GATE_CAS" ]]; then consumer_args+=(--cas "$GATE_CAS"); fi
+if [[ -n "$GATE_RUN_LID" ]]; then consumer_args+=(--run_lid "$GATE_RUN_LID"); fi
 
 log="$GATE_ROOT/logs/consumer"
 mkdir -p "$log"
@@ -177,12 +212,6 @@ if [[ -f "$GATE_ROOT/consumer/.nextflow.log" ]]; then
     cp "$GATE_ROOT/consumer/.nextflow.log" "$log/nextflow.log"
 fi
 echo "    exit $status  -> $log"
-
-# channel.fromLineage must still work alongside ours; capture the evidence.
-(
-    cd "$GATE_ROOT/pipeline-a"
-    "$NEXTFLOW" -c "$REPO/gate/gate.config" lineage find 'type=FileOutput'
-) > "$log/lineage-find.txt" 2>&1 || rm -f "$log/lineage-find.txt"
 
 # --------------------------------------------------------------------------
 echo

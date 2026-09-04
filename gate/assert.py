@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The Gate's assertions. Independent of the plugin by construction.
 
-    python3 gate/assert.py <GATE_ROOT> [--offline] [--verbose]
-    python3 gate/assert.py <GATE_ROOT> --refs      # shell vars for gate.sh
+    python3 gate/assert.py <GATE_ROOT> [--offline]
+    python3 gate/assert.py <GATE_ROOT> --refs               # shell vars for gate.sh
+    python3 gate/assert.py <GATE_ROOT> <file> --snapshot    # store snapshot
 
 Every address this file checks is derived here, with hashlib, from the bytes
 the pipeline actually produced in its work directory or from the bytes of a
@@ -10,10 +11,12 @@ block on disk. Nothing is taken on the plugin's word. Exit status is 1 if any
 assertion FAILs; SKIP never fails the Gate.
 
 Assertion numbers are the spec's (.scratch/content-addressed-lineage/spec.md
-section 1.2). Numbers 8, 9, 11 and 12 are out of the Walking Skeleton and are
+section 1.2), plus assertion 0 for the preconditions every other assertion
+stands on. Numbers 8, 9, 11 and 12 are out of the Walking Skeleton and are
 reported as SKIP with the spec's own wording, so the list stays complete.
 """
 
+import getpass
 import os
 import re
 import sys
@@ -24,13 +27,17 @@ import cas  # noqa: E402
 
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"
 
-STATS_BYTES = b"schema\t1\nmetric\tvalue\ntotal\t42\n"
-
 # Pipeline Identity, fixed by `manifest.name` in gate/gate.config. DESIGN
 # section 6 takes the first non-null of cas.pipeline, manifest.name and
 # projectName; `nextflow run .` gives projectName the literal "main.nf", so the
 # Gate names the pipeline explicitly and checks the plugin recorded that name.
 PIPELINE_IDENTITY = "cas-test-pipeline"
+
+# The Test Pipeline's five outputs, and how gate.sh drives it.
+OUTPUTS = {"aligned", "stats", "qc", "chunks", "reports"}
+PRODUCER_RUNS = ["cold", "again", "fail", "resumed", "elsewhere"]
+FAILING_RUN = "fail"
+FAILING_SAMPLE = "B"          # MAYBE_FAIL exits 7 for sample B under --fail
 
 REGISTRY = []
 
@@ -41,6 +48,22 @@ def assertion(number, title, online_only=False):
                          "online_only": online_only})
         return fn
     return register
+
+
+def os_user_name():
+    """The OS user name, or None if it genuinely cannot be determined."""
+    try:
+        return getpass.getuser()
+    except Exception:
+        pass
+    for var in ("LOGNAME", "USER", "USERNAME"):
+        if os.environ.get(var):
+            return os.environ[var]
+    try:
+        import pwd
+        return pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -70,38 +93,64 @@ class Run(object):
                 out[block.get("name")] = (link.text, block)
         return out
 
-    def item_cids(self, gate):
-        out = set()
-        for _name, (_cid, block) in self.collections(gate).items():
-            for link in block.get("items") or []:
+    def items(self, gate, output=None):
+        """[(cid, block)] for this run's OutputItems, optionally one output."""
+        out = []
+        collections = self.collections(gate)
+        names = [output] if output else sorted(collections)
+        for name in names:
+            if name not in collections:
+                continue
+            for link in collections[name][1].get("items") or []:
                 if link is not None:
-                    out.add(link.text)
+                    out.append((link.text, gate.block(link.text)))
         return out
+
+    def item_cids(self, gate):
+        return {cid for cid, _block in self.items(gate)}
 
 
 class Gate(object):
-    def __init__(self, root, offline=False):
+    def __init__(self, root):
         self.root = os.path.abspath(root)
-        self.offline = offline
         self.store = cas.Store(os.path.join(self.root, "store"))
         self.store_out = cas.Store(os.path.join(self.root, "store-out"))
-        self.decode_errors = []
+        self.block_problems = []
         self._blocks = None
         self._runs = None
         self._index = None
-        self._index_error = None
 
     # -- blocks ---------------------------------------------------------
     @property
     def blocks(self):
-        """{cid: decoded block} for every dag-cbor block that decodes."""
+        """{cid: decoded block} for every dag-cbor block that decodes.
+
+        A block that cannot be read, decoded, or re-encoded to its own address
+        is recorded in block_problems; assertion 0 turns that into a FAIL. No
+        other assertion may quietly proceed as if the block were not there.
+        """
         if self._blocks is None:
             self._blocks = {}
             for cid, path in self.store.blocks("dagcbor"):
                 try:
-                    self._blocks[cid] = self.store.read_block(cid)
+                    data = self.store.read(cid)
+                    value = cas.decode(data)
                 except Exception as exc:
-                    self.decode_errors.append("%s (%s): %s" % (cid, path, exc))
+                    self.block_problems.append(
+                        "%s (%s): %s: %s" % (cid, path, type(exc).__name__, exc))
+                    continue
+                try:
+                    recoded = cas.encode(value)
+                except Exception as exc:
+                    self.block_problems.append(
+                        "%s (%s): decodes but will not re-encode: %s" % (cid, path, exc))
+                    continue
+                if cas.cid_dagcbor(recoded) != cid:
+                    self.block_problems.append(
+                        "%s (%s): not canonically encoded; the canonical form of "
+                        "its own value is %s" % (cid, path, cas.cid_dagcbor(recoded)))
+                    continue
+                self._blocks[cid] = value
         return self._blocks
 
     def block(self, cid):
@@ -116,19 +165,32 @@ class Gate(object):
     def runs(self):
         """{run_name: Run}, assembled from the blocks alone."""
         if self._runs is None:
-            self._runs = {}
+            runs = {}
             by_manifest = {}
-            for cid, block in self.of_kind("RunManifest").items():
+            seen = {}
+            for cid, block in sorted(self.of_kind("RunManifest").items()):
                 name = block.get("run_name")
-                run = self._runs.setdefault(name, Run(name))
+                seen.setdefault(name, []).append(cid)
+                run = runs.setdefault(name, Run(name))
                 run.manifest_cid, run.manifest = cid, block
                 by_manifest[cid] = run
-            for cid, block in self.of_kind("RunCompletion").items():
+            collisions = {n: c for n, c in seen.items() if len(c) > 1}
+            if collisions:
+                raise cas.GateError(
+                    "run_name is not unique in %s: %s. A run name identifies one "
+                    "run; two RunManifests under one name means the wrong run is "
+                    "being asserted about."
+                    % (self.store.root,
+                       "; ".join("%r has %d manifests (%s)"
+                                 % (n, len(c), ", ".join(x[:16] + "..." for x in c))
+                                 for n, c in sorted(collisions.items()))))
+            for cid, block in sorted(self.of_kind("RunCompletion").items()):
                 link = block.get("run")
                 run = by_manifest.get(link.text) if isinstance(link, cas.Cid) else None
                 if run is None:
-                    run = self._runs.setdefault("<orphan:%s>" % cid[:12], Run(None))
+                    run = runs.setdefault("<orphan:%s>" % cid[:12], Run(None))
                 run.completion_cid, run.completion = cid, block
+            self._runs = runs
         return self._runs
 
     def run(self, name):
@@ -143,18 +205,13 @@ class Gate(object):
     # -- index ----------------------------------------------------------
     @property
     def index(self):
-        if self._index is None and self._index_error is None:
-            try:
-                self._index = cas.Index.open(os.path.join(self.root, "cache"))
-            except Exception as exc:
-                self._index_error = exc
+        """The one SQLite index. Raises rather than degrading if it is absent."""
         if self._index is None:
-            raise cas.GateError("index unavailable: %s" % self._index_error)
+            self._index = cas.Index.open(os.path.join(self.root, "cache"))
         return self._index
 
     # -- the bytes the pipeline produced --------------------------------
     def work_files(self, launch, name_pattern):
-        """Every path under <launch>/work matching a filename glob."""
         root = os.path.join(self.root, launch, "work")
         matcher = re.compile(_glob_to_regex(name_pattern))
         out = []
@@ -173,18 +230,59 @@ class Gate(object):
                     out.append(os.path.join(dirpath, d))
         return sorted(out)
 
+    def exit_code(self, name):
+        """The recorded exit status of one run, or None if gate.sh kept none."""
+        path = os.path.join(self.root, "logs", name, "exit")
+        if not os.path.isfile(path):
+            return None
+        with open(path) as fh:
+            text = fh.read().strip()
+        return int(text) if text.lstrip("-").isdigit() else None
+
+    # -- snapshots ------------------------------------------------------
+    def snapshot(self):
+        """Everything gate.sh must be able to diff between two runs."""
+        return {
+            "blocks": sorted(cid for cid, _p in self.store.blocks()),
+            "runs": sorted(name for name in _listdir(self.store.path("runs"))),
+            "nf": sorted(key for key, _e in self.store.nf_envelopes()),
+            "coords": {rel: self.store.coords_pointer(rel)
+                       for rel in self.store.coords_paths()},
+        }
+
     def read_snapshot(self, filename):
-        """The set of block cids recorded in a `find blocks -type f` snapshot."""
         path = os.path.join(self.root, filename)
         if not os.path.isfile(path):
             raise cas.GateError("no snapshot at %s (gate.sh writes it)" % path)
-        cids = set()
+        out = {"blocks": [], "runs": [], "nf": [], "coords": {}}
         with open(path) as fh:
             for line in fh:
-                name = os.path.basename(line.strip())
-                if cas.is_cid(name):
-                    cids.add(name)
-        return cids
+                line = line.rstrip("\n")
+                if not line or "\t" not in line:
+                    continue
+                section, _, rest = line.partition("\t")
+                if section == "coords":
+                    rel, _, pointer = rest.partition("\t")
+                    out["coords"][rel] = pointer
+                elif section in out:
+                    out[section].append(rest)
+        return out
+
+
+def write_snapshot(gate, path):
+    data = gate.snapshot()
+    lines = []
+    for section in ("blocks", "runs", "nf"):
+        lines.extend("%s\t%s" % (section, value) for value in data[section])
+    for rel in sorted(data["coords"]):
+        lines.append("coords\t%s\t%s" % (rel, data["coords"][rel] or ""))
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + ("\n" if lines else ""))
+    return len(data["blocks"]), len(data["runs"]), len(data["nf"]), len(data["coords"])
+
+
+def _listdir(path):
+    return os.listdir(path) if os.path.isdir(path) else []
 
 
 def _glob_to_regex(pattern):
@@ -198,6 +296,94 @@ def _glob_to_regex(pattern):
             out.append(re.escape(ch))
     out.append("$")
     return "".join(out)
+
+
+def metadata_view(item):
+    """DESIGN section 12: the item itself if a Map, else its first top-level Map."""
+    value = item.get("value") if isinstance(item, dict) else None
+    if isinstance(value, dict) and value.get("kind") != "Leaf":
+        return value
+    if isinstance(value, list):
+        for element in value:
+            if isinstance(element, dict) and element.get("kind") != "Leaf":
+                return element
+    return {}
+
+
+def _leaves(value):
+    if isinstance(value, dict):
+        if value.get("kind") == "Leaf":
+            yield value
+            return
+        for element in value.values():
+            for leaf in _leaves(element):
+                yield leaf
+    elif isinstance(value, list):
+        for element in value:
+            for leaf in _leaves(element):
+                yield leaf
+
+
+def _address_text(value):
+    return value.text if isinstance(value, cas.Cid) else value
+
+
+# --------------------------------------------------------------------------
+# Assertion 0: the preconditions every other assertion stands on
+# --------------------------------------------------------------------------
+
+@assertion(0, "every block decodes and re-encodes to its own address")
+def assert_blocks_sound(gate):
+    gate.blocks                       # decoding is what populates block_problems
+    problems = list(gate.block_problems)
+    raw = 0
+    for cid, path in gate.store.blocks("raw"):
+        raw += 1
+        try:
+            gate.store.read(cid)            # re-hashes the bytes
+        except Exception as exc:
+            problems.append("%s (%s): %s" % (cid, path, exc))
+    if problems:
+        return FAIL, ("%d block(s) are unreadable, undecodable or not canonically "
+                      "encoded, so every assertion over them is unsound: %s"
+                      % (len(problems), "; ".join(problems[:5])))
+    return PASS, ("%d content and %d metadata blocks all hash to the address they "
+                  "are filed under; every metadata block re-encodes to itself"
+                  % (raw, len(gate.blocks)))
+
+
+@assertion(0, "every run exited as the Gate drove it")
+def assert_runs_exited(gate):
+    problems = []
+    notes = []
+    for name in PRODUCER_RUNS + ["consumer"]:
+        code = gate.exit_code(name)
+        if code is None:
+            problems.append("no exit status recorded at %s/logs/%s/exit"
+                            % (gate.root, name))
+        elif name == FAILING_RUN and code == 0:
+            problems.append("run %s was driven with --fail and MAYBE_FAIL exits 7 "
+                            "for sample %s, but it exited 0"
+                            % (name, FAILING_SAMPLE))
+        elif name != FAILING_RUN and code != 0:
+            # `resumed` runs with every published source at mode 000 so that
+            # assertion 4c can catch a re-hash. Under the output DSL's
+            # `mode 'copy'` Nextflow re-publishes those files on every resume
+            # (issue 17) and its own PublishDir hits the lock first, which is
+            # not a plugin failure and must not be scored as one.
+            if name == "resumed" and _publish_copy_failures(gate):
+                notes.append("resumed exited %d on Nextflow's own PublishDir copy "
+                             "of the files the Gate locked (issue 17), not on "
+                             "anything the plugin did" % code)
+                continue
+            problems.append("run %s exited %d; see %s/logs/%s/"
+                            % (name, code, gate.root, name))
+    if problems:
+        return FAIL, "; ".join(problems)
+    expected_zero = [n for n in PRODUCER_RUNS + ["consumer"] if n != FAILING_RUN]
+    return PASS, ("%s exited 0, %s exited non-zero as intended%s"
+                  % (", ".join(expected_zero), FAILING_RUN,
+                     ". " + "; ".join(notes) if notes else ""))
 
 
 # --------------------------------------------------------------------------
@@ -226,25 +412,49 @@ def assert_one(gate):
     if not os.path.isfile(block_path):
         problems.append("expected one block at %s, no such file" % block_path)
     else:
-        gate.store.read(content_cid)   # verifies the address
-        notes.append("block present and verified")
+        gate.store.read(content_cid)
+        notes.append("one block, verified")
 
     cold = gate.run("cold")
-    try:
-        rows = gate.index.query(
-            "SELECT item_cid, filename FROM producer "
-            "WHERE content_cid = ? AND completion_cid = ?",
-            (content_cid, cold.completion_cid))
-        items = sorted({r["item_cid"] for r in rows})
-        if len(rows) < 3 or len(items) != 3:
-            problems.append(
-                "expected >= 3 producer rows over 3 distinct item_cids for "
-                "content %s in run cold (%s); found %d rows over %d items %s"
-                % (content_cid, cold.completion_cid, len(rows), len(items), items))
-        else:
-            notes.append("%d producer rows, 3 items" % len(rows))
-    except Exception as exc:
-        problems.append("producer rows unavailable: %s" % exc)
+    rows = gate.index.query(
+        "SELECT item_cid, filename FROM producer "
+        "WHERE content_cid = ? AND completion_cid = ?",
+        (content_cid, cold.completion_cid))
+    items = sorted({r["item_cid"] for r in rows})
+    if len(rows) < 3 or len(items) != 3:
+        problems.append(
+            "expected >= 3 producer rows over exactly 3 distinct item_cids for "
+            "content %s in run cold (%s); found %d rows over %d items %s"
+            % (content_cid, cold.completion_cid, len(rows), len(items), items))
+    else:
+        notes.append("%d producer rows, 3 items" % len(rows))
+
+    # The producer rows are the plugin's claim. Open the items they name and
+    # check each really is an OutputItem carrying that address under that name.
+    leaf_names = []
+    for item_cid in items:
+        item = gate.block(item_cid)
+        if item is None:
+            problems.append("producer names item %s, which is not a readable "
+                            "dag-cbor block in %s" % (item_cid, gate.store.root))
+            continue
+        if item.get("kind") != "OutputItem":
+            problems.append("producer names item %s, whose kind is %r, expected "
+                            "OutputItem" % (item_cid, item.get("kind")))
+            continue
+        matching = [leaf for leaf in _leaves(item.get("value"))
+                    if _address_text(leaf.get("address")) == content_cid]
+        if len(matching) != 1:
+            problems.append("item %s has %d leaf/leaves addressing %s, expected 1"
+                            % (item_cid, len(matching), content_cid))
+            continue
+        leaf_names.append(matching[0].get("name"))
+    expected_names = {"%s.stats" % s for s in ("A", "B", "C")}
+    if items and not problems and set(leaf_names) != expected_names:
+        problems.append("expected the 3 items' leaf names to be %s, found %s"
+                        % (sorted(expected_names), sorted(leaf_names)))
+    elif leaf_names:
+        notes.append("leaf names %s" % sorted(leaf_names))
 
     fingerprints = {}
     for key, spec in gate.store.nf_records("FileOutput"):
@@ -252,13 +462,15 @@ def assert_one(gate):
             continue
         if cold.nf_run_hash and spec.get("workflowRun") != "lid://%s" % cold.nf_run_hash:
             continue
-        value = ((spec.get("checksum") or {}).get("value"))
-        fingerprints.setdefault(value, []).append(key)
+        fingerprints.setdefault((spec.get("checksum") or {}).get("value"),
+                                []).append(key)
     if len(fingerprints) < 3:
         problems.append(
             "expected 3 different Nextflow checksum.value over the .stats "
-            "FileOutput records under %s/nf for run cold; found %d: %s"
-            % (gate.store.root, len(fingerprints), fingerprints))
+            "FileOutput records under %s/nf for run cold; found %d over %d "
+            "record(s): %s" % (gate.store.root, len(fingerprints),
+                               sum(len(v) for v in fingerprints.values()),
+                               fingerprints))
     else:
         notes.append("%d distinct nextflow fingerprints" % len(fingerprints))
 
@@ -277,28 +489,45 @@ def assert_two(gate):
     after_again = gate.read_snapshot("blocks-after-again.txt")
     problems = []
 
-    lost = sorted(after_cold - after_again)
-    if lost:
-        problems.append("%d block(s) present after cold and gone after again: %s"
-                        % (len(lost), lost[:5]))
+    for section in ("blocks", "runs", "nf"):
+        lost = sorted(set(after_cold[section]) - set(after_again[section]))
+        if lost:
+            problems.append("%d %s entr(y/ies) present after cold and gone after "
+                            "again: %s" % (len(lost), section, lost[:5]))
+    dropped = sorted(set(after_cold["coords"]) - set(after_again["coords"]))
+    if dropped:
+        problems.append("%d coords pointer(s) disappeared between cold and again: "
+                        "%s" % (len(dropped), dropped[:5]))
+    changed = sorted(rel for rel, pointer in after_cold["coords"].items()
+                     if rel in after_again["coords"]
+                     and after_again["coords"][rel] != pointer)
+    if changed:
+        problems.append(
+            "%d coords pointer(s) changed between two runs producing identical "
+            "bytes, so a coordinate no longer names the same content: %s"
+            % (len(changed), [(rel, after_cold["coords"][rel],
+                               after_again["coords"][rel]) for rel in changed[:3]]))
 
-    raw_cold = {c for c in after_cold if cas.cid_codec(c) == cas.RAW}
-    raw_again = {c for c in after_again if cas.cid_codec(c) == cas.RAW}
+    raw_cold = {c for c in after_cold["blocks"] if cas.cid_codec(c) == cas.RAW}
+    raw_again = {c for c in after_again["blocks"] if cas.cid_codec(c) == cas.RAW}
     new_raw = sorted(raw_again - raw_cold)
     if new_raw:
         problems.append(
-            "run again wrote %d new content block(s), expected 0 (identical "
-            "bytes must re-address): %s" % (len(new_raw), new_raw[:5]))
+            "run again wrote %d new content block(s), expected 0 (identical bytes "
+            "must re-address): %s" % (len(new_raw), new_raw[:5]))
 
     unverified = []
-    for cid, path in gate.store.blocks("raw"):
+    for cid, path in gate.store.blocks():
         try:
-            gate.store.read(cid)          # re-hashes: the name must be the address
+            data = gate.store.read(cid)
+            if cas.cid_codec(cid) == cas.DAG_CBOR:
+                if cas.cid_dagcbor(cas.encode(cas.decode(data))) != cid:
+                    raise cas.GateError("re-encodes to a different address")
         except Exception as exc:
             unverified.append("%s: %s" % (path, exc))
     if unverified:
-        problems.append("%d content block(s) do not hash to the address they are "
-                        "filed under: %s" % (len(unverified), unverified[:3]))
+        problems.append("%d block(s) do not hash to the address they are filed "
+                        "under: %s" % (len(unverified), unverified[:3]))
 
     cold_items = gate.run("cold").item_cids(gate)
     again_items = gate.run("again").item_cids(gate)
@@ -312,22 +541,25 @@ def assert_two(gate):
 
     if problems:
         return FAIL, "; ".join(problems)
-    return PASS, ("%d blocks after cold, %d after again, %d raw unchanged, "
+    return PASS, ("%d blocks, %d run-log entries, %d nf records and %d coords "
+                  "pointers survive `again` unchanged; %d raw blocks added 0; "
                   "%d identical OutputItems"
-                  % (len(after_cold), len(after_again), len(raw_cold),
-                     len(cold_items)))
+                  % (len(after_again["blocks"]), len(after_again["runs"]),
+                     len(after_again["nf"]), len(after_again["coords"]),
+                     len(raw_cold), len(cold_items)))
 
 
 # --------------------------------------------------------------------------
 # Assertion 3
 # --------------------------------------------------------------------------
 
-@assertion(3, "failed run is marked failed and is not latest")
+@assertion(3, "failed run is marked failed, is partial, and is not latest")
 def assert_three(gate):
-    run = gate.run("fail")
+    run = gate.run(FAILING_RUN)
     if not run.completion:
-        return FAIL, ("run fail has a RunManifest %s but no RunCompletion block; "
-                      "a failed run must still get one" % run.manifest_cid)
+        return FAIL, ("run %s has a RunManifest %s but no RunCompletion block; "
+                      "a failed run must still get one"
+                      % (FAILING_RUN, run.manifest_cid))
     problems = []
     status = run.completion.get("status")
     if status != "failed":
@@ -337,52 +569,81 @@ def assert_three(gate):
         problems.append("RunCompletion %s: expected possibly_incomplete true, "
                         "found %r" % (run.completion_cid,
                                       run.completion.get("possibly_incomplete")))
+    anomalies = run.completion.get("anomalies")
+    if not isinstance(anomalies, dict):
+        problems.append("RunCompletion %s: expected an anomalies map, found %r"
+                        % (run.completion_cid, anomalies))
 
+    # The collections must be partial and say so. MAYBE_FAIL exits 7 for
+    # sample B, so `reports` cannot carry a sample B item and cannot be full.
+    collections = run.collections(gate)
     counts = {name: len(block.get("items") or [])
-              for name, (_c, block) in run.collections(gate).items()}
+              for name, (_c, block) in collections.items()}
+    if "reports" not in collections:
+        problems.append("run %s has no `reports` collection at all (has %s); a "
+                        "partially published output must still be recorded"
+                        % (FAILING_RUN, sorted(counts)))
+    else:
+        reports = run.items(gate, "reports")
+        samples = [metadata_view(item).get("sample") for _cid, item in reports]
+        if FAILING_SAMPLE in samples:
+            problems.append("the `reports` collection of run %s holds an item for "
+                            "sample %s, whose task exited 7: samples %s"
+                            % (FAILING_RUN, FAILING_SAMPLE, samples))
+        if len(reports) > 2:
+            problems.append("the `reports` collection of run %s holds %d items "
+                            "(samples %s); at most 2 can have been published"
+                            % (FAILING_RUN, len(reports), samples))
+
     pipeline = (run.manifest or {}).get("pipeline")
     if pipeline != PIPELINE_IDENTITY:
         problems.append("RunManifest %s records pipeline %r; gate.config sets "
-                        "manifest.name = %r, and DESIGN section 6 takes the "
-                        "first non-null of cas.pipeline, manifest.name, "
-                        "projectName" % (run.manifest_cid, pipeline,
-                                         PIPELINE_IDENTITY))
+                        "manifest.name = %r, and DESIGN section 6 takes the first "
+                        "non-null of cas.pipeline, manifest.name, projectName"
+                        % (run.manifest_cid, pipeline, PIPELINE_IDENTITY))
 
-    latest, how = _latest_successful(gate, pipeline)
-    if latest is None:
-        problems.append("could not determine the latest successful run for "
-                        "pipeline %r (%s)" % (pipeline, how))
-    elif latest == run.completion_cid:
-        problems.append("latest successful run for pipeline %r is the failed run "
-                        "%s (via %s)" % (pipeline, latest, how))
+    from_index = _latest_successful_from_index(gate, pipeline)
+    from_log = _latest_successful_from_run_log(gate, pipeline)
+    for source, latest in (("the index run table", from_index),
+                           ("the store run log", from_log)):
+        if latest is None:
+            problems.append("%s names no successful run for pipeline %r"
+                            % (source, pipeline))
+        elif latest == run.completion_cid:
+            problems.append("%s says the latest successful run for pipeline %r is "
+                            "the failed run %s" % (source, pipeline, latest))
+    if from_index and from_log and from_index != from_log:
+        problems.append("the index says the latest successful run is %s, the store "
+                        "run log says %s" % (from_index, from_log))
 
     if problems:
         return FAIL, "; ".join(problems)
-    return PASS, ("status=failed, possibly_incomplete=true, partial collections "
-                  "%s, latest successful is %s (via %s)"
-                  % (counts, (latest or "")[:16] + "...", how))
+    return PASS, ("status=failed, possibly_incomplete=true, anomalies=%s, "
+                  "collections partial %s with no sample %s in reports, latest "
+                  "successful is %s by both the index and the run log"
+                  % (anomalies, counts, FAILING_SAMPLE, from_log[:16] + "..."))
 
 
-def _latest_successful(gate, pipeline):
-    try:
-        rows = gate.index.query(
-            "SELECT completion_cid FROM run WHERE pipeline = ? AND "
-            "status = 'succeeded' AND possibly_incomplete = 0 "
-            "ORDER BY finished_at DESC LIMIT 1", (pipeline,))
-        if rows:
-            return rows[0]["completion_cid"], "index run table"
-    except Exception as exc:
-        del exc
+def _latest_successful_from_index(gate, pipeline):
+    rows = gate.index.query(
+        "SELECT completion_cid FROM run WHERE pipeline = ? AND "
+        "status = 'succeeded' AND possibly_incomplete = 0 "
+        "ORDER BY finished_at DESC LIMIT 1", (pipeline,))
+    return rows[0]["completion_cid"] if rows else None
+
+
+def _latest_successful_from_run_log(gate, pipeline):
     for _rts, cid in gate.store.run_log():          # newest first
         block = gate.block(cid)
         if not isinstance(block, dict):
             continue
-        if block.get("status") == "succeeded" and not block.get("possibly_incomplete"):
-            manifest = gate.block(block["run"].text) if isinstance(
-                block.get("run"), cas.Cid) else None
-            if manifest is None or manifest.get("pipeline") == pipeline:
-                return cid, "store run log"
-    return None, "neither the index nor the run log named one"
+        if block.get("status") != "succeeded" or block.get("possibly_incomplete"):
+            continue
+        link = block.get("run")
+        manifest = gate.block(link.text) if isinstance(link, cas.Cid) else None
+        if manifest is None or manifest.get("pipeline") == pipeline:
+            return cid
+    return None
 
 
 # --------------------------------------------------------------------------
@@ -398,18 +659,25 @@ def assert_four_outputs(gate):
                       % run.completion_cid)
     counts = {name: len(block.get("items") or [])
               for name, (_c, block) in collections.items()}
+    problems = []
+    if set(counts) != OUTPUTS:
+        problems.append("expected exactly the collections %s, found %s"
+                        % (sorted(OUTPUTS), sorted(counts)))
     wrong = {name: n for name, n in counts.items() if n != 3}
     if wrong:
-        return FAIL, ("every collection of the resumed run must hold 3 items; "
-                      "found %s (all: %s)" % (wrong, counts))
-    return PASS, "%d collections, all with 3 items: %s" % (len(counts), sorted(counts))
+        problems.append("every collection of the resumed run must hold 3 items "
+                        "(three samples); wrong: %s (all: %s)" % (wrong, counts))
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, "collections %s, each with 3 items" % sorted(counts)
 
 
 @assertion(4, "resumed run has a populated task layer (onTaskCached)")
 def assert_four_tasks(gate):
     run = gate.run("resumed")
     if not run.nf_run_hash:
-        return FAIL, "run resumed has no nf_run_hash in its RunManifest %s" % run.manifest_cid
+        return FAIL, ("run resumed has no nf_run_hash in its RunManifest %s"
+                      % run.manifest_cid)
     lid = "lid://%s" % run.nf_run_hash
     records = [key for key, spec in gate.store.nf_records("TaskRun")
                if spec.get("workflowRun") == lid]
@@ -422,6 +690,66 @@ def assert_four_tasks(gate):
     return PASS, "15 TaskRun records name %s" % lid
 
 
+@assertion(4, "resumed run re-hashed nothing")
+def assert_four_no_rehash(gate):
+    """Proved by the filesystem, not by a counter.
+
+    gate.sh makes every published source file in pipeline-a/work unreadable
+    (chmod 000) for the duration of the resumed run, so anything that re-reads
+    a published file to re-address it gets AccessDenied and the run fails.
+
+    One caveat, measured rather than assumed: under the workflow output DSL's
+    `mode 'copy'` Nextflow's own PublishDir re-copies every published file on a
+    resumed run (issue 17), and a copy needs read access. When that is what
+    failed, the lock caught Nextflow upstream of the plugin and this assertion
+    has measured nothing about us; it says so and skips rather than reporting a
+    red no plugin change can clear.
+    """
+    marker = os.path.join(gate.root, "logs", "resumed", "sources-locked")
+    if not os.path.isfile(marker):
+        return FAIL, ("no %s: gate.sh did not lock the published source files for "
+                      "the resumed run, so nothing here proves a re-hash would "
+                      "have been caught" % marker)
+    with open(marker) as fh:
+        locked = [line for line in fh.read().splitlines() if line.strip()]
+    if len(locked) < 15:
+        return FAIL, ("%s lists only %d locked source file(s); the Test Pipeline "
+                      "publishes at least 15 (3 bam, 3 stats, 3 report, 9 chunk, "
+                      "and the qc trees)" % (marker, len(locked)))
+    code = gate.exit_code("resumed")
+    if code == 0:
+        return PASS, ("resumed exited 0 with %d published source files at mode "
+                      "000: no content byte was read" % len(locked))
+    publish_failures = _publish_copy_failures(gate)
+    if publish_failures:
+        return SKIP, ("inconclusive, and not a plugin fault: the resumed run "
+                      "exited %r because Nextflow's own PublishDir could not copy "
+                      "%d published file(s) it re-publishes on every resume "
+                      "(issue 17), e.g. %s. The lock is caught upstream of the "
+                      "plugin, so this run measured nothing about re-hashing. It "
+                      "needs the Test Pipeline to offer a non-copy publish mode, "
+                      "which is not the Gate's file."
+                      % (code, len(publish_failures), publish_failures[0]))
+    return FAIL, ("the resumed run exited %r with %d published source file(s) "
+                  "unreadable, and Nextflow's PublishDir reported no copy failure: "
+                  "something else read content that -resume should have taken from "
+                  "the cache. See %s/logs/resumed/"
+                  % (code, len(locked), gate.root))
+
+
+def _publish_copy_failures(gate):
+    """Lines where Nextflow's own PublishDir failed to copy, newest run first."""
+    path = os.path.join(gate.root, "logs", "resumed", "nextflow.log")
+    if not os.path.isfile(path):
+        return []
+    out = []
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            if "PublishDir - Failed to publish file" in line:
+                out.append(line.strip()[:160])
+    return out
+
+
 # --------------------------------------------------------------------------
 # Assertion 5
 # --------------------------------------------------------------------------
@@ -432,22 +760,81 @@ def assert_five(gate):
     if manifest_cid is None:
         return FAIL, ("no DirectoryManifest address recorded for qc sample A: "
                       "neither the coords pointer %s/coords/qc/A/A_qc nor the qc "
-                      "OutputCollection of run cold names one"
-                      % gate.store.root)
+                      "OutputCollection of run cold names one" % gate.store.root)
     dirs = gate.work_dirs("pipeline-a", "A_qc")
     if not dirs:
         return FAIL, ("no A_qc directory under %s/pipeline-a/work to walk"
                       % gate.root)
-    problems = _compare_manifest(gate, manifest_cid, dirs[0], "A_qc")
+    problems = _compare_manifest(gate, manifest_cid, dirs[0], "A_qc", dirs[0])
     if problems:
         return FAIL, ("manifest %s vs %s: %s"
                       % (manifest_cid, os.path.relpath(dirs[0], gate.root),
                          "; ".join(problems[:8])))
-    block = gate.store.read_block(manifest_cid)
-    names = [e.get("name") for e in block.get("entries") or []]
-    return PASS, ("%s matches %s entry for entry (%s); alias.txt is a symlink to "
-                  "summary.txt" % (manifest_cid[:16] + "...",
-                                   os.path.relpath(dirs[0], gate.root), names))
+    counted = _count_manifest(gate, manifest_cid)
+    return PASS, ("%s matches the walk of %s: %d regular file(s) by name, mode, "
+                  "size and raw cid, %d subdirectory manifest(s) recursed into, "
+                  "%d symlink(s) recorded as links (alias.txt -> summary.txt) and "
+                  "%d unresolvable"
+                  % (manifest_cid[:16] + "...",
+                     os.path.relpath(dirs[0], gate.root), counted["regular"],
+                     counted["directory"], counted["symlink"],
+                     counted["unresolvable"]))
+
+
+@assertion(5, "recorded publish paths resolve to the leaf addresses")
+def assert_five_paths(gate):
+    cold = gate.run("cold")
+    collections = cold.collections(gate)
+    if not collections:
+        return FAIL, "run cold has no OutputCollection blocks to check paths on"
+    problems = []
+    checked = 0
+    for name in sorted(collections):
+        _cid, block = collections[name]
+        items = block.get("items") or []
+        paths = block.get("paths") or []
+        if len(paths) != len(items):
+            problems.append("collection %s has %d items but %d path lists"
+                            % (name, len(items), len(paths)))
+            continue
+        for i, link in enumerate(items):
+            if link is None:
+                continue
+            item = gate.block(link.text)
+            if item is None:
+                problems.append("collection %s item %d: %s is not a readable block"
+                                % (name, i, link.text))
+                continue
+            leaves = list(_leaves(item.get("value")))
+            entry_paths = paths[i] or []
+            if len(entry_paths) != len(leaves):
+                problems.append("collection %s item %d (%s): %d leaves but %d "
+                                "publish paths %s"
+                                % (name, i, link.text[:16] + "...", len(leaves),
+                                   len(entry_paths), entry_paths))
+                continue
+            for leaf, publish_path in zip(leaves, entry_paths):
+                if publish_path is None:
+                    continue
+                rel = "/".join(publish_path) if isinstance(publish_path, list) \
+                    else str(publish_path)
+                pointer = gate.store.coords_pointer(rel)
+                if pointer is None:
+                    problems.append("collection %s names publish path %r, but "
+                                    "there is no pointer file at %s/coords/%s"
+                                    % (name, rel, gate.store.root, rel))
+                    continue
+                checked += 1
+                want = "cas://%s/%s" % (_address_text(leaf.get("address")),
+                                        leaf.get("name"))
+                if pointer != want:
+                    problems.append("coords/%s holds %r, expected %r (the leaf's "
+                                    "own address and name)" % (rel, pointer, want))
+    if problems:
+        return FAIL, "; ".join(problems[:6])
+    return PASS, ("%d recorded publish path(s) across %d collection(s) each resolve "
+                  "to a pointer naming that leaf's address and name"
+                  % (checked, len(collections)))
 
 
 def _qc_manifest_cid(gate, sample):
@@ -456,18 +843,13 @@ def _qc_manifest_cid(gate, sample):
         match = re.match(r"^cas://([^/]+)", pointer)
         if match and cas.is_cid(match.group(1)):
             return match.group(1)
-    try:
-        run = gate.run("cold")
-    except cas.GateError:
-        return None
-    entry = run.collections(gate).get("qc")
+    entry = gate.run("cold").collections(gate).get("qc")
     if not entry:
         return None
     for link in entry[1].get("items") or []:
         if link is None:
             continue
-        item = gate.block(link.text)
-        for leaf in _leaves(item.get("value")):
+        for leaf in _leaves((gate.block(link.text) or {}).get("value")):
             address = leaf.get("address")
             if isinstance(address, cas.Cid) and address.codec == cas.DAG_CBOR:
                 if leaf.get("name") in (None, "%s_qc" % sample):
@@ -475,21 +857,26 @@ def _qc_manifest_cid(gate, sample):
     return None
 
 
-def _leaves(value):
-    if isinstance(value, dict):
-        if value.get("kind") == "Leaf":
-            yield value
-            return
-        for element in value.values():
-            for leaf in _leaves(element):
-                yield leaf
-    elif isinstance(value, list):
-        for element in value:
-            for leaf in _leaves(element):
-                yield leaf
+def _count_manifest(gate, manifest_cid, seen=None):
+    counts = {"regular": 0, "executable": 0, "symlink": 0, "directory": 0,
+              "unresolvable": 0}
+    seen = seen if seen is not None else set()
+    if manifest_cid in seen:
+        return counts
+    seen.add(manifest_cid)
+    for entry in (gate.block(manifest_cid) or {}).get("entries") or []:
+        mode = entry.get("mode")
+        if mode in counts:
+            counts[mode] += 1
+        if mode == "directory":
+            address = _address_text(entry.get("address"))
+            if address:
+                for key, value in _count_manifest(gate, address, seen).items():
+                    counts[key] += value
+    return counts
 
 
-def _compare_manifest(gate, manifest_cid, dirpath, label, depth=0):
+def _compare_manifest(gate, manifest_cid, dirpath, label, root, depth=0):
     """Walk dirpath ourselves and diff it against the recorded manifest."""
     problems = []
     if depth > 64:
@@ -511,7 +898,7 @@ def _compare_manifest(gate, manifest_cid, dirpath, label, depth=0):
         problems.append("%s: entries are not sorted by the UTF-8 bytes of name: %s"
                         % (label, order))
 
-    walked = _walk(dirpath)
+    walked = _walk(dirpath, root)
     for name in sorted(set(walked) | set(recorded)):
         want = walked.get(name)
         got = recorded.get(name)
@@ -525,13 +912,12 @@ def _compare_manifest(gate, manifest_cid, dirpath, label, depth=0):
             if want[field] != got.get(field):
                 problems.append("%s/%s: %s expected %r, manifest says %r"
                                 % (label, name, field, want[field], got.get(field)))
-        address = got.get("address")
-        address = address.text if isinstance(address, cas.Cid) else address
+        address = _address_text(got.get("address"))
         if want["mode"] in ("regular", "executable"):
             if address != want["address"]:
                 problems.append("%s/%s: address expected %s (sha256 of the file), "
-                                "manifest says %s" % (label, name, want["address"],
-                                                      address))
+                                "manifest says %s"
+                                % (label, name, want["address"], address))
         elif want["mode"] == "directory":
             if not cas.is_cid(address or ""):
                 problems.append("%s/%s: directory entry needs a manifest address, "
@@ -539,23 +925,33 @@ def _compare_manifest(gate, manifest_cid, dirpath, label, depth=0):
             else:
                 problems.extend(_compare_manifest(
                     gate, address, os.path.join(dirpath, name),
-                    "%s/%s" % (label, name), depth + 1))
+                    "%s/%s" % (label, name), root, depth + 1))
         elif address is not None:
             problems.append("%s/%s: %s entry must have address null, found %s"
                             % (label, name, want["mode"], address))
     return problems
 
 
-def _walk(dirpath):
-    """{name: entry} for one directory, by the rules of DESIGN section 6."""
+def _walk(dirpath, root):
+    """{name: entry} for one directory, by the rules of DESIGN section 6.
+
+    `root` is the root of the tree being published. A relative symlink counts
+    as internal when it resolves inside `root`, not merely inside `dirpath`:
+    nested/up.txt -> ../summary.txt is still a link within the published tree.
+    """
+    # Resolve both sides in one namespace: on macOS $TMPDIR is /var/... which
+    # is itself a symlink to /private/var/..., and comparing one against the
+    # other makes every internal link look like an escape.
+    real_root = os.path.realpath(root)
+    real_dir = os.path.realpath(dirpath)
     out = {}
     for name in sorted(os.listdir(dirpath), key=lambda n: n.encode("utf-8")):
         full = os.path.join(dirpath, name)
         if os.path.islink(full):
             target = os.readlink(full)
-            resolved = os.path.normpath(os.path.join(dirpath, target))
+            resolved = os.path.normpath(os.path.join(real_dir, target))
             inside = (not os.path.isabs(target)
-                      and not os.path.relpath(resolved, dirpath).startswith(".."))
+                      and not os.path.relpath(resolved, real_root).startswith(".."))
             if inside:
                 out[name] = {"mode": "symlink", "size": len(target.encode()),
                              "address": None, "target": target}
@@ -579,10 +975,11 @@ def _walk(dirpath):
 # --------------------------------------------------------------------------
 
 def _consumer_hashes(gate):
-    """{tag: sha256 hex} read out of the consumer's own cas:// store."""
+    """{source: {published file name: sha256 hex}} from the consumer's store."""
     out = {}
     for rel in gate.store_out.coords_paths():
-        if not rel.startswith("hashes/"):
+        parts = rel.split("/")
+        if len(parts) < 3 or parts[0] != "hashes":
             continue
         pointer = gate.store_out.coords_pointer(rel)
         match = re.match(r"^cas://([^/]+)", pointer or "")
@@ -594,7 +991,7 @@ def _consumer_hashes(gate):
         if not digest:
             raise cas.GateError("coords/%s resolves to %r, which is not "
                                 "sha256sum output" % (rel, text[:80]))
-        out[rel.split("/")[1]] = digest.group(1)
+        out.setdefault(parts[1], {})[parts[-1]] = digest.group(1)
     return out
 
 
@@ -619,20 +1016,23 @@ def assert_six(gate):
                       "see %s/logs/consumer/" % (gate.store_out.root, gate.root))
     expected = _bam_sha256(gate, "A")
     problems = []
-    for tag in ("lid", "cas"):
-        got = hashes.get(tag)
-        if got is None:
-            problems.append("no hashes/%s output in %s (found %s)"
-                            % (tag, gate.store_out.root, sorted(hashes)))
-        elif got != expected:
-            problems.append("hashes/%s staged bytes hashing to %s, expected %s "
-                            "(sha256 of A.bam in pipeline-a/work)"
-                            % (tag, got, expected))
+    for source in ("lid", "cas"):
+        got = hashes.get(source) or {}
+        if len(got) != 1:
+            problems.append("expected exactly 1 file under hashes/%s/ in %s, "
+                            "found %d: %s" % (source, gate.store_out.root,
+                                              len(got), sorted(got)))
+            continue
+        name, digest = next(iter(got.items()))
+        if digest != expected:
+            problems.append("hashes/%s/%s says the staged bytes hash to %s, "
+                            "expected %s (sha256 of A.bam in pipeline-a/work)"
+                            % (source, name, digest, expected))
     if problems:
         return FAIL, ("; ".join(problems) + ". Not covered in the skeleton: the "
                       "run-rooted cas://<runCid>/aligned/A/A.bam form and a glob "
                       "over a manifest.")
-    return PASS, ("lid:// and cas:// both staged bytes hashing to %s; the "
+    return PASS, ("lid:// and cas:// each staged one file hashing to %s; the "
                   "run-rooted form and the manifest glob are not in the skeleton"
                   % expected)
 
@@ -641,56 +1041,42 @@ def assert_six(gate):
            online_only=True)
 def assert_seven(gate):
     hashes = _consumer_hashes(gate)
-    got = hashes.get("fromstore")
-    expected = _bam_sha256(gate, "B")
     problems = []
-    if got is None:
-        problems.append("no hashes/fromstore output in %s (found %s); "
-                        "channel.fromStore(where: [sample: 'B']) emitted nothing"
-                        % (gate.store_out.root, sorted(hashes)))
-    elif got != expected:
-        problems.append("fromStore staged bytes hashing to %s, expected %s "
-                        "(sha256 of B.bam in pipeline-a/work)" % (got, expected))
 
-    count = _fromstore_item_count(gate)
-    if count is not None and count != 1:
-        problems.append("the index says %d aligned items have sample == 'B' in "
-                        "run cold, expected exactly 1" % count)
-
-    lineage = os.path.join(gate.root, "logs", "consumer", "lineage-find.txt")
-    if os.path.isfile(lineage):
-        with open(lineage) as fh:
-            text = fh.read()
-        note = ("`nextflow lineage find` returned %d line(s)"
-                % len(text.strip().splitlines()))
-        if "ERROR" in text or "Exception" in text:
-            problems.append("`nextflow lineage find` errored: %s"
-                            % text.strip().splitlines()[:2])
+    expected_b = _bam_sha256(gate, "B")
+    from_store = hashes.get("fromstore") or {}
+    if len(from_store) != 1:
+        problems.append("expected exactly 1 file under hashes/fromstore/ in %s "
+                        "(channel.fromStore(where: [sample: 'B']) must emit one "
+                        "item), found %d: %s"
+                        % (gate.store_out.root, len(from_store), sorted(from_store)))
     else:
-        note = ("channel.fromLineage not exercised: no %s (gate.sh writes it "
-                "when `nextflow lineage find` is applicable)" % lineage)
+        name, digest = next(iter(from_store.items()))
+        if digest != expected_b:
+            problems.append("hashes/fromstore/%s says the staged bytes hash to %s, "
+                            "expected %s (sha256 of B.bam in pipeline-a/work)"
+                            % (name, digest, expected_b))
+
+    all_bams = {sample: _bam_sha256(gate, sample) for sample in ("A", "B", "C")}
+    from_lineage = hashes.get("fromlineage") or {}
+    if not from_lineage:
+        problems.append("nothing under hashes/fromlineage/ in %s: "
+                        "channel.fromLineage(workflowRun: ..., label: 'bam') "
+                        "emitted no file, so native lineage read-back is broken "
+                        "alongside ours" % gate.store_out.root)
+    else:
+        stray = {name: digest for name, digest in from_lineage.items()
+                 if digest not in set(all_bams.values())}
+        if stray:
+            problems.append("hashes/fromlineage/ carries %d digest(s) that are not "
+                            "any of the three bam files %s: %s"
+                            % (len(stray), all_bams, stray))
 
     if problems:
-        return FAIL, "; ".join(problems) + ". " + note
-    return PASS, "one item, staged bytes hash to %s. %s" % (expected, note)
-
-
-def _fromstore_item_count(gate):
-    try:
-        run = gate.run("cold")
-        collection = run.collections(gate).get("aligned")
-        if not collection:
-            return None
-        cids = [l.text for l in collection[1].get("items") or [] if l is not None]
-        if not cids:
-            return None
-        marks = ",".join("?" * len(cids))
-        rows = gate.index.query(
-            "SELECT DISTINCT item_cid FROM item_attr WHERE path = 'sample' "
-            "AND value = 'B' AND item_cid IN (%s)" % marks, tuple(cids))
-        return len(rows)
-    except Exception:
-        return None
+        return FAIL, "; ".join(problems)
+    return PASS, ("one file under hashes/fromstore/ hashing to %s; %d "
+                  "fromLineage file(s) all hash to bam content the Gate computed"
+                  % (expected_b, len(from_lineage)))
 
 
 # --------------------------------------------------------------------------
@@ -718,16 +1104,18 @@ def assert_ten(gate):
                         % (sorted(a_manifests - b_manifests)[:5],
                            sorted(b_manifests - a_manifests)[:5]))
 
-    needles = {"the GATE_ROOT path": gate.root}
-    user = os.environ.get("USER")
-    if user:
-        needles["the OS user name"] = user
+    user = os_user_name()
+    if not user:
+        return FAIL, ("cannot determine the OS user name (getpass.getuser, "
+                      "$LOGNAME, $USER and pwd all failed), so the leak scan "
+                      "cannot be performed and must not be reported as clean")
     # No exemptions. DESIGN section 6 scrubs RunManifest params and config for
     # portability (dropping the cas, lineage, workDir, outputDir, launchDir,
     # projectDir, homeDir, configFiles, scriptFile, commandLine, runName and
     # resume scopes, and replacing absolute paths and non-lid/cas URIs with
     # "[redacted-location]" and the OS user name with "[redacted-user]"), so
     # every dag-cbor block is scanned whole.
+    needles = {"the GATE_ROOT path": gate.root, "the OS user name": user}
     leaks = []
     for cid, block in gate.blocks.items():
         kind = block.get("kind") if isinstance(block, dict) else None
@@ -835,18 +1223,15 @@ def wrap(text, width, indent):
 
 
 def emit_refs(gate):
-    """Print shell assignments gate.sh needs but can only learn from the store.
-
-    The Pipeline Identity, one lid:// reference and one cas:// reference, all
-    read out of the producer's store after it has run.
-    """
-    pipeline = lid = uri = ""
+    """Print shell assignments gate.sh needs but can only learn from the store."""
+    pipeline = lid = uri = run_lid = ""
     try:
         cold = gate.run("cold")
         pipeline = (cold.manifest or {}).get("pipeline") or ""
         if cold.nf_run_hash:
+            run_lid = "lid://%s" % cold.nf_run_hash
             lid = "lid://%s/aligned/A/A.bam" % cold.nf_run_hash
-    except Exception as exc:
+    except cas.GateError as exc:
         sys.stderr.write("refs: %s\n" % exc)
     pointer = gate.store.coords_pointer("aligned/A/A.bam")
     if pointer and pointer.startswith("cas://"):
@@ -857,6 +1242,7 @@ def emit_refs(gate):
         sys.stderr.write("refs: no coords pointer at %s/coords/aligned/A/A.bam\n"
                          % gate.store.root)
     print("GATE_PIPELINE=%s" % _shquote(pipeline))
+    print("GATE_RUN_LID=%s" % _shquote(run_lid))
     print("GATE_LID=%s" % _shquote(lid))
     print("GATE_CAS=%s" % _shquote(uri))
     return 0
@@ -869,26 +1255,38 @@ def _shquote(text):
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
-    if len(args) != 1 or flags - {"--offline", "--verbose", "--refs"}:
+    known = {"--offline", "--refs", "--snapshot"}
+    if not args or flags - known:
         sys.stderr.write(__doc__)
         return 2
     root = args[0]
-    offline = "--offline" in flags
     if not os.path.isdir(root):
         sys.stderr.write("no such GATE_ROOT: %s\n" % root)
         return 2
 
-    gate = Gate(root, offline)
+    gate = Gate(root)
+    if "--snapshot" in flags:
+        if len(args) != 2:
+            sys.stderr.write("--snapshot needs an output file\n")
+            return 2
+        blocks, runs, nf, coords = write_snapshot(gate, args[1])
+        print("%d blocks, %d run-log entries, %d nf records, %d coords pointers"
+              % (blocks, runs, nf, coords))
+        return 0
     if "--refs" in flags:
         return emit_refs(gate)
+    if len(args) != 1:
+        sys.stderr.write(__doc__)
+        return 2
+    offline = "--offline" in flags
+
     print("GATE_ROOT  %s" % gate.root)
-    print("store      %s (%d blocks, %d dag-cbor decoded)"
+    print("store      %s (%d blocks, %d dag-cbor sound)"
           % (gate.store.root, sum(1 for _ in gate.store.blocks()), len(gate.blocks)))
-    if gate.decode_errors:
-        print("!! %d dag-cbor block(s) failed to decode:" % len(gate.decode_errors))
-        for line in gate.decode_errors[:10]:
-            print("   %s" % line)
-    print("runs       %s" % (", ".join(sorted(gate.runs)) or "none"))
+    try:
+        print("runs       %s" % (", ".join(sorted(gate.runs)) or "none"))
+    except cas.GateError as exc:
+        print("runs       UNRESOLVABLE: %s" % exc)
     print("")
 
     results = []
@@ -906,7 +1304,7 @@ def main(argv):
     for number, title, wording in NOT_IN_SKELETON:
         results.append((SKIP, number, title, "not in skeleton: " + wording))
 
-    results.sort(key=lambda r: r[1])
+    results.sort(key=lambda r: (r[1], r[2]))
     width = max(len(r[2]) for r in results)
     failures = 0
     for status, number, title, message in results:

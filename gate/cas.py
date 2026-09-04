@@ -37,8 +37,8 @@ class StoreError(GateError):
     pass
 
 
-class IndexError(GateError):  # noqa: A001 - deliberate: cas.IndexError
-    pass
+class IndexLocateError(GateError):
+    """The one expected SQLite index could not be found."""
 
 
 # --------------------------------------------------------------------------
@@ -58,6 +58,7 @@ def _varint(value):
 
 
 def _read_varint(data, pos):
+    """Unsigned LEB128, rejecting any non-minimal encoding."""
     value = 0
     shift = 0
     while True:
@@ -67,6 +68,8 @@ def _read_varint(data, pos):
         pos += 1
         value |= (byte & 0x7F) << shift
         if not byte & 0x80:
+            if shift and byte == 0x00:
+                raise GateError("non-minimal varint: trailing zero group")
             return value, pos
         shift += 7
         if shift > 63:
@@ -78,11 +81,23 @@ def _b32_encode(data):
 
 
 def _b32_decode(text):
+    """Decode multibase base32 lower, no padding, rejecting a non-canonical form.
+
+    base64.b32decode silently discards the bits left over in the final
+    character, so `bafkrei…v6am`, `…v6an`, `…v6ao` and `…v6ap` would all decode
+    to the same bytes. Re-encoding and comparing is what rules the other three
+    out: only the form whose trailing bits are zero survives.
+    """
     if not text or text[0] != "b":
         raise GateError("not multibase base32: %r" % (text,))
-    body = text[1:].upper()
-    body += "=" * (-len(body) % 8)
-    return base64.b32decode(body)
+    body = text[1:]
+    if not body or body.strip("abcdefghijklmnopqrstuvwxyz234567"):
+        raise GateError("not base32 lower: %r" % (text,))
+    padded = body.upper() + "=" * (-len(body) % 8)
+    data = base64.b32decode(padded)
+    if _b32_encode(data) != text:
+        raise GateError("non-canonical base32 (non-zero padding bits): %r" % (text,))
+    return data
 
 
 def cid_from_sha256(digest, codec):
@@ -515,9 +530,9 @@ class Index(object):
         pattern = os.path.join(str(cache_home), "nf-blocks", "*.sqlite")
         found = sorted(glob.glob(pattern))
         if not found:
-            raise IndexError("no index: nothing matches %s" % pattern)
+            raise IndexLocateError("no index: nothing matches %s" % pattern)
         if len(found) > 1:
-            raise IndexError("expected exactly 1 index, found %d matching %s: %s"
+            raise IndexLocateError("expected exactly 1 index, found %d matching %s: %s"
                              % (len(found), pattern, ", ".join(found)))
         return found[0]
 
