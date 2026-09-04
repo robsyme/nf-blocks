@@ -54,10 +54,13 @@ SAMPLES = [
 META = {s: m for s, _d, m in SAMPLES}
 DEPTH = {s: d for s, d, _m in SAMPLES}
 
-# The failed run: MAYBE_FAIL exits 7 for sample B, so reports carries only C
-# and qc never publishes. Entry counts measured on released Nextflow, issue 17.
-FAIL_SAMPLES = ["A", "C"]
-FAIL_REPORTS = ["C"]
+# The failed run: only MAYBE_FAIL exits 7 for sample B, so ALIGN, SHARED_STATS
+# and CHUNKS still publish all three samples (aligned/B is legitimate); qc never
+# publishes and reports loses sample B, both measured on released Nextflow
+# (issue 17). This matches the real Gate run's shape: aligned/stats/chunks each
+# carry A, B, C, and qc and reports are absent.
+FAIL_SAMPLES = ["A", "B", "C"]
+FAIL_REPORTS = []
 
 RUNS = [
     ("cold", "a1" * 16, "11111111-1111-1111-1111-111111111111", False,
@@ -275,6 +278,9 @@ def main():
 
         collections = {}
         for output in sorted(entries):
+            if not entries[output]:
+                continue           # an output that published nothing has no
+                                   # collection, matching the real failed run
             rows = sorted(entries[output], key=lambda e: e[0])
             collections[output] = writer.put_block({
                 "kind": "OutputCollection", "schema": 1,

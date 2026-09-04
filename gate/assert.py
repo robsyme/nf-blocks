@@ -587,16 +587,26 @@ def assert_three(gate):
         problems.append("RunCompletion %s: expected an anomalies map, found %r"
                         % (run.completion_cid, anomalies))
 
-    # The collections must be partial and say so. MAYBE_FAIL exits 7 for
-    # sample B, so `reports` cannot carry a sample B item and cannot be full.
+    # The collections must be partial and say so. Partiality is the whole
+    # point of RunCompletion: a reader must be able to tell "this run produces
+    # no reports" from "this run died before reports". A failed run is partial
+    # when it is missing an output a full run has, or holds a short collection
+    # (fewer than the three samples). Which output goes missing depends on when
+    # the abort landed relative to each publish, so nothing here requires a
+    # specific collection to survive: on this run qc and reports published
+    # nothing before MAYBE_FAIL exited 7, on another run reports might carry C.
     collections = run.collections(gate)
     counts = {name: len(block.get("items") or [])
               for name, (_c, block) in collections.items()}
-    if "reports" not in collections:
-        problems.append("run %s has no `reports` collection at all (has %s); a "
-                        "partially published output must still be recorded"
-                        % (FAILING_RUN, sorted(counts)))
-    else:
+    if not _failed_run_is_partial(counts, OUTPUTS):
+        problems.append("run %s recorded every output full (%s); a failed run "
+                        "must be partial and say so, but this is indistinguishable "
+                        "from a clean run" % (FAILING_RUN, counts))
+    # Only the failing task's own output may lose sample B: MAYBE_FAIL exits 7
+    # for sample B before its report can publish. Every other output (ALIGN,
+    # SHARED_STATS, QC_DIR, CHUNKS) succeeds for B, so aligned/B and the rest
+    # legitimately carry it; the check is specific to `reports`.
+    if "reports" in collections:
         reports = run.items(gate, "reports")
         samples = [metadata_view(item).get("sample") for _cid, item in reports]
         if FAILING_SAMPLE in samples:
@@ -605,7 +615,7 @@ def assert_three(gate):
                             % (FAILING_RUN, FAILING_SAMPLE, samples))
         if len(reports) > 2:
             problems.append("the `reports` collection of run %s holds %d items "
-                            "(samples %s); at most 2 can have been published"
+                            "(samples %s); at most 2 can have published"
                             % (FAILING_RUN, len(reports), samples))
 
     pipeline = (run.manifest or {}).get("pipeline")
@@ -632,9 +642,17 @@ def assert_three(gate):
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("status=failed, possibly_incomplete=true, anomalies=%s, "
-                  "collections partial %s with no sample %s in reports, latest "
-                  "successful is %s by both the index and the run log"
-                  % (anomalies, counts, FAILING_SAMPLE, from_log[:16] + "..."))
+                  "collections partial %s (of %d outputs), reports carries no "
+                  "sample %s, latest successful is %s by both the index and the "
+                  "run log" % (anomalies, counts, len(OUTPUTS), FAILING_SAMPLE,
+                               from_log[:16] + "..."))
+
+
+def _failed_run_is_partial(counts, full_outputs):
+    """A failed run is partial: missing an output, or a short collection."""
+    if set(counts) != set(full_outputs):
+        return True
+    return any(n < 3 for n in counts.values())
 
 
 def _latest_successful_from_index(gate, pipeline):

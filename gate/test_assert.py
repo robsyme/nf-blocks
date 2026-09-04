@@ -477,6 +477,29 @@ class TestRunExitAssertion(TempTree):
         self.assertIn("again", message)
 
 
+class TestFailedRunPartiality(unittest.TestCase):
+    """Assertion 3's "collections are partial and say so" decision."""
+
+    FULL = {"aligned", "stats", "qc", "chunks", "reports"}
+
+    def test_a_run_missing_an_output_is_partial(self):
+        counts = {"aligned": 3, "chunks": 3, "stats": 3}      # no qc, no reports
+        self.assertTrue(gate_assert._failed_run_is_partial(counts, self.FULL))
+
+    def test_a_run_with_a_short_collection_is_partial(self):
+        counts = {"aligned": 3, "chunks": 3, "stats": 3, "qc": 3, "reports": 1}
+        self.assertTrue(gate_assert._failed_run_is_partial(counts, self.FULL))
+
+    def test_a_run_with_every_output_full_is_not_partial(self):
+        counts = {k: 3 for k in self.FULL}
+        self.assertFalse(gate_assert._failed_run_is_partial(counts, self.FULL))
+
+    def test_reports_absent_is_still_partial(self):
+        """On a failed run reports may never publish; that is partiality itself."""
+        counts = {"aligned": 3, "chunks": 3, "stats": 3}
+        self.assertTrue(gate_assert._failed_run_is_partial(counts, self.FULL))
+
+
 class TestUserNeedle(unittest.TestCase):
     def test_the_os_user_name_is_determined(self):
         self.assertTrue(gate_assert.os_user_name())
