@@ -30,7 +30,9 @@ artifacts only.
 4. "Already exists" is success for every block write. Re-storing identical
    content is the normal case.
 5. No command-line or web surface. No participation in task hashing or
-   `-resume` identity.
+   `-resume` identity. *Amended 2026-09-24: the command-line and web surface
+   rule is lifted for the block explorer alone, specified in
+   `../.scratch/block-explorer/spec.md`.*
 6. The Gate's assertions never trust the plugin: they hash bytes themselves.
 
 ## 1. Plugin identity and layout
@@ -171,6 +173,9 @@ blocks/<xx>/<cid>       xx = last two characters of the cid string. Files are ch
                         "Target already exists" is success.
 runs/<rts>-<cid>        Run Log: empty file per RunCompletion. rts = String.format('%013d', 9999999999999L - finishedAtMillis)
                         so lexicographic order is newest first. cid = the RunCompletion cid.
+                        AMENDED 2026-09-24 (block explorer spec section 3, a v1 change): replaced by the Store Log,
+                        log/<rts>-<kind>-<cid> with kind run|selection|claim, rts from the moment the entry is
+                        written to this member rather than finishedAt, runs/ dropped with no compatibility read.
 coords/<publish path>   Publish Coordinate tree (§7). Real directories; leaves are Pointer Files.
 nf/<key>/.data.json     Nextflow's own lineage records, DefaultLinStore layout. nf/.history is its history log.
 ```
@@ -184,12 +189,168 @@ skipped because a read-only member holds the block.
 Every metadata block is a DAG-CBOR map with `kind` (string) and `schema`
 (integer, `1`). Keys are `snake_case`. Links are `Cid` values (tag 42).
 Timestamps are ISO-8601 UTC strings with millisecond precision, only ever as
-facts about a run. Nothing store-local: no absolute paths, host names, user
+facts about a run, or as a Claim's advisory `timestamp`. Nothing store-local: no absolute paths, host names, user
 names, member aliases, or surrogate ids.
 
 Two content-derived kinds carry no `asserted_by`, so that identical content
 yields one block regardless of who stored it: `DirectoryManifest` and
 `OutputItem`. All other kinds carry `asserted_by` (string from config).
+Confirmed by Rob 2026-09-24; the lineage spec and glossary now say the same.
+
+### IPLD Schema (amended 2026-09-24)
+
+Every kind below, and the block explorer's Selection and Claim, in IPLD
+Schema DSL as one inline union on `kind` (block explorer spec section 12).
+The per-kind notation that follows remains for its prose rules: sort orders,
+the symlink and scrub rules, the Leaf decoding rule. Where the two disagree,
+fix one; neither silently wins. `nullable` means the key is always present
+and may hold null; nothing here is `optional`. Link targets are named for the
+reader; a decoder checks the target's `kind` when it follows one.
+
+```ipldsch
+type Block union {
+  | DirectoryManifest "DirectoryManifest"
+  | OutputItem "OutputItem"
+  | OutputCollection "OutputCollection"
+  | RunManifest "RunManifest"
+  | RunCompletion "RunCompletion"
+  | Selection "Selection"
+  | Claim "Claim"
+} representation inline {
+  discriminantKey "kind"
+}
+# Reserved kinds, specified in the lineage spec, not yet built: InputSet, Attestation.
+
+type DirectoryManifest struct {
+  schema Int
+  entries [DirEntry]            # sorted by the UTF-8 bytes of name
+}
+type DirEntry struct {
+  name String
+  mode EntryMode
+  size Int
+  address nullable &Any         # raw cid for regular/executable, &DirectoryManifest for directory
+  target nullable String        # relative in-tree target, or "[redacted-location]"
+}
+type EntryMode enum {
+  | regular
+  | executable
+  | symlink
+  | directory
+  | unresolvable
+}
+
+type OutputItem struct {
+  schema Int
+  value Any                     # the channel item; every file leaf is a Leaf map (prose rule)
+}
+# Not a Block member: found inside OutputItem.value by its kind field.
+type Leaf struct {
+  kind String                   # always "Leaf"
+  name nullable String
+  address nullable &Any
+  size nullable Int
+  provider nullable Provider
+  reason nullable LeafReason
+}
+type Provider enum {
+  | HeadNode ("head-node")
+  | FusionNode ("fusion-node")
+}
+type LeafReason enum {
+  | declined
+  | never_published
+  | unresolvable
+  | unaddressed
+}
+
+type OutputCollection struct {
+  schema Int
+  asserted_by String
+  run &RunManifest
+  name String
+  items [nullable &OutputItem]  # sorted by cid string
+  paths [[nullable String]]
+}
+
+type RunManifest struct {
+  schema Int
+  asserted_by String
+  pipeline String
+  repository nullable String
+  revision nullable String
+  commit_id nullable String
+  run_name String
+  nf_run_hash String
+  session_id String
+  resumed Bool
+  nextflow_version String
+  params {String:Any}
+  config {String:Any}
+  script nullable &Any
+  started_at String
+}
+
+type RunCompletion struct {
+  schema Int
+  asserted_by String
+  run &RunManifest
+  collections [&OutputCollection]   # sorted by output name
+  input_set nullable &Any
+  status RunStatus
+  exit_status nullable Int
+  possibly_incomplete Bool
+  started_at String
+  finished_at String
+  anomalies Anomalies
+  error nullable String
+}
+type RunStatus enum {
+  | succeeded
+  | failed
+}
+type Anomalies struct {
+  unresolvable Int
+  unaddressed Int
+  declined Int
+  never_published Int
+}
+
+# Block explorer spec section 7.
+type Selection struct {
+  schema Int
+  asserted_by String
+  members [Member]              # sorted by member address; each address once
+  derived_from [Bytes]          # binary cids, weak references, sorted
+}
+type Member union {
+  | ItemMember "item"
+  | SelectionLink "selection"
+} representation keyed
+type ItemMember struct {
+  address &OutputItem
+  via [&OutputCollection]       # sorted; followed for metadata only
+}
+type SelectionLink &Selection
+
+# Block explorer spec section 8.
+type Claim struct {
+  schema Int
+  asserted_by String
+  subject &Any
+  verb ClaimVerb
+  attribute nullable String
+  value nullable Any
+  supersedes [&Claim]           # sorted by cid string
+  timestamp String              # advisory, from the request
+}
+type ClaimVerb enum {
+  | set
+  | add
+  | del
+  | delete
+}
+```
 
 ### DirectoryManifest
 ```
@@ -298,6 +459,19 @@ as a CID (`Cid.parse` succeeds):
     paths (run-rooted reference). Skeleton: implement raw and manifest;
     run-rooted may be stubbed with `UnsupportedOperationException` until the
     observer exists.
+  - *Amended 2026-09-24:* **Item Occurrence**
+    `cas://<OutputCollection cid>/<OutputItem cid>[/<leaf name>]`, one item
+    as it appeared in one run's output. Rule: when the root is an
+    OutputCollection and the first segment parses as a CID listed in that
+    collection's `items`, the URI names the occurrence; otherwise the
+    segments are a publish path, as above. If neither resolves, the error
+    names both readings. No reserved word, so no publish directory name can
+    collide; the only ambiguity would be a publish directory named exactly
+    after an item CID in the same collection. Without a leaf name the path
+    is presented as a directory of the item's leaves by leaf name; with one,
+    it is that file. Canonical form: CIDs in their string form, no trailing
+    slash. Built with the explorer's milestone 2 (block explorer spec
+    section 7.4).
 - **Publish Coordinate** `cas://<alias>/<relative path>`. The write-side name
   Nextflow's `PublishDir` hands us. Persisted in the writable member as a
   Pointer File tree under `coords/`: intermediate segments are real
@@ -466,6 +640,20 @@ claim_current(subject_cid, attribute, value, claim_cid, conflicted)
 missing(have_cid, needed_cid)
 nf_record(key PK, kind, workflow_run, task_run, labels_json, block_cid)
 ```
+
+*Amended 2026-09-24 (block explorer spec section 13), v1 changes:*
+
+```
+index collection(completion_cid, output_name)   -- query 3's join; without it
+index collection_item(collection_cid)           -- query 3 scans both tables
+```
+
+Measured on a year-scale index (1,825 runs, 580 MB): query 3 fell from 105
+page reads and 28.6 MB (2.2 s even warm) to 42 page reads and 180 KB. Catch-up
+reads the Store Log past the watermark **plus a 10-minute overlap**, since an
+entry can be written behind the watermark by a Bundle merge or a host with a
+skewed clock; ingest is idempotent. Rebuild also reads the Store Log, to fill
+the explorer's `log_entry` table. Selection tables: explorer spec section 11.
 
 - `item_attr`: every scalar leaf of the item's **metadata view** (the item
   itself if a Map, else its first top-level Map) under its dotted path; array
