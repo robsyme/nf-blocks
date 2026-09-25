@@ -108,7 +108,7 @@ try {
   // next query that reads a page it has not cached fails with snapshot_changed.
   const swapped = await context.newPage()
   await open(swapped, 'http://127.0.0.1:8841/index.html#/idle')
-  const snapshot = join(dir, 'index/v2.sqlite')
+  const snapshot = join(dir, 'index/v3.sqlite')
   copyFileSync(snapshot, snapshot + '.orig')
   writeFileSync(snapshot + '.tmp', Buffer.concat([readFileSync(snapshot), Buffer.alloc(4096)]))
   renameSync(snapshot + '.tmp', snapshot)
@@ -119,7 +119,7 @@ try {
 
   // A member whose Store Log no listing answers for (final review finding 6).
   mkdirSync(join(dir, 'nolog/index'), { recursive: true })
-  copyFileSync(join(dir, 'index/v2.sqlite'), join(dir, 'nolog/index/v2.sqlite'))
+  copyFileSync(join(dir, 'index/v3.sqlite'), join(dir, 'nolog/index/v3.sqlite'))
   const nolog = await context.newPage()
   await open(nolog, 'http://127.0.0.1:8841/index.html?store=nolog/#/idle')
   assert.equal(await nolog.$eval('#stale', e => e.dataset.log), 'unreadable')

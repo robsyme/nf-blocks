@@ -655,15 +655,26 @@ run(completion_cid PK, manifest_cid, pipeline, revision, commit_id,
     status, possibly_incomplete, finished_at, member)
   index (pipeline, status, finished_at DESC)
   index (nf_run_hash), index (manifest_cid)
-collection(collection_cid PK, completion_cid, output_name)
+collection(collection_cid PK, kind, completion_cid, output_name, asserted_by)
 item(item_cid PK)
-collection_item(collection_cid, item_cid)
+collection_item(collection_cid, item_cid, via_cid)
+selection_child(parent_cid, child_cid)
+  index (child_cid)
+selection_derived(selection_cid, derived_from_cid)
 producer(content_cid, item_cid, collection_cid, completion_cid, filename)
   index (content_cid)
 consumer(content_cid, completion_cid, name, how)
 item_attr(item_cid, path, type, value, truncated)
   index (path, type, value)
+log_entry(cid, kind, member, written_at)
+  unique index (cid, member)
+  index (kind, written_at DESC)
+claim(claim_cid PK, subject_cid, verb, attribute, value, timestamp, asserted_by)
+  index (subject_cid)
+claim_supersedes(claim_cid, superseded_cid)
+  index (superseded_cid)
 claim_current(subject_cid, attribute, value, claim_cid, conflicted)
+  index (subject_cid, attribute)
 missing(have_cid, needed_cid)
 nf_record(key PK, kind, workflow_run, task_run, labels_json, block_cid)
 ```
@@ -674,6 +685,9 @@ nf_record(key PK, kind, workflow_run, task_run, labels_json, block_cid)
 index collection(completion_cid, output_name)   -- query 3's join; without it
 index collection_item(collection_cid)           -- query 3 scans both tables
 ```
+
+*Amended 2026-09-25 (block explorer milestone 2): schema 3, spec section 11,
+plus the indexes of decision 3 of `docs/plans/2026-09-25-explorer-milestone-2.md`.*
 
 Measured on a year-scale index (1,825 runs, 580 MB): query 3 fell from 105
 page reads and 28.6 MB (2.2 s even warm) to 42 page reads and 180 KB. Catch-up
@@ -700,7 +714,8 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   Log past the watermark plus a 10-minute overlap (floor clamped to the local
   clock), skipping runs already indexed; retries every run recorded as
   `missing`; and records an unreachable block as `missing` rather than
-  aborting the member.
+  aborting the member. Every Store Log entry read is recorded in `log_entry`
+  (earliest time per `(cid, member)`); rebuild fills it from the whole log.
 - Queries: `producersOf(Cid content) → List<ProducerRow>`;
   `latestSuccessfulRun(String pipeline) → Optional<Cid completion>`;
   `items(Cid completion, String outputName, Map<String,Object> where) → List<Cid item>`;
@@ -754,13 +769,12 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
 
 ### Index Snapshot
 
-- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v2.sqlite`.
+- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v3.sqlite`.
   Class `robsyme.cas.core.IndexSnapshot`.
-- Rows, milestone 1: every `run` row whose `member` is the member's alias, and
-  the `collection`, `collection_item`, `item`, `producer`, `item_attr`,
-  `consumer` and `missing` rows reached from those runs. Copied by SQL from the
-  cache index; no block is read. `run.member` is written as NULL. Milestone 2
-  replaces the `run.member` rule with `log_entry.member` (spec section 4).
+- Rows: every `run` the member's Store Log announced (`log_entry.member`) or
+  its blocks held at the first scan (`run.member`), and the rows reached from
+  those runs, plus the member's `log_entry` rows with `member` NULL.
+  Selections and Claims: Tasks 4 and 6.
 - Same DDL as the cache index (`Index.ddl()`), same `schema_version`.
 - `meta` holds exactly `store_log_watermark` (the member's watermark in the
   cache index, a Store Log entry name; absent when the member has no log) and
@@ -850,7 +864,7 @@ pinned in the `plugins {}` block directly, never through
 Relative to a member's base URL:
 
 ```
-index/v2.sqlite            the Index Snapshot, read with single-range GETs
+index/v3.sqlite            the Index Snapshot, read with single-range GETs
 index.html                 the page
 blocks/<xx>/<cid>          a block, xx = the cid's last two characters
 log/                       the Store Log listing (one of the three forms below)

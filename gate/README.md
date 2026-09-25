@@ -102,7 +102,7 @@ skips it.
 After `fail`, gate.sh keeps that run's Index Snapshot as
 `snapshot-after-fail.sqlite`. `browser_assert.py prepare` then lays out four
 member copies under `$GATE_ROOT/browser/site/stores/`, each holding what a
-member publishes (`blocks/`, `log/`, `index/v2.sqlite`, `index.html`, never
+member publishes (`blocks/`, `log/`, `index/v3.sqlite`, `index.html`, never
 `coords/` or `nf/`):
 
 | store | snapshot | for |
@@ -110,7 +110,7 @@ member publishes (`blocks/`, `log/`, `index/v2.sqlite`, `index.html`, never
 | `current` | the store's own, after `elsewhere` | A1, A5 |
 | `stale` | the one kept after `fail`, two runs behind | A3 |
 | `tampered` | as `stale`, with one byte of `elsewhere`'s RunCompletion changed | A4 |
-| `year` | only `index/v2.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
+| `year` | only `index/v3.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
 
 The year snapshot takes minutes to generate, so it is cached in
 `GATE_YEAR_CACHE` (default `$TMPDIR/nf-blocks-gate-year`), keyed by

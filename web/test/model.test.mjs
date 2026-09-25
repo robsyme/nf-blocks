@@ -133,9 +133,9 @@ async function openBig() {
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
      INSERT INTO run (completion_cid, pipeline, run_name, status, possibly_incomplete, finished_at)
      SELECT printf('run%03d', i), 'big', printf('R%03d', i), 'succeeded', 0, printf('2026-09-01T%02d:%02d:00.000Z', i / 60, i % 60) FROM n`,
-    "INSERT INTO collection VALUES ('coll', 'run001', 'aligned')",
+    "INSERT INTO collection(collection_cid, kind, completion_cid, output_name) VALUES ('coll', 'output', 'run001', 'aligned')",
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
-     INSERT INTO collection_item SELECT 'coll', printf('item%04d', i) FROM n`])
+     INSERT INTO collection_item(collection_cid, item_cid) SELECT 'coll', printf('item%04d', i) FROM n`])
   return Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(bytes),
     blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: async () => new Response('', { status: 404 }) }),
     listFn: async () => ({ names: [], readable: true }) })

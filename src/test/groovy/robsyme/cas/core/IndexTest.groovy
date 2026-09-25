@@ -125,9 +125,9 @@ class IndexTest extends Specification {
         run            : ['completion_cid', 'manifest_cid', 'pipeline', 'revision', 'commit_id',
                           'nf_run_hash', 'session_id', 'run_name', 'asserted_by',
                           'status', 'possibly_incomplete', 'finished_at', 'member'],
-        collection     : ['collection_cid', 'completion_cid', 'output_name'],
+        collection     : ['collection_cid', 'kind', 'completion_cid', 'output_name', 'asserted_by'],
         item           : ['item_cid'],
-        collection_item: ['collection_cid', 'item_cid'],
+        collection_item: ['collection_cid', 'item_cid', 'via_cid'],
         producer       : ['content_cid', 'item_cid', 'collection_cid', 'completion_cid', 'filename'],
         consumer       : ['content_cid', 'completion_cid', 'name', 'how'],
         item_attr      : ['item_cid', 'path', 'type', 'value', 'truncated'],
@@ -608,10 +608,10 @@ class IndexTest extends Specification {
     }
 
     /** Records which blocks the index actually reads. */
-    def 'schema 2 carries the two query 3 indexes'() {
+    def 'schema 3 carries the two query 3 indexes'() {
         expect:
         indexNames().containsAll(['collection_completion_output', 'collection_item_collection'])
-        Index.SCHEMA_VERSION == 2
+        Index.SCHEMA_VERSION == 3
     }
 
     private List<String> indexNames() {

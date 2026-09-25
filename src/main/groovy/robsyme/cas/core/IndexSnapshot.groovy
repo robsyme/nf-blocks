@@ -39,16 +39,26 @@ class IndexSnapshot {
     private static final DateTimeFormatter MILLIS =
         DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
 
-    /** The member's runs; alias written as NULL, since an alias is a local label. */
+    /**
+     * The member's runs: those its Store Log announced, and those its blocks
+     * held when the index first scanned it (a store written before the Store
+     * Log, DESIGN.md §12). Alias written as NULL, since an alias is a local label.
+     */
     private static final String COPY_RUNS = '''
         INSERT INTO main.run
         SELECT completion_cid, manifest_cid, pipeline, revision, commit_id, nf_run_hash, session_id,
                run_name, asserted_by, status, possibly_incomplete, finished_at, NULL
-        FROM src.run WHERE member = ?'''
+        FROM src.run
+        WHERE member = ? OR completion_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'run')'''
+
+    /** The member's own Store Log rows. */
+    private static final String COPY_LOG_ENTRIES =
+        'INSERT INTO main.log_entry SELECT cid, kind, NULL, written_at FROM src.log_entry WHERE member = ?'
 
     /** Everything those runs reach, in dependency order. */
     private static final List<String> COPY_CLOSURE = [
-        'INSERT INTO main.collection SELECT * FROM src.collection WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
+        '''INSERT INTO main.collection SELECT * FROM src.collection
+           WHERE kind = 'output' AND completion_cid IN (SELECT completion_cid FROM main.run)''',
         'INSERT INTO main.collection_item SELECT * FROM src.collection_item WHERE collection_cid IN (SELECT collection_cid FROM main.collection)',
         'INSERT INTO main.item SELECT DISTINCT item_cid FROM main.collection_item',
         'INSERT INTO main.producer SELECT * FROM src.producer WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
@@ -128,9 +138,10 @@ class IndexSnapshot {
             // ATTACH is refused inside a transaction, so it comes first.
             update(c, 'ATTACH DATABASE ? AS src', [(Object) cacheFile.toAbsolutePath().toString()])
             c.setAutoCommit(false)
-            update(c, COPY_RUNS, [(Object) member])
+            update(c, COPY_RUNS, [(Object) member, member])
             for( String sql : COPY_CLOSURE )
                 exec(c, sql)
+            update(c, COPY_LOG_ENTRIES, [(Object) member])
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
             update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WRITTEN_AT_KEY, MILLIS.format(Instant.now())])

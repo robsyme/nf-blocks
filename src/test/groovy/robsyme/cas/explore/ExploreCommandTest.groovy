@@ -55,9 +55,9 @@ class ExploreCommandTest extends Specification {
         started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
 
         then:
-        Files.isRegularFile(tempDir.resolve('lab/index/v2.sqlite'))
+        Files.isRegularFile(tempDir.resolve('lab/index/v3.sqlite'))
         out.toString().trim() == "nf-blocks explorer: ${started.server.url}"
-        RawHttp.send(started.server.port, 'GET', '/m/lab/index/v2.sqlite').status == 200
+        RawHttp.send(started.server.port, 'GET', '/m/lab/index/v3.sqlite').status == 200
         RawHttp.send(started.server.port, 'GET', '/members.json').text().contains('"shared"')
     }
 

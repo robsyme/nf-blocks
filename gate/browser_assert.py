@@ -35,7 +35,7 @@ import gen_year  # noqa: E402
 import year_params  # noqa: E402
 
 PASS, FAIL = "PASS", "FAIL"
-SNAPSHOT = "index/v2.sqlite"
+SNAPSHOT = "index/v3.sqlite"
 POINT_LIMIT = (8, 65536)          # requests, bytes: spec section 1.3 assertion 2
 QUERY3_LIMIT = (50, 524288)
 YEAR_RUNS = 5 * 365

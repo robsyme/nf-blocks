@@ -32,7 +32,7 @@ import groovy.util.logging.Slf4j
 class Index implements Closeable {
 
     /** Bumped whenever the schema below changes; a mismatch deletes and recreates. */
-    static final int SCHEMA_VERSION = 2
+    static final int SCHEMA_VERSION = 3
 
     // The SQL the block explorer's page runs too (DESIGN.md §12, §15). The page
     // holds a copy in web/src/queries.json; ExplorerQueriesTest pins them equal.
@@ -169,7 +169,7 @@ class Index implements Closeable {
         }
     }
 
-    /** Every CREATE statement of the schema of DESIGN.md §12, in order. */
+    /** Every CREATE statement of the schema of DESIGN.md §12 and block explorer spec section 11, in order. */
     static List<String> ddl() {
         return [
             'CREATE TABLE schema_version(version INTEGER NOT NULL)',
@@ -180,19 +180,38 @@ class Index implements Closeable {
             'CREATE INDEX run_pipeline_status_finished_at ON run(pipeline, status, finished_at DESC)',
             'CREATE INDEX run_nf_run_hash ON run(nf_run_hash)',
             'CREATE INDEX run_manifest_cid ON run(manifest_cid)',
-            'CREATE TABLE collection(collection_cid TEXT PRIMARY KEY, completion_cid TEXT, output_name TEXT)',
+            // kind: 'output' | 'selection'. A Selection has no run and no output name.
+            '''CREATE TABLE collection(
+                 collection_cid TEXT PRIMARY KEY, kind TEXT, completion_cid TEXT, output_name TEXT, asserted_by TEXT)''',
             'CREATE TABLE item(item_cid TEXT PRIMARY KEY)',
-            'CREATE TABLE collection_item(collection_cid TEXT, item_cid TEXT)',
+            // One row per (collection, item, via); via_cid is NULL for an Output
+            // Collection and for a Selection item chosen by query.
+            'CREATE TABLE collection_item(collection_cid TEXT, item_cid TEXT, via_cid TEXT)',
             'CREATE INDEX collection_completion_output ON collection(completion_cid, output_name)',
             'CREATE INDEX collection_item_collection ON collection_item(collection_cid)',
+            'CREATE INDEX collection_item_item ON collection_item(item_cid)',
+            'CREATE TABLE selection_child(parent_cid TEXT, child_cid TEXT)',
+            'CREATE INDEX selection_child_child ON selection_child(child_cid)',
+            'CREATE TABLE selection_derived(selection_cid TEXT, derived_from_cid TEXT)',
             '''CREATE TABLE producer(
                  content_cid TEXT, item_cid TEXT, collection_cid TEXT, completion_cid TEXT, filename TEXT)''',
             'CREATE INDEX producer_content_cid ON producer(content_cid)',
             'CREATE TABLE consumer(content_cid TEXT, completion_cid TEXT, name TEXT, how TEXT)',
             'CREATE TABLE item_attr(item_cid TEXT, path TEXT, type TEXT, value TEXT, truncated INTEGER)',
             'CREATE INDEX item_attr_path_type_value ON item_attr(path, type, value)',
+            // written_at: ISO-8601 UTC, milliseconds; the earliest entry per (cid, member).
+            'CREATE TABLE log_entry(cid TEXT, kind TEXT, member TEXT, written_at TEXT)',
+            'CREATE UNIQUE INDEX log_entry_cid_member ON log_entry(cid, member)',
+            'CREATE INDEX log_entry_kind_written_at ON log_entry(kind, written_at DESC)',
+            '''CREATE TABLE claim(
+                 claim_cid TEXT PRIMARY KEY, subject_cid TEXT, verb TEXT, attribute TEXT, value TEXT,
+                 timestamp TEXT, asserted_by TEXT)''',
+            'CREATE INDEX claim_subject ON claim(subject_cid)',
+            'CREATE TABLE claim_supersedes(claim_cid TEXT, superseded_cid TEXT)',
+            'CREATE INDEX claim_supersedes_superseded ON claim_supersedes(superseded_cid)',
             '''CREATE TABLE claim_current(
                  subject_cid TEXT, attribute TEXT, value TEXT, claim_cid TEXT, conflicted INTEGER)''',
+            'CREATE INDEX claim_current_subject ON claim_current(subject_cid, attribute)',
             'CREATE TABLE missing(have_cid TEXT, needed_cid TEXT)',
             '''CREATE TABLE nf_record(
                  key TEXT PRIMARY KEY, kind TEXT, workflow_run TEXT, task_run TEXT,
@@ -263,8 +282,8 @@ class Index implements Closeable {
             insertMissing(completion, collectionCid)
             return
         }
-        update('INSERT OR REPLACE INTO collection(collection_cid, completion_cid, output_name) VALUES (?, ?, ?)',
-            [collectionCid.toString(), completion.toString(), text(collection.get('name'))])
+        update('INSERT OR REPLACE INTO collection(collection_cid, kind, completion_cid, output_name, asserted_by) VALUES (?, ?, ?, ?, ?)',
+            [collectionCid.toString(), 'output', completion.toString(), text(collection.get('name')), text(collection.get('asserted_by'))])
         for( Object link : asList(collection.get('items')) ) {
             // A null entry is a hole: Nextflow handed us a null item and §6
             // keeps its position rather than compacting it away.
@@ -272,7 +291,7 @@ class Index implements Closeable {
             if( itemCid == null )
                 continue
             update('INSERT OR IGNORE INTO item(item_cid) VALUES (?)', [itemCid.toString()])
-            update('INSERT INTO collection_item(collection_cid, item_cid) VALUES (?, ?)',
+            update('INSERT INTO collection_item(collection_cid, item_cid, via_cid) VALUES (?, ?, NULL)',
                 [collectionCid.toString(), itemCid.toString()])
             final Map item = readBlock(store, itemCid, 'OutputItem')
             if( item == null ) {
@@ -354,7 +373,7 @@ class Index implements Closeable {
         // The watermark is per member: in a composition each member's log
         // advances independently (DESIGN.md §12).
         scanOnce(store, member)
-        retryMissingRuns(store, member)
+        retryMissingLogged(store, member)
         final String key = watermarkKey(member)
         final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
@@ -362,17 +381,26 @@ class Index implements Closeable {
         // entriesSince is newest first; ingest in the order they were written.
         for( int i = entries.size() - 1; i >= 0; i-- ) {
             final StoreLogEntry entry = entries[i]
-            if( entry.kind != StoreLogKind.RUN ) {
-                log.debug("store log entry ${entry.name} is a ${entry.kind.token}; not ingested until the explorer lands")
-                continue
-            }
-            if( isRunIndexed(entry.cid) )
-                continue
-            // An absent RunCompletion is not an error: ingestRun records a
-            // `missing` row and returns, and the run is indexed when it arrives.
-            ingestTolerant(store, entry.cid, member)
+            recordLogEntry(entry, member)
+            ingestLogged(store, entry.kind, entry.cid, member)
         }
         setMeta(key, entries[0].name)
+    }
+
+    /**
+     * Ingests one block a Store Log announced, unless it is already indexed.
+     * Every catch-up, retry and scan path comes through here, so a new kind
+     * is one branch. A block that cannot be read is recorded as `missing`.
+     */
+    private void ingestLogged(BlockStore store, StoreLogKind kind, Cid cid, String member) {
+        switch( kind ) {
+            case StoreLogKind.RUN:
+                if( !isRunIndexed(cid) )
+                    ingestTolerant(store, cid, member)
+                return
+            default:
+                log.debug("store log entry for ${cid} is a ${kind.token}; ingested from Task 4 and Task 6 on")
+        }
     }
 
     /**
@@ -401,22 +429,26 @@ class Index implements Closeable {
     }
 
     /**
-     * A logged run whose RunCompletion had not arrived was recorded as
-     * `missing`. Retried on every catch-up, so it is indexed once its block
-     * lands even after the overlap window has moved past its entry.
+     * A logged block that had not arrived was recorded as `missing`. Retried
+     * on every catch-up, so it is indexed once its block lands even after the
+     * overlap window has moved past its entry. A `missing` row with no
+     * `log_entry` (a run found by the block scan, not the log) defaults to RUN.
      */
-    private void retryMissingRuns(BlockStore store, String member) {
-        final List<Cid> waiting = new ArrayList<Cid>()
-        query('SELECT DISTINCT needed_cid FROM missing WHERE have_cid IS NULL', []) { ResultSet rs ->
-            waiting.add(Cid.parse(rs.getString(1)))
+    private void retryMissingLogged(BlockStore store, String member) {
+        final Map<Cid, StoreLogKind> waiting = new LinkedHashMap<Cid, StoreLogKind>()
+        query('''SELECT DISTINCT m.needed_cid, l.kind FROM missing m
+                 LEFT JOIN log_entry l ON l.cid = m.needed_cid
+                 WHERE m.have_cid IS NULL''', []) { ResultSet rs ->
+            final StoreLogKind kind = rs.getString(2) == null ? StoreLogKind.RUN : StoreLogKind.fromToken(rs.getString(2))
+            waiting.put(Cid.parse(rs.getString(1)), kind ?: StoreLogKind.RUN)
         }
-        for( Cid completion : waiting ) {
+        for( Map.Entry<Cid, StoreLogKind> each : waiting.entrySet() ) {
             try {
-                if( store.has(completion) && !isRunIndexed(completion) )
-                    ingestRun(store, completion, member)
+                if( store.has(each.key) )
+                    ingestLogged(store, each.value, each.key, member)
             }
             catch( IOException | UncheckedIOException e ) {
-                warnOnce(completion.toString(), "run completion $completion is still unreachable (${e.message}); will retry")
+                warnOnce(each.key.toString(), "block ${each.key} is still unreachable (${e.message}); will retry")
             }
         }
     }
@@ -454,6 +486,36 @@ class Index implements Closeable {
         return found
     }
 
+    private static final java.time.format.DateTimeFormatter ISO_MILLIS =
+        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(java.time.ZoneOffset.UTC)
+
+    /** ISO-8601 UTC with milliseconds, the form of every timestamp in a block and in log_entry. */
+    static String isoMillis(long millis) {
+        return ISO_MILLIS.format(java.time.Instant.ofEpochMilli(millis))
+    }
+
+    /**
+     * Records that {@code member}'s Store Log announced {@code entry}. Idempotent;
+     * keeps the earliest time, which is when the member first saw the block
+     * (block explorer spec section 11). ISO text of one fixed width sorts as time.
+     */
+    void recordLogEntry(StoreLogEntry entry, String member) {
+        update('''INSERT INTO log_entry(cid, kind, member, written_at) VALUES (?, ?, ?, ?)
+                  ON CONFLICT(cid, member) DO UPDATE SET written_at = min(written_at, excluded.written_at)''',
+            [entry.cid.toString(), entry.kind.token, member, isoMillis(entry.writtenAtMillis)])
+    }
+
+    /** The earliest Store Log entry of {@code cid} in {@code member}, rebuilt from its row, or null. */
+    StoreLogEntry firstLogEntry(Cid cid, String member) {
+        final List<StoreLogEntry> found = new ArrayList<StoreLogEntry>()
+        query('SELECT kind, written_at FROM log_entry WHERE cid = ? AND member = ?', [cid.toString(), member]) { ResultSet rs ->
+            final StoreLogKind kind = StoreLogKind.fromToken(rs.getString(1))
+            final long millis = java.time.Instant.parse(rs.getString(2)).toEpochMilli()
+            found.add(StoreLog.parse(StoreLog.entryName(kind, cid, millis)))
+        }
+        return found ? found[0] : null
+    }
+
     private static String watermarkKey(String member) {
         return META_WATERMARK + ':' + member
     }
@@ -476,6 +538,13 @@ class Index implements Closeable {
             for( Cid completion : runCompletionsIn(store) )
                 fresh.ingestRun(store, completion, member)
             fresh.setMeta(META_SCANNED + ':' + member, 'done')
+            try {
+                for( StoreLogEntry entry : StoreLog.read(store) )
+                    fresh.recordLogEntry(entry, member)
+            }
+            catch( Exception e ) {
+                log.debug("could not read the Store Log to fill log_entry: ${e.message}")
+            }
             // Carry the Store Log watermark forward to the newest logged entry, so
             // the next catchUp reads only what arrives after this rebuild rather
             // than re-scanning the whole log. Correctness-safe either way.

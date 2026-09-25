@@ -41,7 +41,7 @@ async function openOver(srv, version) {
   const name = `swap-${++vfsCount}`
   const vfs = installReadOnlyVfs(sqlite3, name)
   const size = srv.file.bytes.length
-  vfs.register('snap', new ChunkedSource(size, xhrRange('http://h/index/v2.sqlite', new Counter(), { ...version, size, newXhr: srv.newXhr })))
+  vfs.register('snap', new ChunkedSource(size, xhrRange('http://h/index/v3.sqlite', new Counter(), { ...version, size, newXhr: srv.newXhr })))
   const db = new sqlite3.oo1.DB({ filename: 'file:snap?immutable=1', flags: 'r', vfs: name })
   return { db, vfs }
 }
@@ -85,7 +85,7 @@ test('an unchanged snapshot checks its version without extra requests', async ()
 
 test('the probe records the snapshot version: ETag, else Last-Modified', async () => {
   const head = new Uint8Array(4096)
-  const probe = (headers) => probeSnapshot('http://h/index/v2.sqlite', {
+  const probe = (headers) => probeSnapshot('http://h/index/v3.sqlite', {
     fetchFn: async () => new Response(head, { status: 206, headers: { 'Content-Range': 'bytes 0-4095/8192', ...headers } }) })
   assert.equal((await probe({ ETag: '"x"', 'Last-Modified': 'Thu, 25 Sep 2026 10:00:00 GMT' })).tag, '"x"')
   assert.equal((await probe({ 'Last-Modified': 'Thu, 25 Sep 2026 10:00:00 GMT' })).tag, 'Thu, 25 Sep 2026 10:00:00 GMT')
@@ -105,7 +105,7 @@ test('the worker hands snapshot_changed to the page as that code, and the probe 
     },
     terminate() {},
   }
-  const db = await openSnapshot('http://h/index/v2.sqlite', { wasm: new Uint8Array(4), createWorker: () => worker, fetchFn })
+  const db = await openSnapshot('http://h/index/v3.sqlite', { wasm: new Uint8Array(4), createWorker: () => worker, fetchFn })
   assert.equal(opened[0].tag, '"x"')
   await assert.rejects(db.query('SELECT 1'), e => e instanceof SnapshotError && e.code === 'snapshot_changed')
 })

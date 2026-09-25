@@ -50,7 +50,7 @@ class CasCommandsTest extends Specification {
 
         when:
         final int status = run('snapshot')
-        final Path file = tempDir.resolve('store/index/v2.sqlite')
+        final Path file = tempDir.resolve('store/index/v3.sqlite')
 
         then:
         status == 0

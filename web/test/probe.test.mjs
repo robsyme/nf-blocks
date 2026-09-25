@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { probeSnapshot, SnapshotError } from '../src/db.js'
 
-const URL_ = 'http://store.test/index/v2.sqlite'
+const URL_ = 'http://store.test/index/v3.sqlite'
 
 function response(status, body, headers = {}) {
   return new Response(body, { status, headers })

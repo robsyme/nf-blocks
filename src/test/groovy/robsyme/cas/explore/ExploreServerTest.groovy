@@ -24,7 +24,7 @@ class ExploreServerTest extends Specification {
     def setup() {
         final Path lab = tempDir.resolve('lab')
         Files.createDirectories(lab.resolve('index'))
-        Files.write(lab.resolve('index/v2.sqlite'), snapshot)
+        Files.write(lab.resolve('index/v3.sqlite'), snapshot)
         Files.createDirectories(lab.resolve("blocks/${CID[-2..-1]}"))
         Files.write(lab.resolve("blocks/${CID[-2..-1]}/${CID}"), [0xa0] as byte[])
         Files.createDirectories(lab.resolve('log'))
@@ -77,28 +77,28 @@ class ExploreServerTest extends Specification {
 
     def 'the snapshot is served whole, and by single ranges'() {
         expect:
-        get('/m/lab/index/v2.sqlite').with { status == 200 && body == snapshot && headers['accept-ranges'] == 'bytes' }
-        get('/m/lab/index/v2.sqlite', [Range: 'bytes=4096-8191']).with {
+        get('/m/lab/index/v3.sqlite').with { status == 200 && body == snapshot && headers['accept-ranges'] == 'bytes' }
+        get('/m/lab/index/v3.sqlite', [Range: 'bytes=4096-8191']).with {
             status == 206 && headers['content-range'] == 'bytes 4096-8191/10240' &&
                 body == Arrays.copyOfRange(snapshot, 4096, 8192)
         }
-        get('/m/lab/index/v2.sqlite', [Range: 'bytes=-10']).with { status == 206 && body.length == 10 }
-        get('/m/lab/index/v2.sqlite', [Range: 'bytes=20000-']).with { status == 416 && headers['content-range'] == 'bytes */10240' }
-        RawHttp.send(server.port, 'HEAD', '/m/lab/index/v2.sqlite').with { status == 200 && body.length == 0 }
+        get('/m/lab/index/v3.sqlite', [Range: 'bytes=-10']).with { status == 206 && body.length == 10 }
+        get('/m/lab/index/v3.sqlite', [Range: 'bytes=20000-']).with { status == 416 && headers['content-range'] == 'bytes */10240' }
+        RawHttp.send(server.port, 'HEAD', '/m/lab/index/v3.sqlite').with { status == 200 && body.length == 0 }
     }
 
     def 'the snapshot and blocks carry an ETag, and a replaced snapshot gets a new one (final review finding 1)'() {
         given:
-        final Path file = tempDir.resolve('lab/index/v2.sqlite')
-        final String before = get('/m/lab/index/v2.sqlite', [Range: 'bytes=0-4095']).headers['etag']
-        final String whole = get('/m/lab/index/v2.sqlite').headers['etag']
-        final String head = RawHttp.send(server.port, 'HEAD', '/m/lab/index/v2.sqlite').headers['etag']
+        final Path file = tempDir.resolve('lab/index/v3.sqlite')
+        final String before = get('/m/lab/index/v3.sqlite', [Range: 'bytes=0-4095']).headers['etag']
+        final String whole = get('/m/lab/index/v3.sqlite').headers['etag']
+        final String head = RawHttp.send(server.port, 'HEAD', '/m/lab/index/v3.sqlite').headers['etag']
 
         when: 'replaced as IndexSnapshot writes it: same size, new bytes, an atomic move'
-        final Path temp = file.resolveSibling('v2.sqlite.tmp')
+        final Path temp = file.resolveSibling('v3.sqlite.tmp')
         Files.write(temp, snapshot.collect { byte b -> (byte) (b ^ 1) } as byte[])
         Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        final RawHttp.Response after = get('/m/lab/index/v2.sqlite', [Range: 'bytes=0-4095'])
+        final RawHttp.Response after = get('/m/lab/index/v3.sqlite', [Range: 'bytes=0-4095'])
 
         then:
         before ==~ /^"[0-9a-z-]+"$/
@@ -112,22 +112,22 @@ class ExploreServerTest extends Specification {
 
     def 'an opened member file keeps the size, tag and bytes of the file it opened'() {
         given:
-        final Path file = tempDir.resolve('lab/index/v2.sqlite')
+        final Path file = tempDir.resolve('lab/index/v3.sqlite')
         final MemberFiles files = new LocalMemberFiles(tempDir.resolve('lab'))
-        final MemberFiles.Opened opened = files.open('index/v2.sqlite')
+        final MemberFiles.Opened opened = files.open('index/v3.sqlite')
 
         when: 'the file is replaced by a bigger one after it was opened'
-        final Path temp = file.resolveSibling('v2.sqlite.tmp')
+        final Path temp = file.resolveSibling('v3.sqlite.tmp')
         Files.write(temp, new byte[20000])
         Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        final MemberFiles.Opened reopened = files.open('index/v2.sqlite')
+        final MemberFiles.Opened reopened = files.open('index/v3.sqlite')
 
         then:
         opened.size == 10240L
         opened.read(4096, 100).withCloseable { it.readNBytes(100) } == Arrays.copyOfRange(snapshot, 4096, 4196)
         reopened.size == 20000L
         reopened.tag != opened.tag
-        files.open('index/v3.sqlite') == null
+        files.open('index/v2.sqlite') == null
         files.open('index') == null
 
         cleanup:
@@ -158,13 +158,13 @@ class ExploreServerTest extends Specification {
 
         where:
         path << ['/m/lab/coords/aligned/A.bam', '/m/lab/nf/abc/.data.json', '/m/lab/../../etc/passwd',
-                 '/m/lab/%2e%2e/%2e%2e/etc/passwd', '/m/lab/index/../nf/abc/.data.json', '/m/ghost/index/v2.sqlite',
-                 '/m/lab/index/v2.sqlite-wal', '/m/lab/log/.DS_Store', '/m/lab/blocks/', '/etc/passwd']
+                 '/m/lab/%2e%2e/%2e%2e/etc/passwd', '/m/lab/index/../nf/abc/.data.json', '/m/ghost/index/v3.sqlite',
+                 '/m/lab/index/v3.sqlite-wal', '/m/lab/log/.DS_Store', '/m/lab/blocks/', '/etc/passwd']
     }
 
     def 'a foreign Host or Origin is refused (Review Focus 4): #headers'() {
         expect:
-        get('/m/lab/index/v2.sqlite', headers).status == 403
+        get('/m/lab/index/v3.sqlite', headers).status == 403
 
         where:
         headers << [[Host: 'attacker.example:80'], [Host: 'evil.test'], [Host: '127.0.0.1:1'],
@@ -179,11 +179,11 @@ class ExploreServerTest extends Specification {
 
     def 'it is read-only'() {
         expect:
-        RawHttp.send(server.port, 'POST', '/m/lab/index/v2.sqlite').with { status == 405 && headers['allow'] == 'GET, HEAD' }
+        RawHttp.send(server.port, 'POST', '/m/lab/index/v3.sqlite').with { status == 405 && headers['allow'] == 'GET, HEAD' }
     }
 
     def 'no CORS headers are sent'() {
         expect:
-        !get('/m/lab/index/v2.sqlite', [Origin: "http://127.0.0.1:${server.port}".toString()]).headers.keySet().any { it.startsWith('access-control') }
+        !get('/m/lab/index/v3.sqlite', [Origin: "http://127.0.0.1:${server.port}".toString()]).headers.keySet().any { it.startsWith('access-control') }
     }
 }

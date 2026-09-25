@@ -14,8 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser_assert as B  # noqa: E402
 
 CID = "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua"
-YEAR = "http://127.0.0.1:1/stores/year/index/v2.sqlite"
-CLOUD_YEAR_URL = "https://pub-bucket.s3.ca-central-1.amazonaws.com/year/index/v2.sqlite"
+YEAR = "http://127.0.0.1:1/stores/year/index/v3.sqlite"
+CLOUD_YEAR_URL = "https://pub-bucket.s3.ca-central-1.amazonaws.com/year/index/v3.sqlite"
 
 
 def step(**kw):
@@ -32,7 +32,7 @@ def reads(n, size, phase="query", url=YEAR):
 class QueryCostTest(unittest.TestCase):
     def test_counts_only_query_phase_reads_of_the_snapshot(self):
         s = step(requests=reads(3, 4096, "open") + reads(7, 4096) + reads(2, 99, url="http://127.0.0.1:1/x"))
-        self.assertEqual(B.query_cost(s, "/stores/year/index/v2.sqlite"), (7, 7 * 4096))
+        self.assertEqual(B.query_cost(s, "/stores/year/index/v3.sqlite"), (7, 7 * 4096))
 
     def test_limits(self):
         self.assertTrue(B.within((8, 65536), (8, 65536)))
@@ -165,7 +165,7 @@ class CloudCheckTest(unittest.TestCase):
              "method": "GET", "status": 200, "bytes": 512},
         ]
         priv_requests = [
-            {"url": "http://127.0.0.1:1/m/priv/index/v2.sqlite", "method": "GET", "status": 200, "bytes": 4096},
+            {"url": "http://127.0.0.1:1/m/priv/index/v3.sqlite", "method": "GET", "status": 200, "bytes": 4096},
             {"url": "http://127.0.0.1:1/m/priv/blocks/ua/%s" % CID, "method": "GET", "status": 200, "bytes": 12},
         ]
         return [
@@ -264,7 +264,7 @@ class CloudCheckTest(unittest.TestCase):
         steps = self.good_steps()
         for s in steps:
             if s["id"] == "A7.explore":
-                s["requests"] = [{"url": "http://127.0.0.1:1/m/lab/index/v2.sqlite", "method": "GET", "status": 200, "bytes": 4096}]
+                s["requests"] = [{"url": "http://127.0.0.1:1/m/lab/index/v3.sqlite", "method": "GET", "status": 200, "bytes": 4096}]
         self.write_observed(steps)
         code, out = self.check()
         self.assertEqual(code, 1)

@@ -78,14 +78,15 @@ async function snapshotOf(r1, item, content, watermark) {
   try {
     db.exec('PRAGMA page_size=4096')
     db.exec(readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'))
-    db.exec({ sql: 'INSERT INTO schema_version VALUES (2)' })
+    db.exec({ sql: 'INSERT INTO schema_version VALUES (3)' })
     db.exec({ sql: 'INSERT INTO run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)', bind: [r1.completion, r1.manifest, 'demo', null, null,
       'hash-R1', 's', 'R1', 'test', 'succeeded', 0, r1.finished] })
-    db.exec({ sql: 'INSERT INTO collection VALUES (?,?,?)', bind: [r1.collection, r1.completion, 'aligned'] })
+    db.exec({ sql: "INSERT INTO collection(collection_cid, kind, completion_cid, output_name, asserted_by) VALUES (?, 'output', ?, ?, 'test')",
+      bind: [r1.collection, r1.completion, 'aligned'] })
     for (const [s, lane, depth] of [['A', 1, '1.5'], ['B', 2, '2.5']]) {
       const i = item[s].toString()
       db.exec({ sql: 'INSERT INTO item VALUES (?)', bind: [i] })
-      db.exec({ sql: 'INSERT INTO collection_item VALUES (?,?)', bind: [r1.collection, i] })
+      db.exec({ sql: 'INSERT INTO collection_item(collection_cid, item_cid) VALUES (?, ?)', bind: [r1.collection, i] })
       db.exec({ sql: 'INSERT INTO producer VALUES (?,?,?,?,?)', bind: [content[s].toString(), i, r1.collection, r1.completion, `${s}.bam`] })
       for (const [path, type, value] of [['sample', 'string', s], ['lane', 'int', String(lane)], ['depth', 'float', depth]])
         db.exec({ sql: 'INSERT INTO item_attr VALUES (?,?,?,?,0)', bind: [i, path, type, value] })
