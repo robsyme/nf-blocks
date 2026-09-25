@@ -116,6 +116,12 @@ try {
   assert.equal(await swapped.$eval('[data-error]', e => e.dataset.error), 'snapshot_changed')
   renameSync(snapshot + '.orig', snapshot)
 
+  // Opened straight from disk (final review finding 4): a clear refusal.
+  const disk = await context.newPage()
+  await open(disk, `file://${join(dir, 'index.html')}#/`)
+  assert.equal(await disk.evaluate(() => document.body.dataset.state), 'error')
+  assert.equal(await disk.$eval('[data-error]', e => e.dataset.error), 'file_protocol')
+
   console.log('page smoke: ok')
 } finally {
   await browser.close()

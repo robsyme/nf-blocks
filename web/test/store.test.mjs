@@ -20,3 +20,17 @@ test('under explore, the first member or ?member=', async () => {
 test('otherwise the page directory', async () => {
   assert.equal((await resolveStore('http://h/stores/current/index.html#/run/x', { fetchFn: nothing })).base, 'http://h/stores/current/')
 })
+
+test('a page opened from file:// is refused with file_protocol, before any fetch (final review finding 4)', async () => {
+  let asked = 0
+  const counting = async () => { asked++; return nothing() }
+  await assert.rejects(resolveStore('file:///Users/me/store/index.html#/', { fetchFn: counting }),
+    e => e.code === 'file_protocol' && /static file server/.test(e.message) && /nf-blocks:explore/.test(e.message))
+  assert.equal(asked, 0)
+  await assert.rejects(resolveStore('http://h/index.html?store=file:///Users/me/store/', { fetchFn: counting }), e => e.code === 'file_protocol')
+})
+
+test('a file:// page may still name an http store', async () => {
+  const s = await resolveStore('file:///Users/me/index.html?store=https://b.s3.amazonaws.com/x/', { fetchFn: nothing })
+  assert.equal(s.base, 'https://b.s3.amazonaws.com/x/')
+})

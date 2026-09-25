@@ -837,20 +837,13 @@ replace (`HttpPluginRepository`, seen in the debug log as `GET
 https://registry.nextflow.io/api/v1/plugins/dependencies?plugins=nf-blocks&
 nextflowVersion=26.04.6`); the plugin's own version and location come from
 `plugins.json`, and since the zip is already unpacked at
-`<plugins dir>/nf-blocks-<version>`, nothing is downloaded. An example
-`plugins.json` for the current build is checked in at
-`.superpowers/sdd/2026-09-25-explorer-milestone-1/plugins.json.example`.
+`<plugins dir>/nf-blocks-<version>`, nothing is downloaded.
+`gate/browser/plugin-repo.sh <repo> <out dir>` writes that `plugins.json` for
+the installed build; the Gate's browser tier uses it.
 
-Verified 2026-09-25, Task 6: against a `make gate` store, with this
-invocation, `nextflow plugin nf-blocks:nope` exits 2 with the usage text
-above, and `nextflow plugin nf-blocks:snapshot` exits 0 and prints `wrote
-<store>/index/v2.sqlite (180224 bytes, 5 runs, watermark ...)`. `nextflow
-run` was never affected by any of this: `Plugins.load(config)` reads the
-pinned version straight from the `plugins {}` config block and calls
-`PluginUpdater.installPlugin` with it directly, never consulting
-`manager.getPlugin()` first the way `Plugins.start(target)` does, which is
-why the Gate's `nextflow run . -c gate.config` has worked throughout with
-`id 'nf-blocks@0.1.0'` pinned there.
+`nextflow run` is unaffected: `Plugins.load(config)` installs the version
+pinned in the `plugins {}` block directly, never through
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.1.0'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -910,23 +903,10 @@ modification time and file key (inode) for a local member, the object's own
 `ETag` for an S3 one, whose reads are `GetObject` with `If-Match` on it (a
 replaced object is a `500`, never another object's bytes).
 
-Verified 2026-09-25, Task 7: against a `make gate` store, `nextflow plugin
-nf-blocks:explore --port <n>` prints `nf-blocks explorer: http://127.0.0.1:<n>/`,
-serves the snapshot by single range, serves `/m/lab/log/` as the Store Log's
-JSON listing, and refuses a foreign `Host` with `403`. The exit rewrite
-("Index Snapshot" above) fires: the snapshot's mtime advances once the
-process is told to stop.
-
-Stopping it with `SIGINT` needs a caveat: when `explore` is `&`-backgrounded
-from a non-interactive shell (a script, CI, the Gate), POSIX job control sets
-`SIGINT` and `SIGQUIT` to `SIG_IGN` for that background job at exec, and
-HotSpot leaves an inherited-ignored `SIGINT` ignored rather than installing
-its own handler, so no shutdown hook runs. `SIGTERM` is unaffected and runs
-the same shutdown hook -- that's what this verification used, and the exit
-rewrite was observed under it. A shell with job control on (`set -m`) keeps
-`SIGINT`'s default disposition instead, and an interactive terminal's own
-Ctrl-C, sent to the foreground process group directly, is unaffected either
-way.
+The exit rewrite runs in a shutdown hook. Stop a backgrounded `explore` with
+`SIGTERM`: a job `&`-backgrounded from a non-interactive shell (a script, CI,
+the Gate) inherits `SIGINT` ignored, HotSpot leaves it ignored, and no hook
+runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
 
 ### The page
 
@@ -970,7 +950,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-stale-count]` | runs newer than the snapshot; `#stale [data-command]` once past the notice thresholds |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
-| `[data-page]` | on the pipeline and collection views: `data-first`, `data-last` (1-based, inclusive; 0 and the offset's rows when empty) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
+| `[data-page]` | on the pipeline and collection views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
@@ -979,14 +959,21 @@ The DOM the Gate reads, and nothing else it may rely on:
 
 Error codes: `no_snapshot`, `no_range_over_cap`, `cors_headers`,
 `fetch_failed`, `query_failed`, `worker_failed`, `snapshot_changed`, `hash_mismatch`,
-`schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`.
+`schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`,
+`file_protocol` (the store resolved to a `file://` URL, which a browser will
+not fetch from: the page must be served, by any static server or `explore`).
 
 The query views (query 1, 2 and 3) read the snapshot only through their own
 statement, so Gate assertion 2's counts are the query's cost.
 
 ### Decisions made where the spec is silent (2026-09-25)
 
-1. Milestone 1 selects snapshot rows by `run.member` (above).
+1. Milestone 1 selects snapshot rows by `run.member` (above). `run.member` is
+   last-writer-wins: a RunCompletion present in two members keeps only the
+   member it was last ingested from (`Index.insertRun`, `INSERT OR REPLACE`),
+   so it can drop out of the other member's snapshot and, once that
+   snapshot's watermark passes it, out of that member's tail too. Milestone
+   2's `log_entry.member` fixes it.
 2. `explore` rewrites the snapshot at start as well as at exit, so opening a
    member through it clears the stale notice (spec section 5.4).
 3. The tail fetches a stale run's RunManifest with its RunCompletion, for the
