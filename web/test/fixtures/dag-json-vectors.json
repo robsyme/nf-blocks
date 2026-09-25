@@ -1,0 +1,34 @@
+[
+ {
+  "name": "empty",
+  "json": "{}"
+ },
+ {
+  "name": "scalars",
+  "json": "{\"big\":9007199254740991,\"f\":false,\"i\":7,\"n\":null,\"neg\":-12,\"s\":\"plain\",\"t\":true}"
+ },
+ {
+  "name": "order",
+  "json": "{\"B\":4,\"a\":2,\"aaa\":3,\"bb\":1,\"z\":6,\"é\":5}"
+ },
+ {
+  "name": "escapes",
+  "json": "{\"s\":\"q\\\"\\\\\\n\\r\\t\\b\\f\\u0001\\u001fé€𝄞\"}"
+ },
+ {
+  "name": "link",
+  "json": "{\"l\":{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"},\"list\":[{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"},{\"/\":\"bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am\"}],\"r\":{\"/\":\"bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am\"}}"
+ },
+ {
+  "name": "bytes",
+  "json": "{\"b\":{\"/\":{\"bytes\":\"AQID+g\"}},\"none\":{\"/\":{\"bytes\":\"\"}}}"
+ },
+ {
+  "name": "selection",
+  "json": "{\"derived_from\":[{\"/\":{\"bytes\":\"AXESIMGaeX+h/VkM0uW0LRz18kbim5FoTi+HQEuB3DRcelag\"}}],\"kind\":\"Selection\",\"members\":[{\"item\":{\"address\":{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"},\"via\":[{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"}]}},{\"selection\":{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"}}]}"
+ },
+ {
+  "name": "claim",
+  "json": "{\"attribute\":\"name\",\"kind\":\"Claim\",\"subject\":{\"/\":\"bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua\"},\"supersedes\":[],\"timestamp\":\"2026-09-25T10:00:00.000Z\",\"value\":\"tumour, \\\"batch 2\\\"\",\"verb\":\"set\"}"
+ }
+]

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@ipld/dag-cbor": "10.0.2",
+    "@ipld/dag-json": "11.0.1",
     "@ipld/schema": "7.0.12",
     "@noble/hashes": "2.4.0",
     "@sqlite.org/sqlite-wasm": "3.53.4-build1",
