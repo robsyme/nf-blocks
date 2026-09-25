@@ -70,6 +70,18 @@ work directory path:
 {"kind":"FileOutput","spec":{"path":"cas://lab/aligned/A/A.bam", ...}}
 ```
 
+## Browsing a store
+
+`nextflow plugin nf-blocks:explore` serves a live view of every configured
+member (`cas.stores`) at `http://127.0.0.1:<port>/`, port `--port` or
+ephemeral; `nextflow plugin nf-blocks:snapshot` writes a member's Index
+Snapshot and explorer page without starting a server. Once a snapshot exists,
+serving the member's directory through any static file server and opening its
+`index.html` browses it too. Opening that file straight from disk does not
+work: a browser will not fetch from `file://`, and the page says so
+(`file_protocol`). A member served straight from a bucket needs the bucket
+policy and CORS rule in `DESIGN.md` §15.
+
 ## Plugin development
 
 This project was created from the [Nextflow plugin template](https://www.nextflow.io/docs/latest/guides/gradle-plugin.html#gradle-plugin-create).

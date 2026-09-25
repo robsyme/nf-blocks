@@ -17,6 +17,8 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.Index
+import robsyme.cas.core.IndexPaths
+import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
@@ -146,6 +148,35 @@ class CasSession {
     /** The store's members, writable first; a single-store session has one. */
     List<BlockStore> members() {
         return store instanceof CompositeStore ? ((CompositeStore) store).members : [store]
+    }
+
+    /** This composition's per-user cache index (DESIGN.md §12). The caller closes it. */
+    Index openIndex() {
+        return Index.open(IndexPaths.cachePath(config.localLocations(), config.indexOverride))
+    }
+
+    /**
+     * Rewrites the writable member's Index Snapshot from {@code index}, and the
+     * page beside it when this build carries one (DESIGN.md §15).
+     * {@code maxBytes <= 0} writes at any size.
+     */
+    IndexSnapshot.Result snapshotWritable(Index index, long maxBytes) {
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, config.writableLocation, maxBytes)
+        if( result.written ) {
+            final byte[] page = IndexSnapshot.bundledPage()
+            if( page != null )
+                IndexSnapshot.writePage(config.writableLocation, page)
+            else
+                warnOnce('this build of nf-blocks carries no explorer page; the snapshot was written without index.html')
+        }
+        return result
+    }
+
+    private static final Set<String> WARNED = ConcurrentHashMap.newKeySet()
+
+    private static void warnOnce(String message) {
+        if( WARNED.add(message) )
+            log.warn(message)
     }
 
     void recordPublish(String joinKey, Publish publish) {

@@ -1,0 +1,22 @@
+{
+  "name": "nf-blocks-explorer",
+  "private": true,
+  "type": "module",
+  "description": "The block explorer page (block explorer spec section 5). Built into the plugin zip; the output is not committed.",
+  "scripts": {
+    "gen": "node schema-gen.mjs",
+    "build": "node schema-gen.mjs && node build.mjs",
+    "test": "node schema-gen.mjs && node --test --test-reporter=spec \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "@ipld/dag-cbor": "10.0.2",
+    "@ipld/schema": "7.0.12",
+    "@noble/hashes": "2.4.0",
+    "@sqlite.org/sqlite-wasm": "3.53.4-build1",
+    "cborg": "6.1.2",
+    "multiformats": "14.0.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "producersOf": "SELECT content_cid, item_cid, collection_cid, completion_cid, filename FROM producer WHERE content_cid = ?",
+  "latestSuccessfulRun": "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 1",
+  "itemsBase": "SELECT ci.item_cid, ci.collection_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE c.completion_cid = ? AND c.output_name = ?",
+  "itemsPredicate": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?)",
+  "itemsPredicateNull": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value IS NULL)",
+  "itemsOrder": " ORDER BY ci.item_cid",
+  "collectionsOf": "SELECT output_name, collection_cid FROM collection WHERE completion_cid = ? ORDER BY output_name",
+  "watermark": "SELECT value FROM meta WHERE key = 'store_log_watermark'",
+  "pipelines": "SELECT pipeline, count(*) AS runs, max(finished_at) AS latest FROM run GROUP BY pipeline ORDER BY pipeline",
+  "runsOfPipeline": "SELECT completion_cid, manifest_cid, pipeline, run_name, status, possibly_incomplete, finished_at FROM run WHERE pipeline = ? ORDER BY finished_at DESC, completion_cid ASC LIMIT ? OFFSET ?",
+  "runByCompletion": "SELECT completion_cid, manifest_cid, pipeline, run_name, status, possibly_incomplete, finished_at FROM run WHERE completion_cid = ?",
+  "runsKnown": "SELECT completion_cid FROM run WHERE completion_cid IN (SELECT value FROM json_each(?))",
+  "collectionByCid": "SELECT collection_cid, completion_cid, output_name FROM collection WHERE collection_cid = ?",
+  "collectionItems": "SELECT item_cid FROM collection_item WHERE collection_cid = ? ORDER BY item_cid LIMIT ? OFFSET ?",
+  "runCount": "SELECT count(*) AS n FROM run WHERE pipeline = ?",
+  "collectionItemCount": "SELECT count(*) AS n FROM collection_item WHERE collection_cid = ?"
+}

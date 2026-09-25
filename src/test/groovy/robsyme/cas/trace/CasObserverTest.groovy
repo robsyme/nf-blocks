@@ -339,4 +339,73 @@ class CasObserverTest extends Specification {
         then:
         thrown(AbortRunException)
     }
+
+    private static List<List<Object>> snapshotRows(Path db, String sql) {
+        final def c = java.sql.DriverManager.getConnection("jdbc:sqlite:${db}")
+        try {
+            final def rs = c.createStatement().executeQuery(sql)
+            final List<List<Object>> out = []
+            while( rs.next() )
+                out << [rs.getObject(1)]
+            return out
+        }
+        finally {
+            c.close()
+        }
+    }
+
+    def 'onFlowComplete writes the writable member Index Snapshot after indexing'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+        final Path snapshot = tempDir.resolve('store/index/v2.sqlite')
+
+        then:
+        Files.isRegularFile(snapshot)
+        snapshotRows(snapshot, 'SELECT count(*) FROM run') == [[1]]
+    }
+
+    def 'a snapshot already over cas.snapshot.maxBytes is not rewritten by a run'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).snapshot = [maxBytes: 1]
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final Path snapshot = tempDir.resolve('store/index/v2.sqlite')
+        Files.createDirectories(snapshot.parent)
+        Files.write(snapshot, 'old'.bytes)
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        new String(Files.readAllBytes(snapshot)) == 'old'
+    }
+
+    def 'a snapshot failure does not fail the run'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        // A directory where the snapshot file must go makes the atomic move fail.
+        Files.createDirectories(tempDir.resolve('store/index/v2.sqlite/blocker'))
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+    }
 }

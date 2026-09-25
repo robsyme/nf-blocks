@@ -1,0 +1,9 @@
+{
+  "name": "nf-blocks-gate-browser",
+  "private": true,
+  "type": "module",
+  "description": "The Gate's browser tier: Playwright's own pinned Chromium (block explorer spec section 1.3).",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

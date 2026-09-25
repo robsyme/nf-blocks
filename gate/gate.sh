@@ -8,8 +8,10 @@
 #   GATE_ROOT=/tmp/g gate/gate.sh   # reuse one while developing
 #   NEXTFLOW=/path/to/nextflow gate/gate.sh
 #   GATE_SKIP_BUILD=1 gate/gate.sh  # reuse the plugin already in GATE_ROOT
+#   GATE_SKIP_BROWSER=1 gate/gate.sh  # lineage tier only
 #
-# Exit status is assert.py's.
+# Exit status is assert.py's, or the browser tier's (gate/browser/tier.sh)
+# when the lineage tier passed.
 
 set -euo pipefail
 
@@ -34,7 +36,8 @@ export NXF_ANSI_LOG=false
 # snapshots: every one of them is evidence, and stale evidence is worse than
 # none. The built plugin is the one thing worth keeping.
 rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/cache" \
-       "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt
+       "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt \
+       "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/logs"
 
@@ -42,7 +45,7 @@ mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
 # Preconditions
 # --------------------------------------------------------------------------
 
-for tool in python3 unzip find; do
+for tool in python3 unzip find $([[ -n "${GATE_SKIP_BROWSER:-}" ]] || echo node); do
     if ! command -v "$tool" > /dev/null 2>&1; then
         echo "gate: $tool is required" >&2
         exit 2
@@ -77,15 +80,17 @@ if [[ -z "${GATE_SKIP_BUILD:-}" ]]; then
             exit 2
         }
     # installPlugin may honour NXF_PLUGINS_DIR or install into ~/.nextflow;
-    # either way, make sure this run's plugins dir holds the zip we just built.
-    if ! compgen -G "$NXF_PLUGINS_DIR/nf-blocks-*" > /dev/null; then
-        zip="$(ls -t "$REPO"/build/distributions/nf-blocks-*.zip 2>/dev/null | head -1 || true)"
-        if [[ -z "$zip" ]]; then
-            echo "gate: no plugin in $NXF_PLUGINS_DIR and no zip under $REPO/build/distributions" >&2
-            exit 2
-        fi
-        ( cd "$NXF_PLUGINS_DIR" && unzip -q -o "$zip" -d "$(basename "${zip%.zip}")" )
+    # either way, replace this run's copy with the zip just built. A reused
+    # GATE_ROOT otherwise keeps a stale plugin, and `nextflow plugin
+    # nf-blocks:explore` fails against it with "Invalid target plugin".
+    zip="$(ls -t "$REPO"/build/distributions/nf-blocks-*.zip 2>/dev/null | head -1 || true)"
+    if [[ -z "$zip" ]]; then
+        echo "gate: no zip under $REPO/build/distributions after the build" >&2
+        exit 2
     fi
+    installed="$NXF_PLUGINS_DIR/$(basename "${zip%.zip}")"
+    rm -rf "${installed:?}"
+    unzip -q -o "$zip" -d "$installed"
 fi
 ls -1 "$NXF_PLUGINS_DIR" 2> /dev/null || true
 echo
@@ -151,6 +156,9 @@ snapshot blocks-after-again.txt
 
 # Expected to exit non-zero: MAYBE_FAIL exits 7 for sample B.
 run "$GATE_ROOT/pipeline-a" fail --fail
+# Browser assertion A3 needs a snapshot two runs stale: keep the one `fail` wrote.
+cp "$GATE_STORE"/index/v*.sqlite "$GATE_ROOT/snapshot-after-fail.sqlite" 2> /dev/null \
+    || echo "    no Index Snapshot after fail; browser assertion A3 will fail"
 
 # Assertion 4c, "re-hashed nothing", proved by the filesystem rather than by a
 # counter: make every published source file unreadable for the duration of the
@@ -213,4 +221,12 @@ echo "    exit $status  -> $log"
 
 # --------------------------------------------------------------------------
 echo
-python3 "$REPO/gate/assert.py" "$GATE_ROOT"
+lineage=0
+python3 "$REPO/gate/assert.py" "$GATE_ROOT" || lineage=$?
+browser=0
+if [[ -z "${GATE_SKIP_BROWSER:-}" ]]; then
+    echo
+    NEXTFLOW="$NEXTFLOW" "$REPO/gate/browser/tier.sh" "$GATE_ROOT" || browser=$?
+fi
+# Either tier failing fails the Gate.
+exit $(( lineage != 0 ? lineage : browser ))

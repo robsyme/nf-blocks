@@ -10,3 +10,6 @@ work
 # Python bytecode from the Gate harness
 __pycache__/
 .superpowers/
+node_modules/
+web/dist/
+web/src/generated/

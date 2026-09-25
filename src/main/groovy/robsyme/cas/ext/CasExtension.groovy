@@ -13,7 +13,6 @@ import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
-import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Records
@@ -179,18 +178,6 @@ class CasExtension extends PluginExtensionPoint {
     }
 
     private Index openIndex() {
-        final List<String> memberLocations = cas.config.members.collect { String alias -> cas.config.locationOf(alias).toString() }
-        final String override = navigate('cas.index.path')
-        return Index.open(IndexPaths.cachePath(memberLocations, override))
-    }
-
-    private String navigate(String dottedKey) {
-        Object node = session.config
-        for( String segment : dottedKey.split('\\.') ) {
-            if( !(node instanceof Map) )
-                return null
-            node = ((Map) node).get(segment)
-        }
-        return node == null ? null : node.toString()
+        return cas.openIndex()
     }
 }
