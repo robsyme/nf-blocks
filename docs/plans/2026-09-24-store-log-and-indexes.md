@@ -4,7 +4,7 @@
 
 **Goal:** Replace the Run Log (`runs/<rts>-<cid>`) with the Store Log (`log/<rts>-<kind>-<cid>`, write-time timestamps, a 10-minute catch-up overlap) and add the two indexes query 3 needs, keeping the Gate green.
 
-**Architecture:** The log classes in `robsyme.cas.core` are renamed and gain a `kind` and an overlap-aware `entriesSince`. `Index` moves to schema version 2 (which rebuilds every existing index from its blocks), adds two indexes, and catches up with the overlap, skipping entries it has already indexed so a catch-up with nothing new still reads no blocks. The observer writes entries at write time. The Gate's Python reads the new layout and ranks "latest successful run" by each RunCompletion's `finished_at`, not by log order.
+**Architecture:** The log classes in `robsyme.cas.core` are renamed and gain a `kind` and an overlap-aware `entriesSince`. `Index` moves to schema version 2 (an old index is recreated empty on open, and the first catch-up for each member then finds its runs from the blocks; see the final-review fix), adds two indexes, and catches up with the overlap, skipping entries it has already indexed so a catch-up with nothing new still reads no blocks. The observer writes entries at write time. The Gate's Python reads the new layout and ranks "latest successful run" by each RunCompletion's `finished_at`, not by log order.
 
 **Tech Stack:** Groovy 4 (`@CompileStatic`), Spock, `org.xerial:sqlite-jdbc`, Gradle 8.14, Nextflow 26.04.6, Python 3 stdlib for the Gate.
 
@@ -18,7 +18,7 @@
 - Store Log entry name: `<rts>-<kind>-<cid>` under `log/`, `rts = String.format('%013d', 9999999999999L - writtenAtMillis)`, `kind ∈ run | selection | claim`.
 - `rts` is the moment the entry is written to the member, never `finished_at`.
 - Catch-up overlap: exactly `10 * 60 * 1000L` ms before the watermark.
-- `runs/` is dropped with no compatibility read. Existing stores keep their runs because the schema bump rebuilds every index from the blocks.
+- `runs/` is dropped with no compatibility read. Existing stores keep their runs because each member's first catch-up scans its blocks once.
 - New indexes, exact names: `collection_completion_output ON collection(completion_cid, output_name)` and `collection_item_collection ON collection_item(collection_cid)`.
 - Index `SCHEMA_VERSION` becomes `2`; the watermark meta key becomes `store_log_watermark:<member>`.
 - Failures in derived structures (index, Store Log) log at warn and continue (DESIGN §0 rule 3).
@@ -28,7 +28,7 @@
 
 ## Review Focus
 
-1. **A store written by v1** (`runs/` only, no `log/`) opened by the new plugin: its runs still answer queries, because the schema-2 rebuild scans blocks. Pinned in Task 2.
+1. **A store written by v1** (`runs/` only, no `log/`) opened by the new plugin: its runs still answer queries, because the first catch-up for a member scans its blocks once. Pinned by the final-review fix (`a v1 index is recreated on open and the first catch-up finds its runs from the blocks`); the Task 2 test only exercised `rebuild`.
 2. **An unknown or malformed entry in `log/`** (a future kind such as `pin`, a stray file): ignored with a warning, never an exception, and the rest of the log still ingests. Pinned in Task 1.
 3. **The same run logged twice** (a retried append at a later millisecond gives a second name for the same CID): one `run` row, no duplicate producers. Pinned in Task 2.
 4. **A log entry whose block is absent** (a partial Bundle merge): catch-up does not abort, the other entries ingest, and the watermark still advances. Pinned in Task 2.

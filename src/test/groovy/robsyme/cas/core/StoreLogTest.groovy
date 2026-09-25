@@ -125,6 +125,18 @@ class StoreLogTest extends Specification {
         log.entriesSince(watermark)*.cid == [e40, e25, e20]
     }
 
+    def 'a watermark from a clock running ahead cannot hide entries written by correct clocks'() {
+        given: 'now is t, the watermark came from a host one hour fast, a correct host wrote at t - 1 min'
+        def now = 1_700_000_000_000L
+        def ahead = cidOf('ahead'); def correct = cidOf('correct')
+        StoreLog.append(store, StoreLogKind.RUN, ahead, now + 60 * 60_000L)
+        StoreLog.append(store, StoreLogKind.RUN, correct, now - 60_000L)
+        def watermark = StoreLog.entryName(StoreLogKind.RUN, ahead, now + 60 * 60_000L)
+
+        expect:
+        StoreLog.of(store).entriesSince(watermark, now)*.cid.contains(correct)
+    }
+
     def 'entriesSince with no watermark is everything'() {
         given:
         StoreLog.append(store, StoreLogKind.RUN, cidOf('a'), 1_000L)

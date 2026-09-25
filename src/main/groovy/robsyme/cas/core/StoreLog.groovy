@@ -88,6 +88,16 @@ class StoreLog {
      * everything. The caller skips what it has already ingested.
      */
     List<StoreLogEntry> entriesSince(String watermark) {
+        return entriesSince(watermark, System.currentTimeMillis())
+    }
+
+    /**
+     * As {@link #entriesSince(String)}, with the local clock given. The floor
+     * is taken from the earlier of the watermark and now, so a watermark
+     * written by a host whose clock runs ahead cannot hide entries that
+     * correctly clocked hosts write behind it.
+     */
+    List<StoreLogEntry> entriesSince(String watermark, long nowMillis) {
         final List<StoreLogEntry> entries = read()
         if( !watermark )
             return entries
@@ -96,7 +106,7 @@ class StoreLog {
             log.warn("ignoring an unreadable store log watermark '$watermark'; reading the whole log")
             return entries
         }
-        final long floor = mark.writtenAtMillis - OVERLAP_MILLIS
+        final long floor = Math.min(mark.writtenAtMillis, nowMillis) - OVERLAP_MILLIS
         final List<StoreLogEntry> since = new ArrayList<StoreLogEntry>()
         for( StoreLogEntry entry : entries )
             if( entry.writtenAtMillis >= floor )

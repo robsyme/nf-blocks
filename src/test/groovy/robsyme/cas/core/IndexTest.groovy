@@ -730,6 +730,65 @@ class IndexTest extends Specification {
         return value
     }
 
+    def 'a v1 index is recreated on open and the first catch-up finds its runs from the blocks'() {
+        given: 'a run whose blocks exist, logged only in the old runs/ layout'
+        def completion = buildRun()
+        def runs = storeRoot.resolve('runs')
+        Files.createDirectories(runs)
+        Files.createFile(runs.resolve("${String.format('%013d', 9999999999999L - 1_000_000L)}-${completion}"))
+        and: 'the cached index is from schema 1'
+        index.close()
+        DriverManager.getConnection("jdbc:sqlite:${dbFile}").withCloseable { c ->
+            c.createStatement().execute('UPDATE schema_version SET version = 1')
+        }
+
+        when: 'the plugin opens it and catches up, as CasSession does'
+        index = Index.open(dbFile)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        count('run') == 1
+    }
+
+    def 'a v1 read-only member with no log is scanned once, not on every catch-up'() {
+        given:
+        buildRun()
+        def counting = new Counting(store)
+
+        when:
+        index.catchUp(counting, StoreLog.of(store), 'lab')
+        def firstOpens = counting.opens
+        counting.opens = 0
+        index.catchUp(counting, StoreLog.of(store), 'lab')
+
+        then:
+        count('run') == 1
+        firstOpens > 0
+        counting.opens == 0
+    }
+
+    def 'a run whose block arrives after the overlap has moved on is still indexed'() {
+        given: 'a run whose RunCompletion block is withheld when its entry is logged'
+        def late = buildRun()
+        def blockFile = storeRoot.resolve('blocks').resolve(late.toString()[-2..-1]).resolve(late.toString())
+        def bytes = Files.readAllBytes(blockFile)
+        Files.delete(blockFile)
+        StoreLog.append(store, StoreLogKind.RUN, late, 1_000_000L)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        and: 'a later run moves the watermark well past the overlap'
+        def later = buildOtherRun([finished_at: '2026-09-03T11:00:00.000Z'], 'later')
+        StoreLog.append(store, StoreLogKind.RUN, later, 1_000_000L + 30 * 60_000L)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        when: 'the withheld block arrives'
+        Files.write(blockFile, bytes)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        count('run') == 2
+    }
+
     static class Counting implements BlockStore {
         final BlockStore delegate
         int opens = 0

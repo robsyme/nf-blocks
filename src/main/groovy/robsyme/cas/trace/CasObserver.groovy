@@ -118,10 +118,24 @@ class CasObserver implements TraceObserverV2 {
     void onFlowComplete() {
         // Fires twice on a failed run (no barrier on that path); the latch keeps
         // exactly one RunCompletion.
-        if( !cas.claimCompletion() )
+        if( !cas.claimCompletion() ) {
+            // The other notification is writing the RunCompletion. A failed
+            // run's second notification comes from Session.destroy on main,
+            // which reaches System.exit next, so wait until the write is done.
+            if( !cas.awaitCompletionWritten(COMPLETION_WAIT_MILLIS) )
+                log.warn("the run's RunCompletion was still being written after ${COMPLETION_WAIT_MILLIS} ms; not waiting longer")
             return
-        runUninterrupted { writeCompletion() }
+        }
+        try {
+            runUninterrupted { writeCompletion() }
+        }
+        finally {
+            cas.completionWritten()
+        }
     }
+
+    /** How long the losing notification waits for the winner's write. */
+    static final long COMPLETION_WAIT_MILLIS = 60_000L
 
     /**
      * Nextflow shuts its executors down, interrupting their threads, while a

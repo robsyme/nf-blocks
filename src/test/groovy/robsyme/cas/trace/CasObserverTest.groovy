@@ -146,6 +146,31 @@ class CasObserverTest extends Specification {
     }
 
 
+    def 'the notification that loses the completion latch waits for the winner to finish writing'() {
+        // A failed run is notified twice: on the abort path (a finalizer thread)
+        // and from Session.destroy on main, which reaches System.exit next. The
+        // loser must not return, and let the JVM exit, while the winner writes.
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        and: 'the winner has claimed the latch and is still writing'
+        cas.claimCompletion()
+
+        when: 'the second notification arrives'
+        final loser = Thread.start { observer.onFlowComplete() }
+        loser.join(300)
+        final boolean waitedForWinner = loser.isAlive()
+        cas.completionWritten()
+        loser.join(5_000)
+
+        then:
+        waitedForWinner
+        !loser.isAlive()
+    }
+
     def 'a failed run notified on an interrupted thread still writes its RunCompletion'() {
         // Nextflow shuts its executors down, interrupting their threads, while a
         // failed run is still notifying observers on one of them (measured in the

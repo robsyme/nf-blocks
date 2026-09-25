@@ -2,6 +2,8 @@ package robsyme.cas
 
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -96,6 +98,7 @@ class CasSession {
 
     /** Fires once: the join at onFlowComplete, which runs twice on a failed run. */
     private final AtomicBoolean completed = new AtomicBoolean(false)
+    private final CountDownLatch completionDone = new CountDownLatch(1)
 
     CasSession(CasConfig config) {
         this.config = config
@@ -180,5 +183,24 @@ class CasSession {
     /** True exactly once, for the first caller; the join is written only then. */
     boolean claimCompletion() {
         return completed.compareAndSet(false, true)
+    }
+
+    /** Called by the notification that claimed the completion, once it has written it (or failed to). */
+    void completionWritten() {
+        completionDone.countDown()
+    }
+
+    /**
+     * Waits for the claiming notification to finish writing the completion.
+     * False on timeout, or when interrupted (the interrupt is restored).
+     */
+    boolean awaitCompletionWritten(long timeoutMillis) {
+        try {
+            return completionDone.await(timeoutMillis, TimeUnit.MILLISECONDS)
+        }
+        catch( InterruptedException e ) {
+            Thread.currentThread().interrupt()
+            return false
+        }
     }
 }

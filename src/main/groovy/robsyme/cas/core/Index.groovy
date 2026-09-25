@@ -34,6 +34,7 @@ class Index implements Closeable {
     static final int SCHEMA_VERSION = 2
 
     private static final String META_WATERMARK = 'store_log_watermark'
+    private static final String META_SCANNED = 'block_scan'
     private static final String META_STALE = 'stale'
 
     /** A metadata block far larger than this is not one of ours; refuse to hold it. */
@@ -322,6 +323,8 @@ class Index implements Closeable {
     void catchUp(BlockStore store, StoreLog storeLog, String member) {
         // The watermark is per member: in a composition each member's log
         // advances independently (DESIGN.md §12).
+        scanOnce(store, member)
+        retryMissingRuns(store, member)
         final String key = watermarkKey(member)
         final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
@@ -340,6 +343,37 @@ class Index implements Closeable {
             ingestRun(store, entry.cid, member)
         }
         setMeta(key, entries[0].name)
+    }
+
+    /**
+     * The first catch-up for a member this index has never scanned finds its
+     * runs from the blocks: a new index, one recreated for a schema change,
+     * or a store written before the Store Log existed, whose runs no log
+     * lists. Recorded per member, so it happens once.
+     */
+    private void scanOnce(BlockStore store, String member) {
+        final String key = META_SCANNED + ':' + member
+        if( meta(key) != null )
+            return
+        for( Cid completion : runCompletionsIn(store) )
+            if( !isRunIndexed(completion) )
+                ingestRun(store, completion, member)
+        setMeta(key, 'done')
+    }
+
+    /**
+     * A logged run whose RunCompletion had not arrived was recorded as
+     * `missing`. Retried on every catch-up, so it is indexed once its block
+     * lands even after the overlap window has moved past its entry.
+     */
+    private void retryMissingRuns(BlockStore store, String member) {
+        final List<Cid> waiting = new ArrayList<Cid>()
+        query('SELECT DISTINCT needed_cid FROM missing WHERE have_cid IS NULL', []) { ResultSet rs ->
+            waiting.add(Cid.parse(rs.getString(1)))
+        }
+        for( Cid completion : waiting )
+            if( store.has(completion) && !isRunIndexed(completion) )
+                ingestRun(store, completion, member)
     }
 
     /** True when a RunCompletion already has its `run` row. */
@@ -365,6 +399,7 @@ class Index implements Closeable {
         try {
             for( Cid completion : runCompletionsIn(store) )
                 fresh.ingestRun(store, completion, member)
+            fresh.setMeta(META_SCANNED + ':' + member, 'done')
             // Carry the Store Log watermark forward to the newest logged entry, so
             // the next catchUp reads only what arrives after this rebuild rather
             // than re-scanning the whole log. Correctness-safe either way.
