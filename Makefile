@@ -48,3 +48,9 @@ release:
 gate:
 	python3 -m unittest discover -s gate
 	./gate/gate.sh
+
+# The Gate's cloud browser tier (gate/README.md): throwaway buckets in the scidev
+# account, a human's AWS SSO session. Run after `make gate` with the same GATE_ROOT.
+.PHONY: gate-cloud
+gate-cloud:
+	./gate/cloud/cloud.sh "$(GATE_ROOT)"

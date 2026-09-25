@@ -25,24 +25,9 @@ echo "--- browser tier: setup"
 }
 python3 "$REPO/gate/browser_assert.py" prepare "$GATE_ROOT"
 
-# `nextflow plugin` starts the plugin unpinned, so a locally built, unpublished
-# one is found through a plugins.json naming the built zip, with NXF_OFFLINE
-# unset (DESIGN.md section 15, "Plugin verbs"). The zip is already unpacked in
-# NXF_PLUGINS_DIR by gate.sh, so nothing is downloaded; the registry is asked
-# once for dependencies.
-zip="$(ls -t "$REPO"/build/distributions/nf-blocks-*.zip 2> /dev/null | head -1 || true)"
-[[ -n "$zip" ]] || { echo "browser tier: no plugin zip under $REPO/build/distributions" >&2; exit 2; }
-version="$(basename "$zip" .zip)"; version="${version#nf-blocks-}"
-python3 - "$zip" "$version" "$B/plugins.json" << 'PY'
-import datetime, hashlib, json, sys
-zip_path, version, out = sys.argv[1:]
-with open(zip_path, "rb") as fh:
-    digest = hashlib.sha512(fh.read()).hexdigest()
-date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-with open(out, "w") as fh:
-    json.dump([{"id": "nf-blocks", "releases": [{"version": version, "date": date, "url": "file://" + zip_path,
-                                                  "requires": ">=26.04.6", "sha512sum": digest}]}], fh)
-PY
+# The zip lookup and plugins.json generation are shared with cloud/cloud.sh
+# (gate/browser/plugin-repo.sh); see that script's header for why.
+plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$B")"
 free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 P_RANGE=$(free_port); P_PLAIN=$(free_port); P_EXPLORE=$(free_port)
 
@@ -60,7 +45,7 @@ trap stop EXIT
 python3 "$REPO/gate/browser/serve.py" "$B/site" "$P_RANGE" > "$B/serve-range.log" 2>&1 & S1=$!
 python3 "$REPO/gate/browser/serve.py" "$B/site" "$P_PLAIN" --no-range > "$B/serve-plain.log" 2>&1 & S2=$!
 ( cd "$GATE_ROOT/pipeline-a" && unset NXF_OFFLINE && \
-  NXF_PLUGINS_TEST_REPOSITORY="file://$B/plugins.json" \
+  NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" \
   exec "$NEXTFLOW" -c "$REPO/gate/gate.config" plugin nf-blocks:explore --port "$P_EXPLORE" ) \
   > "$B/explore.log" 2>&1 & S3=$!
 

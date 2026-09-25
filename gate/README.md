@@ -149,6 +149,31 @@ from the Gate's own hashes and block reads, and `sqlite3` for the year file:
 A failing line: read `browser/observed.json` for that step and
 `browser/drive.log`. Assertions 6 and 7 are the cloud part.
 
+## The cloud browser tier
+
+`gate/cloud/cloud.sh`, assertions 6 and 7: real S3 (CORS, ranged GETs,
+`ListObjectsV2`) from a page on another origin, and a private bucket readable
+only through `nf-blocks:explore`. Needs Rob's `scidev` SSO session, so it is
+not part of `gate.sh` and is run on demand: before each milestone is accepted
+and whenever the HTTP reader or the serving code changes.
+
+```
+GATE_ROOT=/tmp/g make gate                              # local tier must pass first
+GATE_PYTHON=/path/to/venv/bin/python make gate-cloud GATE_ROOT=/tmp/g
+```
+
+It creates two tagged, throwaway buckets (`nf-blocks-gate-pub-*`,
+`nf-blocks-gate-priv-*`) in `AWS_PROFILE` (default `scidev`) and
+`GATE_CLOUD_REGION` (default `ca-central-1`), uploads `browser/site`'s stores
+into them, and deletes both on exit, success or failure. `GATE_PYTHON` picks a
+Python with `boto3` installed, since the Gate itself needs none. After a run,
+confirm no `nf-blocks-gate-` bucket remains with that Python's `boto3`.
+
+Known limit: a private-bucket member whose policy grants `s3:GetObject` but not
+`s3:ListBucket` answers `403` for a missing key, which `explore` surfaces as
+`500`. This tier's buckets are created by their own owner, so it does not
+arise here; it can with a member on someone else's bucket.
+
 ## The GATE_ROOT tree
 
 ```

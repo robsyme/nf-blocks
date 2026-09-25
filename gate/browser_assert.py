@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Gate browser tier A, local part (block explorer spec section 1.3).
+"""Gate browser tier A (block explorer spec section 1.3): the local part
+(assertions 1-5) and the cloud part (assertions 6-7, gate/cloud/cloud.sh).
 
     python3 gate/browser_assert.py prepare <GATE_ROOT>
     python3 gate/browser_assert.py check <GATE_ROOT>
+    python3 gate/browser_assert.py cloud-prepare <GATE_ROOT> <public bucket> <private bucket> <region>
+    python3 gate/browser_assert.py cloud-check <GATE_ROOT>
 
 prepare lays out $GATE_ROOT/browser/site, works out every expected answer from
 the Gate's own hashes and its own read of the blocks (never the plugin's index
@@ -10,7 +13,9 @@ or snapshot), and writes the scenario drive.mjs plays. check compares what the
 browser saw with those answers. Request counts come from Playwright's network
 events, not from the page.
 
-Assertions 6 and 7 are the cloud part (gate/cloud/cloud.sh).
+cloud-prepare writes cloud-scenario.json against real bucket names (assertion
+6 over the public bucket, 7 over the private one, through nf-blocks:explore).
+cloud-check compares gate/cloud/cloud.sh's cloud-observed.json the same way.
 """
 import hashlib
 import importlib.util
@@ -375,11 +380,88 @@ def check(root):
     return 1 if failures else 0
 
 
+# --------------------------------------------------------------------------
+# cloud-prepare / cloud-check (assertions 6-7, gate/cloud/cloud.sh)
+# --------------------------------------------------------------------------
+
+def cloud_prepare(root, public, private, region):
+    out = os.path.join(root, "browser")
+    with open(os.path.join(out, "expected.json")) as fh:
+        expected = json.load(fh)
+    pub = "https://%s.s3.%s.amazonaws.com" % (public, region)
+    priv = "https://%s.s3.%s.amazonaws.com" % (private, region)
+    p = expected["year"]["params"]
+    page = "stores/current/index.html"
+    steps = [
+        {"id": "A6.producers", "server": "local", "path": page, "query": "?store=%s/" % pub,
+         "hash": "#/content/%s" % expected["content"], "head": "%s/%s" % (pub, SNAPSHOT)},
+        {"id": "A6.home", "server": "local", "path": page, "query": "?store=%s/" % pub, "hash": "#/"},
+        {"id": "A6.year.producers", "server": "local", "path": page, "query": "?store=%s/year/" % pub, "idle": True,
+         "hash": "#/content/%s" % p["producersOf"][0]},
+        {"id": "A6.year.items", "server": "local", "path": page, "query": "?store=%s/year/" % pub, "idle": True,
+         "hash": "#/items/%s/%s%s" % (p["itemsWhere"][0], p["itemsWhere"][1], where("sample", p["itemsWhere"][4]))},
+        {"id": "A7.explore", "server": "explore", "path": "", "query": "?member=priv",
+         "hash": "#/content/%s" % expected["content"]},
+        {"id": "A7.direct", "server": "local", "path": page, "query": "?store=%s/" % priv, "hash": "#/idle"},
+    ]
+    with open(os.path.join(out, "cloud-scenario.json"), "w") as fh:
+        json.dump({"steps": steps}, fh, indent=1)
+    return 0
+
+
+def cloud_check(root):
+    out = os.path.join(root, "browser")
+    with open(os.path.join(out, "expected.json")) as fh:
+        expected = json.load(fh)
+    with open(os.path.join(out, "cloud-observed.json")) as fh:
+        observed = {s["id"]: s for s in json.load(fh)["steps"]}
+    want = {tuple(t) for t in expected["producers"]}
+    results = []
+
+    problems = []
+    s = observed["A6.producers"]
+    if producer_set(s["producers"]) != want:
+        problems.append("producers-of from the public bucket gave %d rows, expected %d" % (len(s["producers"]), len(want)))
+    if (s.get("head") or {}).get("status") != 200:
+        problems.append("anonymous HEAD from the page answered %s" % s.get("head"))
+    s3 = [r for step in observed.values() if step["id"].startswith("A6") for r in step["requests"] if "amazonaws.com" in r["url"]]
+    if not any(r.get("status") == 206 for r in s3):
+        problems.append("no ranged GET answered 206")
+    if not any("list-type=2" in r["url"] and r.get("status") == 200 for r in s3):
+        problems.append("no ListObjectsV2 answered 200")
+    cors = [e for step in observed.values() if step["id"].startswith("A6") for e in step["consoleErrors"] if "CORS" in e]
+    if cors:
+        problems.append("CORS errors: %s" % cors[:2])
+    costs = ["%s %d req / %d B" % (k, *query_cost(observed[k], "/year/" + SNAPSHOT)) for k in ("A6.year.producers", "A6.year.items")]
+    if not within(query_cost(observed["A6.year.producers"], "/year/" + SNAPSHOT), POINT_LIMIT) or \
+            not within(query_cost(observed["A6.year.items"], "/year/" + SNAPSHOT), QUERY3_LIMIT):
+        problems.append("year-scale limits exceeded on real S3: %s" % costs)
+    results.append((FAIL if problems else PASS, 6, "real S3 from a page on another origin",
+                    "; ".join(problems) or "anonymous HEAD, ranged GET and ListObjectsV2 succeed with no CORS errors; " + ", ".join(costs)))
+
+    problems = []
+    if producer_set(observed["A7.explore"]["producers"]) != want:
+        problems.append("through nf-blocks:explore the private member answered %d producers, expected %d"
+                        % (len(observed["A7.explore"]["producers"]), len(want)))
+    if observed["A7.direct"]["state"] != "error":
+        problems.append("the private bucket was readable directly (state %s)" % observed["A7.direct"]["state"])
+    results.append((FAIL if problems else PASS, 7, "a private bucket through explore only",
+                    "; ".join(problems) or "browsable through nf-blocks:explore with the user's credentials, refused directly"))
+
+    for status, number, title, message in results:
+        print("%-4s  A%d  %-38s  %s" % (status, number, title, message))
+    failures = sum(1 for r in results if r[0] == FAIL)
+    print("\nbrowser tier A (cloud): %d PASS, %d FAIL" % (len(results) - failures, failures))
+    return 1 if failures else 0
+
+
 def main(argv):
-    if len(argv) != 3 or argv[1] not in ("prepare", "check"):
-        sys.stderr.write(__doc__)
-        return 2
-    return prepare(argv[2]) if argv[1] == "prepare" else check(argv[2])
+    if len(argv) == 3 and argv[1] in ("prepare", "check", "cloud-check"):
+        return {"prepare": prepare, "check": check, "cloud-check": cloud_check}[argv[1]](argv[2])
+    if len(argv) == 6 and argv[1] == "cloud-prepare":
+        return cloud_prepare(argv[2], argv[3], argv[4], argv[5])
+    sys.stderr.write(__doc__)
+    return 2
 
 
 if __name__ == "__main__":
