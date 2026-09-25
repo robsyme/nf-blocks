@@ -38,11 +38,20 @@ class S3MemberFiles implements MemberFiles {
         return new S3MemberFiles(defaultClient(), parts[0], parts[1])
     }
 
+    /**
+     * {@code location.host} is null for a legal bucket name whose last label
+     * starts with a digit ({@code data.2024}, {@code logs.v1.0}): those fail
+     * java.net.URI's server-based authority syntax (RFC 2396 toplabel must
+     * start with a letter), so URI falls back to registry-based parsing,
+     * which leaves {@code host} null but still fills {@code authority} with
+     * the same raw string. CasConfig's S3_LOCATION already refused anything
+     * with '?', '#' or whitespace, so authority here is exactly the bucket.
+     */
     static List<String> bucketAndPrefix(URI location) {
         String prefix = (location.path ?: '').replaceAll('^/+', '')
         if( prefix && !prefix.endsWith('/') )
             prefix += '/'
-        return [location.host, prefix]
+        return [location.authority, prefix]
     }
 
     /**

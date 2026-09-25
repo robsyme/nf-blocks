@@ -33,7 +33,11 @@ class CasConfig {
 
     private static final Pattern CAS_LOCATION = ~/^cas:\/\/([^\/]*)$/
 
-    private static final Pattern S3_LOCATION = ~/^s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\/.*)?$/
+    // The path, if any, excludes '?', '#' and whitespace: those split a URI
+    // into path/query/fragment differently than this pattern would validate,
+    // so a location that contains them is refused here rather than accepted
+    // and then parsed differently by S3MemberFiles.bucketAndPrefix.
+    private static final Pattern S3_LOCATION = ~/^s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\/[^?#\s]*)?$/
 
     static final String DEFAULT_ASSERTED_BY = 'anonymous'
 

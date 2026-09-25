@@ -9,6 +9,7 @@ import robsyme.cas.cli.Options
 import robsyme.cas.cli.UsageException
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
+import software.amazon.awssdk.services.s3.S3Client
 
 /**
  * `nextflow plugin nf-blocks:explore [--port <n>]` (DESIGN.md §15). Rewrites
@@ -75,13 +76,25 @@ class ExploreCommand {
         }
     }
 
-    /** Every configured member the explorer serves, writable first. */
-    static LinkedHashMap<String, MemberFiles> membersOf(CasConfig config) {
+    /**
+     * Every configured member the explorer serves, writable first. The S3
+     * client for a remote alias comes from {@code s3ClientFactory}, called
+     * once per remote alias; production leaves it at
+     * {@link S3MemberFiles#defaultClient}, which resolves credentials and a
+     * region through the default chains (possibly reaching IMDS). A test can
+     * replace it with a factory that never touches the network.
+     */
+    static LinkedHashMap<String, MemberFiles> membersOf(CasConfig config, Closure<S3Client> s3ClientFactory = { -> S3MemberFiles.defaultClient() }) {
         final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
-        for( String alias : config.configuredAliases )
-            members.put(alias, config.isRemote(alias)
-                ? (MemberFiles) S3MemberFiles.open(config.remoteLocationOf(alias))
-                : new LocalMemberFiles(config.locationOf(alias)))
+        for( String alias : config.configuredAliases ) {
+            if( config.isRemote(alias) ) {
+                final List<String> bucketAndPrefix = S3MemberFiles.bucketAndPrefix(config.remoteLocationOf(alias))
+                members.put(alias, new S3MemberFiles(s3ClientFactory.call(), bucketAndPrefix[0], bucketAndPrefix[1]))
+            }
+            else {
+                members.put(alias, new LocalMemberFiles(config.locationOf(alias)))
+            }
+        }
         return members
     }
 }

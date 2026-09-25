@@ -64,6 +64,11 @@ class S3MemberFilesTest extends Specification {
         's3://bucket/'           | ['bucket', '']
         's3://bucket/member'     | ['bucket', 'member/']
         's3://bucket/a/b/'       | ['bucket', 'a/b/']
+        // A last dotted label that starts with a digit fails java.net.URI's
+        // server-based authority syntax, so getHost() would be null here;
+        // getAuthority() still carries the bucket name correctly.
+        's3://data.2024/x'       | ['data.2024', 'x/']
+        's3://logs.v1.0/a/b/'    | ['logs.v1.0', 'a/b/']
     }
 
     def 'explore serves an S3 member with Range, end to end'() {

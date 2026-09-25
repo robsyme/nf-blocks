@@ -252,4 +252,14 @@ class CasConfigTest extends Specification {
         final IllegalArgumentException e = thrown()
         e.message.contains('local directory')
     }
+
+    def 'an S3 location with a query string is refused, since it would parse differently than it validated'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas'], priv: [location: 's3://bucket/a?b']]]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('priv')
+        e.message.contains('is not an S3 URI')
+    }
 }
