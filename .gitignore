@@ -9,3 +9,4 @@ work
 
 # Python bytecode from the Gate harness
 __pycache__/
+.superpowers/
