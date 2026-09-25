@@ -400,53 +400,132 @@ def cloud_prepare(root, public, private, region):
          "hash": "#/content/%s" % p["producersOf"][0]},
         {"id": "A6.year.items", "server": "local", "path": page, "query": "?store=%s/year/" % pub, "idle": True,
          "hash": "#/items/%s/%s%s" % (p["itemsWhere"][0], p["itemsWhere"][1], where("sample", p["itemsWhere"][4]))},
+        # `members` is fetched from the explore origin itself (drive.mjs), so
+        # cloud-check can tell "priv" is a registered member apart from the
+        # page's own routing: store.js falls back to members[0] (the writable
+        # local alias) when the requested member is not registered, which
+        # would otherwise let A7 pass without ever touching S3.
         {"id": "A7.explore", "server": "explore", "path": "", "query": "?member=priv",
-         "hash": "#/content/%s" % expected["content"]},
+         "hash": "#/content/%s" % expected["content"], "members": "{explore}/members.json"},
         {"id": "A7.direct", "server": "local", "path": page, "query": "?store=%s/" % priv, "hash": "#/idle"},
     ]
     with open(os.path.join(out, "cloud-scenario.json"), "w") as fh:
-        json.dump({"steps": steps}, fh, indent=1)
+        # `buckets` lets cloud-check build the same bucket URLs without being
+        # passed them again on the command line, and lets it require this
+        # run's own bucket host in the requests it inspects rather than
+        # trusting a possibly stale cloud-observed.json.
+        json.dump({"steps": steps, "buckets": {"public": public, "private": private, "region": region}}, fh, indent=1)
     return 0
 
 
-def cloud_check(root):
+def anonymous_probe(url):
+    """A HEAD with no credentials, stdlib only (urllib, never boto3 or a
+    browser): a page-independent anchor for "is this bucket public" / "is
+    this bucket private" that does not depend on the page's own CORS or error
+    handling. Returns the HTTP status, or None if the connection itself failed
+    (DNS, timeout, refused)."""
+    import urllib.error
+    import urllib.request
+    request = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+    except urllib.error.URLError:
+        return None
+
+
+def cloud_check(root, probe=anonymous_probe):
     out = os.path.join(root, "browser")
     with open(os.path.join(out, "expected.json")) as fh:
         expected = json.load(fh)
     with open(os.path.join(out, "cloud-observed.json")) as fh:
-        observed = {s["id"]: s for s in json.load(fh)["steps"]}
+        observed = {s.get("id"): s for s in json.load(fh).get("steps", [])}
+    with open(os.path.join(out, "cloud-scenario.json")) as fh:
+        buckets = json.load(fh).get("buckets") or {}
     want = {tuple(t) for t in expected["producers"]}
     results = []
 
-    problems = []
-    s = observed["A6.producers"]
-    if producer_set(s["producers"]) != want:
-        problems.append("producers-of from the public bucket gave %d rows, expected %d" % (len(s["producers"]), len(want)))
-    if (s.get("head") or {}).get("status") != 200:
-        problems.append("anonymous HEAD from the page answered %s" % s.get("head"))
-    s3 = [r for step in observed.values() if step["id"].startswith("A6") for r in step["requests"] if "amazonaws.com" in r["url"]]
-    if not any(r.get("status") == 206 for r in s3):
-        problems.append("no ranged GET answered 206")
-    if not any("list-type=2" in r["url"] and r.get("status") == 200 for r in s3):
-        problems.append("no ListObjectsV2 answered 200")
-    cors = [e for step in observed.values() if step["id"].startswith("A6") for e in step["consoleErrors"] if "CORS" in e]
-    if cors:
-        problems.append("CORS errors: %s" % cors[:2])
-    costs = ["%s %d req / %d B" % (k, *query_cost(observed[k], "/year/" + SNAPSHOT)) for k in ("A6.year.producers", "A6.year.items")]
-    if not within(query_cost(observed["A6.year.producers"], "/year/" + SNAPSHOT), POINT_LIMIT) or \
-            not within(query_cost(observed["A6.year.items"], "/year/" + SNAPSHOT), QUERY3_LIMIT):
-        problems.append("year-scale limits exceeded on real S3: %s" % costs)
-    results.append((FAIL if problems else PASS, 6, "real S3 from a page on another origin",
-                    "; ".join(problems) or "anonymous HEAD, ranged GET and ListObjectsV2 succeed with no CORS errors; " + ", ".join(costs)))
+    def run(number, title, fn):
+        try:
+            status, message = fn()
+        except Exception as exc:  # noqa: BLE001, a crash in a check is a FAIL of that check
+            status, message = FAIL, "%s: %s" % (type(exc).__name__, exc)
+        results.append((status, number, title, message))
 
-    problems = []
-    if producer_set(observed["A7.explore"]["producers"]) != want:
-        problems.append("through nf-blocks:explore the private member answered %d producers, expected %d"
-                        % (len(observed["A7.explore"]["producers"]), len(want)))
-    if observed["A7.direct"]["state"] != "error":
-        problems.append("the private bucket was readable directly (state %s)" % observed["A7.direct"]["state"])
-    results.append((FAIL if problems else PASS, 7, "a private bucket through explore only",
-                    "; ".join(problems) or "browsable through nf-blocks:explore with the user's credentials, refused directly"))
+    def step(step_id):
+        s = observed.get(step_id)
+        if s is None:
+            raise cas.GateError("the driver recorded no step %s (see browser/cloud-drive.log)" % step_id)
+        return s
+
+    def a6_steps():
+        return [observed[sid] for sid in observed if sid and sid.startswith("A6")]
+
+    def a6():
+        problems = []
+        s = step("A6.producers")
+        if producer_set(s.get("producers") or []) != want:
+            problems.append("producers-of from the public bucket gave %d rows, expected %d"
+                            % (len(s.get("producers") or []), len(want)))
+        if (s.get("head") or {}).get("status") != 200:
+            problems.append("anonymous HEAD from the page answered %s" % s.get("head"))
+        # Scoped to this run's own bucket host, not just "amazonaws.com": a
+        # stale cloud-observed.json left by a crashed driver run would
+        # otherwise satisfy these checks with a previous, now-deleted
+        # bucket's requests (bucket names are random per run, so this only
+        # matches this run's own upload).
+        pub_host = "%s.s3." % buckets.get("public")
+        s3 = [r for st in a6_steps() for r in (st.get("requests") or []) if pub_host in r.get("url", "")]
+        if not s3:
+            problems.append("no request reached this run's public bucket (%s); cloud-observed.json may be stale"
+                            % buckets.get("public"))
+        if not any(r.get("status") == 206 for r in s3):
+            problems.append("no ranged GET answered 206")
+        if not any("list-type=2" in r.get("url", "") and r.get("status") == 200 for r in s3):
+            problems.append("no ListObjectsV2 answered 200")
+        cors = [e for st in a6_steps() for e in (st.get("consoleErrors") or []) if "CORS" in e]
+        if cors:
+            problems.append("CORS errors: %s" % cors[:2])
+        costs = ["%s %d req / %d B" % (k, *query_cost(step(k), "/year/" + SNAPSHOT)) for k in ("A6.year.producers", "A6.year.items")]
+        if not within(query_cost(step("A6.year.producers"), "/year/" + SNAPSHOT), POINT_LIMIT) or \
+                not within(query_cost(step("A6.year.items"), "/year/" + SNAPSHOT), QUERY3_LIMIT):
+            problems.append("year-scale limits exceeded on real S3: %s" % costs)
+        pub_status = probe("https://%s.s3.%s.amazonaws.com/%s" % (buckets.get("public"), buckets.get("region"), SNAPSHOT))
+        if pub_status != 200:
+            problems.append("anonymous probe of the public bucket answered %s, expected 200" % pub_status)
+        return (FAIL, "; ".join(problems)) if problems else (
+            PASS, "anonymous HEAD, ranged GET and ListObjectsV2 succeed with no CORS errors, "
+                  "anonymous probe answers 200; " + ", ".join(costs))
+
+    def a7():
+        problems = []
+        s = step("A7.explore")
+        if producer_set(s.get("producers") or []) != want:
+            problems.append("through nf-blocks:explore the private member answered %d producers, expected %d"
+                            % (len(s.get("producers") or []), len(want)))
+        requests = s.get("requests") or []
+        if not any("/m/priv/" in r.get("url", "") for r in requests):
+            problems.append("no request through explore reached /m/priv/; the page may have fallen back to another member")
+        lab = [r.get("url") for r in requests if "/m/lab/" in r.get("url", "")]
+        if lab:
+            problems.append("requests through explore reached /m/lab/ (member fallback), not only /m/priv/: %s" % lab[:2])
+        aliases = {m.get("alias") for m in (((s.get("members") or {}).get("body") or {}).get("members") or [])}
+        if "priv" not in aliases:
+            problems.append("members.json does not list priv: %s" % sorted(a for a in aliases if a))
+        direct = step("A7.direct")
+        if direct.get("state") != "error":
+            problems.append("the private bucket was readable directly (state %s)" % direct.get("state"))
+        priv_status = probe("https://%s.s3.%s.amazonaws.com/%s" % (buckets.get("private"), buckets.get("region"), SNAPSHOT))
+        if priv_status != 403:
+            problems.append("anonymous probe of the private bucket answered %s, expected 403" % priv_status)
+        return (FAIL, "; ".join(problems)) if problems else (
+            PASS, "browsable through nf-blocks:explore only (member priv, never lab); "
+                  "an anonymous probe of the bucket answers 403")
+
+    run(6, "real S3 from a page on another origin", a6)
+    run(7, "a private bucket through explore only", a7)
 
     for status, number, title, message in results:
         print("%-4s  A%d  %-38s  %s" % (status, number, title, message))

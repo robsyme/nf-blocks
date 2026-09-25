@@ -32,9 +32,16 @@ def session():
     return boto3.Session(profile_name=os.environ.get("AWS_PROFILE", "scidev"))
 
 
-def create(s3, region, public):
+def create(s3, region, public, on_created=lambda bucket: None):
+    """`on_created` fires the instant the bucket exists, before tagging, the
+    public access block, CORS or the policy retry loop (which can raise
+    SystemExit) run. Any of those can fail on a bucket that was still created
+    -- an account-level Block Public Access is a plausible way for the policy
+    step to fail -- so the caller must learn the bucket's name before this
+    function can raise, or setup()'s own cleanup never sees it and leaks it."""
     bucket = "nf-blocks-gate-%s-%s" % ("pub" if public else "priv", uuid.uuid4().hex[:10])
     s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region})
+    on_created(bucket)
     s3.put_bucket_tagging(Bucket=bucket, Tagging={"TagSet": TAGS})
     if not public:
         s3.put_public_access_block(Bucket=bucket, PublicAccessBlockConfiguration={
@@ -82,17 +89,28 @@ def setup(site, region):
     s3 = session().client("s3", region_name=region)
     made = []
     try:
-        public = create(s3, region, True)
-        made.append(public)
-        private = create(s3, region, False)
-        made.append(private)
+        public = create(s3, region, True, made.append)
+        private = create(s3, region, False, made.append)
         store = os.path.join(site, "stores", "current")
         upload(s3, public, store)
         upload(s3, public, os.path.join(site, "stores", "year"), prefix="year/")
         upload(s3, private, store)
     except BaseException:
+        # Each bucket is torn down independently: one delete failing (e.g. a
+        # transient error, or objects.all().delete() missing something) must
+        # not skip the other bucket, and a bucket that could not be deleted
+        # here is reported loudly rather than silently leaked.
+        undeleted = []
         for bucket in made:
-            delete(region, bucket)
+            try:
+                delete(region, bucket)
+            except BaseException as exc:  # noqa: BLE001, we want every bucket attempted regardless
+                undeleted.append(bucket)
+                print("bucket %s NOT deleted; delete it by hand (%s: %s)"
+                      % (bucket, type(exc).__name__, exc), file=sys.stderr)
+        if undeleted:
+            print("cloud tier: %d bucket(s) could not be torn down: %s"
+                  % (len(undeleted), ", ".join(undeleted)), file=sys.stderr)
         raise
     print("%s %s" % (public, private))
 

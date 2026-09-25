@@ -109,6 +109,7 @@ class CloudPrepareTest(unittest.TestCase):
         s = steps["A7.explore"]
         self.assertEqual(s["server"], "explore")
         self.assertEqual(s["query"], "?member=priv")
+        self.assertEqual(s["members"], "{explore}/members.json")
 
     def test_private_bucket_url_is_used_only_by_A7_direct(self):
         steps = self.scenario()
@@ -118,6 +119,24 @@ class CloudPrepareTest(unittest.TestCase):
             if step_id == "A7.direct":
                 continue
             self.assertNotIn("priv-bucket", json.dumps(s), "%s must not name the private bucket" % step_id)
+
+    def test_writes_the_bucket_names_and_region_for_cloud_check(self):
+        B.cloud_prepare(self.root, "pub-bucket", "priv-bucket", "ca-central-1")
+        with open(os.path.join(self.root, "browser", "cloud-scenario.json")) as fh:
+            doc = json.load(fh)
+        self.assertEqual(doc["buckets"], {"public": "pub-bucket", "private": "priv-bucket", "region": "ca-central-1"})
+
+
+def make_probe(pub_status=200, priv_status=403):
+    """A stub for cloud_check's `probe` parameter: real runs use urllib
+    against S3, tests never touch the network."""
+    def probe(url):
+        if "pub-bucket" in url:
+            return pub_status
+        if "priv-bucket" in url:
+            return priv_status
+        return None  # noqa: unreachable in these tests, but explicit about "unknown host"
+    return probe
 
 
 class CloudCheckTest(unittest.TestCase):
@@ -129,9 +148,14 @@ class CloudCheckTest(unittest.TestCase):
         self.producer_row = {"content": CID, "item": "item1", "collection": "coll1", "completion": "run1", "filename": "A.bam"}
         with open(os.path.join(self.root, "browser", "expected.json"), "w") as fh:
             json.dump({"content": CID, "producers": [[CID, "item1", "coll1", "run1", "A.bam"]]}, fh)
+        with open(os.path.join(self.root, "browser", "cloud-scenario.json"), "w") as fh:
+            json.dump({"steps": [], "buckets": {"public": "pub-bucket", "private": "priv-bucket", "region": "ca-central-1"}}, fh)
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def members_body(self, aliases=("lab", "priv")):
+        return {"status": 200, "body": {"members": [{"alias": a, "writable": a == "lab", "base": "m/%s/" % a} for a in aliases]}}
 
     def good_steps(self):
         s3_requests = [
@@ -139,6 +163,10 @@ class CloudCheckTest(unittest.TestCase):
              "method": "GET", "status": 206, "bytes": 12},
             {"url": "https://pub-bucket.s3.ca-central-1.amazonaws.com/?list-type=2&prefix=blocks/",
              "method": "GET", "status": 200, "bytes": 512},
+        ]
+        priv_requests = [
+            {"url": "http://127.0.0.1:1/m/priv/index/v2.sqlite", "method": "GET", "status": 200, "bytes": 4096},
+            {"url": "http://127.0.0.1:1/m/priv/blocks/ua/%s" % CID, "method": "GET", "status": 200, "bytes": 12},
         ]
         return [
             {"id": "A6.producers", "state": "ready", "producers": [self.producer_row],
@@ -148,7 +176,8 @@ class CloudCheckTest(unittest.TestCase):
              "requests": reads(5, 4096, url=CLOUD_YEAR_URL)},
             {"id": "A6.year.items", "state": "ready", "consoleErrors": [],
              "requests": reads(10, 4096, url=CLOUD_YEAR_URL)},
-            {"id": "A7.explore", "state": "ready", "producers": [self.producer_row]},
+            {"id": "A7.explore", "state": "ready", "producers": [self.producer_row],
+             "requests": priv_requests, "members": self.members_body()},
             {"id": "A7.direct", "state": "error"},
         ]
 
@@ -156,10 +185,10 @@ class CloudCheckTest(unittest.TestCase):
         with open(os.path.join(self.root, "browser", "cloud-observed.json"), "w") as fh:
             json.dump({"steps": steps}, fh)
 
-    def check(self):
+    def check(self, probe=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = B.cloud_check(self.root)
+            code = B.cloud_check(self.root, probe=probe or make_probe())
         return code, out.getvalue()
 
     def test_pass_when_every_condition_holds(self):
@@ -224,6 +253,67 @@ class CloudCheckTest(unittest.TestCase):
         code, out = self.check()
         self.assertEqual(code, 1)
         self.assertIn("year-scale limits exceeded", out)
+
+    # -- Fix round 1 --------------------------------------------------------
+
+    def test_fails_when_A7_explore_never_reaches_the_priv_member(self):
+        # store.js falls back to members[0] (the writable local alias) when
+        # the requested member is not registered; the producer set would
+        # still match (same content, different member), so this must be
+        # caught by the request paths, not by the producer rows.
+        steps = self.good_steps()
+        for s in steps:
+            if s["id"] == "A7.explore":
+                s["requests"] = [{"url": "http://127.0.0.1:1/m/lab/index/v2.sqlite", "method": "GET", "status": 200, "bytes": 4096}]
+        self.write_observed(steps)
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("fallback", out)
+
+    def test_fails_when_A7_explore_does_not_list_priv_as_a_member(self):
+        steps = self.good_steps()
+        for s in steps:
+            if s["id"] == "A7.explore":
+                s["members"] = self.members_body(aliases=("lab",))
+        self.write_observed(steps)
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("members.json does not list priv", out)
+
+    def test_fails_when_the_private_bucket_probe_is_not_403(self):
+        self.write_observed(self.good_steps())
+        code, out = self.check(probe=make_probe(priv_status=200))
+        self.assertEqual(code, 1)
+        self.assertIn("anonymous probe of the private bucket answered 200", out)
+
+    def test_fails_when_the_public_bucket_probe_is_not_200(self):
+        self.write_observed(self.good_steps())
+        code, out = self.check(probe=make_probe(pub_status=403))
+        self.assertEqual(code, 1)
+        self.assertIn("anonymous probe of the public bucket answered 403", out)
+
+    def test_fails_on_requests_to_a_foreign_or_stale_bucket_host(self):
+        # A cloud-observed.json left over from an earlier run would name a
+        # different (by now deleted) bucket in every A6 request, not just one
+        # of them; this run's own bucket name comes from cloud-scenario.json,
+        # so none of those old requests may satisfy A6.
+        steps = self.good_steps()
+        for s in steps:
+            if s["id"].startswith("A6"):
+                for r in s.get("requests", []):
+                    r["url"] = r["url"].replace("pub-bucket", "nf-blocks-gate-pub-oldrun")
+        self.write_observed(steps)
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("cloud-observed.json may be stale", out)
+
+    def test_a_missing_step_fails_with_a_message_not_a_crash(self):
+        steps = [s for s in self.good_steps() if s["id"] != "A6.producers"]
+        self.write_observed(steps)
+        code, out = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL", out)
+        self.assertIn("A6.producers", out)
 
 
 if __name__ == "__main__":

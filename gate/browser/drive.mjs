@@ -88,6 +88,15 @@ for (const step of steps) {
         .then((r) => ({ status: r.status, length: r.headers.get('content-length') }))
         .catch((e) => ({ error: String(e) })), fill(step.head))
     }
+    if (step.members) {
+      // browser_assert.py's cloud_check reads this to confirm a member
+      // (e.g. "priv") is actually registered, apart from store.js's own
+      // routing, which falls back to members[0] when the requested one is
+      // not found.
+      record.members = await page.evaluate((u) => fetch(u, { cache: 'no-store' })
+        .then((r) => r.json().then((body) => ({ status: r.status, body })))
+        .catch((e) => ({ error: String(e) })), fill(step.members))
+    }
   } catch (e) {
     record.state = 'driver_error'
     record.driverError = String(e)

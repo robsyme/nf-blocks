@@ -29,13 +29,27 @@ export NXF_PLUGINS_DIR="$GATE_ROOT/plugins" XDG_CACHE_HOME="$GATE_ROOT/cache" GA
 # non-interactive shell starts `&` jobs with SIGINT ignored, and the JVM then
 # never runs its shutdown hook (DESIGN.md section 15). Never `kill 0`: that
 # signals this whole process group.
+#
+# Buckets are torn down first and unconditionally, before waiting on the local
+# processes: they are the costly, leaky resource, and `wait` could in
+# principle hang if explore ignores SIGTERM. Each bucket is torn down
+# independently -- one failing must not skip the other -- and a teardown that
+# fails is loud and fails the script, rather than the usual `|| true`.
 PUBLIC=''; PRIVATE=''; LOCAL=''; EXPLORE=''
 cleanup() {
+    local failed=0
+    if [[ -n "$PUBLIC" ]]; then
+        "$PY" "$REPO/gate/cloud/s3tier.py" teardown "$PUBLIC" "$REGION" \
+            || { echo "cloud tier: bucket $PUBLIC NOT deleted; delete it by hand" >&2; failed=1; }
+    fi
+    if [[ -n "$PRIVATE" ]]; then
+        "$PY" "$REPO/gate/cloud/s3tier.py" teardown "$PRIVATE" "$REGION" \
+            || { echo "cloud tier: bucket $PRIVATE NOT deleted; delete it by hand" >&2; failed=1; }
+    fi
     if [[ -n "$EXPLORE" ]]; then kill -TERM "$EXPLORE" 2> /dev/null || true; fi
     if [[ -n "$LOCAL" ]]; then kill "$LOCAL" 2> /dev/null || true; fi
     wait 2> /dev/null || true
-    if [[ -n "$PUBLIC" ]]; then "$PY" "$REPO/gate/cloud/s3tier.py" teardown "$PUBLIC" "$REGION" || true; fi
-    if [[ -n "$PRIVATE" ]]; then "$PY" "$REPO/gate/cloud/s3tier.py" teardown "$PRIVATE" "$REGION" || true; fi
+    [[ "$failed" -eq 0 ]] || exit 1
 }
 trap cleanup EXIT
 
@@ -70,6 +84,9 @@ done
 grep -q 'nf-blocks explorer:' "$B/cloud-explore.log" || { echo "cloud tier: explore never listened, see $B/cloud-explore.log" >&2; exit 2; }
 sleep 5    # a new bucket policy can take a few seconds to apply
 
+# A stale cloud-observed.json (or cloud-scenario.json) from a previous, crashed
+# run must never let cloud-check pass over old evidence.
+rm -f "$B/cloud-observed.json" "$B/cloud-scenario.json"
 python3 "$REPO/gate/browser_assert.py" cloud-prepare "$GATE_ROOT" "$PUBLIC" "$PRIVATE" "$REGION"
 node "$REPO/gate/browser/drive.mjs" "$B/cloud-scenario.json" "$B/cloud-observed.json" \
      "local=http://127.0.0.1:$PORT_LOCAL" "explore=http://127.0.0.1:$PORT_EXPLORE" > "$B/cloud-drive.log" 2>&1 || true
