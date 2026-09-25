@@ -20,15 +20,24 @@ export function idle() {
   return h('p', { class: 'muted' }, 'Snapshot open.')
 }
 
+/** Store Log runs whose blocks were missing or refused. Their pipeline is
+ * unknown (it is in the RunManifest the refused RunCompletion links to), so
+ * every view that lists runs shows them. */
+function unreadableRuns(ex) {
+  const unreadable = ex.stale.filter(s => s.error)
+  return unreadable.length
+    ? h('section', {}, h('h2', {}, 'Runs in the Store Log that could not be read'), unreadable.map(s => errorNode(s.error)))
+    : null
+}
+
 export async function home(ex) {
   const pipelines = await ex.pipelines()
-  const unreadable = ex.stale.filter(s => s.error)
   return h('section', {},
     h('h1', {}, 'Pipelines'),
     pipelines.length === 0 ? h('p', { class: 'muted' }, 'No runs in this member yet.')
       : table(['pipeline', 'runs', 'latest finish'], pipelines.map(p => h('tr', {},
         h('td', {}, link(`#/pipeline/${enc(p.pipeline)}`, p.pipeline)), h('td', {}, String(p.runs)), h('td', {}, p.latest ?? '')))),
-    unreadable.length ? h('section', {}, h('h2', {}, 'Runs in the Store Log that could not be read'), unreadable.map(s => errorNode(s.error))) : null)
+    unreadableRuns(ex))
 }
 
 export async function pipeline(ex, name) {
@@ -42,7 +51,8 @@ export async function pipeline(ex, name) {
     h('td', {}, r.possibly_incomplete ? `${r.status}, possibly incomplete` : r.status),
     h('td', {}, r.finished_at ?? ''),
     h('td', { 'data-anomalies-for': r.completion_cid, class: 'muted' }, '...'),
-    h('td', { class: 'muted' }, r.source === 'tail' ? 'newer than the snapshot' : 'snapshot')))))
+    h('td', { class: 'muted' }, r.source === 'tail' ? 'newer than the snapshot' : 'snapshot')))),
+    unreadableRuns(ex))
   // Anomaly counts are only in each RunCompletion; fill them in without holding up the view.
   for (const r of rows) {
     ex.completionOf(r.completion_cid).then(c => {
