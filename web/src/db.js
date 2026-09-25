@@ -20,7 +20,9 @@ export async function probeSnapshot(url, { cap = DEFAULT_CAP_BYTES, fetchFn = fe
     const total = range && /\/(\d+)$/.exec(range)
     if (!total)
       throw new SnapshotError('cors_headers', `${url} answered 206 but Content-Range is not readable; a bucket's CORS rule must expose Content-Range (DESIGN.md §15)`)
-    return { mode: 'range', size: Number(total[1]), head: new Uint8Array(await res.arrayBuffer()) }
+    // The version every later range is checked against (xhrRange).
+    const tag = res.headers.get('ETag') ?? res.headers.get('Last-Modified')
+    return { mode: 'range', size: Number(total[1]), tag, head: new Uint8Array(await res.arrayBuffer()) }
   }
   if (res.status === 200) return { mode: 'whole', ...(await readCapped(url, res, cap, abort)) }
   if (res.status === 403 || res.status === 404)
@@ -59,7 +61,7 @@ export async function openSnapshot(url, { cap = DEFAULT_CAP_BYTES, wasm, createW
     if (!waiting) return
     pending.delete(data.id)
     if (data.ok) waiting.resolve(data.result)
-    else waiting.reject(new SnapshotError('query_failed', data.error))
+    else waiting.reject(new SnapshotError(data.code ?? 'query_failed', data.error))
   }
   worker.onerror = (event) => {
     for (const waiting of pending.values()) waiting.reject(new SnapshotError('worker_failed', event.message || 'the snapshot worker failed'))
@@ -74,7 +76,7 @@ export async function openSnapshot(url, { cap = DEFAULT_CAP_BYTES, wasm, createW
   const transfer = [wasmCopy.buffer]
   if (probe.bytes) transfer.push(probe.bytes.buffer)
   try {
-    await call({ op: 'open', url: new URL(url, globalThis.location?.href).href, mode: probe.mode, size: probe.size, head: probe.head, bytes: probe.bytes, wasm: wasmCopy }, transfer)
+    await call({ op: 'open', url: new URL(url, globalThis.location?.href).href, mode: probe.mode, size: probe.size, tag: probe.tag ?? null, head: probe.head, bytes: probe.bytes, wasm: wasmCopy }, transfer)
   } catch (e) {
     worker.terminate()
     throw e

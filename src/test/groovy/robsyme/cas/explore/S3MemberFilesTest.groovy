@@ -45,13 +45,29 @@ class S3MemberFilesTest extends Specification {
         final List<String> logNames = files.list('log')
 
         then:
-        files.size('index/v2.sqlite') == 10240L
-        files.size('index/v3.sqlite') == null
-        files.open('index/v2.sqlite', 4096, 100).withCloseable { it.readAllBytes() } == Arrays.copyOfRange(snapshot, 4096, 4196)
+        files.open('index/v2.sqlite').size == 10240L
+        files.open('index/v3.sqlite') == null
+        files.open('index/v2.sqlite').read(4096, 100).withCloseable { it.readAllBytes() } == Arrays.copyOfRange(snapshot, 4096, 4196)
         logNames.size() == 5
         logNames.every { it.endsWith(CID) && !it.contains('/') }
         // One full paginated traversal of 5 keys at page size 2: three requests.
         s3.requests.count { it.startsWith('GET /bucket?') } == 3
+    }
+
+    def 'an opened object reads only the version it opened: a replaced object fails the read (final review finding 1)'() {
+        given:
+        final S3MemberFiles files = new S3MemberFiles(client, 'bucket', 'member/')
+        final MemberFiles.Opened opened = files.open('index/v2.sqlite')
+        final String tag = opened.tag
+
+        when:
+        s3.objects['bucket/member/index/v2.sqlite'] = snapshot.collect { byte b -> (byte) (b ^ 1) } as byte[]
+        opened.read(0, 100).withCloseable { it.readAllBytes() }
+
+        then:
+        thrown(Exception)
+        tag == s3.etagOf(snapshot)
+        files.open('index/v2.sqlite').tag != tag
     }
 
     def 'open parses bucket and prefix from the URI'() {
@@ -84,6 +100,7 @@ class S3MemberFilesTest extends Specification {
         then:
         r.status == 206
         r.body == Arrays.copyOfRange(snapshot, 0, 4096)
+        r.headers['etag'] == s3.etagOf(snapshot)
         log.text().count(CID) == 5
 
         cleanup:

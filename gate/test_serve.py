@@ -71,6 +71,19 @@ class ServeTest(unittest.TestCase):
         self.assertEqual(headers["Access-Control-Allow-Origin"], "*")
         self.assertIn("Content-Range", headers["Access-Control-Expose-Headers"])
 
+    def test_ranges_carry_an_etag_that_changes_with_the_file(self):
+        # The page checks every range against the probe's ETag (DESIGN.md §15,
+        # snapshot_changed), as S3 lets it; this server must too, or the Gate
+        # never exercises that check.
+        self.start()
+        first = self.get("/f.bin", {"Range": "bytes=0-9"})[1]["ETag"]
+        self.assertEqual(self.get("/f.bin", {"Range": "bytes=10-19"})[1]["ETag"], first)
+        path = os.path.join(self.root, "f.bin")
+        with open(path + ".tmp", "wb") as fh:
+            fh.write(bytes(10240))
+        os.replace(path + ".tmp", path)
+        self.assertNotEqual(self.get("/f.bin", {"Range": "bytes=0-9"})[1]["ETag"], first)
+
 
 if __name__ == "__main__":
     unittest.main()

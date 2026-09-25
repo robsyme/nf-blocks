@@ -84,32 +84,38 @@ def make_server(root, port, no_range=False):
             return super().do_GET()
 
         def ranged(self, path, header):
-            size = os.path.getsize(path)
             m = RANGE.match(header.strip())
             if not m or (m.group(1) == '' and m.group(2) == ''):
-                self.record(size, None)
+                self.record(os.path.getsize(path), None)
                 return super().do_GET()
-            if m.group(1) == '':
-                start, end = max(0, size - int(m.group(2))), size - 1
-            else:
-                start = int(m.group(1))
-                end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
-            if start >= size or start > end:
-                self.send_response(416)
-                self.send_header('Content-Range', 'bytes */%d' % size)
-                self.send_header('Content-Length', '0')
-                self.end_headers()
-                return
-            n = end - start + 1
+            with open(path, 'rb') as fh:
+                # Size, mtime and inode of the file opened, as nf-blocks:explore's
+                # ETag: the page checks every range against the probe's
+                # (snapshot_changed, DESIGN.md §15).
+                st = os.fstat(fh.fileno())
+                size = st.st_size
+                if m.group(1) == '':
+                    start, end = max(0, size - int(m.group(2))), size - 1
+                else:
+                    start = int(m.group(1))
+                    end = min(int(m.group(2)) if m.group(2) else size - 1, size - 1)
+                if start >= size or start > end:
+                    self.send_response(416)
+                    self.send_header('Content-Range', 'bytes */%d' % size)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                n = end - start + 1
+                fh.seek(start)
+                body = fh.read(n)
             self.send_response(206)
             self.send_header('Content-Type', 'application/octet-stream')
             self.send_header('Content-Range', 'bytes %d-%d/%d' % (start, end, size))
+            self.send_header('ETag', '"%x-%x-%x"' % (size, st.st_mtime_ns, st.st_ino))
             self.send_header('Content-Length', str(n))
             self.send_header('Accept-Ranges', 'bytes')
             self.end_headers()
-            with open(path, 'rb') as fh:
-                fh.seek(start)
-                self.wfile.write(fh.read(n))
+            self.wfile.write(body)
             self.record(n, header)
 
     return ThreadingHTTPServer(('127.0.0.1', port), Handler)

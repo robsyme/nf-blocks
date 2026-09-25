@@ -14,7 +14,9 @@ self.onmessage = async ({ data: message }) => {
     self.postMessage({ id: message.id, ok: true, result: await handle(message) })
   } catch (e) {
     const cause = vfs?.lastError ? ` (${vfs.lastError.message})` : ''
-    self.postMessage({ id: message.id, ok: false, error: `${e?.message ?? e}${cause}` })
+    // A read's own code (snapshot_changed) is the answer's; SQLite's is only IOERR.
+    const code = vfs?.lastError?.code ?? e?.code ?? null
+    self.postMessage({ id: message.id, ok: false, code, error: `${e?.message ?? e}${cause}` })
   }
 }
 
@@ -28,7 +30,7 @@ async function handle(message) {
       }
       const source = message.mode === 'whole'
         ? new MemorySource(message.bytes)
-        : new ChunkedSource(message.size, xhrRange(message.url, counter), { head: message.head })
+        : new ChunkedSource(message.size, xhrRange(message.url, counter, { tag: message.tag, size: message.size }), { head: message.head })
       vfs.register('snapshot', source)
       db = new sqlite3.oo1.DB({ filename: 'file:snapshot?immutable=1', flags: 'r', vfs: VFS })
       return { sqlite: sqlite3.version.libVersion }

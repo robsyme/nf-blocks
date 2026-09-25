@@ -5,7 +5,9 @@ import com.sun.net.httpserver.HttpServer
 
 /**
  * Just enough of S3's REST API, path style, for S3MemberFiles through the real
- * SDK: HeadObject, GetObject with one Range, ListObjectsV2 with paging.
+ * SDK: HeadObject, GetObject with one Range and If-Match, ListObjectsV2 with
+ * paging. An object's ETag is the MD5 of its bytes, as S3's is for a
+ * single-part upload.
  */
 class FakeS3 {
 
@@ -54,7 +56,16 @@ class FakeS3 {
         }
         ex.responseHeaders.set('Content-Type', 'application/octet-stream')
         ex.responseHeaders.set('Accept-Ranges', 'bytes')
-        ex.responseHeaders.set('ETag', '"fake"')
+        final String etag = etagOf(bytes)
+        ex.responseHeaders.set('ETag', etag)
+        final String ifMatch = ex.requestHeaders.getFirst('If-Match')
+        if( ifMatch != null && ifMatch != etag ) {
+            final byte[] body = '<?xml version="1.0"?><Error><Code>PreconditionFailed</Code><Message>no</Message></Error>'.bytes
+            ex.responseHeaders.set('Content-Type', 'application/xml')
+            ex.sendResponseHeaders(412, ex.requestMethod == 'HEAD' ? -1 : body.length)
+            if( ex.requestMethod != 'HEAD' ) ex.responseBody.write(body)
+            return
+        }
         final String range = ex.requestHeaders.getFirst('Range')
         if( ex.requestMethod == 'HEAD' ) {
             ex.responseHeaders.set('Content-Length', String.valueOf(bytes.length))
@@ -73,6 +84,10 @@ class FakeS3 {
         }
         ex.sendResponseHeaders(200, bytes.length)
         ex.responseBody.write(bytes)
+    }
+
+    static String etagOf(byte[] bytes) {
+        '"' + java.security.MessageDigest.getInstance('MD5').digest(bytes).encodeHex().toString() + '"'
     }
 
     private void list(HttpExchange ex, String bucket, Map<String, String> query) {

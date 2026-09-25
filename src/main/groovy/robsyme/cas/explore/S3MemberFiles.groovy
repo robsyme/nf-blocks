@@ -9,6 +9,7 @@ import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.GetObjectRequest
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException
 import software.amazon.awssdk.services.s3.model.S3Exception
@@ -96,31 +97,58 @@ class S3MemberFiles implements MemberFiles {
         }
     }
 
+    /**
+     * HeadObject for the size and ETag; every read is a ranged GetObject with
+     * If-Match on that ETag, so an object replaced after it was opened fails
+     * the read (412) instead of answering with the new object's bytes.
+     */
     @Override
-    Long size(String rel) {
-        return withPluginLoader {
+    MemberFiles.Opened open(String rel) {
+        final String key = prefix + rel
+        final HeadObjectResponse head = withPluginLoader {
             try {
-                return client.headObject(HeadObjectRequest.builder().bucket(bucket).key(prefix + rel).build()).contentLength()
+                return client.headObject(HeadObjectRequest.builder().bucket(bucket).key(key).build())
             }
             catch( NoSuchKeyException e ) {
-                return (Long) null
+                return (HeadObjectResponse) null
             }
             catch( S3Exception e ) {
                 if( e.statusCode() == 404 )
-                    return (Long) null
+                    return (HeadObjectResponse) null
                 throw e
             }
         }
+        return head == null ? null : new Opened(this, key, head.contentLength(), head.eTag())
     }
 
-    @Override
-    InputStream open(String rel, long start, long length) {
+    private InputStream read(String key, String etag, long start, long length) {
         return withPluginLoader {
             (InputStream) client.getObject(GetObjectRequest.builder()
-                .bucket(bucket).key(prefix + rel)
+                .bucket(bucket).key(key).ifMatch(etag)
                 .range("bytes=${start}-${start + length - 1}".toString())
                 .build())
         }
+    }
+
+    @CompileStatic
+    private static class Opened implements MemberFiles.Opened {
+        private final S3MemberFiles files
+        private final String key
+        final long size
+        final String tag
+
+        Opened(S3MemberFiles files, String key, long size, String tag) {
+            this.files = files
+            this.key = key
+            this.size = size
+            this.tag = tag
+        }
+
+        @Override
+        InputStream read(long start, long length) { files.read(key, tag, start, length) }
+
+        @Override
+        void close() {}
     }
 
     @Override

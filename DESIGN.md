@@ -892,7 +892,7 @@ once it is listening, then blocks until the JVM is interrupted.
 |---|---|
 | `GET /`, `GET /index.html` | the page |
 | `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/"}, ...]}`, writable first |
-| `GET` or `HEAD /m/<alias>/index/v<N>.sqlite` | the file, honouring one `Range` |
+| `GET` or `HEAD /m/<alias>/index/v<N>.sqlite` | the file, honouring one `Range`, with an `ETag` |
 | `GET` or `HEAD /m/<alias>/blocks/<xx>/<cid>` | the block, honouring one `Range`; `xx` must equal the cid's last two characters |
 | `GET /m/<alias>/log/` | listing form 1 |
 | anything else | `404`; a method other than `GET` or `HEAD` is `405` |
@@ -903,6 +903,12 @@ No CORS headers are sent. No other path under a member is ever served:
 `coords/` and `nf/` hold host paths. Members are every configured store
 (`cas.stores`), local ones read from disk, S3 ones with the AWS SDK default
 credential chain (`AWS_PROFILE`, SSO) and ranged `GetObject`.
+
+Every snapshot and block answer carries a strong `ETag` taken from the file as
+opened for that answer, never from a second look at the path: size,
+modification time and file key (inode) for a local member, the object's own
+`ETag` for an S3 one, whose reads are `GetObject` with `If-Match` on it (a
+replaced object is a `500`, never another object's bytes).
 
 Verified 2026-09-25, Task 7: against a `make gate` store, `nextflow plugin
 nf-blocks:explore --port <n>` prints `nf-blocks explorer: http://127.0.0.1:<n>/`,
@@ -938,6 +944,12 @@ way.
 - Blocks: fetched from `<base>blocks/<xx>/<cid>`, SHA-256 checked against the
   requested CID, then decoded and checked against the IPLD Schema of §6
   (extracted from this file at build time), before use.
+- Snapshot version: the probe records the snapshot's `ETag` (else its
+  `Last-Modified`) and the `Content-Range` total, and every later range is
+  checked against both, from the headers it already carries. A mismatch fails
+  that query, and every later one, with `snapshot_changed`: the snapshot was
+  rewritten under the open page (every run and `explore` rewrite it), and
+  pages of two files must never answer (spec section 4).
 - Stale runs: Store Log `run` entries since the snapshot's watermark minus the
   10-minute overlap (floor clamped to the local clock), less those the snapshot
   holds. For each, the RunCompletion and its RunManifest are fetched; a run's
@@ -961,7 +973,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `window.__nfBlocks.verified` | every cid whose bytes the page hashed and accepted |
 
 Error codes: `no_snapshot`, `no_range_over_cap`, `cors_headers`,
-`fetch_failed`, `query_failed`, `worker_failed`, `hash_mismatch`,
+`fetch_failed`, `query_failed`, `worker_failed`, `snapshot_changed`, `hash_mismatch`,
 `schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`.
 
 The query views (query 1, 2 and 3) read the snapshot only through their own

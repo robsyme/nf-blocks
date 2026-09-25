@@ -147,16 +147,33 @@ class ExploreServer {
         return JsonOutput.toJson([entries: names]).getBytes('UTF-8')
     }
 
+    /**
+     * The file opened once: its size, tag and bytes come from that one opening
+     * (final review finding 1). The ETag lets the page notice a snapshot
+     * rewritten under it (DESIGN.md §15).
+     */
     private static void file(HttpExchange exchange, MemberFiles files, String rel, String type, String cache) {
-        final Long size = files.size(rel)
-        if( size == null ) {
+        final MemberFiles.Opened opened = files.open(rel)
+        if( opened == null ) {
             text(exchange, 404, 'not found')
             return
         }
+        try {
+            serve(exchange, opened, type, cache)
+        }
+        finally {
+            opened.close()
+        }
+    }
+
+    private static void serve(HttpExchange exchange, MemberFiles.Opened opened, String type, String cache) {
+        final long size = opened.size
         final Headers headers = exchange.responseHeaders
         headers.set('Content-Type', type)
         headers.set('Accept-Ranges', 'bytes')
         headers.set('Cache-Control', cache)
+        if( opened.tag )
+            headers.set('ETag', opened.tag)
         final ByteRange range
         try {
             range = ByteRange.parse(exchange.requestHeaders.getFirst('Range'), size)
@@ -175,9 +192,11 @@ class ExploreServer {
             exchange.sendResponseHeaders(status, -1)
             return
         }
-        exchange.sendResponseHeaders(status, length)
-        final InputStream input = files.open(rel, start, length)
+        // Opened before the headers go out, so a read that fails (an S3 object
+        // replaced since HeadObject) is a 500, not a truncated 206.
+        final InputStream input = opened.read(start, length)
         try {
+            exchange.sendResponseHeaders(status, length)
             copy(input, exchange.responseBody, length)
         }
         finally {
