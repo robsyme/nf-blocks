@@ -792,40 +792,63 @@ nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
 on a usage error.
 
-**No offline invocation of `nextflow plugin nf-blocks:<verb>` works against a
-plugin that exists only in a local `NXF_PLUGINS_DIR`, not on the plugin
-registry** (checked against v26.04.6). `CmdPlugin.run()` calls
-`Plugins.start(target)` and then looks the plugin instance back up with
-`Plugins.manager.getPlugin(target)`, using the same string both times
-(`CmdPlugin.groovy`). Unpinned (`target = 'nf-blocks'`), `PluginsFacade`'s
-`manager.loadPlugins()` never finds it: in the mode the plain `nextflow`
-launcher script selects (`NXF_HOME` set → `LocalPluginManager`), that scan
-targets a fresh per-process directory under `Const.appCacheDir/plr/<uuid>`,
-never `NXF_PLUGINS_DIR` (`LocalPluginManager.groovy`), so the plugin is
-"not yet loaded" and `PluginUpdater.load0` throws `Cannot find version for
-nf-blocks plugin -- plugin versions MUST be specified in offline mode`
-regardless of `NXF_OFFLINE` (`PluginUpdater.groovy:346`). Pinning the version
-on the command line (`nf-blocks@0.1.0:snapshot`) does let `Plugins.start`
-load and start it, but `CmdPlugin` then calls
-`Plugins.manager.getPlugin('nf-blocks@0.1.0')` — the wrapper is registered
-under the bare id `nf-blocks` from its manifest, so the lookup returns null
-and the run aborts with `Cannot find target plugin: nf-blocks@0.1.0` before
-`CasCommands` ever runs. `nextflow run` is unaffected: `Plugins.load(config)`
-reads the pinned version straight from the `plugins {}` config block and
-calls `PluginUpdater.installPlugin` with it directly, never consulting
-`manager.getPlugin()` first, which is why the Gate's `nextflow run . -c
-gate.config` already works with `id 'nf-blocks@0.1.0'` pinned there. Verified
-2026-09-25, Task 6: both the unpinned and the `@version`-pinned forms of
-`nextflow plugin nf-blocks:snapshot` fail as above under `NXF_OFFLINE=true`
-against a `make gate` store; `CasCommands.run()` was instead exercised
-directly (bypassing `CmdPlugin`/`PluginExecAware`) against that same store
-and produced `wrote <store>/index/v2.sqlite (180224 bytes, 5 runs, watermark
-...)`. Until nf-blocks is registered somewhere Nextflow's plugin resolver can
-reach, or this Nextflow limitation is fixed, Task 12's `tier.sh` cannot drive
-the verbs through the real `nextflow plugin` CLI offline; it should exercise
-`CasCommands`/`CasPlugin` at the unit level (as `CasCommandsTest` does) and
-rely on `nextflow run` (which does work) for anything that needs a live
-plugin inside a pipeline.
+A **published** plugin needs none of what follows: once `nf-blocks` is on the
+plugin registry, an unpinned `nextflow plugin nf-blocks:<verb>` resolves and
+starts it the ordinary way, offline or not. Driving a **locally built,
+unpublished** plugin's verbs from the real CLI needs one extra step in
+v26.04.6, because `CmdPlugin.run()` starts the plugin unpinned
+(`Plugins.start('nf-blocks')`) and, with `NXF_OFFLINE=true`, an unpinned,
+unregistered plugin always fails with `Cannot find version for nf-blocks
+plugin -- plugin versions MUST be specified in offline mode`
+(`PluginUpdater.groovy:346`): the plugin manager the plain launcher selects
+(`LocalPluginManager`, whenever `NXF_HOME` is set) discovers plugins from a
+fresh per-process directory, never `NXF_PLUGINS_DIR`, so it never already
+knows about a plugin that is merely unpacked there. Pinning the version on
+the command line instead (`nf-blocks@0.1.0:snapshot`) does not help either --
+`CmdPlugin` looks the started plugin back up with that same versioned
+string, which does not match the bare id (`nf-blocks`) the plugin registers
+itself under, and aborts with `Cannot find target plugin: nf-blocks@0.1.0`.
+
+The invocation that works leaves `NXF_OFFLINE` unset and points
+`NXF_PLUGINS_TEST_REPOSITORY` (`PluginUpdater.customRepos()`, only added to
+the repository list when not offline) at a `file://` URL for a small
+`plugins.json` describing the built zip:
+
+```json
+[{"id":"nf-blocks","releases":[{"version":"0.1.0","date":"2026-09-25T00:00:00Z",
+  "url":"file:///abs/path/to/build/distributions/nf-blocks-0.1.0.zip",
+  "requires":">=26.04.6","sha512sum":"<sha512 of that zip>"}]}]
+```
+
+```bash
+export NXF_PLUGINS_DIR=<plugins dir> XDG_CACHE_HOME=<cache dir>
+export NXF_PLUGINS_TEST_REPOSITORY="file:///abs/path/to/plugins.json"
+nextflow [-c <config>] plugin nf-blocks:snapshot   # NXF_OFFLINE left unset
+```
+
+`<plugins dir>` must hold the current build (`installPlugin`, or a fresh
+`unzip` of `build/distributions/nf-blocks-<version>.zip`) -- an install that
+predates `CasPlugin implements PluginExecAware` fails with `Invalid target
+plugin`, not the errors above. This still reaches the real plugin registry
+once, for a dependency-resolution call the custom repository does not
+replace (`HttpPluginRepository`, seen in the debug log as `GET
+https://registry.nextflow.io/api/v1/plugins/dependencies?plugins=nf-blocks&
+nextflowVersion=26.04.6`); the plugin's own version and location come from
+`plugins.json`, and since the zip is already unpacked at
+`<plugins dir>/nf-blocks-<version>`, nothing is downloaded. An example
+`plugins.json` for the current build is checked in at
+`.superpowers/sdd/2026-09-25-explorer-milestone-1/plugins.json.example`.
+
+Verified 2026-09-25, Task 6: against a `make gate` store, with this
+invocation, `nextflow plugin nf-blocks:nope` exits 2 with the usage text
+above, and `nextflow plugin nf-blocks:snapshot` exits 0 and prints `wrote
+<store>/index/v2.sqlite (180224 bytes, 5 runs, watermark ...)`. `nextflow
+run` was never affected by any of this: `Plugins.load(config)` reads the
+pinned version straight from the `plugins {}` config block and calls
+`PluginUpdater.installPlugin` with it directly, never consulting
+`manager.getPlugin()` first the way `Plugins.start(target)` does, which is
+why the Gate's `nextflow run . -c gate.config` has worked throughout with
+`id 'nf-blocks@0.1.0'` pinned there.
 
 ### What a member serves
 
