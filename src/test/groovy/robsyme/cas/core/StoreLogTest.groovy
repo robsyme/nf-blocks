@@ -147,6 +147,36 @@ class StoreLogTest extends Specification {
         StoreLog.of(store).entriesSince('').size() == 2
     }
 
+
+    private static ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> capture(Class type) {
+        final logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(type)
+        final appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
+        appender.start()
+        logger.addAppender(appender)
+        return appender
+    }
+
+    private static int warnings(ch.qos.logback.core.read.ListAppender appender, String containing) {
+        return appender.list.count { e -> e.level == ch.qos.logback.classic.Level.WARN && e.formattedMessage.contains(containing) } as int
+    }
+
+    def 'an unreadable entry warns once, not on every read'() {
+        given:
+        def dir = tempDir.resolve('store/log')
+        StoreLog.append(store, StoreLogKind.RUN, cidOf('good'), 1_000L)
+        def odd = "${String.format('%013d', 9999999999999L - 2_000L)}-pin-${cidOf('future-kind-' + System.nanoTime())}".toString()
+        Files.createFile(dir.resolve(odd))
+        def appender = capture(StoreLog)
+
+        when:
+        StoreLog.read(store)
+        StoreLog.read(store)
+        StoreLog.read(store)
+
+        then:
+        warnings(appender, odd) == 1
+    }
+
     def 'an empty log reads as nothing'() {
         expect:
         StoreLog.read(store) == []

@@ -10,6 +10,7 @@ import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.sql.Statement
+import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Stream
 
 import groovy.transform.CompileStatic
@@ -206,7 +207,7 @@ class Index implements Closeable {
         withTransaction {
             clearRun(completion)
             if( completionBlock == null ) {
-                log.warn("run completion $completion has not arrived; nothing of it can be indexed")
+                warnOnce(completion.toString(), "run completion $completion has not arrived; nothing of it can be indexed until it does")
                 insertMissing(null, completion)
                 return
             }
@@ -340,7 +341,7 @@ class Index implements Closeable {
                 continue
             // An absent RunCompletion is not an error: ingestRun records a
             // `missing` row and returns, and the run is indexed when it arrives.
-            ingestRun(store, entry.cid, member)
+            ingestTolerant(store, entry.cid, member)
         }
         setMeta(key, entries[0].name)
     }
@@ -355,9 +356,18 @@ class Index implements Closeable {
         final String key = META_SCANNED + ':' + member
         if( meta(key) != null )
             return
-        for( Cid completion : runCompletionsIn(store) )
+        final List<Cid> completions
+        try {
+            completions = runCompletionsIn(store)
+        }
+        catch( IOException | UncheckedIOException e ) {
+            // Not marked done, so the next catch-up scans again.
+            log.warn("could not scan the blocks of store member '$member' (${e.message}); will retry")
+            return
+        }
+        for( Cid completion : completions )
             if( !isRunIndexed(completion) )
-                ingestRun(store, completion, member)
+                ingestTolerant(store, completion, member)
         setMeta(key, 'done')
     }
 
@@ -371,9 +381,41 @@ class Index implements Closeable {
         query('SELECT DISTINCT needed_cid FROM missing WHERE have_cid IS NULL', []) { ResultSet rs ->
             waiting.add(Cid.parse(rs.getString(1)))
         }
-        for( Cid completion : waiting )
-            if( store.has(completion) && !isRunIndexed(completion) )
-                ingestRun(store, completion, member)
+        for( Cid completion : waiting ) {
+            try {
+                if( store.has(completion) && !isRunIndexed(completion) )
+                    ingestRun(store, completion, member)
+            }
+            catch( IOException | UncheckedIOException e ) {
+                warnOnce(completion.toString(), "run completion $completion is still unreachable (${e.message}); will retry")
+            }
+        }
+    }
+
+    /**
+     * Ingests one logged run. A block that cannot be read (a permission error,
+     * a stale network handle) is not an absence: it is recorded as `missing`
+     * so later catch-ups retry it, and the rest of the member still ingests.
+     */
+    private void ingestTolerant(BlockStore store, Cid completion, String member) {
+        try {
+            ingestRun(store, completion, member)
+        }
+        catch( IOException | UncheckedIOException e ) {
+            warnOnce(completion.toString(), "run completion $completion could not be read (${e.message}); it will be retried")
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [completion.toString()])
+            insertMissing(null, completion)
+        }
+    }
+
+    /** Keys already warned about, so a recurring condition warns once per JVM. */
+    private static final Set<String> WARNED = ConcurrentHashMap.newKeySet()
+
+    private static void warnOnce(String key, String message) {
+        if( WARNED.add(key) )
+            log.warn(message)
+        else
+            log.debug(message)
     }
 
     /** True when a RunCompletion already has its `run` row. */

@@ -338,8 +338,8 @@ class TestLatestSuccessful(TempTree):
         return completion
 
     def test_store_log_returns_the_newest_successful_run(self):
-        older = self._run("cold", "succeeded", 1000)
-        newer = self._run("again", "succeeded", 2000)
+        older = self._run("cold", "succeeded", 1000, finished_at="2026-01-01T00:01:00.000Z")
+        newer = self._run("again", "succeeded", 2000, finished_at="2026-01-01T00:02:00.000Z")
         gate = gate_assert.Gate(self.tmp)
         self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"), newer)
         self.assertNotEqual(newer, older)
@@ -365,6 +365,28 @@ class TestLatestSuccessful(TempTree):
         gate = gate_assert.Gate(self.tmp)
         self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"),
                          good)
+
+    def test_store_log_breaks_a_finished_at_tie_by_the_smaller_cid(self):
+        # One rule everywhere (the plugin's index: finished_at DESC, completion_cid ASC).
+        a = self._run("cold", "succeeded", 1000, finished_at="2026-01-01T01:00:00.000Z")
+        b = self._run("again", "succeeded", 2000, finished_at="2026-01-01T01:00:00.000Z")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"), min(a, b))
+
+    def test_index_breaks_a_finished_at_tie_by_the_smaller_cid(self):
+        d = self.path("cache", "nf-blocks")
+        os.makedirs(d)
+        con = sqlite3.connect(os.path.join(d, "x.sqlite"))
+        con.execute("CREATE TABLE run(completion_cid TEXT, pipeline TEXT, status TEXT, "
+                    "possibly_incomplete INTEGER, finished_at TEXT)")
+        # Inserted larger cid first, so insertion order cannot pass the test.
+        for cid in ("bafyreizzzz", "bafyreiaaaa"):
+            con.execute("INSERT INTO run VALUES (?, ?, 'succeeded', 0, '2026-01-01T01:00:00.000Z')",
+                        (cid, gate_assert.PIPELINE_IDENTITY))
+        con.commit(); con.close()
+        gate = gate_assert.Gate(self.tmp)
+        self.assertEqual(gate_assert._latest_successful_from_index(gate, gate_assert.PIPELINE_IDENTITY),
+                         "bafyreiaaaa")
 
     def test_a_missing_index_is_raised_not_swallowed(self):
         self._run("cold", "succeeded", 1000)

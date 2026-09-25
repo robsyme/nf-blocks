@@ -789,6 +789,69 @@ class IndexTest extends Specification {
         count('run') == 2
     }
 
+
+    private static ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> capture(Class type) {
+        final logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(type)
+        final appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
+        appender.start()
+        logger.addAppender(appender)
+        return appender
+    }
+
+    private static int warnings(ch.qos.logback.core.read.ListAppender appender, String containing) {
+        return appender.list.count { e -> e.level == ch.qos.logback.classic.Level.WARN && e.formattedMessage.contains(containing) } as int
+    }
+
+    def 'a run that has not arrived warns once, not on every catch-up'() {
+        given:
+        def absent = Cid.of(Cid.DAG_CBOR, Hashing.sha256("never stored ${System.nanoTime()}".getBytes('UTF-8')))
+        StoreLog.append(store, StoreLogKind.RUN, absent, 1_000_000L)
+        def appender = capture(Index)
+
+        when:
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        warnings(appender, absent.toString()) == 1
+    }
+
+    def 'an unreachable block does not stop catch-up and is retried once reachable'() {
+        given: 'two logged runs, one whose block cannot be read for now'
+        def reachable = buildRun()
+        def flaky = buildOtherRun([finished_at: '2026-09-03T11:00:00.000Z'], 'flaky')
+        StoreLog.append(store, StoreLogKind.RUN, reachable, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, flaky, 2_000_000L)
+        def unreachable = new Unreachable(store, flaky)
+
+        when:
+        index.catchUp(unreachable, StoreLog.of(store), 'lab')
+
+        then: 'the reachable run is indexed and nothing is thrown'
+        noExceptionThrown()
+        count('run') == 1
+
+        when: 'the block becomes reachable, long after the overlap has moved on'
+        unreachable.broken = false
+        StoreLog.append(store, StoreLogKind.RUN, buildOtherRun([finished_at: '2026-09-03T12:00:00.000Z'], 'third'), 2_000_000L + 30 * 60_000L)
+        index.catchUp(unreachable, StoreLog.of(store), 'lab')
+
+        then:
+        count('run') == 3
+    }
+
+    /** A store whose has() fails with an I/O error for one block, as a permission error or stale NFS handle does. */
+    static class Unreachable extends Counting {
+        final Cid bad
+        boolean broken = true
+        Unreachable(BlockStore delegate, Cid bad) { super(delegate); this.bad = bad }
+        @Override boolean has(Cid cid) {
+            if( broken && cid == bad ) throw new java.nio.file.AccessDeniedException("blocks/${cid}")
+            return super.has(cid)
+        }
+    }
+
     static class Counting implements BlockStore {
         final BlockStore delegate
         int opens = 0

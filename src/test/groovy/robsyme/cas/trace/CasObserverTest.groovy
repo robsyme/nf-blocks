@@ -1,5 +1,6 @@
 package robsyme.cas.trace
 
+import java.nio.file.Files
 import java.nio.file.Path
 
 import nextflow.Global
@@ -192,6 +193,55 @@ class CasObserverTest extends Specification {
         blocksOfKind('RunCompletion')[0].get('status') == 'failed'
         StoreLog.read(cas.store).size() == 1
         stillInterrupted
+    }
+
+    def 'interrupts arriving while the completion is written do not lose it, and are handed back'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        boolean interruptedAfter = false
+        Throwable thrown = null
+
+        when: 'the notifying thread is interrupted over and over while it writes'
+        final notifier = Thread.start {
+            try { observer.onFlowComplete() } catch( Throwable t ) { thrown = t }
+            interruptedAfter = Thread.currentThread().isInterrupted()
+        }
+        while( notifier.isAlive() ) {
+            notifier.interrupt()
+            Thread.sleep(1)
+        }
+
+        then:
+        thrown == null
+        blocksOfKind('RunCompletion').size() == 1
+        interruptedAfter
+    }
+
+    def 'a failure while writing the completion reaches the caller and still releases the waiting notification'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        and: 'the block store can no longer be written'
+        final blocks = tempDir.resolve('store').resolve('blocks')
+        final List<Path> dirs = Files.walk(blocks).filter { Path p -> Files.isDirectory(p) }.toList()
+        dirs.each { Path d -> d.toFile().setWritable(false, false) }
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        thrown(nextflow.exception.AbortRunException)
+        cas.awaitCompletionWritten(0)
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
     }
 
     def 'the Store Log entry is stamped with the time it was written, not the run finish time'() {

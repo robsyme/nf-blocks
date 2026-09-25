@@ -659,7 +659,7 @@ def _latest_successful_from_index(gate, pipeline):
     rows = gate.index.query(
         "SELECT completion_cid FROM run WHERE pipeline = ? AND "
         "status = 'succeeded' AND possibly_incomplete = 0 "
-        "ORDER BY finished_at DESC LIMIT 1", (pipeline,))
+        "ORDER BY finished_at DESC, completion_cid ASC LIMIT 1", (pipeline,))
     return rows[0]["completion_cid"] if rows else None
 
 
@@ -681,9 +681,12 @@ def _latest_successful_from_store_log(gate, pipeline):
         manifest = gate.block(link.text) if isinstance(link, cas.Cid) else None
         if manifest is not None and manifest.get("pipeline") != pipeline:
             continue
-        key = (block.get("finished_at") or "", cid)
-        if best is None or key > best[0]:
-            best = (key, cid)
+        # Newest finish first; a tie goes to the smaller cid, the rule the
+        # plugin's index uses (ORDER BY finished_at DESC, completion_cid ASC).
+        finished = block.get("finished_at") or ""
+        if (best is None or finished > best[0]
+                or (finished == best[0] and cid < best[1])):
+            best = (finished, cid)
     return best[1] if best else None
 
 

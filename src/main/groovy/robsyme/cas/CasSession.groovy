@@ -27,7 +27,7 @@ import robsyme.cas.core.StoreRef
  * during a run lives here, keyed by the Nextflow {@link Session}.
  *
  * Nothing in this class survives the JVM: anything a later run or a later JVM
- * needs is in the store (blocks, coords/, runs/, nf/), never here. The provider
+ * needs is in the store (blocks, coords/, log/, nf/), never here. The provider
  * is a JVM singleton but the state is per-session, which is why it is keyed by
  * {@link Session} rather than memoised on the provider (see the Task 1 review).
  */

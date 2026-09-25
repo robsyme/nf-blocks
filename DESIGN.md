@@ -611,8 +611,19 @@ and a one-shot latch for `onFlowComplete`.
   `OutputCollection` (items sorted by cid string, `paths` aligned), then the
   `RunCompletion` (status from `session.isSuccess()`, `exit_status` from
   `session.workflowMetadata.exitStatus`, `possibly_incomplete = !success`).
-  Write the Run Log entry. Then update the index (§12) for this run; index
-  failure logs and marks the index stale, never aborts.
+  Write the Store Log entry (`run`, stamped with the write time). Then update
+  the index (§12) for this run; index failure logs and marks the index stale,
+  never aborts.
+  *Amended 2026-09-25:* a failed run is notified twice, once on a Nextflow
+  finalizer thread inside `Session.abort` and once from `Session.destroy` on
+  main, and Nextflow interrupts the finalizer threads while the first is
+  still writing. So the notification that claims the completion writes it on
+  a plugin-owned thread (`nf-blocks-completion`) and waits for it without
+  honouring interrupts, then restores the interrupt; the other notification
+  waits up to 60 s for that write before returning, so the JVM cannot reach
+  `System.exit` mid-write. Any failure writing the provenance, a checked
+  exception included, reaches the caller as `AbortRunException` (§0 rule 3);
+  before this change a checked exception was swallowed at debug level.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 
@@ -662,9 +673,18 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `sha256:<hex>` with `truncated = 1`.
 - `producer.filename` = the Leaf name.
 - Rebuild: `Index.rebuild(store)` deletes and recreates from `bafy…` blocks
-  only, into a temp file renamed into place. Schema mismatch → rebuild.
+  only, into a temp file renamed into place. *Amended 2026-09-25:* a schema
+  mismatch recreates the index empty on open; the first `catchUp` for each
+  member then scans that member's blocks once (recorded as
+  `block_scan:<member>` in `meta`), which is also how a store written before
+  the Store Log keeps its runs. `rebuild` reads the Store Log only to carry
+  the watermark forward.
 - Ingest: `Index.ingestRun(store, completionCid)` reads the RunCompletion
-  and its closure. `Index.catchUp(store)` reads the Run Log past a watermark.
+  and its closure. `Index.catchUp(store, storeLog, member)` reads the Store
+  Log past the watermark plus a 10-minute overlap (floor clamped to the local
+  clock), skipping runs already indexed; retries every run recorded as
+  `missing`; and records an unreachable block as `missing` rather than
+  aborting the member.
 - Queries: `producersOf(Cid content) → List<ProducerRow>`;
   `latestSuccessfulRun(String pipeline) → Optional<Cid completion>`;
   `items(Cid completion, String outputName, Map<String,Object> where) → List<Cid item>`;

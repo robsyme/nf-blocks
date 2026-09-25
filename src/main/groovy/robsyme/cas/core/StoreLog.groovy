@@ -1,5 +1,7 @@
 package robsyme.cas.core
 
+import java.util.concurrent.ConcurrentHashMap
+
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 
@@ -114,19 +116,29 @@ class StoreLog {
         return since
     }
 
+    /** Names already warned about, so a stray file warns once per JVM, not on every read. */
+    private static final Set<String> WARNED = ConcurrentHashMap.newKeySet()
+
+    private static void warnOnce(String name, String message) {
+        if( WARNED.add(name) )
+            log.warn(message)
+        else
+            log.debug(message)
+    }
+
     static StoreLogEntry parse(String name) {
         final String[] parts = name.split('-', 3)
         if( parts.length != 3 || !parts[0].matches(/\d{13}/) ) {
-            log.warn("ignoring a store log entry that is not <13 digits>-<kind>-<cid>: '$name'")
+            warnOnce(name, "ignoring a store log entry that is not <13 digits>-<kind>-<cid>: '$name'")
             return null
         }
         final StoreLogKind kind = StoreLogKind.fromToken(parts[1])
         if( kind == null ) {
-            log.warn("ignoring a store log entry of unknown kind '${parts[1]}': '$name'")
+            warnOnce(name, "ignoring a store log entry of unknown kind '${parts[1]}': '$name'")
             return null
         }
         if( !Cid.isCid(parts[2]) ) {
-            log.warn("ignoring a store log entry whose name does not end in a cid: '$name'")
+            warnOnce(name, "ignoring a store log entry whose name does not end in a cid: '$name'")
             return null
         }
         final long written = HORIZON_MILLIS - Long.parseLong(parts[0])
