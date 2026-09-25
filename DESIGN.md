@@ -902,23 +902,23 @@ No CORS headers are sent. No other path under a member is ever served:
 (`cas.stores`), local ones read from disk, S3 ones with the AWS SDK default
 credential chain (`AWS_PROFILE`, SSO) and ranged `GetObject`.
 
-Verified 2026-09-25, Task 7: against a `make gate` store, with the
-`NXF_PLUGINS_TEST_REPOSITORY` invocation above, `nextflow plugin
+Verified 2026-09-25, Task 7: against a `make gate` store, `nextflow plugin
 nf-blocks:explore --port <n>` prints `nf-blocks explorer: http://127.0.0.1:<n>/`,
-serves the snapshot by single range (`206`, exact byte count), serves
-`/m/lab/log/` as the JSON listing of the store's five `run` entries, and
-refuses a foreign `Host` with `403`. The exit rewrite (start of this section,
-"Index Snapshot") does fire: the snapshot's mtime advances after the process
-is told to stop. It could not be exercised with `SIGINT` in this session's
-sandboxed shell -- a bare JVM with nothing but a `Runtime.addShutdownHook`,
-launched the same way, never ran its hook under `kill -INT` here either, so
-the gap is the sandbox not delivering `SIGINT` to a backgrounded process, not
-a race with Nextflow's own shutdown hook or a bug in `ExploreCommand`; the
-same process's shutdown hook ran cleanly and rewrote the snapshot under
-`SIGTERM`, which every JVM (this environment included) treats the same as
-`SIGINT` for shutdown-hook purposes. A real terminal's Ctrl-C sends `SIGINT`
-to the foreground process group directly, not through this tool's `kill`, so
-it is unaffected.
+serves the snapshot by single range, serves `/m/lab/log/` as the Store Log's
+JSON listing, and refuses a foreign `Host` with `403`. The exit rewrite
+("Index Snapshot" above) fires: the snapshot's mtime advances once the
+process is told to stop.
+
+Stopping it with `SIGINT` needs a caveat: when `explore` is `&`-backgrounded
+from a non-interactive shell (a script, CI, the Gate), POSIX job control sets
+`SIGINT` and `SIGQUIT` to `SIG_IGN` for that background job at exec, and
+HotSpot leaves an inherited-ignored `SIGINT` ignored rather than installing
+its own handler, so no shutdown hook runs. `SIGTERM` is unaffected and runs
+the same shutdown hook -- that's what this verification used, and the exit
+rewrite was observed under it. A shell with job control on (`set -m`) keeps
+`SIGINT`'s default disposition instead, and an interactive terminal's own
+Ctrl-C, sent to the foreground process group directly, is unaffected either
+way.
 
 ### The page
 
