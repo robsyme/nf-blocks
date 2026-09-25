@@ -76,10 +76,27 @@ dependencies {
     // Bundled at runtime (lands in the plugin zip lib/).
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
 
+    // Private S3 members for nf-blocks:explore (DESIGN.md §15). URL-connection
+    // client only: the Apache and Netty clients would add megabytes for nothing.
+    implementation platform('software.amazon.awssdk:bom:2.46.7')
+    implementation 'software.amazon.awssdk:s3'
+    implementation 'software.amazon.awssdk:sso'
+    implementation 'software.amazon.awssdk:ssooidc'
+    implementation 'software.amazon.awssdk:url-connection-client'
+
     testImplementation "io.nextflow:nextflow:${nextflowPlugin.nextflowVersion}"
     testImplementation "io.nextflow:nf-lineage:${nextflowPlugin.nextflowVersion}"
     testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
     testImplementation 'org.pf4j:pf4j:3.4.1'
+}
+
+configurations.configureEach {
+    // 2.46.7 renamed the Apache client module to apache5-client; sso and
+    // ssooidc still pull it in as their default sync client, so both names
+    // are excluded to keep only url-connection-client on the classpath.
+    exclude group: 'software.amazon.awssdk', module: 'apache-client'
+    exclude group: 'software.amazon.awssdk', module: 'apache5-client'
+    exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
 }
 
 tasks.withType(Test).configureEach {

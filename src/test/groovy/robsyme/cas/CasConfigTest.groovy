@@ -217,4 +217,39 @@ class CasConfigTest extends Specification {
     private Map withSnapshot(Object maxBytes) {
         return [cas: [stores: [lab: [location: '/data/cas']], snapshot: [maxBytes: maxBytes]]]
     }
+
+    def 'an S3 location is a read-only member that runs leave out and explore serves'() {
+        given:
+        final Map cfg = [cas: [stores: [lab: [location: '/data/cas'], priv: [location: 's3://bucket/member']]]]
+
+        when:
+        final CasConfig config = CasConfig.from(cfg, 'cas://lab')
+
+        then:
+        config.members == ['lab']
+        config.configuredAliases == ['lab', 'priv']
+        config.isRemote('priv')
+        !config.isRemote('lab')
+        config.remoteLocationOf('priv') == URI.create('s3://bucket/member')
+        config.localLocations() == ['/data/cas']
+    }
+
+    def 'naming an S3 member in cas.resolve is refused for runs'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas'], priv: [location: 's3://bucket']], resolve: ['lab', 'priv']]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('priv')
+        e.message.contains('nf-blocks:explore')
+    }
+
+    def 'the writable member cannot be on S3'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: 's3://bucket']]]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('local directory')
+    }
 }

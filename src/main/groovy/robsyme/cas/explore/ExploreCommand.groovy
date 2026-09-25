@@ -75,11 +75,13 @@ class ExploreCommand {
         }
     }
 
-    /** Every member the explorer serves, writable first. */
+    /** Every configured member the explorer serves, writable first. */
     static LinkedHashMap<String, MemberFiles> membersOf(CasConfig config) {
         final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
-        for( String alias : config.members )
-            members.put(alias, new LocalMemberFiles(config.locationOf(alias)))
+        for( String alias : config.configuredAliases )
+            members.put(alias, config.isRemote(alias)
+                ? (MemberFiles) S3MemberFiles.open(config.remoteLocationOf(alias))
+                : new LocalMemberFiles(config.locationOf(alias)))
         return members
     }
 }

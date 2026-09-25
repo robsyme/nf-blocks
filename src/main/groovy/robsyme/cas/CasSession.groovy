@@ -152,8 +152,7 @@ class CasSession {
 
     /** This composition's per-user cache index (DESIGN.md §12). The caller closes it. */
     Index openIndex() {
-        final List<String> locations = config.members.collect { String alias -> config.locationOf(alias).toString() }
-        return Index.open(IndexPaths.cachePath(locations, config.indexOverride))
+        return Index.open(IndexPaths.cachePath(config.localLocations(), config.indexOverride))
     }
 
     /**
