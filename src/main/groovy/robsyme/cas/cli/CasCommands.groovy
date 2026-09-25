@@ -10,6 +10,7 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.explore.ExploreCommand
 
 /**
  * `nextflow plugin nf-blocks:<verb>` (DESIGN.md §15). Builds the config the
@@ -47,7 +48,7 @@ class CasCommands {
                 case 'snapshot':
                     return snapshot(Options.parse(args, [] as Set), config, out)
                 case 'explore':
-                    return explore(args, config, out, err)
+                    return ExploreCommand.run(args, config, out, err)
             }
             return 2
         }
@@ -84,11 +85,5 @@ class CasCommands {
         finally {
             index.close()
         }
-    }
-
-    /** Replaced by ExploreCommand in Task 7. */
-    private static int explore(List<String> args, Map config, PrintStream out, PrintStream err) {
-        err.println('nf-blocks:explore is not built yet')
-        return 1
     }
 }
