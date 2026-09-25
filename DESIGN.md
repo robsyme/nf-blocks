@@ -747,6 +747,8 @@ script for CI.
 
 ## 15. The block explorer (milestone 1)
 
+*Status 2026-09-25: milestone 1 accepted; Gate browser tier A 7 of 7 (local 5, cloud 2).*
+
 Specified in `../.scratch/block-explorer/spec.md`; this section fixes the names,
 paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-milestone-1.md`.
 
