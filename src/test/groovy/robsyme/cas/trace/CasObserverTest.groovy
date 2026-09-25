@@ -146,6 +146,29 @@ class CasObserverTest extends Specification {
     }
 
 
+    def 'a failed run notified on an interrupted thread still writes its RunCompletion'() {
+        // Nextflow shuts its executors down, interrupting their threads, while a
+        // failed run is still notifying observers on one of them (measured in the
+        // Gate's `fail` run: Session.shutdown0 interrupts TaskFinalizer-N mid-write).
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when: 'the notifying thread carries an interrupt'
+        Thread.currentThread().interrupt()
+        observer.onFlowComplete()
+        final boolean stillInterrupted = Thread.interrupted()   // also clears it for the rest of the suite
+
+        then: 'the provenance is written anyway, and the interrupt is handed back to the caller'
+        blocksOfKind('RunCompletion').size() == 1
+        blocksOfKind('RunCompletion')[0].get('status') == 'failed'
+        StoreLog.read(cas.store).size() == 1
+        stillInterrupted
+    }
+
     def 'the Store Log entry is stamped with the time it was written, not the run finish time'() {
         given: 'the usual binding, then an observer whose clock is fixed'
         final long fixed = 1_800_000_000_000L

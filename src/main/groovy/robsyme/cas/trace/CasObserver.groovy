@@ -120,6 +120,50 @@ class CasObserver implements TraceObserverV2 {
         // exactly one RunCompletion.
         if( !cas.claimCompletion() )
             return
+        runUninterrupted { writeCompletion() }
+    }
+
+    /**
+     * Nextflow shuts its executors down, interrupting their threads, while a
+     * failed run is still notifying observers on one of them. An interrupt that
+     * lands mid-write would lose the RunCompletion: the latch is already
+     * claimed, so the second notification writes nothing. The provenance is
+     * therefore written on a thread of our own; this one waits for it without
+     * honouring the interrupt, then hands the interrupt back.
+     */
+    private static void runUninterrupted(Closure body) {
+        final Throwable[] failure = new Throwable[1]
+        final Thread worker = new Thread({
+            try {
+                body.call()
+            }
+            catch( Throwable t ) {
+                failure[0] = t
+            }
+        } as Runnable, 'nf-blocks-completion')
+        worker.start()
+        boolean interrupted = false
+        while( true ) {
+            try {
+                worker.join()
+                break
+            }
+            catch( InterruptedException e ) {
+                interrupted = true
+            }
+        }
+        if( interrupted || Thread.currentThread().isInterrupted() )
+            Thread.currentThread().interrupt()
+        final Throwable thrown = failure[0]
+        if( thrown instanceof RuntimeException )
+            throw (RuntimeException) thrown
+        if( thrown instanceof Error )
+            throw (Error) thrown
+        if( thrown != null )
+            throw new AbortRunException("Unable to write the run's provenance: ${thrown.message}", thrown)
+    }
+
+    private void writeCompletion() {
         final Cid manifest = ensureManifest()
         final Join.Result joined = Join.join(capturedOutputs, cas)
 
