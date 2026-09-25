@@ -87,6 +87,35 @@ test('a tampered stale RunCompletion is an error on that run, not a listed run',
   assert.ok(!(await explorer.runsOfPipeline('demo')).some(r => r.completion_cid === member.runs.R2.completion))
 })
 
+test('a missing stale item keeps its collection membership without its attributes or producers, and the closure records it missing', async () => {
+  const member = await buildMember()
+  const bad = new Map(member.blocks)
+  bad.delete(member.item.C)
+  const { explorer } = await open({ blocks: bad })
+  const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items
+  assert.deepEqual(await items(member.runs.R2.completion, []), [member.item.B, member.item.C].sort())
+  assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'B']]), [member.item.B])
+  assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'C']]), [])
+  const rows = await explorer.producersOf(member.content.A)
+  assert.deepEqual(rows.map(r => [r.completion_cid, r.item_cid]), [[member.runs.R1.completion, member.item.A]])
+  const closure = explorer.closures.get(member.runs.R2.completion)
+  assert.deepEqual(closure.missing, [{ cid: member.item.C, code: 'block_missing' }])
+})
+
+test('a tampered stale item is likewise recorded missing rather than failing the query', async () => {
+  const member = await buildMember()
+  const bad = new Map(member.blocks)
+  const bytes = Uint8Array.from(member.blocks.get(member.item.C))
+  bytes[bytes.length - 3] ^= 1
+  bad.set(member.item.C, bytes)
+  const { explorer } = await open({ blocks: bad })
+  const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items
+  assert.deepEqual(await items(member.runs.R2.completion, []), [member.item.B, member.item.C].sort())
+  assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'C']]), [])
+  const closure = explorer.closures.get(member.runs.R2.completion)
+  assert.deepEqual(closure.missing, [{ cid: member.item.C, code: 'hash_mismatch' }])
+})
+
 test('past 20 stale runs the notice is on', async () => {
   const member = await buildMember()
   const missing = Array.from({ length: 21 }, (_, i) => entryName(Date.now() - (i + 1) * 1000, 'run', rawCid(`missing-${i}`).toString()))

@@ -112,10 +112,27 @@ export class Explorer {
     return { collection: collectionCid, cid: itemCid, value, view: metadataView(value), leaves: leavesOf(value) }
   }
 
-  /** A stale run's collections and items, fetched once and turned into index-shaped rows. */
+  /**
+   * A stale run's collections and items, fetched once and turned into
+   * index-shaped rows. A missing or refused block does not fail the query:
+   * as Index.ingestCollection/ingestItem do, a missing OutputCollection is
+   * skipped (nothing of that output is indexed), and a missing OutputItem
+   * keeps its collection_item membership with no attributes and no
+   * producers. Each is recorded in the result's `missing` list.
+   */
   async closure(stale, onProgress = () => {}) {
     if (this.closures.has(stale.cid)) return this.closures.get(stale.cid)
-    const collections = await Promise.all(stale.completion.collections.map(async (c) => ({ cid: text(c), block: (await this.blocks.ofKind(text(c), 'OutputCollection')).value })))
+    const settled = await Promise.all(stale.completion.collections.map(async (c) => {
+      const cid = text(c)
+      try {
+        return { ok: true, cid, block: (await this.blocks.ofKind(cid, 'OutputCollection')).value }
+      } catch (e) {
+        if (!(e instanceof BlockError)) throw e
+        return { ok: false, cid, code: e.code }
+      }
+    }))
+    const collections = settled.filter(s => s.ok)
+    const missing = settled.filter(s => !s.ok).map(({ cid, code }) => ({ cid, code }))
     const total = collections.reduce((n, c) => n + c.block.items.filter(Boolean).length, 0)
     this.fetchesForQuery += total
     let done = 0
@@ -124,16 +141,24 @@ export class Explorer {
     for (const c of collections) {
       const items = []
       for (const link of c.block.items.filter(Boolean)) {
-        const block = await this.blocks.ofKind(text(link), 'OutputItem')
-        const typed = typedDecode(block.bytes).value
-        items.push({ cid: text(link), rows: attrRows(metadataView(typed)) })
-        for (const leaf of leavesOf(block.value.value))
-          if (leaf.address) producers.push({ content_cid: text(leaf.address), item_cid: text(link), collection_cid: c.cid, completion_cid: stale.cid, filename: leaf.name })
+        const itemCid = text(link)
+        try {
+          const block = await this.blocks.ofKind(itemCid, 'OutputItem')
+          const typed = typedDecode(block.bytes).value
+          items.push({ cid: itemCid, rows: attrRows(metadataView(typed)) })
+          for (const leaf of leavesOf(block.value.value))
+            if (leaf.address) producers.push({ content_cid: text(leaf.address), item_cid: itemCid, collection_cid: c.cid, completion_cid: stale.cid, filename: leaf.name })
+        } catch (e) {
+          if (!(e instanceof BlockError)) throw e
+          // The membership arrived even though the item did not (Index.ingestCollection).
+          items.push({ cid: itemCid, rows: [] })
+          missing.push({ cid: itemCid, code: e.code })
+        }
         onProgress(++done, total)
       }
       outputs.set(c.block.name, { cid: c.cid, items })
     }
-    const result = { outputs, producers }
+    const result = { outputs, producers, missing }
     this.closures.set(stale.cid, result)
     return result
   }
