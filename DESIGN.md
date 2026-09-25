@@ -54,6 +54,10 @@ artifacts only.
   - `robsyme.cas.ext` — `CasExtension` (extends `nextflow.plugin.extension.PluginExtensionPoint`)
     exposing the `fromStore` channel factory.
   - `robsyme.cas.CasSession` — the one per-run shared object (see §9).
+  - `robsyme.cas.cli` — `CasCommands` (the `nextflow plugin nf-blocks:<verb>` dispatch, §15) and `Options`.
+  - `robsyme.cas.explore` — `ExploreServer`, `MemberFiles` and its local and S3 implementations (§15).
+- The page is an npm project under `web/`, built by Gradle into the plugin jar as
+  `robsyme/cas/explorer/index.html` (block explorer spec section 2). Its output is not committed.
 - Tests: Spock, under `src/test/groovy`, same packages. Groovy `@CompileStatic`
   on all main classes.
 
@@ -74,6 +78,7 @@ cas {
     resolve = ['lab']          // optional; default = every alias, writable first
     asserted_by = 'anonymous'  // optional opaque label; default 'anonymous'. Never defaults to the OS user name.
     index { path = null }      // optional override of the SQLite cache path (the Gate sets XDG_CACHE_HOME instead)
+    snapshot { maxBytes = 64.MB }   // optional; a run writes the Index Snapshot only while it is under this (§15)
 }
 ```
 
@@ -96,6 +101,14 @@ cas {
   must name the same alias (checked at run start, abort otherwise).
 - In the Walking Skeleton a member location is a local directory path. The
   store abstraction (§5) is written so an S3 member can be added later.
+- `cas.snapshot.maxBytes` (a number of bytes, a `MemoryUnit`, or a string such as
+  `'64 MB'`; default 64 MiB): the cap under which a run rewrites its member's
+  Index Snapshot at `onFlowComplete` (§15).
+- *Amended 2026-09-25:* a read-only member's `location` may be an S3 URI,
+  `s3://<bucket>[/<prefix>]`. Only `nf-blocks:explore` reads such a member (§15).
+  A run leaves S3 members out of its default `resolve` list and refuses one named
+  in `cas.resolve`, because no S3 `BlockStore` exists yet. The writable member is
+  always a local directory.
 
 ## 3. Content identity
 
@@ -178,6 +191,9 @@ runs/<rts>-<cid>        Run Log: empty file per RunCompletion. rts = String.form
                         written to this member rather than finishedAt, runs/ dropped with no compatibility read.
 coords/<publish path>   Publish Coordinate tree (§7). Real directories; leaves are Pointer Files.
 nf/<key>/.data.json     Nextflow's own lineage records, DefaultLinStore layout. nf/.history is its history log.
+index/v<N>.sqlite       Index Snapshot of this member's rows, N = Index.SCHEMA_VERSION (§15). Derived,
+                        rewritten whole by an atomic move, mode 0644. Not a block, not a root.
+index.html              The explorer page, self-contained (§15). Rewritten when its bytes differ.
 ```
 
 `CompositeStore(List<BlockStore> members)`: reads resolve in order, first hit
@@ -692,6 +708,13 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `runByManifest(Cid) → Optional<Cid completion>`.
   `successful` = `status == 'succeeded' AND possibly_incomplete = 0`
   (delete claims arrive later).
+- *Amended 2026-09-25:* the three load-bearing queries' SQL is held in public
+  constants (`Index.SQL_PRODUCERS_OF`, `SQL_LATEST_SUCCESSFUL_RUN`,
+  `SQL_ITEMS_BASE`, `SQL_ITEMS_PREDICATE`, `SQL_ITEMS_PREDICATE_NULL`,
+  `SQL_ITEMS_ORDER`, `SQL_COLLECTIONS_OF`), and the page's copy in
+  `web/src/queries.json` is pinned equal to them by `ExplorerQueriesTest`, which
+  also refuses any page query whose plan scans a table other than `run` through
+  a covering index (§15).
 
 ## 13. `fromStore` (`robsyme.cas.ext.CasExtension`)
 
@@ -721,3 +744,166 @@ library only: `hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and
 CID encoder of its own). Exit non-zero on any failed assertion. The Gate
 config overlay lives at `gate/gate.config`. A `gate/Dockerfile` wraps the same
 script for CI.
+
+## 15. The block explorer (milestone 1)
+
+Specified in `../.scratch/block-explorer/spec.md`; this section fixes the names,
+paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-milestone-1.md`.
+
+### Index Snapshot
+
+- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v2.sqlite`.
+  Class `robsyme.cas.core.IndexSnapshot`.
+- Rows, milestone 1: every `run` row whose `member` is the member's alias, and
+  the `collection`, `collection_item`, `item`, `producer`, `item_attr`,
+  `consumer` and `missing` rows reached from those runs. Copied by SQL from the
+  cache index; no block is read. `run.member` is written as NULL. Milestone 2
+  replaces the `run.member` rule with `log_entry.member` (spec section 4).
+- Same DDL as the cache index (`Index.ddl()`), same `schema_version`.
+- `meta` holds exactly `store_log_watermark` (the member's watermark in the
+  cache index, a Store Log entry name; absent when the member has no log) and
+  `snapshot_written_at` (ISO-8601 UTC, milliseconds).
+- Written by inserting into a fresh database, `PRAGMA page_size=4096`, then
+  `VACUUM INTO` a temp file in `<member>/index/`, then an atomic move over the
+  old file. One rollback-journal file, no sidecars.
+- Writers: a run's `onFlowComplete`, after indexing, only while the existing
+  snapshot is under `cas.snapshot.maxBytes` and only if the new one is too;
+  `nf-blocks:snapshot` at any size; `nf-blocks:explore` at start and at exit, at
+  any size. Every writer writes only the writable member's snapshot.
+- `<member>/index.html` is the page from the plugin jar
+  (`/robsyme/cas/explorer/index.html`), written beside the snapshot whenever a
+  snapshot is written and its bytes differ.
+
+### Plugin verbs
+
+`CasPlugin implements nextflow.cli.PluginExecAware` and delegates to
+`robsyme.cas.cli.CasCommands`. It does not use `PluginAbstractExec`, which
+swallows every exception and returns 0 (v26.04.6,
+`modules/nextflow/src/main/groovy/nextflow/cli/PluginAbstractExec.groovy`). The
+config comes from `ConfigBuilder` over the launch directory and `-c`, exactly as
+`PluginAbstractExec` builds it; no `Session` is created.
+
+```
+nextflow [-c <config>] plugin nf-blocks:snapshot
+nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
+```
+
+`CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
+the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
+on a usage error. An unpinned plugin id makes Nextflow prefetch registry
+metadata for `nf-blocks`; set `NXF_OFFLINE=true` when the plugin was installed
+locally (the Gate does).
+
+### What a member serves
+
+Relative to a member's base URL:
+
+```
+index/v2.sqlite            the Index Snapshot, read with single-range GETs
+index.html                 the page
+blocks/<xx>/<cid>          a block, xx = the cid's last two characters
+log/                       the Store Log listing (one of the three forms below)
+```
+
+The page lists `log/` in the first form that answers:
+
+1. `GET <base>log/` answering `200` with `Content-Type: application/json`:
+   `{"entries": ["<rts>-<kind>-<cid>", ...]}`, sorted ascending (newest first).
+   This is what `nf-blocks:explore` serves.
+2. `GET <base>log/` answering `200` with HTML: a static server's directory
+   index; entry names are the `href` values that parse as Store Log names.
+3. S3 `ListObjectsV2` at `<origin>/?list-type=2&prefix=<base path>log/`,
+   following `NextContinuationToken`, stopping once a page's last key is older
+   than the overlap floor. Virtual-hosted-style bucket URLs only.
+
+If none answers, the member has no log and the tail is empty.
+
+A directly browsed bucket needs the policy and CORS rule of spec section 6:
+`s3:GetObject` and `s3:ListBucket` for `Principal "*"`, Block Public Access's
+`BlockPublicPolicy` and `RestrictPublicBuckets` off, and a CORS rule allowing
+`GET` and `HEAD` with `AllowedHeaders` including `range` and `ExposeHeaders`
+`Content-Range`, `Content-Length`, `Accept-Ranges`, `ETag`.
+
+### `nf-blocks:explore`
+
+A JDK `HttpServer` bound to `InetAddress.getLoopbackAddress()`, port `--port`
+or ephemeral. Prints `nf-blocks explorer: http://127.0.0.1:<port>/` on stdout
+once it is listening, then blocks until the JVM is interrupted.
+
+| Request | Answer |
+|---|---|
+| `GET /`, `GET /index.html` | the page |
+| `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/"}, ...]}`, writable first |
+| `GET` or `HEAD /m/<alias>/index/v<N>.sqlite` | the file, honouring one `Range` |
+| `GET` or `HEAD /m/<alias>/blocks/<xx>/<cid>` | the block, honouring one `Range`; `xx` must equal the cid's last two characters |
+| `GET /m/<alias>/log/` | listing form 1 |
+| anything else | `404`; a method other than `GET` or `HEAD` is `405` |
+
+`Host` must be `127.0.0.1:<port>` or `localhost:<port>`, and `Origin`, when
+sent, `http://127.0.0.1:<port>` or `http://localhost:<port>`; otherwise `403`.
+No CORS headers are sent. No other path under a member is ever served:
+`coords/` and `nf/` hold host paths. Members are every configured store
+(`cas.stores`), local ones read from disk, S3 ones with the AWS SDK default
+credential chain (`AWS_PROFILE`, SSO) and ranged `GetObject`.
+
+### The page
+
+- Store: `?store=<base URL>` if given; else, if `./members.json` answers, the
+  member `?member=<alias>` or the first listed, at `./m/<alias>/`; else the
+  page's own directory (spec section 5.1).
+- `?cap=<bytes>` overrides the 64 MiB whole-file cap.
+- Routes (location hash): `#/` home, `#/idle` (opens the snapshot and does
+  nothing else), `#/pipeline/<name>`, `#/run/<completion>`,
+  `#/collection/<collection>`, `#/item/<collection>/<item>`,
+  `#/content/<cid>` (query 1), `#/latest/<pipeline>` (query 2),
+  `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
+  (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`).
+- SQL: only the statements in `web/src/queries.json`.
+- Blocks: fetched from `<base>blocks/<xx>/<cid>`, SHA-256 checked against the
+  requested CID, then decoded and checked against the IPLD Schema of §6
+  (extracted from this file at build time), before use.
+- Stale runs: Store Log `run` entries since the snapshot's watermark minus the
+  10-minute overlap (floor clamped to the local clock), less those the snapshot
+  holds. For each, the RunCompletion and its RunManifest are fetched; a run's
+  collections and items only when it is opened or a query needs them.
+
+The DOM the Gate reads, and nothing else it may rely on:
+
+| Selector | Meaning |
+|---|---|
+| `body[data-state]` | `loading`, `ready` or `error`, for the current render |
+| `body[data-render]` | a counter, incremented when a render finishes |
+| `body[data-route]` | the current route's name |
+| `#snapshot-mode[data-mode]` | `range` or `whole` |
+| `#stale[data-stale-count]` | runs newer than the snapshot; `#stale [data-command]` once past the notice thresholds |
+| `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
+| `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
+| `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
+| `[data-latest]` | query 2's answer, a completion cid or empty |
+| `[data-item-result]` | one query 3 item cid |
+| `[data-error]` | an error: `data-error` code, `data-cid` when a block is to blame |
+| `window.__nfBlocks.verified` | every cid whose bytes the page hashed and accepted |
+
+Error codes: `no_snapshot`, `no_range_over_cap`, `cors_headers`,
+`fetch_failed`, `query_failed`, `worker_failed`, `hash_mismatch`,
+`schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`.
+
+The query views (query 1, 2 and 3) read the snapshot only through their own
+statement, so Gate assertion 2's counts are the query's cost.
+
+### Decisions made where the spec is silent (2026-09-25)
+
+1. Milestone 1 selects snapshot rows by `run.member` (above).
+2. `explore` rewrites the snapshot at start as well as at exit, so opening a
+   member through it clears the stale notice (spec section 5.4).
+3. The tail fetches a stale run's RunManifest with its RunCompletion, for the
+   pipeline name.
+4. Query 3 is per run; matching across runs waits for milestone 2's
+   `collection_item(item_cid)` index.
+5. Run-list anomalies come from each visible run's RunCompletion, fetched lazily.
+6. The page is one self-contained `index.html`.
+7. The whole-file cap is 64 MiB, `?cap=` per load.
+8. No launch token until the write endpoint (milestone 2); `Host` and `Origin`
+   checks from the start.
+9. S3 members are read-only and explore-only.
+10. Nothing is filtered by `delete` Claims until Claims exist (milestone 2).
