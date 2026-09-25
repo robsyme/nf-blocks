@@ -10,7 +10,8 @@ import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
-import robsyme.cas.core.RunLog
+import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogKind
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -123,7 +124,7 @@ class CasObserverTest extends Specification {
         cas.getRunManifest() != null
     }
 
-    def 'onFlowComplete twice writes exactly one RunCompletion and one run log entry'() {
+    def 'onFlowComplete twice writes exactly one RunCompletion and one Store Log entry'() {
         given:
         bind(config())
         cas.setNextflowRunKey('nfhash123')
@@ -137,11 +138,35 @@ class CasObserverTest extends Specification {
 
         then: 'the second call is a no-op (the completion latch already fired)'
         blocksOfKind('RunCompletion').size() == 1
-        RunLog.read(cas.store).size() == 1
+        StoreLog.read(cas.store).size() == 1
 
         and: 'a successful run'
         blocksOfKind('RunCompletion')[0].get('status') == 'succeeded'
         blocksOfKind('RunCompletion')[0].get('possibly_incomplete') == false
+    }
+
+
+    def 'the Store Log entry is stamped with the time it was written, not the run finish time'() {
+        given: 'the usual binding, then an observer whose clock is fixed'
+        final long fixed = 1_800_000_000_000L
+        bind(config())
+        observer = new CasObserver() {
+            @Override
+            protected long nowMillis() { return fixed }
+        }
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        final entries = StoreLog.read(cas.store)
+        entries.size() == 1
+        entries[0].kind == StoreLogKind.RUN
+        entries[0].writtenAtMillis == fixed
     }
 
     def 'a failed session yields a failed, possibly-incomplete RunCompletion'() {

@@ -26,7 +26,8 @@ import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.RunCompletion
-import robsyme.cas.core.RunLog
+import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogKind
 import robsyme.cas.core.RunManifest
 
 /**
@@ -148,7 +149,7 @@ class CasObserver implements TraceObserverV2 {
             error             : success ? null : (meta?.errorMessage ?: null),
         ]).toCbor(), 'RunCompletion')
 
-        appendRunLog(completion, epochMillis(meta?.complete))
+        appendStoreLog(completion)
         indexRun(completion)
     }
 
@@ -226,13 +227,18 @@ class CasObserver implements TraceObserverV2 {
         return Index.open(IndexPaths.cachePath(memberLocations, override))
     }
 
-    private void appendRunLog(Cid completion, long finishedAtMillis) {
+    private void appendStoreLog(Cid completion) {
         try {
-            RunLog.append(cas.store, completion, finishedAtMillis)
+            StoreLog.append(cas.store, StoreLogKind.RUN, completion, nowMillis())
         }
         catch( Exception e ) {
-            log.warn("the run log entry for ${completion} could not be written; it is derived: ${e.message}", e)
+            log.warn("the store log entry for ${completion} could not be written; it is derived: ${e.message}", e)
         }
+    }
+
+    /** When the entry is written; overridable so a test can fix the clock. */
+    protected long nowMillis() {
+        return System.currentTimeMillis()
     }
 
     // ------------------------------------------------------------- plumbing
@@ -270,9 +276,5 @@ class CasObserver implements TraceObserverV2 {
 
     private static String iso(OffsetDateTime when) {
         return (when ?: OffsetDateTime.now()).toInstant().truncatedTo(ChronoUnit.MILLIS).toString()
-    }
-
-    private static long epochMillis(OffsetDateTime when) {
-        return (when ?: OffsetDateTime.now()).toInstant().toEpochMilli()
     }
 }
