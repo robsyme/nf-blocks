@@ -4,7 +4,9 @@ import java.nio.file.Path
 import java.util.regex.Pattern
 
 import groovy.transform.CompileStatic
+import nextflow.util.MemoryUnit
 import robsyme.cas.core.Cid
+import robsyme.cas.core.IndexSnapshot
 
 /**
  * The `cas` configuration scope, as specified in DESIGN.md section 2.
@@ -44,11 +46,20 @@ class CasConfig {
     /** Opaque label recorded in every asserted block. */
     final String assertedBy
 
-    private CasConfig(String writableAlias, List<String> members, Map<String,Path> locations, String assertedBy) {
+    /** `cas.index.path`, or null for the per-user cache path (DESIGN.md §12). */
+    final String indexOverride
+
+    /** `cas.snapshot.maxBytes`: a run rewrites the Index Snapshot only while under this (DESIGN.md §15). */
+    final long snapshotMaxBytes
+
+    private CasConfig(String writableAlias, List<String> members, Map<String,Path> locations, String assertedBy,
+                       String indexOverride, long snapshotMaxBytes) {
         this.writableAlias = writableAlias
         this.members = Collections.unmodifiableList(members)
         this.locations = Collections.unmodifiableMap(locations)
         this.assertedBy = assertedBy
+        this.indexOverride = indexOverride
+        this.snapshotMaxBytes = snapshotMaxBytes
     }
 
     Path getWritableLocation() {
@@ -109,7 +120,26 @@ class CasConfig {
 
         final List<String> members = memberList(alias, scope.get('resolve'), locations.keySet())
         final assertedBy = (scope.get('asserted_by') ?: DEFAULT_ASSERTED_BY) as String
-        return new CasConfig(alias, members, locations, assertedBy)
+        final Object indexScope = scope.get('index')
+        final String indexOverride = indexScope instanceof Map ? ((Map) indexScope).get('path') as String : null
+        final Object snapshotScope = scope.get('snapshot')
+        final long snapshotMaxBytes = bytesOf(snapshotScope instanceof Map ? ((Map) snapshotScope).get('maxBytes') : null)
+        return new CasConfig(alias, members, locations, assertedBy, indexOverride, snapshotMaxBytes)
+    }
+
+    private static long bytesOf(Object value) {
+        if( value == null )
+            return IndexSnapshot.DEFAULT_MAX_BYTES
+        final long bytes
+        if( value instanceof MemoryUnit )
+            bytes = ((MemoryUnit) value).toBytes()
+        else if( value instanceof Number )
+            bytes = ((Number) value).longValue()
+        else
+            bytes = new MemoryUnit(value.toString()).toBytes()
+        if( bytes <= 0 )
+            throw new IllegalArgumentException("cas.snapshot.maxBytes must be a positive size, e.g. 64.MB -- offending value: ${value}")
+        return bytes
     }
 
     private static Path locationFor(String alias, Object storeOpts) {

@@ -6,6 +6,7 @@ import nextflow.config.spec.ConfigScope
 import nextflow.config.spec.PlaceholderName
 import nextflow.config.spec.ScopeName
 import nextflow.script.dsl.Description
+import nextflow.util.MemoryUnit
 
 /**
  * Declares the {@code cas} configuration scope so {@code ConfigValidator} stops
@@ -49,6 +50,18 @@ class CasConfigScope implements ConfigScope {
     String pipeline
 
     CasIndexScope index
+
+    CasSnapshotScope snapshot
+
+    /** {@code cas.snapshot}: the Index Snapshot a member carries for the explorer (DESIGN.md §15). */
+    @CompileStatic
+    static class CasSnapshotScope implements ConfigScope {
+        CasSnapshotScope() {}
+
+        @ConfigOption
+        @Description('A run rewrites its member Index Snapshot only while it is under this size. Defaults to 64 MB.')
+        MemoryUnit maxBytes
+    }
 
     /** One configured store member: {@code cas.stores.<alias>.location}. */
     @CompileStatic

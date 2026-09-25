@@ -190,4 +190,31 @@ class CasConfigTest extends Specification {
         CasConfig.aliasOf('file:///x') == null
         CasConfig.aliasOf(null) == null
     }
+
+    def 'cas.snapshot.maxBytes defaults to 64 MiB and accepts bytes, MemoryUnit and text'() {
+        expect:
+        CasConfig.from(storeConfig(), 'cas://lab').snapshotMaxBytes == 64L * 1024 * 1024
+        CasConfig.from(withSnapshot(1000), 'cas://lab').snapshotMaxBytes == 1000L
+        CasConfig.from(withSnapshot(nextflow.util.MemoryUnit.of('2 MB')), 'cas://lab').snapshotMaxBytes == 2L * 1024 * 1024
+        CasConfig.from(withSnapshot('3 MB'), 'cas://lab').snapshotMaxBytes == 3L * 1024 * 1024
+    }
+
+    def 'a non-positive snapshot cap is refused'() {
+        when:
+        CasConfig.from(withSnapshot(0), 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('cas.snapshot.maxBytes')
+    }
+
+    def 'cas.index.path is carried as the index override'() {
+        expect:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], index: [path: '/tmp/i.sqlite']]], 'cas://lab').indexOverride == '/tmp/i.sqlite'
+        CasConfig.from(storeConfig(), 'cas://lab').indexOverride == null
+    }
+
+    private Map withSnapshot(Object maxBytes) {
+        return [cas: [stores: [lab: [location: '/data/cas']], snapshot: [maxBytes: maxBytes]]]
+    }
 }

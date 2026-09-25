@@ -22,7 +22,7 @@ import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.Coordinates
 import robsyme.cas.core.Index
-import robsyme.cas.core.IndexPaths
+import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.RunCompletion
@@ -264,6 +264,7 @@ class CasObserver implements TraceObserverV2 {
             // Also fold in any read-only members' run logs, so this user's index
             // reflects the whole composition and not only what this run wrote.
             cas.catchUpIndex(index)
+            writeSnapshot(index)
         }
         catch( Exception e ) {
             log.warn("the index could not be updated for run ${completion}; it is derived and can be rebuilt: ${e.message}", e)
@@ -280,9 +281,20 @@ class CasObserver implements TraceObserverV2 {
 
     /** Overridable seam so a test can inject an index failure (DESIGN.md §11). */
     protected Index openIndex() {
-        final List<String> memberLocations = cas.config.members.collect { String alias -> cas.config.locationOf(alias).toString() }
-        final String override = navigate('cas.index.path')
-        return Index.open(IndexPaths.cachePath(memberLocations, override))
+        return cas.openIndex()
+    }
+
+    /** The member's Index Snapshot, under the cap (DESIGN.md §15). Derived: a failure only warns. */
+    private void writeSnapshot(Index index) {
+        try {
+            final IndexSnapshot.Result result = cas.snapshotWritable(index, cas.config.snapshotMaxBytes)
+            if( result.skipped )
+                log.info("the Index Snapshot of store '${cas.config.writableAlias}' is over cas.snapshot.maxBytes " +
+                    "(${cas.config.snapshotMaxBytes} bytes) and was not rewritten; `nextflow plugin nf-blocks:snapshot` rewrites it at any size")
+        }
+        catch( Exception e ) {
+            log.warn("the Index Snapshot of store '${cas.config.writableAlias}' could not be written; it is derived: ${e.message}", e)
+        }
     }
 
     private void appendStoreLog(Cid completion) {
