@@ -69,11 +69,13 @@ block, not as a silently different value. Order violations raise
 7. Reads the read-back references out of the store (`assert.py --refs`) and
    passes them to the consumer as `--lid` and `--cas`, because neither exists
    before the producer has run.
-8. `python3 gate/assert.py "$GATE_ROOT"` and exits with its status.
+8. `python3 gate/assert.py "$GATE_ROOT"`, then the browser tier
+   (`gate/browser/tier.sh`, below). Exits non-zero when either tier fails.
 
-Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/` and the
-snapshots first. Every one of them is evidence, and stale evidence is worse
-than none; the built plugin is the one thing kept.
+Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/`,
+`browser/` and the snapshots first. Every one of them is evidence, and stale
+evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
+the zip just built on every run that builds.
 
 `GATE_SKIP_BUILD=1` reuses whatever is already in `$GATE_ROOT/plugins`.
 
@@ -88,6 +90,64 @@ Two things `gate.config` has to say that are not obvious:
   `nextflow run .` sets `projectName` to the literal string `main.nf`, which
   identifies nothing. The consumer names `cas-test-pipeline` literally in its
   `fromStore` call and `assert.py` checks the plugin recorded that name.
+
+## The browser tier (block explorer)
+
+Tier A, local part, of the block explorer spec (section 1.3): the page in
+Playwright's own pinned Chromium against the store this Gate run wrote. It
+needs Node; `tier.sh` runs `npm ci` and `npx playwright install chromium` in
+`gate/browser` (log in `$GATE_ROOT/browser/setup.log`). `GATE_SKIP_BROWSER=1`
+skips it.
+
+After `fail`, gate.sh keeps that run's Index Snapshot as
+`snapshot-after-fail.sqlite`. `browser_assert.py prepare` then lays out four
+member copies under `$GATE_ROOT/browser/site/stores/`, each holding what a
+member publishes (`blocks/`, `log/`, `index/v2.sqlite`, `index.html`, never
+`coords/` or `nf/`):
+
+| store | snapshot | for |
+|---|---|---|
+| `current` | the store's own, after `elsewhere` | A1, A5 |
+| `stale` | the one kept after `fail`, two runs behind | A3 |
+| `tampered` | as `stale`, with one byte of `elsewhere`'s RunCompletion changed | A4 |
+| `year` | only `index/v2.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
+
+The year snapshot takes minutes to generate, so it is cached in
+`GATE_YEAR_CACHE` (default `$TMPDIR/nf-blocks-gate-year`), keyed by
+`gen_year.py`'s source and the schema.
+
+`tier.sh` serves them three ways, all in one script:
+
+| server | what |
+|---|---|
+| `range` | `gate/browser/serve.py` over `site/`, honouring `Range` |
+| `plain` | the same with `--no-range`: every GET is a `200` of the whole file |
+| `explore` | `nextflow plugin nf-blocks:explore` in `pipeline-a`, stopped with SIGTERM |
+
+`explore` is started for the locally built plugin through a `plugins.json`
+naming the zip (`NXF_PLUGINS_TEST_REPOSITORY`, `NXF_OFFLINE` unset; DESIGN.md
+section 15), which asks the plugin registry once for dependencies.
+
+`drive.mjs` plays `scenario.json`, one cold browser context per step,
+recording every request from Playwright's network events and reading only
+the DOM contract of DESIGN.md section 15 into `observed.json`.
+`browser_assert.py check` compares that with `expected.json`, which comes
+from the Gate's own hashes and block reads, and `sqlite3` for the year file:
+
+- A1: the page answers all three load-bearing queries, each equal to the
+  Gate's own answer, through `range` and through `explore`.
+- A2: against the year snapshot, cold, a point query costs at most 8 requests
+  and 64 KB, and query 3 at most 50 requests and 512 KB.
+- A3: with the snapshot two runs stale, the run list shows both runs, the
+  stale notice counts two, and query 3 over one of them returns the right
+  items after fetching its closure.
+- A4: every block the page fetches has its hash verified in the browser, and
+  the tampered block is refused with `hash_mismatch`.
+- A5: against `plain`, the page downloads a snapshot under the cap whole and
+  refuses one over it with `no_range_over_cap` shown.
+
+A failing line: read `browser/observed.json` for that step and
+`browser/drive.log`. Assertions 6 and 7 are the cloud part.
 
 ## The GATE_ROOT tree
 
