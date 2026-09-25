@@ -281,20 +281,26 @@ class TestStore(unittest.TestCase):
         self.assertEqual(self.store.read_block(cid),
                          {"kind": "RunManifest", "schema": 1})
 
-    def test_run_log_is_newest_first(self):
-        runs = os.path.join(self.root, "runs")
-        os.makedirs(runs)
+    def test_store_log_reads_newest_first_with_kind(self):
+        log = os.path.join(self.root, "log")
+        os.makedirs(log)
         older = "%013d" % (9999999999999 - 1000)
         newer = "%013d" % (9999999999999 - 5000)
-        # bigger reverse timestamp = older finish time
-        open(os.path.join(runs, newer + "-" + CID_DAGCBOR_EMPTY_MAP), "w").close()
-        open(os.path.join(runs, older + "-" + CID_RAW_EMPTY), "w").close()
-        log = self.store.run_log()
-        self.assertEqual([cid for _rts, cid in log],
-                         [CID_DAGCBOR_EMPTY_MAP, CID_RAW_EMPTY])
+        open(os.path.join(log, "%s-run-%s" % (newer, CID_DAGCBOR_EMPTY_MAP)), "w").close()
+        open(os.path.join(log, "%s-claim-%s" % (older, CID_RAW_EMPTY)), "w").close()
+        open(os.path.join(log, "%s-pin-%s" % (older, CID_RAW_EMPTY)), "w").close()   # unknown kind: ignored
+        open(os.path.join(log, "README"), "w").close()                               # stray file: ignored
+        self.assertEqual([(kind, cid) for _rts, kind, cid in self.store.store_log()],
+                         [("run", CID_DAGCBOR_EMPTY_MAP), ("claim", CID_RAW_EMPTY)])
 
-    def test_run_log_on_missing_directory_is_empty(self):
-        self.assertEqual(self.store.run_log(), [])
+    def test_store_log_on_missing_directory_is_empty(self):
+        self.assertEqual(self.store.store_log(), [])
+
+    def test_runs_directory_is_not_read(self):
+        runs = os.path.join(self.root, "runs")
+        os.makedirs(runs)
+        open(os.path.join(runs, "%013d-%s" % (1, CID_DAGCBOR_EMPTY_MAP)), "w").close()
+        self.assertEqual(self.store.store_log(), [])
 
     def test_nf_records_reads_data_json_by_kind(self):
         key = "abc123/aligned/A/A.bam"

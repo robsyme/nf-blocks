@@ -53,10 +53,10 @@ class StoreBuilder(object):
             fh.write(data)
         return cid
 
-    def run_log(self, finished_millis, cid):
-        d = os.path.join(self.root, "runs")
+    def store_log(self, written_millis, kind, cid):
+        d = os.path.join(self.root, "log")
         os.makedirs(d, exist_ok=True)
-        open(os.path.join(d, "%013d-%s" % (9999999999999 - finished_millis, cid)),
+        open(os.path.join(d, "%013d-%s-%s" % (9999999999999 - written_millis, kind, cid)),
              "w").close()
 
     def manifest(self, entries):
@@ -315,7 +315,8 @@ class TestLatestSuccessful(TempTree):
         super(TestLatestSuccessful, self).setUp()
         self.builder = StoreBuilder(self.path("store"))
 
-    def _run(self, name, status, finished, incomplete=False):
+    def _run(self, name, status, finished, incomplete=False,
+             finished_at="2026-01-01T00:01:00.000Z"):
         manifest = self.builder.block({
             "kind": "RunManifest", "schema": 1, "asserted_by": "gate",
             "pipeline": "p", "run_name": name, "nf_run_hash": "aa" * 16,
@@ -329,33 +330,40 @@ class TestLatestSuccessful(TempTree):
             "status": status, "exit_status": 0,
             "possibly_incomplete": incomplete,
             "started_at": "2026-01-01T00:00:00.000Z",
-            "finished_at": "2026-01-01T00:01:00.000Z",
+            "finished_at": finished_at,
             "anomalies": {"unresolvable": 0, "unaddressed": 0, "declined": 0,
                           "never_published": 0},
             "error": None})
-        self.builder.run_log(finished, completion)
+        self.builder.store_log(finished, "run", completion)
         return completion
 
-    def test_run_log_returns_the_newest_successful_run(self):
+    def test_store_log_returns_the_newest_successful_run(self):
         older = self._run("cold", "succeeded", 1000)
         newer = self._run("again", "succeeded", 2000)
         gate = gate_assert.Gate(self.tmp)
-        self.assertEqual(gate_assert._latest_successful_from_run_log(gate, "p"),
-                         newer)
+        self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"), newer)
         self.assertNotEqual(newer, older)
 
-    def test_run_log_skips_a_failed_run_even_when_newest(self):
+    def test_latest_is_by_finished_at_not_by_log_order(self):
+        # The run that finished later was logged first (a merged Bundle, or a
+        # skewed clock): latest must still be the later finish.
+        later_finish = self._run("cold", "succeeded", 1000, finished_at="2026-01-01T02:00:00.000Z")
+        earlier_finish = self._run("again", "succeeded", 2000, finished_at="2026-01-01T01:00:00.000Z")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"), later_finish)
+
+    def test_store_log_skips_a_failed_run_even_when_newest(self):
         good = self._run("cold", "succeeded", 1000)
         self._run("fail", "failed", 3000, incomplete=True)
         gate = gate_assert.Gate(self.tmp)
-        self.assertEqual(gate_assert._latest_successful_from_run_log(gate, "p"),
+        self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"),
                          good)
 
-    def test_run_log_skips_a_possibly_incomplete_run(self):
+    def test_store_log_skips_a_possibly_incomplete_run(self):
         good = self._run("cold", "succeeded", 1000)
         self._run("partial", "succeeded", 3000, incomplete=True)
         gate = gate_assert.Gate(self.tmp)
-        self.assertEqual(gate_assert._latest_successful_from_run_log(gate, "p"),
+        self.assertEqual(gate_assert._latest_successful_from_store_log(gate, "p"),
                          good)
 
     def test_a_missing_index_is_raised_not_swallowed(self):

@@ -257,7 +257,7 @@ class Gate(object):
         """Everything gate.sh must be able to diff between two runs."""
         return {
             "blocks": sorted(cid for cid, _p in self.store.blocks()),
-            "runs": sorted(name for name in _listdir(self.store.path("runs"))),
+            "log": sorted(name for name in _listdir(self.store.path("log"))),
             "nf": sorted(key for key, _e in self.store.nf_envelopes()),
             "coords": {rel: self.store.coords_pointer(rel)
                        for rel in self.store.coords_paths()},
@@ -267,7 +267,7 @@ class Gate(object):
         path = os.path.join(self.root, filename)
         if not os.path.isfile(path):
             raise cas.GateError("no snapshot at %s (gate.sh writes it)" % path)
-        out = {"blocks": [], "runs": [], "nf": [], "coords": {}}
+        out = {"blocks": [], "log": [], "nf": [], "coords": {}}
         with open(path) as fh:
             for line in fh:
                 line = line.rstrip("\n")
@@ -285,13 +285,13 @@ class Gate(object):
 def write_snapshot(gate, path):
     data = gate.snapshot()
     lines = []
-    for section in ("blocks", "runs", "nf"):
+    for section in ("blocks", "log", "nf"):
         lines.extend("%s\t%s" % (section, value) for value in data[section])
     for rel in sorted(data["coords"]):
         lines.append("coords\t%s\t%s" % (rel, data["coords"][rel] or ""))
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + ("\n" if lines else ""))
-    return len(data["blocks"]), len(data["runs"]), len(data["nf"]), len(data["coords"])
+    return len(data["blocks"]), len(data["log"]), len(data["nf"]), len(data["coords"])
 
 
 def _listdir(path):
@@ -502,7 +502,7 @@ def assert_two(gate):
     after_again = gate.read_snapshot("blocks-after-again.txt")
     problems = []
 
-    for section in ("blocks", "runs", "nf"):
+    for section in ("blocks", "log", "nf"):
         lost = sorted(set(after_cold[section]) - set(after_again[section]))
         if lost:
             problems.append("%d %s entr(y/ies) present after cold and gone after "
@@ -554,10 +554,10 @@ def assert_two(gate):
 
     if problems:
         return FAIL, "; ".join(problems)
-    return PASS, ("%d blocks, %d run-log entries, %d nf records and %d coords "
+    return PASS, ("%d blocks, %d Store Log entries, %d nf records and %d coords "
                   "pointers survive `again` unchanged; %d raw blocks added 0; "
                   "%d identical OutputItems"
-                  % (len(after_again["blocks"]), len(after_again["runs"]),
+                  % (len(after_again["blocks"]), len(after_again["log"]),
                      len(after_again["nf"]), len(after_again["coords"]),
                      len(raw_cold), len(cold_items)))
 
@@ -626,9 +626,9 @@ def assert_three(gate):
                         % (run.manifest_cid, pipeline, PIPELINE_IDENTITY))
 
     from_index = _latest_successful_from_index(gate, pipeline)
-    from_log = _latest_successful_from_run_log(gate, pipeline)
+    from_log = _latest_successful_from_store_log(gate, pipeline)
     for source, latest in (("the index run table", from_index),
-                           ("the store run log", from_log)):
+                           ("the Store Log", from_log)):
         if latest is None:
             problems.append("%s names no successful run for pipeline %r"
                             % (source, pipeline))
@@ -636,15 +636,15 @@ def assert_three(gate):
             problems.append("%s says the latest successful run for pipeline %r is "
                             "the failed run %s" % (source, pipeline, latest))
     if from_index and from_log and from_index != from_log:
-        problems.append("the index says the latest successful run is %s, the store "
-                        "run log says %s" % (from_index, from_log))
+        problems.append("the index says the latest successful run is %s, the "
+                        "Store Log says %s" % (from_index, from_log))
 
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("status=failed, possibly_incomplete=true, anomalies=%s, "
                   "collections partial %s (of %d outputs), reports carries no "
                   "sample %s, latest successful is %s by both the index and the "
-                  "run log" % (anomalies, counts, len(OUTPUTS), FAILING_SAMPLE,
+                  "Store Log" % (anomalies, counts, len(OUTPUTS), FAILING_SAMPLE,
                                from_log[:16] + "..."))
 
 
@@ -663,8 +663,15 @@ def _latest_successful_from_index(gate, pipeline):
     return rows[0]["completion_cid"] if rows else None
 
 
-def _latest_successful_from_run_log(gate, pipeline):
-    for _rts, cid in gate.store.run_log():          # newest first
+def _latest_successful_from_store_log(gate, pipeline):
+    """The successful run of `pipeline` with the latest asserted finish time,
+    found from the Store Log's run entries and each RunCompletion's own
+    finished_at. Log order is when an entry was written to this store, which
+    a merged Bundle or a skewed clock can make differ from finish order."""
+    best = None
+    for _rts, kind, cid in gate.store.store_log():
+        if kind != "run":
+            continue
         block = gate.block(cid)
         if not isinstance(block, dict):
             continue
@@ -672,9 +679,12 @@ def _latest_successful_from_run_log(gate, pipeline):
             continue
         link = block.get("run")
         manifest = gate.block(link.text) if isinstance(link, cas.Cid) else None
-        if manifest is None or manifest.get("pipeline") == pipeline:
-            return cid
-    return None
+        if manifest is not None and manifest.get("pipeline") != pipeline:
+            continue
+        key = (block.get("finished_at") or "", cid)
+        if best is None or key > best[0]:
+            best = (key, cid)
+    return best[1] if best else None
 
 
 # --------------------------------------------------------------------------
@@ -1294,7 +1304,7 @@ def main(argv):
             sys.stderr.write("--snapshot needs an output file\n")
             return 2
         blocks, runs, nf, coords = write_snapshot(gate, args[1])
-        print("%d blocks, %d run-log entries, %d nf records, %d coords pointers"
+        print("%d blocks, %d Store Log entries, %d nf records, %d coords pointers"
               % (blocks, runs, nf, coords))
         return 0
     if "--refs" in flags:

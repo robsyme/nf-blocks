@@ -120,11 +120,11 @@ class Writer(object):
         with open(path, "w") as fh:
             fh.write("cas://%s/%s\n" % (cid, name))
 
-    def run_log(self, finished_millis, completion_cid):
-        d = os.path.join(self.root, "runs")
+    def store_log(self, written_millis, kind, cid):
+        d = os.path.join(self.root, "log")
         os.makedirs(d, exist_ok=True)
-        rts = "%013d" % (9999999999999 - finished_millis)
-        open(os.path.join(d, "%s-%s" % (rts, completion_cid)), "w").close()
+        rts = "%013d" % (9999999999999 - written_millis)
+        open(os.path.join(d, "%s-%s-%s" % (rts, kind, cid)), "w").close()
 
     def nf_record(self, key, kind, spec):
         d = os.path.join(self.root, "nf", *key.split("/"))
@@ -303,7 +303,7 @@ def main():
                           "declined": 0, "never_published": 0},
             "error": "MAYBE_FAIL (2) exited 7" if failed else None,
         })
-        writer.run_log(finished, completion_cid)
+        writer.store_log(finished, "run", completion_cid)
         per_run[name] = {"manifest_cid": manifest_cid, "manifest": manifest,
                          "completion_cid": completion_cid, "status": status,
                          "finished": finished, "collections": collections}
@@ -452,7 +452,7 @@ def iso_utc(millis):
 def build_consumer_index(per_run):
     """A second index, as the consumer's composite store [out, lab] would keep.
 
-    The consumer ingests the read-only lab member's run log, so this index
+    The consumer ingests the read-only lab member's Store Log, so this index
     carries the producer's runs (cas-test-pipeline) AND the consumer's own run
     (cas-gate-consumer). Index.locate_for_pipeline must therefore pick the
     producer-only index by excluding cas-gate-consumer, not by pipeline alone.

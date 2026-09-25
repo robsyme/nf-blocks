@@ -94,7 +94,7 @@ Two things `gate.config` has to say that are not obvious:
 ```
 plugins/                 NXF_PLUGINS_DIR for these runs only
 cache/nf-blocks/*.sqlite the indexes; the producer's is selected by pipeline
-store/                   the cas:// member `lab`: blocks/ runs/ coords/ nf/
+store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
 consumer/                the second pipeline
@@ -114,7 +114,7 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 0 | every block decodes, re-encodes to its own address, and every run exited as the Gate drove it | re-hashes each block and re-runs the canonical encoder over each metadata block; reads `logs/<name>/exit` and requires `fail` non-zero and every other run zero |
 | 1 | three byte-identical `.stats` get one Content Address, three Output Items, and three *different* Nextflow fingerprints | hashes the three files itself, then opens the three `item_cid`s the `producer` rows name and requires each to be an `OutputItem` with one Leaf addressing that content under the name `<sample>.stats` |
 | 2 | `again` writes no new content block and loses no record; Output Item addresses are identical | diffs blocks, run-log entries, `nf/` keys and `coords/` pointer *text* between the two snapshots, and re-hashes every block in the store |
-| 3 | the failed run is marked failed, is partial and says so, and is not `latest` | requires `status: failed`, `possibly_incomplete: true`, an `anomalies` map, a `reports` collection with no `sample == 'B'` item and at most 2 items, and agreement between the index and the run log that `latest` is some other run |
+| 3 | the failed run is marked failed, is partial and says so, and is not `latest` | requires `status: failed`, `possibly_incomplete: true`, an `anomalies` map, a `reports` collection with no `sample == 'B'` item and at most 2 items, and agreement between the index and the Store Log that `latest` is some other run |
 | 4 | the resumed run's output layer is complete | collection names exactly `{aligned, stats, qc, chunks, reports}`, each with 3 items |
 | 4 | the resumed run's task layer is populated through our own `onTaskCached` | `SKIP`: filling the task layer on resume is deferred out of the Walking Skeleton; native Nextflow leaves it empty (7 not 15, issue 17) |
 | 4 | the resumed run re-hashed nothing | proved by the filesystem: `gate.sh` sets every published source file in `pipeline-a/work` to mode 000 for the duration of the run, so anything that re-reads one to re-address it gets `AccessDenied`. No counter is trusted. See the caveat below |
@@ -160,7 +160,7 @@ One reading worth knowing about:
 `gate/fixtures/root` is a hand-made GATE_ROOT: five runs across all five
 outputs (including the multi-leaf `chunks` items and the partial `reports` of
 the failed run), work trees with the real bytes, `qc` directories with a nested
-subdirectory and an internal symlink, a run log, `nf/` records, coords pointers
+subdirectory and an internal symlink, a Store Log, `nf/` records, coords pointers
 for every publish path, a consumer store covering the three read-back sources,
 and a populated SQLite index. It is what DESIGN says a correct plugin must
 produce, so it exercises every PASS branch of `assert.py` before the plugin

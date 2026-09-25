@@ -446,19 +446,23 @@ class Store(object):
             raise StoreError("%s is not a dag-cbor block" % cid)
         return decode(self.read(cid))
 
-    def run_log(self):
-        """[(reverse_ts, cid)] from runs/<rts>-<cid>, newest first."""
-        root = os.path.join(self.root, "runs")
+    STORE_LOG_KINDS = ("run", "selection", "claim")
+
+    def store_log(self):
+        """[(reverse_ts, kind, cid)] from log/<rts>-<kind>-<cid>, newest first.
+        Unknown kinds and malformed names are ignored, as the plugin does."""
+        root = os.path.join(self.root, "log")
         if not os.path.isdir(root):
             return []
         out = []
         for name in sorted(os.listdir(root)):
-            if "-" not in name:
+            parts = name.split("-", 2)
+            if len(parts) != 3 or len(parts[0]) != 13 or not parts[0].isdigit():
                 continue
-            rts, _, cid = name.partition("-")
-            if not is_cid(cid):
+            rts, kind, cid = parts
+            if kind not in self.STORE_LOG_KINDS or not is_cid(cid):
                 continue
-            out.append((rts, cid))
+            out.append((rts, kind, cid))
         return out
 
     def nf_records(self, kind=None):
@@ -547,7 +551,7 @@ class Index(object):
         A composite store keeps its own per-composition index, so
         <cache_home>/nf-blocks can hold several. The producer store's index and
         the consumer's composite [out, lab] index both carry the producer's
-        runs (the consumer ingests the read-only member's run log), so the
+        runs (the consumer ingests the read-only member's Store Log), so the
         pipeline column alone no longer disambiguates. The producer-only index
         is the one carrying `pipeline` and NOT the consumer's `exclude`
         pipeline.
