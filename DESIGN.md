@@ -867,7 +867,8 @@ The page lists `log/` in the first form that answers:
    following `NextContinuationToken`, stopping once a page's last key is older
    than the overlap floor. Virtual-hosted-style bucket URLs only.
 
-If none answers, the member has no log and the tail is empty.
+If none answers, the tail is empty and the page says the Store Log is not
+readable (`#stale[data-log="unreadable"]`) rather than showing "0 runs newer".
 
 A directly browsed bucket needs the policy and CORS rule of spec section 6:
 `s3:GetObject` and `s3:ListBucket` for `Principal "*"`, Block Public Access's
@@ -948,6 +949,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `body[data-route]` | the current route's name |
 | `#snapshot-mode[data-mode]` | `range` or `whole` |
 | `#stale[data-stale-count]` | runs newer than the snapshot; `#stale [data-command]` once past the notice thresholds |
+| `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
 | `[data-page]` | on the pipeline and collection views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |

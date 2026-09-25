@@ -22,7 +22,11 @@ export function entriesSince(names, watermark, nowMillis = Date.now()) {
   return floor === null ? entries : entries.filter(e => e.writtenAtMillis >= floor)
 }
 
-/** Every entry name the member's log/ listing gives, in the first form that answers (DESIGN.md §15). */
+/**
+ * Every entry name the member's log/ listing gives, in the first form that
+ * answers (DESIGN.md §15), and whether one answered in full: `readable` false
+ * means the tail is unknown, which is not the same as empty.
+ */
 export async function listLog(base, { fetchFn = fetch, watermark = null, nowMillis = Date.now() } = {}) {
   let res = null
   try {
@@ -32,8 +36,8 @@ export async function listLog(base, { fetchFn = fetch, watermark = null, nowMill
   }
   if (res?.ok) {
     const type = res.headers.get('Content-Type') ?? ''
-    if (type.includes('application/json')) return (await res.json()).entries ?? []
-    if (type.includes('text/html')) return hrefs(await res.text())
+    if (type.includes('application/json')) return { names: (await res.json()).entries ?? [], readable: true }
+    if (type.includes('text/html')) return { names: hrefs(await res.text()), readable: true }
   }
   return listS3(base, fetchFn, floorOf(watermark, nowMillis))
 }
@@ -60,16 +64,18 @@ async function listS3(base, fetchFn, floor) {
     try {
       res = await fetchFn(`${url.origin}/?${query}`, { cache: 'no-store' })
     } catch {
-      return names
+      return { names, readable: false }
     }
-    if (!res.ok) return names
+    if (!res.ok) return { names, readable: false }
     const xml = await res.text()
-    if (!xml.includes('<ListBucketResult')) return names
+    // The document itself must be a ListBucketResult: a static server answers
+    // /?list-type=2 with its index.html, which may be this very page.
+    if (!/^\s*(<\?xml[^>]*\?>\s*)?<ListBucketResult[\s>]/.test(xml)) return { names, readable: false }
     const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => unxml(m[1]).slice(prefix.length))
     names.push(...keys)
     const next = /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/.exec(xml)
     const last = parseEntry(keys[keys.length - 1] ?? '')
-    if (!next || (floor !== null && last && last.writtenAtMillis < floor)) return names
+    if (!next || (floor !== null && last && last.writtenAtMillis < floor)) return { names, readable: true }
     token = unxml(next[1])
   }
 }

@@ -18,7 +18,7 @@ const ROUTES = [
   ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0))],
   ['run', /^#\/run\/([^/]+)$/, (ex, m) => views.run(ex, m[1])],
   ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.collection(ex, m[1], Number(m[2] ?? 0))],
-  ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m) => views.item(ex, m[1], m[2])],
+  ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m, ctx) => views.item(ex, m[1], m[2], ctx)],
   ['content', /^#\/content\/([^/]+)$/, (ex, m, ctx) => views.content(ex, m[1], ctx)],
   ['latest', /^#\/latest\/([^/]+)$/, (ex, m) => views.latest(ex, decodeURIComponent(m[1]))],
   ['items', /^#\/items\/([^/]+)\/([^/?]+)(?:\?where=(.*))?$/, (ex, m, ctx) =>
@@ -36,7 +36,11 @@ function finish(state) {
 function updateStale() {
   const el = document.getElementById('stale')
   el.dataset.staleCount = String(explorer.staleCount)
-  const parts = [`${explorer.staleCount} run${explorer.staleCount === 1 ? '' : 's'} newer than the snapshot`]
+  // "0 runs newer" would read as current when the listing never answered.
+  el.dataset.log = explorer.logReadable ? 'read' : 'unreadable'
+  const count = `${explorer.staleCount} run${explorer.staleCount === 1 ? '' : 's'} newer than the snapshot`
+  const parts = [explorer.logReadable ? count
+    : `Store Log not readable here, so runs newer than the snapshot are unknown${explorer.staleCount ? ` (${count} found)` : ''}`]
   if (explorer.notice) {
     el.dataset.notice = ''
     parts.push('; to rewrite it run ', h('code', { 'data-command': '' }, 'nextflow plugin nf-blocks:snapshot'),

@@ -26,7 +26,7 @@ async function open(overrides = {}) {
     base: 'http://h/m/lab/',
     openDb: async () => snapshotDb(member.snapshot),
     blocks: new BlockFetcher('http://h/m/lab/', { fetchFn }),
-    listFn: async () => overrides.log ?? member.log,
+    listFn: async () => ({ names: overrides.log ?? member.log, readable: overrides.readable ?? true }),
     now: () => now,
   })
   return { explorer, member, fetchFn }
@@ -138,7 +138,7 @@ async function openBig() {
      INSERT INTO collection_item SELECT 'coll', printf('item%04d', i) FROM n`])
   return Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(bytes),
     blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: async () => new Response('', { status: 404 }) }),
-    listFn: async () => [] })
+    listFn: async () => ({ names: [], readable: true }) })
 }
 
 test('a pipeline\'s runs come a page at a time, with where the page is in the whole (final review finding 2)', async () => {
@@ -174,4 +174,30 @@ test('a stale collection pages its block\'s items the same way', async () => {
   const c = await explorer.collection(member.runs.R2.collection, { limit: 1 })
   assert.equal(c.items.length, 1)
   assert.deepEqual([c.first, c.last, c.total, c.next, c.prev], [1, 1, 2, 1, null])
+})
+
+test('a Store Log name whose cid does not parse is an unreadable run, and the page still opens (final review finding 5)', async () => {
+  const member = await buildMember()
+  const bad = entryName(Date.now() - 1000, 'run', 'b' + 'a'.repeat(58))
+  const { explorer } = await open({ log: [...member.log, bad], blocks: new Map([...member.blocks, ['b' + 'a'.repeat(58), new Uint8Array([0xa0])]]) })
+  const refused = explorer.stale.find(s => s.cid === 'b' + 'a'.repeat(58))
+  assert.equal(refused.error.code, 'schema_invalid')
+  assert.equal(explorer.staleCount, 3)
+})
+
+test('an unreadable Store Log is recorded, so the page says so instead of "0 runs newer" (final review finding 6)', async () => {
+  const { explorer } = await open({ log: [], readable: false })
+  assert.equal(explorer.logReadable, false)
+  assert.equal(explorer.staleCount, 0)
+  const ok = await open()
+  assert.equal(ok.explorer.logReadable, true)
+})
+
+test('concurrent queries share one closure per stale run, so progress counts each item once (final review finding 7)', async () => {
+  const { explorer, member, fetchFn } = await open()
+  const seen = []
+  await Promise.all([member.content.A, member.content.B, member.content.C].map(c => explorer.producersOf(c, (done, total) => seen.push([done, total]))))
+  // R2's closure has two items and R3's one: three steps, however many queries asked.
+  assert.deepEqual(seen.map(String).sort(), ['1,1', '1,2', '2,2'])
+  assert.equal(fetchFn.asked.filter(c => c === member.item.C).length, 1)
 })

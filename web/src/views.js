@@ -51,29 +51,25 @@ function pager(route, page, noun) {
 
 export async function pipeline(ex, name, offset = 0) {
   const page = await ex.runPage(name, { offset })
-  const rows = page.rows
+  // Anomaly counts are only in each RunCompletion; each row's cell is filled
+  // in when its block arrives, without holding up the view.
+  const rows = page.rows.map(r => ({ r, anomalies: h('td', { 'data-anomalies-for': r.completion_cid, class: 'muted' }, '...') }))
   const node = h('section', {},
     h('h1', {}, name),
     h('p', {}, link(`#/latest/${enc(name)}`, 'Latest successful run')),
     pager(`#/pipeline/${enc(name)}`, page, 'runs'),
-    table(['run', 'status', 'finished', 'anomalies', 'from'], rows.map(r => h('tr', {
+    table(['run', 'status', 'finished', 'anomalies', 'from'], rows.map(({ r, anomalies }) => h('tr', {
       'data-run': r.completion_cid, 'data-pipeline': r.pipeline, 'data-status': r.status, 'data-source': r.source },
     h('td', {}, link(`#/run/${r.completion_cid}`, r.run_name ?? r.completion_cid)),
     h('td', {}, r.possibly_incomplete ? `${r.status}, possibly incomplete` : r.status),
     h('td', {}, r.finished_at ?? ''),
-    h('td', { 'data-anomalies-for': r.completion_cid, class: 'muted' }, '...'),
+    anomalies,
     h('td', { class: 'muted' }, r.source === 'tail' ? 'newer than the snapshot' : 'snapshot')))),
     unreadableRuns(ex))
-  // Anomaly counts are only in each RunCompletion; fill them in without holding up the view.
-  for (const r of rows) {
-    ex.completionOf(r.completion_cid).then(c => {
-      const cell = node.querySelector(`[data-anomalies-for="${r.completion_cid}"]`)
-      const a = c.anomalies
-      if (cell) cell.textContent = Object.entries(a).filter(([, n]) => n).map(([k, n]) => `${k.replace('_', ' ')} ${n}`).join(', ') || 'none'
-    }, e => {
-      const cell = node.querySelector(`[data-anomalies-for="${r.completion_cid}"]`)
-      if (cell) cell.replaceChildren(errorNode(e))
-    })
+  for (const { r, anomalies } of rows) {
+    ex.completionOf(r.completion_cid).then(
+      c => { anomalies.textContent = Object.entries(c.anomalies).filter(([, n]) => n).map(([k, n]) => `${k.replace('_', ' ')} ${n}`).join(', ') || 'none' },
+      e => { anomalies.replaceChildren(errorNode(e)) })
   }
   return node
 }
@@ -103,10 +99,10 @@ export async function collection(ex, collectionCid, offset = 0) {
     h('ul', {}, c.items.map(i => h('li', {}, link(`#/item/${collectionCid}/${i}`, h('code', { class: 'cid' }, `cas://${collectionCid}/${i}`))))))
 }
 
-export async function item(ex, collectionCid, itemCid) {
+export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
   const view = it.view ?? {}
-  const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString())]))
+  const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString(), ctx.progress)]))
   return h('section', {},
     h('h1', {}, 'Item'), h('p', {}, cid(`cas://${collectionCid}/${itemCid}`)),
     h('h2', {}, 'Meta Map'),

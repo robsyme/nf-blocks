@@ -36,14 +36,14 @@ const json = (body) => new Response(JSON.stringify(body), { headers: { 'Content-
 test('explore answers log/ with JSON', async () => {
   const names = [entryName(T, 'run', CID)]
   const fetchFn = async (url) => { assert.equal(url, 'http://h/m/lab/log/'); return json({ entries: names }) }
-  assert.deepEqual(await listLog('http://h/m/lab/', { fetchFn }), names)
+  assert.deepEqual(await listLog('http://h/m/lab/', { fetchFn }), { names, readable: true })
 })
 
 test('a static server answers log/ with an HTML index', async () => {
   const name = entryName(T, 'run', CID)
   const html = `<html><body><ul><li><a href="${name}">${name}</a></li><li><a href="../">..</a></li></ul></body></html>`
   const fetchFn = async () => new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
-  assert.deepEqual(await listLog('http://h/store/', { fetchFn }), [name])
+  assert.deepEqual(await listLog('http://h/store/', { fetchFn }), { names: [name], readable: true })
 })
 
 test('S3 is listed with ListObjectsV2, paged, stopping once a page reaches past the floor', async () => {
@@ -63,12 +63,37 @@ test('S3 is listed with ListObjectsV2, paged, stopping once a page reaches past 
     const next = i + 1 < pages.length ? `<NextContinuationToken>${i + 1}</NextContinuationToken>` : ''
     return new Response(`<?xml version="1.0"?><ListBucketResult>${keys}${next}</ListBucketResult>`, { headers: { 'Content-Type': 'application/xml' } })
   }
-  const names = await listLog('https://b.s3.ca-central-1.amazonaws.com/member/', { fetchFn, watermark: entryName(T, 'run', CID), nowMillis: T })
+  const { names, readable } = await listLog('https://b.s3.ca-central-1.amazonaws.com/member/', { fetchFn, watermark: entryName(T, 'run', CID), nowMillis: T })
+  assert.equal(readable, true)
   assert.equal(names.length, 4)
   assert.equal(asked.filter(u => u.includes('list-type=2')).length, 2)
 })
 
-test('no listing at all is an empty log', async () => {
+test('no listing at all is an unreadable log, not an empty one (final review finding 6)', async () => {
   const fetchFn = async () => new Response('nope', { status: 404 })
-  assert.deepEqual(await listLog('http://h/store/', { fetchFn }), [])
+  assert.deepEqual(await listLog('http://h/store/', { fetchFn }), { names: [], readable: false })
+  const down = async () => { throw new TypeError('Failed to fetch') }
+  assert.deepEqual(await listLog('http://h/store/', { fetchFn: down }), { names: [], readable: false })
+})
+
+test('an empty listing that answered is a readable, empty log', async () => {
+  const fetchFn = async () => json({ entries: [] })
+  assert.deepEqual(await listLog('http://h/m/lab/', { fetchFn }), { names: [], readable: true })
+})
+
+test('an S3 listing that fails part way is unreadable, with what it had', async () => {
+  const fetchFn = async (url) => {
+    if (url.endsWith('/log/')) return new Response('', { status: 403 })
+    if (new URL(url).searchParams.get('continuation-token')) return new Response('', { status: 500 })
+    return new Response(`<ListBucketResult><Contents><Key>m/log/${entryName(T, 'run', CID)}</Key></Contents><NextContinuationToken>1</NextContinuationToken></ListBucketResult>`)
+  }
+  const got = await listLog('https://b.s3.amazonaws.com/m/', { fetchFn })
+  assert.deepEqual(got, { names: [entryName(T, 'run', CID)], readable: false })
+})
+
+test('a static server answering ListObjectsV2 with its own index.html is not a listing, even one quoting <ListBucketResult', async () => {
+  const page = '<!doctype html><script>if (!xml.includes("<ListBucketResult")) {}</script>'
+  const fetchFn = async (url) => (url.endsWith('/log/') ? new Response('', { status: 404 })
+    : new Response(page, { headers: { 'Content-Type': 'text/html' } }))
+  assert.deepEqual(await listLog('http://h/nolog/', { fetchFn }), { names: [], readable: false })
 })

@@ -35,7 +35,9 @@ export class Explorer {
     this.now = now
     this.watermark = null
     this.stale = []
+    this.logReadable = true
     this.closures = new Map()
+    this.closing = new Map()
     this.fetchesForQuery = 0
   }
 
@@ -52,7 +54,8 @@ export class Explorer {
   get notice() { return this.stale.length > STALE_RUNS_NOTICE || this.fetchesForQuery > CLOSURE_FETCH_NOTICE }
 
   async refreshTail(listFn) {
-    const names = await listFn(this.base, { watermark: this.watermark, nowMillis: this.now() })
+    const { names, readable } = await listFn(this.base, { watermark: this.watermark, nowMillis: this.now() })
+    this.logReadable = readable
     const runs = entriesSince(names, this.watermark, this.now()).filter(e => e.kind === 'run')
     const unique = [...new Map(runs.map(e => [e.cid, e])).values()]
     const known = unique.length === 0 ? new Set()
@@ -147,8 +150,15 @@ export class Explorer {
    * keeps its collection_item membership with no attributes and no
    * producers. Each is recorded in the result's `missing` list.
    */
-  async closure(stale, onProgress = () => {}) {
-    if (this.closures.has(stale.cid)) return this.closures.get(stale.cid)
+  closure(stale, onProgress = () => {}) {
+    // One closure per run however many queries ask at once (views.item asks
+    // per leaf): the first caller's progress is the fetch's progress.
+    if (!this.closing.has(stale.cid))
+      this.closing.set(stale.cid, this.buildClosure(stale, onProgress).catch((e) => { this.closing.delete(stale.cid); throw e }))
+    return this.closing.get(stale.cid)
+  }
+
+  async buildClosure(stale, onProgress) {
     const settled = await Promise.all(stale.completion.collections.map(async (c) => {
       const cid = text(c)
       try {

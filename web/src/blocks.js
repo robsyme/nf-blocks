@@ -2,6 +2,7 @@
 // against the address they were asked for, then decoded and schema-checked,
 // or refused (spec section 5.3, DESIGN.md §15).
 import * as dagCbor from '@ipld/dag-cbor'
+import { CID } from 'multiformats/cid'
 import { blockPath, verifies } from './cid.js'
 import { validBlock, validLeaf } from './schema.js'
 import { leavesOf } from './metadata.js'
@@ -33,6 +34,12 @@ export class BlockFetcher {
   }
 
   async load(cidText) {
+    // A Store Log name can match the entry pattern and still not be a CID.
+    try {
+      CID.parse(cidText)
+    } catch (e) {
+      throw new BlockError('schema_invalid', cidText, `${cidText} is not a CID: ${e.message}`)
+    }
     let res
     try {
       res = await this.fetchFn(new URL(blockPath(cidText), this.base).href)

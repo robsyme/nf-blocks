@@ -4,7 +4,7 @@
 //   node gate/browser/page-smoke.mjs
 import { chromium } from 'playwright'
 import { execFileSync, spawn } from 'node:child_process'
-import { copyFileSync, mkdtempSync, renameSync, writeFileSync, readFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, renameSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -58,6 +58,7 @@ try {
   assert.equal(await page.evaluate(() => document.body.dataset.state), 'ready')
   assert.equal(await page.$eval('#snapshot-mode', e => e.dataset.mode), 'range')
   assert.equal(await page.$eval('#stale', e => e.dataset.staleCount), '2')
+  assert.equal(await page.$eval('#stale', e => e.dataset.log), 'read')
 
   await go(page, '#/pipeline/demo')
   assert.deepEqual((await all(page, '[data-run]', ['run', 'source', 'status'])).map(r => [r.run, r.source, r.status]), [
@@ -115,6 +116,15 @@ try {
   assert.equal(await swapped.evaluate(() => document.body.dataset.state), 'error')
   assert.equal(await swapped.$eval('[data-error]', e => e.dataset.error), 'snapshot_changed')
   renameSync(snapshot + '.orig', snapshot)
+
+  // A member whose Store Log no listing answers for (final review finding 6).
+  mkdirSync(join(dir, 'nolog/index'), { recursive: true })
+  copyFileSync(join(dir, 'index/v2.sqlite'), join(dir, 'nolog/index/v2.sqlite'))
+  const nolog = await context.newPage()
+  await open(nolog, 'http://127.0.0.1:8841/index.html?store=nolog/#/idle')
+  assert.equal(await nolog.$eval('#stale', e => e.dataset.log), 'unreadable')
+  assert.equal(await nolog.$eval('#stale', e => e.dataset.staleCount), '0')
+  assert.match(await nolog.$eval('#stale', e => e.textContent), /Store Log not readable/)
 
   // Opened straight from disk (final review finding 4): a clear refusal.
   const disk = await context.newPage()

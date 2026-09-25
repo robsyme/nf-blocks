@@ -31,3 +31,10 @@ test('a block not in this member is block_missing, and the wrong kind is schema_
   await assert.rejects(fetcher.get('bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua'), e => e.code === 'block_missing')
   await assert.rejects(fetcher.ofKind(runs.R1.manifest, 'RunCompletion'), e => e.code === 'schema_invalid')
 })
+
+test('a name that looks like a CID but does not parse as one is schema_invalid, not a plain Error (final review finding 5)', async () => {
+  const bad = 'b' + 'a'.repeat(58)
+  // A server that answers anything: the refusal must not depend on a 404.
+  const fetcher = new BlockFetcher('http://h/', { fetchFn: async () => new Response(new Uint8Array([0xa0])) })
+  await assert.rejects(fetcher.get(bad), e => e.constructor.name === 'BlockError' && e.code === 'schema_invalid' && e.cid === bad)
+})
