@@ -78,6 +78,8 @@ class ExplorerQueriesTest extends Specification {
         'runsKnown'               | page.runsKnown
         'collectionByCid'         | page.collectionByCid
         'collectionItems'         | page.collectionItems
+        'runCount'                | page.runCount
+        'collectionItemCount'     | page.collectionItemCount
     }
 
     def 'the guard itself catches a scan'() {

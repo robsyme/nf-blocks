@@ -10,6 +10,21 @@ import { attrRows, leavesOf, matches, metadataView, predicateRow } from './metad
 
 const byNewest = (a, b) => (a.finished_at > b.finished_at ? -1 : a.finished_at < b.finished_at ? 1
   : a.completion_cid < b.completion_cid ? -1 : a.completion_cid > b.completion_cid ? 1 : 0)
+/** Where a page of `shown` rows at `offset` sits among `total`, the tail's `tail` rows all on the first page. */
+function span({ offset, limit, shown, count, tail = 0 }) {
+  const rows = shown + (offset === 0 ? tail : 0)
+  return {
+    first: rows === 0 ? 0 : offset === 0 ? 1 : tail + offset + 1,
+    last: tail + offset + shown,
+    total: tail + count,
+    next: offset + shown < count ? offset + limit : null,
+    prev: offset > 0 ? Math.max(0, offset - limit) : null,
+  }
+}
+
+export const RUNS_PAGE = 50
+export const ITEMS_PAGE = 500
+
 const text = (cid) => (cid === null || cid === undefined ? null : cid.toString())
 
 export class Explorer {
@@ -72,7 +87,15 @@ export class Explorer {
     return [...out.values()].sort((a, b) => (a.pipeline < b.pipeline ? -1 : 1))
   }
 
-  async runsOfPipeline(pipeline, { limit = 50, offset = 0 } = {}) {
+  /** One page of a pipeline's runs (runsOfPipeline) and where it sits: first, last, total, next and prev offsets. */
+  async runPage(pipeline, { limit = RUNS_PAGE, offset = 0 } = {}) {
+    const rows = await this.runsOfPipeline(pipeline, { limit, offset })
+    const [{ n }] = await this.db.query(SQL.runCount, [pipeline])
+    const tail = this.stale.filter(s => s.row?.pipeline === pipeline).length
+    return { rows, ...span({ offset, limit, shown: rows.filter(r => r.source === 'snapshot').length, count: n, tail }) }
+  }
+
+  async runsOfPipeline(pipeline, { limit = RUNS_PAGE, offset = 0 } = {}) {
     const snapshot = (await this.db.query(SQL.runsOfPipeline, [pipeline, limit, offset])).map(r => ({ ...r, source: 'snapshot' }))
     const tail = offset === 0 ? this.stale.filter(s => s.row?.pipeline === pipeline).map(s => s.row) : []
     return [...tail, ...snapshot].sort(byNewest)
@@ -96,15 +119,19 @@ export class Explorer {
     return { row, completion, collections }
   }
 
-  async collection(cid, { limit = 500, offset = 0 } = {}) {
+  /** One page of a collection's items, with first, last, total, next and prev as runPage. */
+  async collection(cid, { limit = ITEMS_PAGE, offset = 0 } = {}) {
     const [row] = await this.db.query(SQL.collectionByCid, [cid])
     if (row) {
       const items = (await this.db.query(SQL.collectionItems, [cid, limit, offset])).map(r => r.item_cid)
-      return { cid, output: row.output_name, completion: row.completion_cid, items }
+      const [{ n }] = await this.db.query(SQL.collectionItemCount, [cid])
+      return { cid, output: row.output_name, completion: row.completion_cid, items, ...span({ offset, limit, shown: items.length, count: n }) }
     }
     const block = (await this.blocks.ofKind(cid, 'OutputCollection')).value
     const completion = this.stale.find(s => s.completion?.collections.some(c => text(c) === cid))?.cid ?? null
-    return { cid, output: block.name, completion, items: block.items.filter(Boolean).map(text).slice(offset, offset + limit) }
+    const all = block.items.filter(Boolean).map(text)
+    const items = all.slice(offset, offset + limit)
+    return { cid, output: block.name, completion, items, ...span({ offset, limit, shown: items.length, count: all.length }) }
   }
 
   async item(collectionCid, itemCid) {

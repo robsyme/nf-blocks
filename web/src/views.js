@@ -40,11 +40,22 @@ export async function home(ex) {
     unreadableRuns(ex))
 }
 
-export async function pipeline(ex, name) {
-  const rows = await ex.runsOfPipeline(name)
+/** Where a page sits in the whole list, and links to the pages either side (DESIGN.md §15, [data-page]). */
+function pager(route, page, noun) {
+  if (page.total === 0) return null
+  return h('p', { 'data-page': '', 'data-first': page.first, 'data-last': page.last, 'data-total': page.total, class: 'muted' },
+    `showing ${page.first}-${page.last} of ${page.total} ${noun}`,
+    page.prev !== null ? [' ', h('a', { href: `${route}?offset=${page.prev}`, 'data-page-prev': '' }, 'previous page')] : null,
+    page.next !== null ? [' ', h('a', { href: `${route}?offset=${page.next}`, 'data-page-next': '' }, 'next page')] : null)
+}
+
+export async function pipeline(ex, name, offset = 0) {
+  const page = await ex.runPage(name, { offset })
+  const rows = page.rows
   const node = h('section', {},
     h('h1', {}, name),
     h('p', {}, link(`#/latest/${enc(name)}`, 'Latest successful run')),
+    pager(`#/pipeline/${enc(name)}`, page, 'runs'),
     table(['run', 'status', 'finished', 'anomalies', 'from'], rows.map(r => h('tr', {
       'data-run': r.completion_cid, 'data-pipeline': r.pipeline, 'data-status': r.status, 'data-source': r.source },
     h('td', {}, link(`#/run/${r.completion_cid}`, r.run_name ?? r.completion_cid)),
@@ -83,11 +94,12 @@ export async function run(ex, completionCid) {
       link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)')))))
 }
 
-export async function collection(ex, collectionCid) {
-  const c = await ex.collection(collectionCid)
+export async function collection(ex, collectionCid, offset = 0) {
+  const c = await ex.collection(collectionCid, { offset })
   return h('section', {},
     h('h1', {}, c.output), cid(collectionCid),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
+    pager(`#/collection/${collectionCid}`, c, 'items'),
     h('ul', {}, c.items.map(i => h('li', {}, link(`#/item/${collectionCid}/${i}`, h('code', { class: 'cid' }, `cas://${collectionCid}/${i}`))))))
 }
 

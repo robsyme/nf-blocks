@@ -935,11 +935,15 @@ way.
   page's own directory (spec section 5.1).
 - `?cap=<bytes>` overrides the 64 MiB whole-file cap.
 - Routes (location hash): `#/` home, `#/idle` (opens the snapshot and does
-  nothing else), `#/pipeline/<name>`, `#/run/<completion>`,
-  `#/collection/<collection>`, `#/item/<collection>/<item>`,
+  nothing else), `#/pipeline/<name>[?offset=<n>]`, `#/run/<completion>`,
+  `#/collection/<collection>[?offset=<n>]`, `#/item/<collection>/<item>`,
   `#/content/<cid>` (query 1), `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
   (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`).
+- Pages: a pipeline's runs 50 at a time, a collection's items 500 at a time;
+  `offset` counts snapshot rows. The Store Log tail's runs are all on the
+  first page and counted in its span and in the total (`runCount` plus the
+  tail); a stale collection's total is its block's item count.
 - SQL: only the statements in `web/src/queries.json`.
 - Blocks: fetched from `<base>blocks/<xx>/<cid>`, SHA-256 checked against the
   requested CID, then decoded and checked against the IPLD Schema of §6
@@ -966,6 +970,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-stale-count]` | runs newer than the snapshot; `#stale [data-command]` once past the notice thresholds |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
+| `[data-page]` | on the pipeline and collection views: `data-first`, `data-last` (1-based, inclusive; 0 and the offset's rows when empty) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |

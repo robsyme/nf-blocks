@@ -12,5 +12,7 @@
   "runByCompletion": "SELECT completion_cid, manifest_cid, pipeline, run_name, status, possibly_incomplete, finished_at FROM run WHERE completion_cid = ?",
   "runsKnown": "SELECT completion_cid FROM run WHERE completion_cid IN (SELECT value FROM json_each(?))",
   "collectionByCid": "SELECT collection_cid, completion_cid, output_name FROM collection WHERE collection_cid = ?",
-  "collectionItems": "SELECT item_cid FROM collection_item WHERE collection_cid = ? ORDER BY item_cid LIMIT ? OFFSET ?"
+  "collectionItems": "SELECT item_cid FROM collection_item WHERE collection_cid = ? ORDER BY item_cid LIMIT ? OFFSET ?",
+  "runCount": "SELECT count(*) AS n FROM run WHERE pipeline = ?",
+  "collectionItemCount": "SELECT count(*) AS n FROM collection_item WHERE collection_cid = ?"
 }

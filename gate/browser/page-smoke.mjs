@@ -4,7 +4,7 @@
 //   node gate/browser/page-smoke.mjs
 import { chromium } from 'playwright'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync } from 'node:fs'
+import { copyFileSync, mkdtempSync, renameSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
@@ -62,6 +62,14 @@ try {
   await go(page, '#/pipeline/demo')
   assert.deepEqual((await all(page, '[data-run]', ['run', 'source', 'status'])).map(r => [r.run, r.source, r.status]), [
     [runs.R3.completion, 'tail', 'failed'], [runs.R2.completion, 'tail', 'succeeded'], [runs.R1.completion, 'snapshot', 'succeeded']])
+  assert.deepEqual(await all(page, '[data-page]', ['first', 'last', 'total']), [{ first: '1', last: '3', total: '3' }])
+  assert.equal(await page.$('[data-page-next]'), null)
+
+  await go(page, `#/collection/${runs.R1.collection}`)
+  assert.deepEqual(await all(page, '[data-page]', ['first', 'last', 'total']), [{ first: '1', last: '2', total: '2' }])
+  await go(page, `#/collection/${runs.R1.collection}?offset=1`)
+  assert.deepEqual(await all(page, '[data-page]', ['first', 'last', 'total']), [{ first: '2', last: '2', total: '2' }])
+  assert.equal((await page.$$('[data-page-prev]')).length, 1)
 
   await go(page, `#/content/${content.B}`)
   assert.deepEqual((await all(page, '[data-producer]', ['completion', 'item', 'filename'])).map(p => p.completion).sort(),
@@ -94,6 +102,19 @@ try {
   await open(plain, `http://127.0.0.1:8842/index.html#/content/${content.A}`)
   assert.equal(await plain.$eval('#snapshot-mode', e => e.dataset.mode), 'whole')
   assert.equal((await all(plain, '[data-producer]', ['completion'])).length, 1)
+
+  // A snapshot rewritten under an open page (final review finding 1): the
+  // next query that reads a page it has not cached fails with snapshot_changed.
+  const swapped = await context.newPage()
+  await open(swapped, 'http://127.0.0.1:8841/index.html#/idle')
+  const snapshot = join(dir, 'index/v2.sqlite')
+  copyFileSync(snapshot, snapshot + '.orig')
+  writeFileSync(snapshot + '.tmp', Buffer.concat([readFileSync(snapshot), Buffer.alloc(4096)]))
+  renameSync(snapshot + '.tmp', snapshot)
+  await go(swapped, `#/content/${content.B}`)
+  assert.equal(await swapped.evaluate(() => document.body.dataset.state), 'error')
+  assert.equal(await swapped.$eval('[data-error]', e => e.dataset.error), 'snapshot_changed')
+  renameSync(snapshot + '.orig', snapshot)
 
   console.log('page smoke: ok')
 } finally {

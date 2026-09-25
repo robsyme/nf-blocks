@@ -4,7 +4,8 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { installReadOnlyVfs } from '../src/vfs/httpvfs.js'
 import { MemorySource } from '../src/vfs/sources.js'
-import { loadSqlite } from './helpers.mjs'
+import { readFileSync } from 'node:fs'
+import { loadSqlite, makeDb } from './helpers.mjs'
 import { blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
 
 let vfsCount = 0
@@ -123,4 +124,54 @@ test('past 20 stale runs the notice is on', async () => {
   assert.equal(explorer.staleCount, 23)
   assert.ok(explorer.stale.filter(s => s.error?.code === 'block_missing').length === 21)
   assert.equal(explorer.notice, true)
+})
+
+/** A snapshot with 120 runs of `big` and one collection of 1200 items, and no tail. */
+async function openBig() {
+  const sqlite3 = await loadSqlite()
+  const bytes = makeDb(sqlite3, [readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'),
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
+     INSERT INTO run (completion_cid, pipeline, run_name, status, possibly_incomplete, finished_at)
+     SELECT printf('run%03d', i), 'big', printf('R%03d', i), 'succeeded', 0, printf('2026-09-01T%02d:%02d:00.000Z', i / 60, i % 60) FROM n`,
+    "INSERT INTO collection VALUES ('coll', 'run001', 'aligned')",
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
+     INSERT INTO collection_item SELECT 'coll', printf('item%04d', i) FROM n`])
+  return Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(bytes),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: async () => new Response('', { status: 404 }) }),
+    listFn: async () => [] })
+}
+
+test('a pipeline\'s runs come a page at a time, with where the page is in the whole (final review finding 2)', async () => {
+  const explorer = await openBig()
+  const first = await explorer.runPage('big')
+  assert.equal(first.rows.length, 50)
+  assert.equal(first.rows[0].completion_cid, 'run120')
+  assert.deepEqual([first.first, first.last, first.total, first.next, first.prev], [1, 50, 120, 50, null])
+  const last = await explorer.runPage('big', { offset: 100 })
+  assert.deepEqual(last.rows.map(r => r.completion_cid), Array.from({ length: 20 }, (_, i) => `run${String(20 - i).padStart(3, '0')}`))
+  assert.deepEqual([last.first, last.last, last.total, last.next, last.prev], [101, 120, 120, null, 50])
+})
+
+test('the tail\'s runs are on the first page and counted in its span and the total', async () => {
+  const { explorer, member } = await open()
+  const page = await explorer.runPage('demo', { limit: 1 })
+  assert.deepEqual(page.rows.map(r => r.completion_cid), [member.runs.R3.completion, member.runs.R2.completion, member.runs.R1.completion])
+  assert.deepEqual([page.first, page.last, page.total, page.next, page.prev], [1, 3, 3, null, null])
+})
+
+test('a collection\'s items come a page at a time, with its item count', async () => {
+  const explorer = await openBig()
+  const first = await explorer.collection('coll')
+  assert.equal(first.items.length, 500)
+  assert.deepEqual([first.first, first.last, first.total, first.next, first.prev], [1, 500, 1200, 500, null])
+  const last = await explorer.collection('coll', { offset: 1000 })
+  assert.equal(last.items[0], 'item1001')
+  assert.deepEqual([last.first, last.last, last.total, last.next, last.prev], [1001, 1200, 1200, null, 500])
+})
+
+test('a stale collection pages its block\'s items the same way', async () => {
+  const { explorer, member } = await open()
+  const c = await explorer.collection(member.runs.R2.collection, { limit: 1 })
+  assert.equal(c.items.length, 1)
+  assert.deepEqual([c.first, c.last, c.total, c.next, c.prev], [1, 1, 2, 1, null])
 })

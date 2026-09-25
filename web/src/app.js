@@ -15,9 +15,9 @@ import * as views from './views.js'
 const ROUTES = [
   ['home', /^#?\/?$/, (ex) => views.home(ex)],
   ['idle', /^#\/idle$/, () => views.idle()],
-  ['pipeline', /^#\/pipeline\/([^/]+)$/, (ex, m) => views.pipeline(ex, decodeURIComponent(m[1]))],
+  ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0))],
   ['run', /^#\/run\/([^/]+)$/, (ex, m) => views.run(ex, m[1])],
-  ['collection', /^#\/collection\/([^/]+)$/, (ex, m) => views.collection(ex, m[1])],
+  ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.collection(ex, m[1], Number(m[2] ?? 0))],
   ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m) => views.item(ex, m[1], m[2])],
   ['content', /^#\/content\/([^/]+)$/, (ex, m, ctx) => views.content(ex, m[1], ctx)],
   ['latest', /^#\/latest\/([^/]+)$/, (ex, m) => views.latest(ex, decodeURIComponent(m[1]))],
