@@ -790,9 +790,42 @@ nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
 
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
-on a usage error. An unpinned plugin id makes Nextflow prefetch registry
-metadata for `nf-blocks`; set `NXF_OFFLINE=true` when the plugin was installed
-locally (the Gate does).
+on a usage error.
+
+**No offline invocation of `nextflow plugin nf-blocks:<verb>` works against a
+plugin that exists only in a local `NXF_PLUGINS_DIR`, not on the plugin
+registry** (checked against v26.04.6). `CmdPlugin.run()` calls
+`Plugins.start(target)` and then looks the plugin instance back up with
+`Plugins.manager.getPlugin(target)`, using the same string both times
+(`CmdPlugin.groovy`). Unpinned (`target = 'nf-blocks'`), `PluginsFacade`'s
+`manager.loadPlugins()` never finds it: in the mode the plain `nextflow`
+launcher script selects (`NXF_HOME` set → `LocalPluginManager`), that scan
+targets a fresh per-process directory under `Const.appCacheDir/plr/<uuid>`,
+never `NXF_PLUGINS_DIR` (`LocalPluginManager.groovy`), so the plugin is
+"not yet loaded" and `PluginUpdater.load0` throws `Cannot find version for
+nf-blocks plugin -- plugin versions MUST be specified in offline mode`
+regardless of `NXF_OFFLINE` (`PluginUpdater.groovy:346`). Pinning the version
+on the command line (`nf-blocks@0.1.0:snapshot`) does let `Plugins.start`
+load and start it, but `CmdPlugin` then calls
+`Plugins.manager.getPlugin('nf-blocks@0.1.0')` — the wrapper is registered
+under the bare id `nf-blocks` from its manifest, so the lookup returns null
+and the run aborts with `Cannot find target plugin: nf-blocks@0.1.0` before
+`CasCommands` ever runs. `nextflow run` is unaffected: `Plugins.load(config)`
+reads the pinned version straight from the `plugins {}` config block and
+calls `PluginUpdater.installPlugin` with it directly, never consulting
+`manager.getPlugin()` first, which is why the Gate's `nextflow run . -c
+gate.config` already works with `id 'nf-blocks@0.1.0'` pinned there. Verified
+2026-09-25, Task 6: both the unpinned and the `@version`-pinned forms of
+`nextflow plugin nf-blocks:snapshot` fail as above under `NXF_OFFLINE=true`
+against a `make gate` store; `CasCommands.run()` was instead exercised
+directly (bypassing `CmdPlugin`/`PluginExecAware`) against that same store
+and produced `wrote <store>/index/v2.sqlite (180224 bytes, 5 runs, watermark
+...)`. Until nf-blocks is registered somewhere Nextflow's plugin resolver can
+reach, or this Nextflow limitation is fixed, Task 12's `tier.sh` cannot drive
+the verbs through the real `nextflow plugin` CLI offline; it should exercise
+`CasCommands`/`CasPlugin` at the unit level (as `CasCommandsTest` does) and
+rely on `nextflow run` (which does work) for anything that needs a live
+plugin inside a pipeline.
 
 ### What a member serves
 

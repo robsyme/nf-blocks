@@ -1,9 +1,12 @@
 package robsyme.cas
 
 import groovy.transform.CompileStatic
+import nextflow.cli.Launcher
+import nextflow.cli.PluginExecAware
 import nextflow.file.FileHelper
 import nextflow.plugin.BasePlugin
 import org.pf4j.PluginWrapper
+import robsyme.cas.cli.CasCommands
 import robsyme.cas.nio.CasFileSystemProvider
 
 /**
@@ -11,7 +14,7 @@ import robsyme.cas.nio.CasFileSystemProvider
  * See DESIGN.md at the repository root for the contract this plugin implements.
  */
 @CompileStatic
-class CasPlugin extends BasePlugin {
+class CasPlugin extends BasePlugin implements PluginExecAware {
 
     private static CasFileSystemProvider provider
 
@@ -35,5 +38,11 @@ class CasPlugin extends BasePlugin {
         if( provider == null )
             provider = FileHelper.getOrInstallProvider(CasFileSystemProvider)
         return provider
+    }
+
+    /** `nextflow plugin nf-blocks:<cmd>` (DESIGN.md §15). */
+    @Override
+    int exec(Launcher launcher, String pluginId, String cmd, List<String> args) {
+        return new CasCommands().exec(launcher, pluginId, cmd, args)
     }
 }
