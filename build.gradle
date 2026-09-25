@@ -1,5 +1,8 @@
+import com.github.gradle.node.npm.task.NpmTask
+
 plugins {
     id 'io.nextflow.nextflow-plugin' version '1.0.0-beta.15'
+    id 'com.github.node-gradle.node' version '7.1.0'
 }
 
 version = '0.1.0'
@@ -16,6 +19,47 @@ nextflowPlugin {
         'robsyme.cas.ext.CasExtension',
         'robsyme.cas.CasConfigScope',
     ]
+}
+
+// The explorer page (block explorer spec section 2): an npm project under web/,
+// built on a pinned Node and packaged into the plugin jar. Its output is not committed.
+node {
+    download = true
+    version = '24.21.0'
+    nodeProjectDir = file('web')
+    npmInstallCommand = 'ci'
+}
+
+tasks.register('webBuild', NpmTask) {
+    description = 'Builds web/dist/index.html, the self-contained explorer page'
+    group = 'build'
+    dependsOn 'npmInstall'
+    args = ['run', 'build']
+    inputs.dir('web/src')
+    inputs.file('web/build.mjs')
+    inputs.file('web/schema-gen.mjs')
+    inputs.file('web/package-lock.json')
+    inputs.file('DESIGN.md')
+    outputs.file('web/dist/index.html')
+}
+
+tasks.register('webTest', NpmTask) {
+    description = 'Runs the page unit tests (node --test)'
+    group = 'verification'
+    dependsOn 'npmInstall'
+    args = ['test']
+    inputs.dir('web/src')
+    inputs.dir('web/test')
+    inputs.file('web/schema-gen.mjs')
+    inputs.file('web/package-lock.json')
+    inputs.file('DESIGN.md')
+    inputs.file('src/main/groovy/robsyme/cas/core/Index.groovy')
+    outputs.upToDateWhen { false }
+}
+
+processResources {
+    dependsOn 'webBuild'
+    from('web/dist/index.html') { into 'robsyme/cas/explorer' }
 }
 
 repositories {
@@ -80,9 +124,33 @@ tasks.register('dependencyCheck') {
                 }
             }
         }
+        // Block explorer spec section 1.4: the npm lockfiles fall under this check too.
+        ['web', 'gate/browser'].each { String dir ->
+            final def manifest = file("${dir}/package.json")
+            final def lock = file("${dir}/package-lock.json")
+            if( !manifest.exists() )
+                return
+            final def pkg = new groovy.json.JsonSlurper().parse(manifest) as Map
+            ['dependencies', 'devDependencies'].each { String section ->
+                ((pkg[section] ?: [:]) as Map).each { name, version ->
+                    if( !(version ==~ /\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?/) )
+                        offenders << "${dir}/package.json: ${name} is '${version}', not an exact released version"
+                }
+            }
+            if( !lock.exists() ) {
+                offenders << "${dir}/package-lock.json is missing"
+                return
+            }
+            final def packages = ((new groovy.json.JsonSlurper().parse(lock) as Map).packages ?: [:]) as Map
+            packages.each { path, entry ->
+                final def resolved = (entry as Map).resolved as String
+                if( path && !(entry as Map).link && !(resolved?.startsWith('https://registry.npmjs.org/')) )
+                    offenders << "${dir}/package-lock.json: ${path} resolves from '${resolved}', not https://registry.npmjs.org/"
+            }
+        }
         if( offenders )
             throw new GradleException("Unreleased or machine-local dependency:\n  " + offenders.join('\n  '))
     }
 }
 
-check.dependsOn memoryBoundTest, dependencyCheck
+check.dependsOn memoryBoundTest, dependencyCheck, webTest
