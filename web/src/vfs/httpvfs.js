@@ -85,5 +85,6 @@ export function installReadOnlyVfs(sqlite3, name) {
     register(key, source) { sources.set(key, source) },
     unregister(key) { sources.delete(key) },
     get lastError() { return state.lastError },
+    clearError() { state.lastError = null },
   }
 }

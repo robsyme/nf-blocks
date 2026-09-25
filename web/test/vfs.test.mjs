@@ -109,6 +109,22 @@ test('a failed fetch surfaces as a query error with the cause', async () => {
   db.close()
 })
 
+test('after a failed read, a later successful query leaves no lastError', async () => {
+  const sqlite3 = await loadSqlite()
+  const bytes = makeDb(sqlite3, statements)
+  let calls = 0
+  // Call 1 opens the file; call 2 (the first query) fails once, then reads succeed again.
+  const flaky = (a, b) => { if (++calls === 2) throw new Error('network down'); return bytes.subarray(a, b + 1) }
+  const { db, vfs } = await openOver(new ChunkedSource(bytes.length, flaky))
+  assert.throws(() => db.selectValue('SELECT count(*) FROM producer'))
+  assert.match(String(vfs.lastError?.message), /network down/)
+  vfs.clearError()
+  assert.equal(vfs.lastError, null)
+  assert.equal(db.selectValue('SELECT count(*) FROM producer'), ROWS)
+  assert.equal(vfs.lastError, null)
+  db.close()
+})
+
 test('the whole-file source answers the same', async () => {
   const sqlite3 = await loadSqlite()
   const bytes = makeDb(sqlite3, statements)

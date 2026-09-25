@@ -19,6 +19,7 @@ self.onmessage = async ({ data: message }) => {
 }
 
 async function handle(message) {
+  vfs?.clearError()
   switch (message.op) {
     case 'open': {
       if (!sqlite3) {

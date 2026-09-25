@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nf-blocks explorer</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --bg: #ffffff; --muted: #6e6e73; --line: #d2d2d7; --bad: #b3261e; --warn: #7a4f00; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --bg: #161617; --muted: #a1a1a6; --line: #3a3a3c; --bad: #ff8a80; --warn: #ffd180; } }
+  body { font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0 auto; max-width: 72rem; padding: 0 16px 4rem; }
+  header { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; align-items: baseline; border-bottom: 1px solid var(--line); padding: .75rem 0; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; }
+  code, .cid { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .muted { color: var(--muted); } [data-error] { color: var(--bad); } #stale[data-notice] { color: var(--warn); }
+  a { color: inherit; } form { display: grid; gap: .5rem; margin: 1rem 0; } fieldset { border: 1px solid var(--line); }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body data-state="loading" data-render="0" data-route="open">
+<header>
+  <strong>nf-blocks explorer</strong>
+  <span id="where" class="muted"></span>
+  <span id="snapshot-mode" class="muted"></span>
+  <span id="stale"></span>
+  <nav id="members"></nav>
+</header>
+<main id="main"><p class="muted">Opening the snapshot...</p></main>
+<!--APP-->
+</body>
+</html>

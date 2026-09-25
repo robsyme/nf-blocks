@@ -73,7 +73,12 @@ export async function openSnapshot(url, { cap = DEFAULT_CAP_BYTES, wasm, createW
   const wasmCopy = wasm.slice()
   const transfer = [wasmCopy.buffer]
   if (probe.bytes) transfer.push(probe.bytes.buffer)
-  await call({ op: 'open', url: new URL(url, globalThis.location?.href).href, mode: probe.mode, size: probe.size, head: probe.head, bytes: probe.bytes, wasm: wasmCopy }, transfer)
+  try {
+    await call({ op: 'open', url: new URL(url, globalThis.location?.href).href, mode: probe.mode, size: probe.size, head: probe.head, bytes: probe.bytes, wasm: wasmCopy }, transfer)
+  } catch (e) {
+    worker.terminate()
+    throw e
+  }
   return {
     mode: probe.mode,
     size: probe.size,

@@ -33,3 +33,4 @@ const wasm = readFileSync(path('node_modules/@sqlite.org/sqlite-wasm/dist/sqlite
 const inlined = { __WORKER_SOURCE__: JSON.stringify(worker), __WASM_BASE64__: JSON.stringify(wasm.toString('base64')) }
 
 await page('bench/bench.js', 'bench/bench.html', 'bench.html', inlined)
+await page('src/app.js', 'src/index.html', 'index.html', inlined)
