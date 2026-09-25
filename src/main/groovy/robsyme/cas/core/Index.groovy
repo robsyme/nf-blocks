@@ -34,6 +34,31 @@ class Index implements Closeable {
     /** Bumped whenever the schema below changes; a mismatch deletes and recreates. */
     static final int SCHEMA_VERSION = 2
 
+    // The SQL the block explorer's page runs too (DESIGN.md §12, §15). The page
+    // holds a copy in web/src/queries.json; ExplorerQueriesTest pins them equal.
+
+    static final String SQL_PRODUCERS_OF =
+        'SELECT content_cid, item_cid, collection_cid, completion_cid, filename FROM producer WHERE content_cid = ?'
+
+    static final String SQL_LATEST_SUCCESSFUL_RUN =
+        "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 1"
+
+    // ci.collection_cid rides along so the page can link each item without a
+    // second lookup; it is on the collection_item row already read, so it costs no page.
+    static final String SQL_ITEMS_BASE =
+        'SELECT ci.item_cid, ci.collection_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE c.completion_cid = ? AND c.output_name = ?'
+
+    static final String SQL_ITEMS_PREDICATE =
+        ' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?)'
+
+    static final String SQL_ITEMS_PREDICATE_NULL =
+        ' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value IS NULL)'
+
+    static final String SQL_ITEMS_ORDER = ' ORDER BY ci.item_cid'
+
+    static final String SQL_COLLECTIONS_OF =
+        'SELECT output_name, collection_cid FROM collection WHERE completion_cid = ? ORDER BY output_name'
+
     private static final String META_WATERMARK = 'store_log_watermark'
     private static final String META_SCANNED = 'block_scan'
     private static final String META_STALE = 'stale'
@@ -144,9 +169,9 @@ class Index implements Closeable {
         }
     }
 
-    /** The schema of DESIGN.md §12, verbatim in its column names. */
-    private static void createSchema(Connection connection) {
-        final List<String> ddl = [
+    /** Every CREATE statement of the schema of DESIGN.md §12, in order. */
+    static List<String> ddl() {
+        return [
             'CREATE TABLE schema_version(version INTEGER NOT NULL)',
             '''CREATE TABLE run(
                  completion_cid TEXT PRIMARY KEY, manifest_cid TEXT, pipeline TEXT, revision TEXT,
@@ -176,9 +201,13 @@ class Index implements Closeable {
             // this build's own bookkeeping rather than indexed block content.
             'CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)',
         ]
+    }
+
+    /** The schema of DESIGN.md §12, verbatim in its column names. */
+    private static void createSchema(Connection connection) {
         final Statement statement = connection.createStatement()
         try {
-            for( String sql : ddl )
+            for( String sql : ddl() )
                 statement.executeUpdate(sql)
         }
         finally {
@@ -429,6 +458,11 @@ class Index implements Closeable {
         return META_WATERMARK + ':' + member
     }
 
+    /** The member's Store Log watermark, the newest entry name catch-up has read, or null. */
+    String watermark(String member) {
+        return meta(watermarkKey(member))
+    }
+
     /**
      * Rebuilds from the store alone into a temporary file beside the target,
      * then renames it into place. Reads only DAG-CBOR blocks, never Nextflow's
@@ -497,8 +531,7 @@ class Index implements Closeable {
     /** Every item, in every run, that carries this content address. */
     List<ProducerRow> producersOf(Cid content) {
         final List<ProducerRow> rows = new ArrayList<ProducerRow>()
-        query('SELECT content_cid, item_cid, collection_cid, completion_cid, filename FROM producer WHERE content_cid = ?',
-            [content.toString()]) { ResultSet rs ->
+        query(SQL_PRODUCERS_OF, [content.toString()]) { ResultSet rs ->
             rows.add(new ProducerRow(Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2)),
                 Cid.parse(rs.getString(3)), Cid.parse(rs.getString(4)), rs.getString(5)))
         }
@@ -510,9 +543,7 @@ class Index implements Closeable {
      * possibly incomplete. Ties on the finish time break by address.
      */
     Optional<Cid> latestSuccessfulRun(String pipeline) {
-        return firstCid('''SELECT completion_cid FROM run
-                           WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0
-                           ORDER BY finished_at DESC, completion_cid ASC LIMIT 1''', [pipeline])
+        return firstCid(SQL_LATEST_SUCCESSFUL_RUN, [pipeline])
     }
 
     /**
@@ -521,10 +552,7 @@ class Index implements Closeable {
      * several keys intersect. An empty predicate is every item.
      */
     List<Cid> items(Cid completion, String outputName, Map<String, Object> where) {
-        final StringBuilder sql = new StringBuilder(
-            '''SELECT ci.item_cid FROM collection_item ci
-               JOIN collection c ON c.collection_cid = ci.collection_cid
-               WHERE c.completion_cid = ? AND c.output_name = ?''')
+        final StringBuilder sql = new StringBuilder(SQL_ITEMS_BASE)
         final List<Object> parameters = new ArrayList<Object>([completion.toString(), outputName] as List<Object>)
         for( Map.Entry<String, Object> entry : (where ?: [:]).entrySet() ) {
             final AttrRow row = MetadataView.scalar(entry.key, entry.value)
@@ -533,18 +561,19 @@ class Index implements Closeable {
                 log.warn("the predicate on '${entry.key}' is longer than ${MetadataView.VALUE_CAP_BYTES} bytes and cannot be matched")
                 return []
             }
-            sql.append(' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ?')
             parameters.add(row.path)
             parameters.add(row.type)
             if( row.value == null ) {
-                sql.append(' AND a.value IS NULL)')
+                sql.append(SQL_ITEMS_PREDICATE_NULL)
             }
             else {
-                sql.append(' AND a.value = ?)')
+                sql.append(SQL_ITEMS_PREDICATE)
                 parameters.add(row.value)
             }
         }
-        sql.append(' ORDER BY ci.item_cid')
+        sql.append(SQL_ITEMS_ORDER)
+        // SQL_ITEMS_BASE also selects ci.collection_cid; only column 1 (item_cid)
+        // is read here, since Index.items returns items, not (item, collection) pairs.
         final List<Cid> items = new ArrayList<Cid>()
         query(sql.toString(), parameters) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
         return items
@@ -565,8 +594,7 @@ class Index implements Closeable {
     /** The run's outputs by name. */
     Map<String, Cid> collectionsOf(Cid completion) {
         final Map<String, Cid> collections = new LinkedHashMap<String, Cid>()
-        query('SELECT output_name, collection_cid FROM collection WHERE completion_cid = ? ORDER BY output_name',
-            [completion.toString()]) { ResultSet rs ->
+        query(SQL_COLLECTIONS_OF, [completion.toString()]) { ResultSet rs ->
             collections.put(rs.getString(1), Cid.parse(rs.getString(2)))
         }
         return collections
