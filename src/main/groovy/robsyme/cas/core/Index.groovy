@@ -399,7 +399,7 @@ class Index implements Closeable {
                     ingestTolerant(store, cid, member)
                 return
             default:
-                log.debug("store log entry for ${cid} is a ${kind.token}; ingested from Task 4 and Task 6 on")
+                log.debug("store log entry for ${cid} is a ${kind.token}; not indexed by this build yet")
         }
     }
 
@@ -543,7 +543,10 @@ class Index implements Closeable {
                     fresh.recordLogEntry(entry, member)
             }
             catch( Exception e ) {
-                log.debug("could not read the Store Log to fill log_entry: ${e.message}")
+                // A member with no log/ directory lists empty rather than throwing,
+                // so reaching this catch is a real failure, not an absent log
+                // (DESIGN.md §0 rule 3: derived-structure failures log at warn).
+                warnOnce('rebuild-log:' + member, "could not read the Store Log to fill log_entry: ${e.message}")
             }
             // Carry the Store Log watermark forward to the newest logged entry, so
             // the next catchUp reads only what arrives after this rebuild rather
