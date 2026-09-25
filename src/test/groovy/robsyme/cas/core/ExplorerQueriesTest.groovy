@@ -1,6 +1,5 @@
 package robsyme.cas.core
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
@@ -106,6 +105,18 @@ class ExplorerQueriesTest extends Specification {
 
         cleanup:
         index.close()
+    }
+
+    def 'the page tests build their databases from the index schema itself'() {
+        given:
+        final def rs = connection.createStatement().executeQuery(
+            "SELECT sql || ';' FROM sqlite_master WHERE sql IS NOT NULL ORDER BY rowid")
+        final List<String> statements = []
+        while( rs.next() )
+            statements << rs.getString(1)
+
+        expect:
+        Path.of('web/test/fixtures/schema.sql').text.trim() == statements.join('\n').trim()
     }
 
     def 'the watermark is readable per member'() {

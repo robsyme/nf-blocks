@@ -1,11 +1,15 @@
 // Builds single-file pages into dist/: the app, the Worker source and
 // sqlite3.wasm are inlined so a member can carry the page as one index.html
-// (DESIGN.md §15). `node build.mjs` builds every page.
+// (DESIGN.md §15). The IPLD Schema is regenerated from DESIGN.md first.
 import * as esbuild from 'esbuild'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { extractSchema } from './schema-gen.mjs'
 
 const here = new URL('.', import.meta.url)
 const path = (p) => new URL(p, here).pathname
+
+mkdirSync(path('src/generated'), { recursive: true })
+writeFileSync(path('src/generated/schema.json'), JSON.stringify(extractSchema(readFileSync(path('../DESIGN.md'), 'utf8'))))
 
 async function bundle(entry, define = {}) {
   const result = await esbuild.build({
