@@ -16,7 +16,7 @@ import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
-import robsyme.cas.core.RunLog
+import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
 
 /**
@@ -122,7 +122,7 @@ class CasSession {
     }
 
     /**
-     * Brings the index up to date from every store member's run log, so a read
+     * Brings the index up to date from every store member's Store Log, so a read
      * across a composition (a {@code fromStore} through {@code [out, lab]}) sees
      * the runs recorded in a read-only member and not only the writable one
      * (DESIGN.md §12). Each member advances its own watermark, so this is cheap
@@ -132,7 +132,7 @@ class CasSession {
     void catchUpIndex(Index index) {
         for( BlockStore member : members() ) {
             try {
-                index.catchUp(member, RunLog.of(member), member.alias())
+                index.catchUp(member, StoreLog.of(member), member.alias())
             }
             catch( Exception e ) {
                 log.warn("could not catch up the index from store member '${member.alias()}'; it is derived: ${e.message}", e)

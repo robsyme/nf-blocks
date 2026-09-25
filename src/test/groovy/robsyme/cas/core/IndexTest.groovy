@@ -513,7 +513,7 @@ class IndexTest extends Specification {
     def 'catchUp keeps a per-member watermark so a newer member never hides an older one'() {
         given: 'the writable member has a newer run, a read-only member an older one'
         def newerInWritable = buildOtherRun([finished_at: '2026-09-03T12:00:00.000Z'], 'newer')
-        RunLog.append(store, newerInWritable, 3_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, newerInWritable, 3_000_000L)
 
         def sharedRoot = tempDir.resolve('shared')
         def shared = new LocalBlockStore(sharedRoot, 'shared', true)
@@ -522,11 +522,11 @@ class IndexTest extends Specification {
             [shared.putDagCbor(Fixtures.outputCollection(
                 shared.putDagCbor(Fixtures.runManifest(run_name: 'older', nf_run_hash: 'hash-older')), 'aligned', []))],
             [finished_at: '2026-09-03T09:00:00.000Z']))
-        RunLog.append(shared, olderInShared, 1_000_000L)   // an earlier reverse timestamp than the writable's
+        StoreLog.append(shared, StoreLogKind.RUN, olderInShared, 1_000_000L)   // an earlier reverse timestamp than the writable's
 
         when: 'the writable member is caught up first, then the read-only member'
-        index.catchUp(store, RunLog.of(store), 'lab')
-        index.catchUp(shared, RunLog.of(shared), 'shared')
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        index.catchUp(shared, StoreLog.of(shared), 'shared')
 
         then: 'both runs are indexed; a single global watermark would have skipped the older shared run'
         count('run') == 2
@@ -535,12 +535,12 @@ class IndexTest extends Specification {
         scalar("SELECT count(*) FROM run WHERE member = 'lab'") == 1
     }
 
-    def 'catchUp ingests only the run log entries past the watermark'() {
+    def 'catchUp ingests only entries it has not indexed'() {
         given:
         def first = buildRun()
-        RunLog.append(store, first, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, first, 1_000_000L)
         def counting = new Counting(store)
-        def log = RunLog.of(store)
+        def log = StoreLog.of(store)
 
         when:
         index.catchUp(counting, log, 'lab')
@@ -551,7 +551,7 @@ class IndexTest extends Specification {
 
         when: 'a second run is logged'
         def second = buildOtherRun([finished_at: '2026-09-03T11:00:00.000Z'], 'second')
-        RunLog.append(store, second, 2_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, second, 2_000_000L)
         counting.opens = 0
         counting.opened.clear()
         index.catchUp(counting, log, 'lab')
@@ -592,7 +592,7 @@ class IndexTest extends Specification {
     def 'rebuild carries the run log watermark forward so catchUp does not re-scan'() {
         given: 'a logged, ingested run'
         final completion = buildRun()
-        RunLog.append(store, completion, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, completion, 1_000_000L)
         index.ingestRun(store, completion, 'lab')
 
         when: 'the index is rebuilt from the store'
@@ -600,7 +600,7 @@ class IndexTest extends Specification {
 
         and: 'catchUp runs against a store that records every read'
         final counting = new Counting(store)
-        index.catchUp(counting, RunLog.of(store), 'lab')
+        index.catchUp(counting, StoreLog.of(store), 'lab')
 
         then: 'the already-logged run is behind the carried watermark, so nothing is re-read'
         counting.opens == 0
@@ -608,6 +608,128 @@ class IndexTest extends Specification {
     }
 
     /** Records which blocks the index actually reads. */
+    def 'schema 2 carries the two query 3 indexes'() {
+        expect:
+        indexNames().containsAll(['collection_completion_output', 'collection_item_collection'])
+        Index.SCHEMA_VERSION == 2
+    }
+
+    private List<String> indexNames() {
+        final List<String> names = []
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${dbFile}").withCloseable { c ->
+            c.createStatement().executeQuery("SELECT name FROM sqlite_master WHERE type = 'index'").withCloseable { rs ->
+                while( rs.next() ) names << rs.getString(1)
+            }
+        }
+        return names
+    }
+
+    def 'query 3 is served by the collection indexes, not a scan'() {
+        given:
+        final String sql = '''EXPLAIN QUERY PLAN SELECT ci.item_cid FROM collection_item ci
+               JOIN collection c ON c.collection_cid = ci.collection_cid
+               WHERE c.completion_cid = ? AND c.output_name = ?'''
+        final List<String> plan = []
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${dbFile}").withCloseable { c ->
+            c.prepareStatement(sql).withCloseable { st ->
+                st.setString(1, 'x'); st.setString(2, 'y')
+                st.executeQuery().withCloseable { rs -> while( rs.next() ) plan << rs.getString('detail') }
+            }
+        }
+
+        expect:
+        plan.any { it.contains('collection_completion_output') }
+        plan.any { it.contains('collection_item_collection') }
+        !plan.any { it.startsWith('SCAN ci') || it.startsWith('SCAN collection_item') }
+    }
+
+    def 'an entry written behind the watermark by a skewed clock is picked up'() {
+        given: 'a run logged and caught up at t = 20 min'
+        def first = buildRun()
+        StoreLog.append(store, StoreLogKind.RUN, first, 20 * 60_000L)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        when: 'another host logs a run stamped 5 minutes earlier'
+        def skewed = buildOtherRun([finished_at: '2026-09-03T11:00:00.000Z'], 'skewed')
+        StoreLog.append(store, StoreLogKind.RUN, skewed, 15 * 60_000L)
+        def counting = new Counting(store)
+        index.catchUp(counting, StoreLog.of(store), 'lab')
+
+        then: 'the skewed run is indexed, and the already-indexed run is not re-read'
+        count('run') == 2
+        counting.opened.contains(skewed)
+        !counting.opened.contains(first)
+    }
+
+    def 'the same run logged twice yields one run row'() {
+        given:
+        def completion = buildRun()
+        StoreLog.append(store, StoreLogKind.RUN, completion, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, completion, 1_000_001L)
+
+        when:
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        count('run') == 1
+    }
+
+    def 'an entry whose block is absent does not stop catch-up'() {
+        given:
+        def present = buildRun()
+        def absent = Cid.of(Cid.DAG_CBOR, Hashing.sha256('never stored'.getBytes('UTF-8')))
+        StoreLog.append(store, StoreLogKind.RUN, present, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.RUN, absent, 2_000_000L)
+
+        when:
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        noExceptionThrown()
+        count('run') == 1
+        and: 'the watermark still advanced past the absent entry'
+        meta('store_log_watermark:lab') == StoreLog.entryName(StoreLogKind.RUN, absent, 2_000_000L)
+    }
+
+    def 'selection and claim entries are listed but not ingested yet'() {
+        given:
+        def completion = buildRun()
+        StoreLog.append(store, StoreLogKind.RUN, completion, 1_000_000L)
+        StoreLog.append(store, StoreLogKind.SELECTION, Cid.of(Cid.DAG_CBOR, Hashing.sha256('s'.getBytes('UTF-8'))), 2_000_000L)
+
+        when:
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        then:
+        noExceptionThrown()
+        count('run') == 1
+    }
+
+    def 'a store with only a v1 runs/ directory is still answered after the schema 2 rebuild'() {
+        given: 'a run whose blocks exist, logged only in the old layout'
+        def completion = buildRun()
+        def runs = storeRoot.resolve('runs')
+        java.nio.file.Files.createDirectories(runs)
+        java.nio.file.Files.createFile(runs.resolve("${String.format('%013d', 9999999999999L - 1_000_000L)}-${completion}"))
+
+        when: 'the index is rebuilt, as a schema bump does'
+        index.rebuild(store, 'lab')
+
+        then:
+        count('run') == 1
+    }
+
+    private String meta(String key) {
+        String value = null
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${dbFile}").withCloseable { c ->
+            c.prepareStatement('SELECT value FROM meta WHERE key = ?').withCloseable { st ->
+                st.setString(1, key)
+                st.executeQuery().withCloseable { rs -> if( rs.next() ) value = rs.getString(1) }
+            }
+        }
+        return value
+    }
+
     static class Counting implements BlockStore {
         final BlockStore delegate
         int opens = 0

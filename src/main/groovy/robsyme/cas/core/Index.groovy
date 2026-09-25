@@ -31,9 +31,9 @@ import groovy.util.logging.Slf4j
 class Index implements Closeable {
 
     /** Bumped whenever the schema below changes; a mismatch deletes and recreates. */
-    static final int SCHEMA_VERSION = 1
+    static final int SCHEMA_VERSION = 2
 
-    private static final String META_WATERMARK = 'run_log_watermark'
+    private static final String META_WATERMARK = 'store_log_watermark'
     private static final String META_STALE = 'stale'
 
     /** A metadata block far larger than this is not one of ours; refuse to hold it. */
@@ -156,6 +156,8 @@ class Index implements Closeable {
             'CREATE TABLE collection(collection_cid TEXT PRIMARY KEY, completion_cid TEXT, output_name TEXT)',
             'CREATE TABLE item(item_cid TEXT PRIMARY KEY)',
             'CREATE TABLE collection_item(collection_cid TEXT, item_cid TEXT)',
+            'CREATE INDEX collection_completion_output ON collection(completion_cid, output_name)',
+            'CREATE INDEX collection_item_collection ON collection_item(collection_cid)',
             '''CREATE TABLE producer(
                  content_cid TEXT, item_cid TEXT, collection_cid TEXT, completion_cid TEXT, filename TEXT)''',
             'CREATE INDEX producer_content_cid ON producer(content_cid)',
@@ -310,21 +312,41 @@ class Index implements Closeable {
     }
 
     /**
-     * Ingests every Run Log entry newer than the stored watermark, oldest
-     * first, then advances the watermark to the newest entry seen.
+     * Ingests every Store Log entry this index has not seen, oldest first,
+     * then advances the watermark to the newest entry listed. Re-reads the
+     * overlap window before the watermark (StoreLog.OVERLAP_MILLIS) so an entry
+     * written behind it is not skipped, and skips runs already indexed so the
+     * overlap costs a listing, never a block read. Only `run` entries are
+     * ingested for now; Selections and Claims arrive with the explorer.
      */
-    void catchUp(BlockStore store, RunLog log, String member) {
-        // The watermark is per member: in a composition each member's run log
-        // advances independently, and a single global watermark would let a
-        // newer member hide an older member's not-yet-seen runs (DESIGN.md §12).
+    void catchUp(BlockStore store, StoreLog storeLog, String member) {
+        // The watermark is per member: in a composition each member's log
+        // advances independently (DESIGN.md §12).
         final String key = watermarkKey(member)
-        final List<RunLogEntry> entries = log.entriesAfter(meta(key))
+        final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
             return
-        // entriesAfter is newest first; ingest in the order the runs finished.
-        for( int i = entries.size() - 1; i >= 0; i-- )
-            ingestRun(store, entries[i].cid, member)
+        // entriesSince is newest first; ingest in the order they were written.
+        for( int i = entries.size() - 1; i >= 0; i-- ) {
+            final StoreLogEntry entry = entries[i]
+            if( entry.kind != StoreLogKind.RUN ) {
+                log.debug("store log entry ${entry.name} is a ${entry.kind.token}; not ingested until the explorer lands")
+                continue
+            }
+            if( isRunIndexed(entry.cid) )
+                continue
+            // An absent RunCompletion is not an error: ingestRun records a
+            // `missing` row and returns, and the run is indexed when it arrives.
+            ingestRun(store, entry.cid, member)
+        }
         setMeta(key, entries[0].name)
+    }
+
+    /** True when a RunCompletion already has its `run` row. */
+    boolean isRunIndexed(Cid completion) {
+        boolean found = false
+        query('SELECT 1 FROM run WHERE completion_cid = ?', [completion.toString()]) { ResultSet rs -> found = true }
+        return found
     }
 
     private static String watermarkKey(String member) {
@@ -343,7 +365,7 @@ class Index implements Closeable {
         try {
             for( Cid completion : runCompletionsIn(store) )
                 fresh.ingestRun(store, completion, member)
-            // Carry the run-log watermark forward to the newest logged entry, so
+            // Carry the Store Log watermark forward to the newest logged entry, so
             // the next catchUp reads only what arrives after this rebuild rather
             // than re-scanning the whole log. Correctness-safe either way.
             carryWatermark(fresh, store, member)
@@ -359,17 +381,17 @@ class Index implements Closeable {
         connection = connect(file)
     }
 
-    /** Sets the fresh index's watermark for this member to the newest run-log entry, if any. */
+    /** Sets the fresh index's watermark for this member to the newest Store Log entry, if any. */
     private static void carryWatermark(Index fresh, BlockStore store, String member) {
         try {
-            final List<RunLogEntry> entries = RunLog.read(store)
+            final List<StoreLogEntry> entries = StoreLog.read(store)
             if( entries )
                 fresh.setMeta(watermarkKey(member), entries[0].name)
         }
         catch( Exception e ) {
-            // The run log is derived; a store with no run-log storage just
+            // The Store Log is derived; a store with no log storage just
             // leaves the watermark empty, which is correct, only slower.
-            log.debug("could not read the run log to carry the watermark forward: ${e.message}")
+            log.debug("could not read the Store Log to carry the watermark forward: ${e.message}")
         }
     }
 
