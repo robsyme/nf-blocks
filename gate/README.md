@@ -152,7 +152,7 @@ A failing line: read `browser/observed.json` for that step and
 
 ## Browser tier B (Selections)
 
-Tier B, milestone 2, assertions 8 to 13 of spec section 1.3. It is local:
+Tier B, milestone 2, assertions 8 to 15 of spec section 1.3. It is local:
 `gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
 Playwright, and needs no network beyond what `explore` itself asks for.
 `GATE_SKIP_BROWSER=1` skips it with tier A.
@@ -165,13 +165,20 @@ its own index under `browser-b/cache`). `prepare` picks, from the Gate's own
 read of the blocks, item A and B of `cold`'s `aligned`, B again through
 `again`'s `aligned` (the same OutputItem in another collection) and C of
 `stats`, and hashes `A.bam`, `B.bam` and `C.stats` in `pipeline-a/work`.
+It also builds a second, read-only member `shared` in `browser-b/shared`
+(only `blocks/` and `log/`, written with the Gate's own encoder): S3 = {A via
+`aligned`} named `from-shared` there and held nowhere else, and a Claim
+`shared-name` superseding `lab`'s name `lab-name` of S4 = {C via `stats`},
+which `prepare` puts in `lab`.
 
-`drive.mjs` then plays five steps with the launch token `explore` printed:
+`drive.mjs` then plays seven steps with the launch token `explore` printed:
 compose `first` = {A, B}; compose `second` = {`first`, B, C}; rename
-`second`; delete it and undo; and two pages renaming it from the same view.
-While `explore` is still up, `browser_b_assert.py probe` replays the page's
-own rename bytes, sends three POSTs that must be refused, and fetches the
-samplesheet of `second` as CSV and JSON. `explore` stops, and
+`second`; delete it and undo; two pages renaming it from the same view;
+compose {A} and save the copy the page offers; and rename S4 to
+`lab-renamed`. While `explore` is still up, `browser_b_assert.py probe`
+replays the page's own rename bytes, sends three POSTs that must be refused,
+dry-runs S4's request, and fetches the samplesheet of `second` as CSV and
+JSON. `explore` stops, and
 `gate/selection` runs in `$GATE_ROOT/selection` over the copy (member `lab`)
 and its own `browser-b/store-out` (member `out`), staging `second` through
 `fromStore(selection:)` and through the CSV's `1` column, and publishing the
@@ -196,12 +203,20 @@ address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
   `stale_supersedes` and shown as `[data-error]`; the Gate's own current
   state of `second` (`dagjson.claim_state`) is the one name `third-a`.
 - B12: no token `403`, a foreign `Origin` `403`, `text/plain` `415`. The
-  three send a Selection no step wrote ({C via `stats`} alone, its Gate
-  address in `probes.json`); the store must not hold it afterwards, and the
+  three send a Selection no step wrote ({A via `aligned`, C via `stats`}, its
+  Gate address in `probes.json`); the store must not hold it afterwards, and the
   block and log counts must not change.
 - B13: both exports answer `200`, their `1` cells are exactly
   `cas://<cid>/<name>` for A, B and C (by item CID), and the cells stage
   once each and hash as B9's files do.
+- B14: a Selection that only the read-only member `shared` holds (built by the
+  Gate, with a name Claim there) is offered as "Save a copy here" with its name
+  prefilled; one click writes it into `lab` at the Gate's address, with one
+  Store Log entry, and a name Claim superseding `shared`'s, so both members
+  together show one current name.
+- B15: `shared` holds a Claim superseding `lab`'s name for a Selection in `lab`;
+  renaming it from the page still succeeds, the composition reports the two
+  names as a conflict, and the endpoint's dry run answers `here` with both.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
 `selection.log` (and `selection-nextflow.log`), beside `scenario.json`,

@@ -2,6 +2,7 @@
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
 import { h, link, cid } from './html.js'
+import { saveChoice, namingRequest } from './save-choice.js'
 
 const enc = encodeURIComponent
 
@@ -324,25 +325,42 @@ export function compose(ex, ctx) {
   const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
   const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
     const members = ctx.tray.toMembers()
+    const saveAndName = async (choice) => {
+      const written = await ctx.write.writer.selection(members)
+      ctx.tray.clear()
+      ctx.trayChanged()
+      const naming = namingRequest(choice, name.value)
+      if (naming) {
+        try {
+          await ctx.write.writer.rename(written.address, naming.name, naming.supersedes)
+        } catch (e) {
+          throw Object.assign(e, { saved: written.address })
+        }
+      }
+      return { address: written.address, href: `#/selection/${written.address}` }
+    }
     const dry = await ctx.write.writer.selection(members, { dryRun: true })
-    if (dry.exists) {
+    const choice = saveChoice(dry)
+    const cancel = h('button', { type: 'button', onclick: () => status.replaceChildren() }, 'cancel')
+    if (choice.state === 'here') {
+      const named = dry.names.length === 0 ? ', unnamed'
+        : dry.names.length === 1 ? ` as ${dry.names[0]}` : ` as ${dry.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-names': JSON.stringify(dry.names) },
-        `This Selection already exists${dry.names.length ? ` as ${dry.names.join(', ')}` : ', unnamed'}. `,
-        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ',
-        h('button', { type: 'button', onclick: () => status.replaceChildren() }, 'cancel'), '.'))
+        `This Selection already exists${named}. `,
+        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ', cancel, '.'))
       return { outcome: 'exists' }
     }
-    const written = await ctx.write.writer.selection(members)
-    ctx.tray.clear()
-    ctx.trayChanged()
-    if (name.value.trim()) {
-      try {
-        await ctx.write.writer.rename(written.address, name.value.trim(), [])
-      } catch (e) {
-        throw Object.assign(e, { saved: written.address })
-      }
+    if (choice.state === 'elsewhere') {
+      if (!name.value.trim() && choice.prefill) name.value = choice.prefill
+      const named = choice.names.length === 0 ? ', unnamed'
+        : choice.names.length === 1 ? ` as ${choice.names[0]}` : ` as ${choice.names.join(', ')} (in conflict)`
+      status.replaceChildren(h('p', { 'data-held-elsewhere': dry.address, 'data-names': JSON.stringify(choice.names) },
+        `This Selection is already held in another member${named}. `,
+        h('button', { type: 'button', id: 'compose-copy', onclick: (e) => ctx.write.run(status, () => saveAndName(choice), e.currentTarget) },
+          'Save a copy here'), ' or ', cancel, '.'))
+      return { outcome: 'elsewhere' }
     }
-    return { address: written.address, href: `#/selection/${written.address}` }
+    return saveAndName(choice)
   }, event.currentTarget) }, 'Save')
   return h('section', {},
     h('h1', {}, 'Compose a Selection'),

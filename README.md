@@ -86,12 +86,15 @@ policy and CORS rule in `DESIGN.md` §15.
 
 A Selection curates Output Items across runs into one named group, without
 copying anything: composing, renaming, deleting and undoing all happen from
-the page opened through `nf-blocks:explore` (the page needs its own
-`?token=` to write, so it must be opened through `explore`, not a plain
-static server). `nextflow plugin nf-blocks:put <file|-> [--dry-run]` builds and writes the
+the page opened through `nf-blocks:explore` (the page needs its own `?token=`
+to write, so it must be opened through `explore`, not a plain static server).
+`nextflow plugin nf-blocks:put <file|-> [--dry-run]` builds and writes the
 same Selection or Claim blocks from a DAG-JSON file on the command line,
 sharing the endpoint's one builder; `-` reads stdin in-process, and from a
 real shell (Nextflow 26.04.6 refuses a bare `-`) use `/dev/stdin` instead.
+Staleness is member-scoped (decision 22): superseding a Claim that only a
+read-only member has already superseded succeeds and leaves a conflict; the
+dry run reports `here` and `name_claims`.
 
 A Selection's items are consumed with `fromStore(selection: <address>)`
 (nested Selections flattened, each item once), or exported as a samplesheet
