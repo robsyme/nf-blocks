@@ -45,6 +45,16 @@ class Index implements Closeable {
     static final String SQL_LATEST_SUCCESSFUL_RUN =
         "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 AND NOT EXISTS (SELECT 1 FROM claim_current cc JOIN claim k ON k.claim_cid = cc.claim_cid WHERE cc.subject_cid = run.completion_cid AND cc.attribute IS NULL AND k.verb = 'delete') ORDER BY finished_at DESC, completion_cid ASC LIMIT 1"
 
+    /** Every item a Selection reaches, nested Selections included, each once (spec section 11). */
+    static final String SQL_SELECTION_ITEMS = '''WITH RECURSIVE reach(cid) AS (
+            SELECT ? UNION SELECT s.child_cid FROM selection_child s JOIN reach r ON s.parent_cid = r.cid)
+        SELECT DISTINCT ci.item_cid FROM collection_item ci JOIN reach r ON ci.collection_cid = r.cid ORDER BY ci.item_cid'''
+
+    private static final String SQL_SELECTIONS_NOT_INDEXED = '''WITH RECURSIVE reach(cid) AS (
+            SELECT ? UNION SELECT s.child_cid FROM selection_child s JOIN reach r ON s.parent_cid = r.cid)
+        SELECT r.cid FROM reach r LEFT JOIN collection c ON c.collection_cid = r.cid AND c.kind = 'selection'
+        WHERE c.collection_cid IS NULL ORDER BY r.cid'''
+
     private static final String SQL_CONFLICTED_DELETIONS_OF_PIPELINE =
         "SELECT DISTINCT run.completion_cid FROM run JOIN claim_current cc ON cc.subject_cid = run.completion_cid WHERE run.pipeline = ? AND cc.attribute IS NULL AND cc.conflicted = 1"
 
@@ -371,8 +381,8 @@ class Index implements Closeable {
      * then advances the watermark to the newest entry listed. Re-reads the
      * overlap window before the watermark (StoreLog.OVERLAP_MILLIS) so an entry
      * written behind it is not skipped, and skips runs already indexed so the
-     * overlap costs a listing, never a block read. Only `run` entries are
-     * ingested for now; Selections and Claims arrive with the explorer.
+     * overlap costs a listing, never a block read. `run`, `selection` and
+     * `claim` entries are ingested.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member) {
         // The watermark is per member: in a composition each member's log
@@ -401,6 +411,10 @@ class Index implements Closeable {
         switch( kind ) {
             case StoreLogKind.RUN:
                 if( !isRunIndexed(cid) )
+                    ingestTolerant(store, kind, cid, member)
+                return
+            case StoreLogKind.SELECTION:
+                if( !isSelectionIndexed(cid) )
                     ingestTolerant(store, kind, cid, member)
                 return
             case StoreLogKind.CLAIM:
@@ -433,6 +447,8 @@ class Index implements Closeable {
         }
         for( Cid completion : found.get(Records.RUN_COMPLETION) )
             ingestLogged(store, StoreLogKind.RUN, completion, member)
+        for( Cid selection : found.get(Records.SELECTION) )
+            ingestLogged(store, StoreLogKind.SELECTION, selection, member)
         for( Cid claim : found.get(Records.CLAIM) )
             ingestLogged(store, StoreLogKind.CLAIM, claim, member)
         setMeta(key, 'done')
@@ -472,6 +488,7 @@ class Index implements Closeable {
         try {
             switch( kind ) {
                 case StoreLogKind.RUN: ingestRun(store, cid, member); break
+                case StoreLogKind.SELECTION: ingestSelection(store, cid, member); break
                 case StoreLogKind.CLAIM: ingestClaim(store, cid, member); break
                 default: return
             }
@@ -534,6 +551,66 @@ class Index implements Closeable {
         return ClaimCurrent.load(connection, subject.toString())
     }
 
+    /**
+     * Indexes one Selection. Idempotent: its rows are replaced. The item
+     * blocks are not read here: an item's metadata is indexed with the run
+     * that produced it, and a Selection may name items another member holds.
+     */
+    void ingestSelection(BlockStore store, Cid selectionCid, String member) {
+        final Map block = readBlock(store, selectionCid, Records.SELECTION)
+        withTransaction {
+            final String text = selectionCid.toString()
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [text])
+            update('DELETE FROM collection_item WHERE collection_cid = ?', [text])
+            update('DELETE FROM selection_child WHERE parent_cid = ?', [text])
+            update('DELETE FROM selection_derived WHERE selection_cid = ?', [text])
+            update("DELETE FROM collection WHERE collection_cid = ? AND kind = 'selection'", [text])
+            if( block == null ) {
+                warnOnce(text, "selection ${selectionCid} has not arrived; it is indexed when it does")
+                insertMissing(null, selectionCid)
+                return
+            }
+            final Selection selection = Selection.fromCbor(block)
+            update("INSERT INTO collection(collection_cid, kind, completion_cid, output_name, asserted_by) VALUES (?, 'selection', NULL, NULL, ?)",
+                [text, selection.assertedBy])
+            for( Selection.Member m : selection.members ) {
+                if( m.nested ) {
+                    update('INSERT INTO selection_child(parent_cid, child_cid) VALUES (?, ?)', [text, m.address.toString()])
+                    continue
+                }
+                update('INSERT OR IGNORE INTO item(item_cid) VALUES (?)', [m.address.toString()])
+                if( m.via.isEmpty() )
+                    update('INSERT INTO collection_item(collection_cid, item_cid, via_cid) VALUES (?, ?, NULL)', [text, m.address.toString()])
+                for( Cid via : m.via )
+                    update('INSERT INTO collection_item(collection_cid, item_cid, via_cid) VALUES (?, ?, ?)', [text, m.address.toString(), via.toString()])
+            }
+            for( Cid derived : selection.derivedFrom )
+                update('INSERT INTO selection_derived(selection_cid, derived_from_cid) VALUES (?, ?)', [text, derived.toString()])
+        }
+    }
+
+    boolean isSelectionIndexed(Cid selectionCid) {
+        boolean found = false
+        query("SELECT 1 FROM collection WHERE collection_cid = ? AND kind = 'selection'", [selectionCid.toString()]) { ResultSet rs -> found = true }
+        return found
+    }
+
+    /**
+     * Every distinct item the Selection reaches, sorted by CID string. Refuses
+     * to answer with a partial set: a Selection reached but not indexed (not
+     * arrived, or held in a member this composition does not include) fails.
+     */
+    List<Cid> selectionItems(Cid selectionCid) {
+        final List<String> absent = new ArrayList<String>()
+        query(SQL_SELECTIONS_NOT_INDEXED, [selectionCid.toString()]) { ResultSet rs -> absent.add(rs.getString(1)) }
+        if( absent )
+            throw new IllegalStateException("selection ${selectionCid} reaches ${absent.size() == 1 ? 'a Selection' : 'Selections'} " +
+                "this index does not hold: ${absent.join(', ')}; it may be in a member this composition does not include")
+        final List<Cid> items = new ArrayList<Cid>()
+        query(SQL_SELECTION_ITEMS, [selectionCid.toString()]) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
+        return items
+    }
+
     /** decision 4: a string as itself, null as NULL, anything else as DAG-JSON text. */
     static String valueText(Object value) {
         if( value == null )
@@ -593,6 +670,8 @@ class Index implements Closeable {
             final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS)
             for( Cid completion : found.get(Records.RUN_COMPLETION) )
                 fresh.ingestRun(store, completion, member)
+            for( Cid selection : found.get(Records.SELECTION) )
+                fresh.ingestSelection(store, selection, member)
             for( Cid claim : found.get(Records.CLAIM) )
                 fresh.ingestClaim(store, claim, member)
             fresh.setMeta(META_SCANNED + ':' + member, 'done')
@@ -680,7 +759,7 @@ class Index implements Closeable {
     }
 
     /** What the scan and rebuild ingest, in dependency order: Claims refer to anything, so last. */
-    private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.CLAIM]
+    private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.SELECTION, Records.CLAIM]
 
     // --------------------------------------------------------------- queries
 

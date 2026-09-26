@@ -55,6 +55,14 @@ class IndexSnapshot {
     private static final String COPY_LOG_ENTRIES =
         'INSERT INTO main.log_entry SELECT cid, kind, NULL, written_at FROM src.log_entry WHERE member = ?'
 
+    /** The Selections the member logged, after the run closure so item and item_attr stay the runs' (spec section 4). */
+    private static final List<String> COPY_SELECTIONS = [
+        "INSERT INTO main.collection SELECT * FROM src.collection WHERE kind = 'selection' AND collection_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'selection')",
+        "INSERT INTO main.collection_item SELECT * FROM src.collection_item WHERE collection_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+        "INSERT INTO main.selection_child SELECT * FROM src.selection_child WHERE parent_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+        "INSERT INTO main.selection_derived SELECT * FROM src.selection_derived WHERE selection_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+    ]
+
     /** The Claims the member's Store Log announced; current state is recomputed from these alone (spec section 4). */
     private static final List<String> COPY_CLAIMS = [
         "INSERT INTO main.claim SELECT * FROM src.claim WHERE claim_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'claim')",
@@ -148,6 +156,9 @@ class IndexSnapshot {
             for( String sql : COPY_CLOSURE )
                 exec(c, sql)
             update(c, COPY_LOG_ENTRIES, [(Object) member])
+            update(c, COPY_SELECTIONS[0], [(Object) member])
+            for( int i = 1; i < COPY_SELECTIONS.size(); i++ )
+                exec(c, COPY_SELECTIONS[i])
             update(c, COPY_CLAIMS[0], [(Object) member])
             exec(c, COPY_CLAIMS[1])
             if( watermark != null )

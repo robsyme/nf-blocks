@@ -716,6 +716,9 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `missing`; and records an unreachable block as `missing` rather than
   aborting the member. Every Store Log entry read is recorded in `log_entry`
   (earliest time per `(cid, member)`); rebuild fills it from the whole log.
+  Selections are ingested from `selection` Store Log entries (spec section
+  11); `Index.selectionItems` resolves nesting with `SQL_SELECTION_ITEMS` and
+  refuses a partial answer.
 - Queries: `producersOf(Cid content) → List<ProducerRow>`;
   `latestSuccessfulRun(String pipeline) → Optional<Cid completion>`;
   `items(Cid completion, String outputName, Map<String,Object> where) → List<Cid item>`;
@@ -780,7 +783,10 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
   those runs, plus the member's `log_entry` rows with `member` NULL.
   Claims: the `claim` and `claim_supersedes` rows of the Claims whose
   `log_entry` names the member, with `claim_current` recomputed from those
-  alone. Selections: Task 6.
+  alone. Selections: those whose `log_entry` names the member, with their
+  `collection_item`, `selection_child` and `selection_derived` rows. An item
+  another member produced keeps its membership row and has no `item_attr`
+  rows; the page shows it as held elsewhere.
 - Same DDL as the cache index (`Index.ddl()`), same `schema_version`.
 - `meta` holds exactly `store_log_watermark` (the member's watermark in the
   cache index, a Store Log entry name; absent when the member has no log) and

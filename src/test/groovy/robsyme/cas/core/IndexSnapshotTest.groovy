@@ -281,4 +281,26 @@ class IndexSnapshotTest extends Specification {
         rows(file, 'SELECT count(*) FROM claim_supersedes') == [[0]]
         rows(file, 'SELECT claim_cid, value, conflicted FROM claim_current') == [[first.toString(), 'first', 0]]
     }
+
+    def 'a member snapshot carries its own Selections; an item held elsewhere keeps its row but no metadata'() {
+        given:
+        final List a = run(lab, 'a', ['A'])
+        final List b = run(shared, 'b', ['B'])
+        final Cid itemA = ((Map<String, Cid>) a[2]).A
+        final Cid itemB = ((Map<String, Cid>) b[2]).B
+        final Cid mine = lab.putDagCbor(new Selection('ada', [Selection.item(itemA, [(Cid) a[1]]), Selection.item(itemB, [(Cid) b[1]])], []).toCbor())
+        StoreLog.append(lab, StoreLogKind.SELECTION, mine, System.currentTimeMillis())
+        final Cid theirs = shared.putDagCbor(new Selection('bob', [Selection.item(itemB, [])], []).toCbor())
+        StoreLog.append(shared, StoreLogKind.SELECTION, theirs, System.currentTimeMillis())
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, "SELECT collection_cid FROM collection WHERE kind = 'selection'") == [[mine.toString()]]
+        rows(file, "SELECT item_cid FROM collection_item WHERE collection_cid = '${mine}' ORDER BY item_cid")*.get(0) ==
+            [itemA.toString(), itemB.toString()].sort()
+        rows(file, "SELECT DISTINCT item_cid FROM item_attr ORDER BY item_cid")*.get(0) == [itemA.toString()]
+    }
 }
