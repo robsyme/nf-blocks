@@ -29,6 +29,7 @@ class Records {
     static final String RUN_COMPLETION = 'RunCompletion'
     static final String LEAF = 'Leaf'
     static final String CLAIM = 'Claim'
+    static final String SELECTION = 'Selection'
 
     static final String REDACTED_LOCATION = '[redacted-location]'
     static final String REDACTED_USER = '[redacted-user]'

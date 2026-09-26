@@ -66,6 +66,12 @@ class Fixtures {
                 timestamp: timestamp]
     }
 
+    /** A Selection as §6 specifies it; the caller passes members already sorted by address. */
+    static Map selection(List<Map> members, List<Cid> derivedFrom = []) {
+        return [kind: 'Selection', schema: 1, asserted_by: ASSERTED_BY, members: members,
+                derived_from: new ArrayList<Cid>(derivedFrom).sort { Cid c -> c.toString() }.collect { Cid c -> c.bytes() }]
+    }
+
     static Map runCompletion(Cid run, List<Cid> collections, Map overrides = [:]) {
         final Map block = [kind: 'RunCompletion', schema: 1, asserted_by: ASSERTED_BY,
                            run: run, collections: collections, input_set: null,
