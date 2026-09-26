@@ -62,6 +62,10 @@ const EXTRACT_B = () => ({
   composeName: document.getElementById('compose-name')?.value ?? null,
   heldElsewhere: document.querySelector('[data-held-elsewhere]')?.dataset.heldElsewhere ?? null,
   heldElsewhereNames: JSON.parse(document.querySelector('[data-held-elsewhere]')?.dataset.names ?? 'null'),
+  heldElsewhereDeletion: document.querySelector('[data-held-elsewhere]')?.dataset.deletion ?? null,
+  exists: document.querySelector('[data-exists]')?.dataset.exists ?? null,
+  existsDeletion: document.querySelector('[data-exists]')?.dataset.deletion ?? null,
+  copyLabel: document.getElementById('compose-copy')?.textContent ?? null,
 })
 
 const writeSeq = (page) => page.evaluate(() => Number(document.body.dataset.writeSeq ?? 0))

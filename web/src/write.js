@@ -28,7 +28,8 @@ export function writer({ endpoint, token, fetchFn = (...a) => fetch(...a), now =
       const body = dagJson.decode(new Uint8Array(await res.arrayBuffer()))
       if (!res.ok) throw new WriteError(body.error, body.message, body.at, res.status)
       return { ...body, address: body.address.toString(),
-        ...(body.name_claims ? { name_claims: body.name_claims.map(String) } : {}) }
+        ...(body.name_claims ? { name_claims: body.name_claims.map(String) } : {}),
+        ...(body.deletion_claims ? { deletion_claims: body.deletion_claims.map(String) } : {}) }
     }
     throw new WriteError(TRANSPORT[res.status] ?? 'write_failed', (await res.text()).trim() || `HTTP ${res.status}`, '', res.status)
   }

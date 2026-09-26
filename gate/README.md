@@ -152,7 +152,7 @@ A failing line: read `browser/observed.json` for that step and
 
 ## Browser tier B (Selections)
 
-Tier B, milestone 2, assertions 8 to 15 of spec section 1.3. It is local:
+Tier B, milestone 2, assertions 8 to 16 of spec section 1.3. It is local:
 `gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
 Playwright, and needs no network beyond what `explore` itself asks for.
 `GATE_SKIP_BROWSER=1` skips it with tier A.
@@ -169,13 +169,15 @@ It also builds a second, read-only member `shared` in `browser-b/shared`
 (only `blocks/` and `log/`, written with the Gate's own encoder): S3 = {A via
 `aligned`} named `from-shared` there and held nowhere else, and a Claim
 `shared-name` superseding `lab`'s name `lab-name` of S4 = {C via `stats`},
-which `prepare` puts in `lab`.
+which `prepare` puts in `lab`. `shared` also holds S5 = {B via `aligned`},
+named `restored-name` and deleted there and held nowhere else, and a
+deletion of S6 = {B via `again`}, which `prepare` puts in `lab`.
 
-`drive.mjs` then plays seven steps with the launch token `explore` printed:
+`drive.mjs` then plays nine steps with the launch token `explore` printed:
 compose `first` = {A, B}; compose `second` = {`first`, B, C}; rename
 `second`; delete it and undo; two pages renaming it from the same view;
-compose {A} and save the copy the page offers; and rename S4 to
-`lab-renamed`. While `explore` is still up, `browser_b_assert.py probe`
+compose {A} and save the copy the page offers; rename S4 to `lab-renamed`;
+compose S5 and restore the copy the page offers; and compose S6. While `explore` is still up, `browser_b_assert.py probe`
 replays the page's own rename bytes, sends three POSTs that must be refused,
 dry-runs S4's request, and fetches the samplesheet of `second` as CSV and
 JSON. `explore` stops, and
@@ -217,6 +219,12 @@ address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
 - B15: `shared` holds a Claim superseding `lab`'s name for a Selection in `lab`;
   renaming it from the page still succeeds, the composition reports the two
   names as a conflict, and the endpoint's dry run answers `here` with both.
+- B16: `shared` names and deletes a Selection only it holds; composing it in the
+  page offers "Restore a copy here" with the name prefilled, and one click
+  writes it into `lab` with a name Claim and a `del` superseding `shared`'s
+  deletion, so both members together show it live and named. Composing a
+  Selection `lab` holds and `shared` deleted names the deletion and writes
+  nothing.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
 `selection.log` (and `selection-nextflow.log`), beside `scenario.json`,

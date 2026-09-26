@@ -157,10 +157,11 @@ async function runWrite(status, attempt, button = null) {
       const node = views.errorNode(e)
       if (e.code === 'stale_supersedes') node.append(' Someone changed this since the page loaded; reload to see the current state.')
       if (e.saved) {
-        // Composing wrote the Selection, then naming it failed.
+        // Composing wrote the Selection, then naming or restoring it failed.
         document.body.dataset.written = e.saved
-        node.prepend('The Selection was saved, but naming it failed: ')
-        node.append(' ', link(write.hrefFor(`#/selection/${e.saved}`), 'Open it to name it'))
+        const what = e.failed === 'restoring' ? 'restoring it' : 'naming it'
+        node.prepend(`The Selection was saved, but ${what} failed: `)
+        node.append(' ', link(write.hrefFor(`#/selection/${e.saved}`), e.failed === 'restoring' ? 'Open it' : 'Open it to name it'))
         if (store.member === write.writable) await explorer.refreshTail(listLog).catch(() => {})
       }
       status.replaceChildren(node)

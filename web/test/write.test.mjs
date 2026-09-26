@@ -54,6 +54,13 @@ test('a dry run decodes name_claims (DAG-JSON links) to CID strings', async () =
   assert.deepEqual(r.name_claims, [N.toString(), S.toString()])
 })
 
+test('a dry run decodes deletion_claims (DAG-JSON links) to CID strings', async () => {
+  const fetchFn = fakeFetch(() => ok({ address: S, exists: true, here: false, names: [], name_claims: [], deletion: 'deleted', deletion_claims: [N] }))
+  const w = writer({ endpoint: 'http://h/api/put', token: 't', fetchFn })
+  const r = await w.selection([{ item: { address: N, via: [] } }], { dryRun: true })
+  assert.deepEqual(r.deletion_claims, [N.toString()])
+})
+
 test('a refusal becomes a WriteError with its code and where; a plain-text refusal keeps its status', async () => {
   const w = writer({ endpoint: 'http://h/api/put', token: 't', fetchFn: fakeFetch(() => new Response(
     dagJson.encode({ error: 'stale_supersedes', message: 'claim is already superseded', at: '/supersedes/0' }),

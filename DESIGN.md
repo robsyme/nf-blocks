@@ -1040,9 +1040,9 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
-| `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON |
-| `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21) |
-| `#compose-copy` | "Save a copy here": the write, then the name Claim superseding `name_claims` |
+| `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON, `data-deletion` the composition's deletion state (decision 23) |
+| `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21), `data-deletion` the composition's deletion state (decision 23) |
+| `#compose-copy` | "Save a copy here", or "Restore a copy here" when the dry run's deletion is not `none`: the write, the name Claim superseding `name_claims`, then a `del` superseding `deletion_claims` (decision 23) |
 | `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
 | `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
@@ -1121,10 +1121,14 @@ decision 14).
 Response: `{"address": {"/": <cid>}, "block": <canonical block as DAG-JSON>,
 "entry": <Store Log entry name>, "written": <bool>}`. Dry run
 (`?dry_run=true`, decision 10): `{"address", "exists", "here", "names",
-"name_claims"}`, and writes nothing; `exists` is true when any member of the
-composition holds the block, `here` when the writable member does (decision
-21). `names` and `name_claims` are the composition's current name Claims'
-values and addresses, in claim-address order.
+"name_claims", "deletion", "deletion_claims"}`, and writes nothing; `exists`
+is true when any member of the composition holds the block, `here` when the
+writable member does (decision 21). `names` and `name_claims` are the
+composition's current name Claims' values and addresses, in claim-address
+order. `deletion` and `deletion_claims` are the composition's deletion state
+(`none`, `deleted` or `conflicted`) and its current deletion Claims'
+addresses, in claim-address order; a current `del` can leave
+`deletion_claims` non-empty while `deletion` is `none` (decision 23).
 
 Errors are DAG-JSON `{"error": <code>, "message": <text>, "at": <JSON
 pointer into the request>}`, `400` (`409` for `not_writable`). Eight codes
@@ -1155,7 +1159,7 @@ option: -`), so from a shell stdin is `/dev/stdin`. A bare `--dry-run`
 reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
 `=true`). Staleness is member-scoped (decision 22): superseding a Claim
 that only a read-only member has already superseded succeeds and leaves a
-conflict; the dry run reports `here` and `name_claims`.
+conflict; the dry run reports `here` and `name_claims`, and `deletion`, `deletion_claims`.
 
 ### Samplesheet export
 
@@ -1302,10 +1306,24 @@ by item CID (decision 18).
     conflict in claim-address order. The presence check stays
     composition-wide, so `nf-blocks:put` can supersede a Claim another
     member holds: that is how a person settles a conflict between members.
+23. A Selection deleted in another member (ticket 10). The dry run reports
+    the composition's `deletion` and `deletion_claims`. Held only elsewhere
+    and `deleted` or `conflicted` there, the page labels the copy "Restore a
+    copy here": after the copy and its name Claim (when a name is set) it
+    writes a `del` Claim superseding every Claim in `deletion_claims`,
+    whether or not a name is set, so the Selection is live across the
+    composition. A `del` that fails after the copy saved is reported like a
+    failed naming, "The Selection was saved, but restoring it failed", with
+    the link to open it. Held here but deleted elsewhere, the "already exists"
+    message names the deletion; the Selection view still reads only this
+    member's Claims (decision 22). After a `del` restores a Selection,
+    `deletion_claims` still names that current `del` Claim although
+    `deletion` is `none`; clients act on `deletion`, not on whether
+    `deletion_claims` is empty.
 
 ### Gate browser tier B
 
-Eight assertions (spec section 1.3, tier B), all local: a Selection made in
+Nine assertions (spec section 1.3, tier B), all local: a Selection made in
 the page has the Gate's own address (8); `fromStore(selection:)` receives each
 distinct item once, nested included (9); rename, delete and undo are Claims at
 the Gate's addresses, and a replay writes nothing (10); two sessions renaming
@@ -1313,7 +1331,8 @@ from one view surface a conflict, not an overwrite (11); a POST without the
 token, from another Origin, or as `text/plain` is refused, and writes nothing
 (12); the samplesheet lists exactly the Selection's items, and its cells stage
 (13); a read-only member's Selection is copied and named (14); a Claim in
-another member does not lock a rename (15). B12 probes with a Selection no
+another member does not lock a rename (15); a copy deleted in another member is
+restored (16). B12 probes with a Selection no
 step has written, so the assertion can actually fail if a refusal ever let a
 block or a Store Log entry through; the earlier draft replayed an already-
 written Selection, which could not distinguish "refused" from "written".
