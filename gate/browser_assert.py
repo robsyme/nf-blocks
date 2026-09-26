@@ -142,6 +142,27 @@ def producers(gate, content):
     return sorted(list(t) for t in out)
 
 
+# A1's floor under the Gate's own producer set (ticket 08). `fail` aborts on
+# MAYBE_FAIL's exit before some output channels close, so whether its
+# RunCompletion holds `aligned` is timing, and it may or may not be a producer.
+# `resumed` never is: its A.bam leaf is never-published because the locked
+# source blocks PublishDir's copy.
+STEADY_PRODUCERS = ("cold", "again", "elsewhere")
+NEVER_PRODUCERS = ("resumed",)
+
+
+def producer_floor(producers, run_names):
+    """(sorted run names behind the rows, problems) for A1's expected producer rows.
+
+    run_names maps a RunCompletion address to its run name; an unnamed
+    completion is reported by its address."""
+    names = sorted({run_names.get(row[3], row[3]) for row in producers})
+    problems = ["the Gate's producer set lacks %s" % name for name in STEADY_PRODUCERS if name not in names]
+    problems += ["the Gate's producer set holds %s, whose A.bam was never published" % name
+                 for name in NEVER_PRODUCERS if name in names]
+    return names, problems
+
+
 def items(gate, run, output, key, value):
     return sorted(cid for cid, block in run.items(gate, output)
                   if isinstance(A.metadata_view(block).get(key), str) and A.metadata_view(block).get(key) == value)
@@ -182,6 +203,7 @@ def prepare(root):
     expected = {
         "content": content,
         "producers": producers(gate, content),
+        "run_names": {run.completion_cid: name for name, run in gate.runs.items() if run.completion_cid},
         "latest": A._latest_successful_from_store_log(gate, A.PIPELINE_IDENTITY),
         "items": items(gate, cold, "aligned", "sample", "B"),
         "stale_runs": sorted([resumed.completion_cid, elsewhere.completion_cid]),
@@ -282,8 +304,8 @@ def check(root):
         results.append((status, number, title, message))
 
     def a1():
-        problems = []
         want = {tuple(t) for t in expected["producers"]}
+        runs, problems = producer_floor(expected["producers"], expected["run_names"])
         for server in ("range", "explore"):
             s = seen("A1.producers.%s" % server)
             if s["state"] != "ready" or producer_set(s["producers"]) != want:
@@ -297,8 +319,9 @@ def check(root):
                 problems.append("%s: query 3 gave %s, expected %s" % (server, s["items"], expected["items"]))
         if problems:
             return FAIL, "; ".join(problems)
-        return PASS, ("producers-of (%d rows), latest successful run and query 3 (%d items) equal the Gate's own "
-                      "answers, through a static server and through nf-blocks:explore" % (len(want), len(expected["items"])))
+        return PASS, ("producers-of (%d rows: %s), latest successful run and query 3 (%d items) equal the Gate's own "
+                      "answers, through a static server and through nf-blocks:explore"
+                      % (len(want), ", ".join(runs), len(expected["items"])))
 
     def a2():
         year = expected["year"]

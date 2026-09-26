@@ -67,6 +67,35 @@ class ProducersTest(unittest.TestCase):
         self.assertEqual(B.producer_set([row, row]), {("c", "i", "k", "r", "A.bam")})
 
 
+class ProducerFloorTest(unittest.TestCase):
+    """A1's floor under the Gate's own producer set (ticket 08): `fail` may or may not count."""
+
+    RUNS = {"r-cold": "cold", "r-again": "again", "r-fail": "fail", "r-resumed": "resumed",
+            "r-elsewhere": "elsewhere"}
+
+    def rows(self, *completions):
+        return [[CID, "item", "coll", c, "A.bam"] for c in completions]
+
+    def test_the_three_steady_producers_pass_with_or_without_fail(self):
+        for rows in (self.rows("r-cold", "r-again", "r-elsewhere"),
+                     self.rows("r-cold", "r-again", "r-elsewhere", "r-fail")):
+            names, problems = B.producer_floor(rows, self.RUNS)
+            self.assertEqual(problems, [])
+        self.assertEqual(names, ["again", "cold", "elsewhere", "fail"])
+
+    def test_a_missing_steady_producer_fails(self):
+        _names, problems = B.producer_floor(self.rows("r-cold", "r-elsewhere"), self.RUNS)
+        self.assertEqual(problems, ["the Gate's producer set lacks again"])
+
+    def test_resumed_as_a_producer_fails(self):
+        _names, problems = B.producer_floor(self.rows("r-cold", "r-again", "r-elsewhere", "r-resumed"), self.RUNS)
+        self.assertEqual(problems, ["the Gate's producer set holds resumed, whose A.bam was never published"])
+
+    def test_an_unnamed_completion_is_reported_by_address(self):
+        names, _problems = B.producer_floor(self.rows("r-cold", "r-again", "r-elsewhere", "r-other"), self.RUNS)
+        self.assertIn("r-other", names)
+
+
 class CloudPrepareTest(unittest.TestCase):
     """cloud_prepare (gate/cloud/cloud.sh): the scenario against real bucket names."""
 
