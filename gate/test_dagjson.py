@@ -1,6 +1,7 @@
 """The Gate's DAG-JSON reader and expected-block builder (block explorer spec
 section 1.3 assertions 8 and 10), and its current-state rules against the
 vectors the plugin and the page share."""
+import base64
 import json
 import os
 import sys
@@ -48,6 +49,43 @@ class DagJsonTest(unittest.TestCase):
         self.assertEqual(block, {"kind": "Selection", "schema": 1, "asserted_by": "gate",
                                  "members": [m for _k, m in members], "derived_from": []})
         self.assertEqual(dagjson.address(block), cas.cid_dagcbor(cas.encode(block)))
+
+    def test_expected_selection_over_the_shared_derived_from_bytes_vector(self):
+        """web/test/fixtures/dag-json-vectors.json's "selection" vector carries
+        derived_from as bytes (fix round 1: _text_of_binary was double-prefixing
+        the multibase text, so cas.Cid() rejected it and this crashed). Its own
+        members reuse one CID as both an item and a nested Selection, which
+        expected_selection separately (and correctly) refuses as ambiguous, so
+        this test keeps the vector's derived_from but supplies members of its
+        own to isolate the bytes-derived_from behaviour under test."""
+        with open(os.path.join(FIXTURES, "dag-json-vectors.json")) as fh:
+            vectors = {v["name"]: v["json"] for v in json.load(fh)}
+        request = dagjson.loads(vectors["selection"])
+        request["members"] = ["cas://%s/%s" % (C1, I1)]
+        block = dagjson.expected_selection(request, "gate")
+        self.assertEqual(block["derived_from"],
+                         [cas.Cid("bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua").binary()])
+
+    def test_derived_from_as_a_link_or_the_same_cid_as_bytes_gives_the_same_address(self):
+        as_link = dagjson.loads('{"kind":"Selection","members":["cas://%s/%s"],"derived_from":[%s]}'
+                                % (C1, I1, link(C2)))
+        bytes_b64 = base64.b64encode(cas.Cid(C2).binary()).decode()
+        as_bytes = dagjson.loads('{"kind":"Selection","members":["cas://%s/%s"],"derived_from":[{"/":{"bytes":"%s"}}]}'
+                                 % (C1, I1, bytes_b64))
+        self.assertEqual(dagjson.address(dagjson.expected_selection(as_link, "gate")),
+                         dagjson.address(dagjson.expected_selection(as_bytes, "gate")))
+
+    def test_an_occurrence_with_a_leaf_name_is_refused(self):
+        with self.assertRaises(cas.GateError):
+            dagjson.expected_selection(
+                dagjson.loads('{"kind":"Selection","members":["cas://%s/%s/leaf.bam"],"derived_from":[]}' % (C1, I1)),
+                "gate")
+
+    def test_an_occurrence_missing_the_item_is_refused(self):
+        with self.assertRaises(cas.GateError):
+            dagjson.expected_selection(
+                dagjson.loads('{"kind":"Selection","members":["cas://%s"],"derived_from":[]}' % (C1,)),
+                "gate")
 
     def test_member_order_is_not_content(self):
         a = dagjson.loads('{"kind":"Selection","members":[{"item":{"address":%s,"via":[]}},{"item":{"address":%s,"via":[]}}],"derived_from":[]}' % (link(I1), link(I2)))

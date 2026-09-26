@@ -33,7 +33,7 @@ def _convert(value):
 
 
 def _text_of_binary(binary):
-    return "b" + cas._b32_encode(binary)
+    return cas._b32_encode(binary)
 
 
 def expected_selection(request, asserted_by):
@@ -41,7 +41,10 @@ def expected_selection(request, asserted_by):
     members = {}
     for m in request["members"]:
         if isinstance(m, str):
-            parts = m[len(OCCURRENCE):].split("/")
+            parts = m[len(OCCURRENCE):].split("/") if m.startswith(OCCURRENCE) else []
+            if len(parts) != 2 or not cas.is_cid(parts[0]) or not cas.is_cid(parts[1]):
+                raise cas.GateError("a member written as text is an Item Occurrence, "
+                                     "cas://<collection>/<item>, got %r" % (m,))
             key, nested, via = parts[1], False, {parts[0]}
         elif "selection" in m:
             key, nested, via = m["selection"].text, True, set()
