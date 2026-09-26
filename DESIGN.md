@@ -1127,7 +1127,8 @@ writable member does (decision 21). `names` and `name_claims` are the
 composition's current name Claims' values and addresses, in claim-address
 order. `deletion` and `deletion_claims` are the composition's deletion state
 (`none`, `deleted` or `conflicted`) and its current deletion Claims'
-addresses, in claim-address order (decision 23).
+addresses, in claim-address order; a current `del` can leave
+`deletion_claims` non-empty while `deletion` is `none` (decision 23).
 
 Errors are DAG-JSON `{"error": <code>, "message": <text>, "at": <JSON
 pointer into the request>}`, `400` (`409` for `not_writable`). Eight codes
@@ -1313,7 +1314,10 @@ by item CID (decision 18).
     whether or not a name is set, so the Selection is live across the
     composition. Held here but deleted elsewhere, the "already exists"
     message names the deletion; the Selection view still reads only this
-    member's Claims (decision 22).
+    member's Claims (decision 22). After a `del` restores a Selection,
+    `deletion_claims` still names that current `del` Claim although
+    `deletion` is `none`; clients act on `deletion`, not on whether
+    `deletion_claims` is empty.
 
 ### Gate browser tier B
 
