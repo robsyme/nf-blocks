@@ -1213,7 +1213,7 @@ by item CID (decision 18).
    at most 256 characters; `add` is refused (out of the slice); every
    superseded address must be about the same subject (`wrong_kind`
    otherwise), present and not already superseded (`stale_supersedes`
-   otherwise).
+   otherwise; superseded by a Claim logged in the writable member; decision 22).
 7. Error code `invalid`, a ninth code beside spec section 9.4's eight (above).
    `DagJson.decode` refuses, as `invalid`, naming the field: a string (a
    value or a map key) holding a lone surrogate, reachable only through a
@@ -1290,6 +1290,13 @@ by item CID (decision 18).
     current name, and the name Claim written with the copy supersedes every
     current name Claim in `name_claims`, so the composition ends with one
     name rather than a same-value conflict.
+22. Staleness across members (ticket 09). The "already superseded" check
+    counts only Claims logged in the writable member, the ones the page can
+    see there. A superseder held only in a read-only member no longer blocks
+    a rename; the composition then has two current names, reported as a
+    conflict in claim-address order. The presence check stays
+    composition-wide, so `nf-blocks:put` can supersede a Claim another
+    member holds: that is how a person settles a conflict between members.
 
 ### Gate browser tier B
 

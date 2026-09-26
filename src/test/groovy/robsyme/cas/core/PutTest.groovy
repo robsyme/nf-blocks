@@ -90,6 +90,16 @@ class PutTest extends Specification {
         }
     }
 
+    private static PutError refusedBy(Put p, String json) {
+        try {
+            p.put(json.getBytes('UTF-8'), false)
+        }
+        catch( PutError e ) {
+            return e
+        }
+        throw new AssertionError('expected a PutError')
+    }
+
     def 'a Selection is normalised, written, logged and indexed; its address is its canonical block address'() {
         when:
         final PutResult r = send(selection(item(itemB, [collA]) + ',' + item(itemA, [collB, collA])))
@@ -190,6 +200,35 @@ class PutTest extends Specification {
 
         and: 'held in both members now, so here'
         sendTo(both, json, true).here
+    }
+
+    def 'staleness counts the writable member\'s Claims; presence counts every member (ticket 09)'() {
+        given: 'a Selection named in lab, renamed by a Claim only shared holds'
+        final Put both = twoMembers()
+        final Cid s = sendTo(both, selection(item(itemA, [collA]))).address
+        final Cid labName = sendTo(both, claim(s, 'set', 'name', '"lab-name"', [])).address
+        final Cid sharedName = sendTo(seedShared(), claim(s, 'set', 'name', '"shared-name"', [labName])).address
+
+        when: 'renaming from what lab shows'
+        final PutResult renamed = sendTo(both, claim(s, 'set', 'name', '"lab-renamed"', [labName], '2025-09-16T05:20:00.001Z'))
+
+        then: 'written, and the composition reports the disagreement as a conflict'
+        renamed.written
+        index.claimState(s).names.toSorted() == ['lab-renamed', 'shared-name']
+        index.claimState(s).nameClaims.size() == 2
+
+        when: 'a superseder lab holds still refuses'
+        final PutError stale = refusedBy(both, claim(s, 'set', 'name', '"again"', [labName], '2025-09-16T05:20:00.002Z'))
+
+        then:
+        stale.code == 'stale_supersedes'
+        stale.message.contains(renamed.address.toString())
+
+        when: 'one Claim superseding both current names, one of them held only in shared'
+        sendTo(both, claim(s, 'set', 'name', '"settled"', [renamed.address, sharedName], '2025-09-16T05:20:00.003Z'))
+
+        then:
+        index.claimState(s).names == ['settled']
     }
 
     def 'rename, delete and undo, with supersedes checked against what the index knows'() {

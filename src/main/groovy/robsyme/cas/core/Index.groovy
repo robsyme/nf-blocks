@@ -546,10 +546,16 @@ class Index implements Closeable {
         return found
     }
 
-    /** The Claims this index holds that supersede {@code claim}. */
-    List<Cid> supersedersOf(Cid claim) {
+    /**
+     * The Claims logged in {@code member} that supersede {@code claim}. Put
+     * checks staleness against the writable member only, the Claims the page
+     * can see there (DESIGN.md §16 decision 22).
+     */
+    List<Cid> supersedersOf(Cid claim, String member) {
         final List<Cid> out = new ArrayList<Cid>()
-        query('SELECT claim_cid FROM claim_supersedes WHERE superseded_cid = ? ORDER BY claim_cid', [claim.toString()]) { ResultSet rs ->
+        query('''SELECT s.claim_cid FROM claim_supersedes s
+                 JOIN log_entry e ON e.cid = s.claim_cid AND e.member = ?
+                 WHERE s.superseded_cid = ? ORDER BY s.claim_cid''', [member, claim.toString()]) { ResultSet rs ->
             out.add(Cid.parse(rs.getString(1)))
         }
         return out

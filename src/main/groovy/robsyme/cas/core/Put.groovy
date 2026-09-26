@@ -303,7 +303,7 @@ class Put {
                 throw new PutError(PutError.WRONG_KIND, "${s} is ${describe(Records.kindOf(block))}, not a Claim", at)
             if( block.get('subject') != claim.subject )
                 throw new PutError(PutError.WRONG_KIND, "claim ${s} is about ${block.get('subject')}, not ${claim.subject}", at)
-            final List<Cid> by = index.supersedersOf(s)
+            final List<Cid> by = index.supersedersOf(s, writable.alias())
             if( by )
                 throw new PutError(PutError.STALE_SUPERSEDES, "claim ${s} is already superseded by ${by.join(', ')}; reload and try again", at)
         }
