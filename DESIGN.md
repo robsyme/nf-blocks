@@ -1117,9 +1117,11 @@ decision 14).
 
 Response: `{"address": {"/": <cid>}, "block": <canonical block as DAG-JSON>,
 "entry": <Store Log entry name>, "written": <bool>}`. Dry run
-(`?dry_run=true`, decision 10): `{"address", "exists", "names"}`, and writes
-nothing; `exists` is true when any member of the composition holds the
-block.
+(`?dry_run=true`, decision 10): `{"address", "exists", "here", "names",
+"name_claims"}`, and writes nothing; `exists` is true when any member of the
+composition holds the block, `here` when the writable member does (decision
+21). `names` and `name_claims` are the composition's current name Claims'
+values and addresses, in claim-address order.
 
 Errors are DAG-JSON `{"error": <code>, "message": <text>, "at": <JSON
 pointer into the request>}`, `400` (`409` for `not_writable`). Eight codes
@@ -1278,7 +1280,16 @@ by item CID (decision 18).
     touched: dead `Explorer.closures` removed (Task 13), the pager's label
     past the end fixed (Task 14), `Cache-Control: no-cache` documented and
     set on uploaded snapshots (this task, §15 "What a member serves" and
-    `gate/cloud/s3tier.py`). The fourth is open, below.
+    `gate/cloud/s3tier.py`). The fourth was already fixed; see Resolved,
+    below.
+21. A Selection held only in a read-only member (ticket 09). The dry run's
+    `here` separates "held here" from "held somewhere". With `exists` and
+    not `here`, the page offers "Save a copy here": the ordinary write,
+    which copies the block into the writable member, logs and ingests it.
+    The name field is prefilled when the composition has exactly one
+    current name, and the name Claim written with the copy supersedes every
+    current name Claim in `name_claims`, so the composition ends with one
+    name rather than a same-value conflict.
 
 ### Gate browser tier B
 

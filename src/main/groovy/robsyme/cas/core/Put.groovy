@@ -113,8 +113,11 @@ class Put {
                 'split it into nested Selections', draft.sizeAt)
         final Cid address = DagCbor.cidOf(bytes)
         catchUp.call()
-        if( dryRun )
-            return PutResult.dryRun(address, store.has(address), index.claimState(address).names)
+        if( dryRun ) {
+            final ClaimState state = index.claimState(address)
+            return PutResult.dryRun(address, store.has(address), writable.has(address), state.names,
+                state.nameClaims.collect { String c -> Cid.parse(c) })
+        }
         if( !writable.isWritable() )
             throw new PutError(PutError.NOT_WRITABLE, "store member '${writable.alias()}' is not writable", '')
         if( writable.has(address) )

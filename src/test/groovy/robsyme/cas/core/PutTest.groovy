@@ -36,9 +36,33 @@ class PutTest extends Specification {
         index?.close()
     }
 
+    LocalBlockStore shared
+
     private Put newPut(BlockStore s) {
         return new Put(s, s, index, 'ada', { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
     }
+
+    /** lab writable, shared read-only: the composition the page sees with a Bundle mounted. */
+    private Put twoMembers() {
+        shared = new LocalBlockStore(tempDir.resolve('shared'), 'shared', false)
+        return new Put(new CompositeStore([store, shared]), store, index, 'ada', { now }, catchUpBoth())
+    }
+
+    /** Writes into shared's directory, as the host where it was writable once did. */
+    private Put seedShared() {
+        final LocalBlockStore seed = new LocalBlockStore(tempDir.resolve('shared'), 'shared', true)
+        return new Put(new CompositeStore([seed, store]), seed, index, 'ada', { now }, catchUpBoth())
+    }
+
+    private Closure catchUpBoth() {
+        return {
+            index.catchUp(store, StoreLog.of(store), 'lab')
+            final LocalBlockStore s = new LocalBlockStore(tempDir.resolve('shared'), 'shared', false)
+            index.catchUp(s, StoreLog.of(s), 'shared')
+        }
+    }
+
+    private static PutResult sendTo(Put p, String json, boolean dry = false) { p.put(json.getBytes('UTF-8'), dry) }
 
     private static String link(Cid c) { '{"/":"' + c + '"}' }
 
@@ -119,19 +143,53 @@ class PutTest extends Specification {
         then:
         dry.dryRun
         !dry.exists
+        !dry.here
         dry.names == []
+        dry.nameClaims == []
         !store.has(dry.address)
         StoreLog.read(store).isEmpty()
 
         when:
         final Cid written = send(json).address
-        send(claim(written, 'set', 'name', '"first"', []))
+        final Cid named = send(claim(written, 'set', 'name', '"first"', [])).address
         final PutResult again = send(json, true)
 
         then:
         again.exists
+        again.here
         again.names == ['first']
-        ((Map) DagJson.decode(again.body())) == [address: written, exists: true, names: ['first']]
+        again.nameClaims == [named]
+        ((Map) DagJson.decode(again.body())) == [address: written, exists: true, here: true, names: ['first'], name_claims: [named]]
+    }
+
+    def 'a dry run says whether the writable member holds the block, and which Claims name it (ticket 09)'() {
+        given:
+        final Put seed = seedShared()
+        final String json = selection(item(itemA, [collA]))
+        final Cid s = sendTo(seed, json).address
+        final Cid named = sendTo(seed, claim(s, 'set', 'name', '"from-shared"', [])).address
+        final Put both = twoMembers()
+
+        when:
+        final PutResult dry = sendTo(both, json, true)
+
+        then:
+        dry.exists
+        !dry.here
+        dry.names == ['from-shared']
+        dry.nameClaims == [named]
+        ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'], name_claims: [named]]
+
+        when: 'the real write copies the block into the writable member'
+        final PutResult copied = sendTo(both, json)
+
+        then:
+        copied.written
+        store.has(s)
+        StoreLog.read(store).any { it.cid == s }
+
+        and: 'held in both members now, so here'
+        sendTo(both, json, true).here
     }
 
     def 'rename, delete and undo, with supersedes checked against what the index knows'() {
