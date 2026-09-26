@@ -30,6 +30,9 @@ final class DagJson {
      */
     private static final int MAX_INTEGER_DIGITS = 40
 
+    /** Same rationale as {@link #MAX_INTEGER_DIGITS}, refused before {@link Double#parseDouble} ever sees it (ticket 11). */
+    private static final int MAX_FLOAT_CHARS = 64
+
     /** dag-cbor's integer range (DagCbor.writeBigInteger): an unsigned 64-bit magnitude either side of zero. */
     private static final BigInteger DAG_CBOR_MAX = new BigInteger('18446744073709551615')
     private static final BigInteger DAG_CBOR_MIN = new BigInteger('-18446744073709551616')
@@ -168,6 +171,9 @@ final class DagJson {
             }
             final String text = s.substring(start, pos)
             if( floating ) {
+                // ticket 11: refuse an unreasonably long float literal before Double.parseDouble parses it.
+                if( text.length() > MAX_FLOAT_CHARS )
+                    throw fail("a float literal of ${text.length()} characters is over the limit of ${MAX_FLOAT_CHARS}", at)
                 final double d = Double.parseDouble(text)
                 if( Double.isInfinite(d) || Double.isNaN(d) )
                     throw fail('a float out of range', at)

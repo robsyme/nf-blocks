@@ -126,6 +126,19 @@ class DagJsonTest extends Specification {
         thrown(DagJson.DagJsonException)
     }
 
+    def 'a float literal over 64 characters is refused (ticket 11)'() {
+        when:
+        DagJson.decode(('{"x":1.' + '1' * 70 + '}').getBytes('UTF-8'))
+
+        then:
+        thrown(IllegalArgumentException)   // or the exception type the integer cap throws; match it
+    }
+
+    def 'the longest round-trip double still decodes'() {
+        expect:
+        DagJson.decode('{"x":-1.7976931348623157E308}'.getBytes('UTF-8')) != null
+    }
+
     def 'a "/" key and non-finite floats cannot be encoded'() {
         when:
         DagJson.encode(value)

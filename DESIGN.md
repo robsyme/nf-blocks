@@ -938,7 +938,7 @@ on stdout once it is listening, then blocks until the JVM is interrupted.
 | `GET` or `HEAD /m/<alias>/blocks/<xx>/<cid>` | the block, honouring one `Range`; `xx` must equal the cid's last two characters |
 | `GET /m/<alias>/log/` | listing form 1 |
 | `POST /api/put[?dry_run=true]` | the same `Put` as `nf-blocks:put` (block explorer spec sections 9.2 and 9.5): `403` without the right `X-NF-Blocks-Token` header, `415` for a content type other than `application/json` or `application/vnd.ipld.dag-json` (parameters such as `charset` ignored), `413` over `Put.MAX_REQUEST_BYTES` (2 MiB), else the builder's status and DAG-JSON body with `Content-Type: application/vnd.ipld.dag-json` |
-| `GET /api/samplesheet/<selection cid>.csv` or `.json` | a Selection's items as a samplesheet (decisions 1 and 18 of `docs/plans/2026-09-25-explorer-milestone-2.md`): `Content-Type: text/csv; charset=utf-8` or `application/json`, `Content-Disposition: attachment; filename="selection-<first 16 chars of the cid>.<ext>"`; `404` naming the reason when the address is not a Selection the index holds, or reaches one it does not |
+| `GET` or `HEAD /api/samplesheet/<selection cid>.csv` or `.json` | a Selection's items as a samplesheet (decisions 1 and 18 of `docs/plans/2026-09-25-explorer-milestone-2.md`): `Content-Type: text/csv; charset=utf-8` or `application/json`, `Content-Disposition: attachment; filename="selection-<first 16 chars of the cid>.<ext>"`; `404` naming the reason when the address is not a Selection the index holds, or reaches one it does not |
 | anything else | `404`; a method other than `GET`, `HEAD` (or `POST` on `/api/put`) is `405` |
 
 `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, and `Origin`, when
@@ -1163,7 +1163,7 @@ conflict; the dry run reports `here` and `name_claims`, and `deletion`, `deletio
 
 ### Samplesheet export
 
-`GET /api/samplesheet/<selection cid>.csv` or `.json`, served by `explore`
+`GET` or `HEAD /api/samplesheet/<selection cid>.csv` or `.json`, served by `explore`
 only (decision 1; no new verb, spec section 2's table stays at three), linked
 from the page's Selection view. One row per distinct item, sorted ascending
 by item CID (decision 18).
@@ -1320,6 +1320,9 @@ by item CID (decision 18).
     `deletion_claims` still names that current `del` Claim although
     `deletion` is `none`; clients act on `deletion`, not on whether
     `deletion_claims` is empty.
+24. Deferred minors from milestone 2's reviews (ticket 11). `Put`'s
+    idempotent path ingests any Store Log entry it appends; DAG-JSON float
+    literals over 64 characters are refused, as over-long integers are.
 
 ### Gate browser tier B
 
