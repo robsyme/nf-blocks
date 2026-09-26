@@ -546,6 +546,15 @@ class Index implements Closeable {
         return found
     }
 
+    /** The Claims this index holds that supersede {@code claim}. */
+    List<Cid> supersedersOf(Cid claim) {
+        final List<Cid> out = new ArrayList<Cid>()
+        query('SELECT claim_cid FROM claim_supersedes WHERE superseded_cid = ? ORDER BY claim_cid', [claim.toString()]) { ResultSet rs ->
+            out.add(Cid.parse(rs.getString(1)))
+        }
+        return out
+    }
+
     /** The subject's current state from every Claim this index holds for it. */
     ClaimState claimState(Cid subject) {
         return ClaimCurrent.load(connection, subject.toString())
