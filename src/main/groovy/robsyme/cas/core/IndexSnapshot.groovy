@@ -39,16 +39,40 @@ class IndexSnapshot {
     private static final DateTimeFormatter MILLIS =
         DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)
 
-    /** The member's runs; alias written as NULL, since an alias is a local label. */
+    /**
+     * The member's runs: those its Store Log announced, and those its blocks
+     * held when the index first scanned it (a store written before the Store
+     * Log, DESIGN.md §12). Alias written as NULL, since an alias is a local label.
+     */
     private static final String COPY_RUNS = '''
         INSERT INTO main.run
         SELECT completion_cid, manifest_cid, pipeline, revision, commit_id, nf_run_hash, session_id,
                run_name, asserted_by, status, possibly_incomplete, finished_at, NULL
-        FROM src.run WHERE member = ?'''
+        FROM src.run
+        WHERE member = ? OR completion_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'run')'''
+
+    /** The member's own Store Log rows. */
+    private static final String COPY_LOG_ENTRIES =
+        'INSERT INTO main.log_entry SELECT cid, kind, NULL, written_at FROM src.log_entry WHERE member = ?'
+
+    /** The Selections the member logged, after the run closure so item and item_attr stay the runs' (spec section 4). */
+    private static final List<String> COPY_SELECTIONS = [
+        "INSERT INTO main.collection SELECT * FROM src.collection WHERE kind = 'selection' AND collection_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'selection')",
+        "INSERT INTO main.collection_item SELECT * FROM src.collection_item WHERE collection_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+        "INSERT INTO main.selection_child SELECT * FROM src.selection_child WHERE parent_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+        "INSERT INTO main.selection_derived SELECT * FROM src.selection_derived WHERE selection_cid IN (SELECT collection_cid FROM main.collection WHERE kind = 'selection')",
+    ]
+
+    /** The Claims the member's Store Log announced; current state is recomputed from these alone (spec section 4). */
+    private static final List<String> COPY_CLAIMS = [
+        "INSERT INTO main.claim SELECT * FROM src.claim WHERE claim_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'claim')",
+        'INSERT INTO main.claim_supersedes SELECT * FROM src.claim_supersedes WHERE claim_cid IN (SELECT claim_cid FROM main.claim)',
+    ]
 
     /** Everything those runs reach, in dependency order. */
     private static final List<String> COPY_CLOSURE = [
-        'INSERT INTO main.collection SELECT * FROM src.collection WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
+        '''INSERT INTO main.collection SELECT * FROM src.collection
+           WHERE kind = 'output' AND completion_cid IN (SELECT completion_cid FROM main.run)''',
         'INSERT INTO main.collection_item SELECT * FROM src.collection_item WHERE collection_cid IN (SELECT collection_cid FROM main.collection)',
         'INSERT INTO main.item SELECT DISTINCT item_cid FROM main.collection_item',
         'INSERT INTO main.producer SELECT * FROM src.producer WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
@@ -128,15 +152,32 @@ class IndexSnapshot {
             // ATTACH is refused inside a transaction, so it comes first.
             update(c, 'ATTACH DATABASE ? AS src', [(Object) cacheFile.toAbsolutePath().toString()])
             c.setAutoCommit(false)
-            update(c, COPY_RUNS, [(Object) member])
+            update(c, COPY_RUNS, [(Object) member, member])
             for( String sql : COPY_CLOSURE )
                 exec(c, sql)
+            update(c, COPY_LOG_ENTRIES, [(Object) member])
+            update(c, COPY_SELECTIONS[0], [(Object) member])
+            for( int i = 1; i < COPY_SELECTIONS.size(); i++ )
+                exec(c, COPY_SELECTIONS[i])
+            update(c, COPY_CLAIMS[0], [(Object) member])
+            exec(c, COPY_CLAIMS[1])
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
             update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WRITTEN_AT_KEY, MILLIS.format(Instant.now())])
             c.commit()
             c.setAutoCommit(true)
             exec(c, 'DETACH DATABASE src')
+            // Running after the detach guarantees the unqualified table names
+            // in ClaimCurrent can only mean the snapshot's own tables.
+            c.setAutoCommit(false)
+            final List<String> subjects = new ArrayList<String>()
+            final ResultSet rs = c.createStatement().executeQuery('SELECT DISTINCT subject_cid FROM claim')
+            while( rs.next() )
+                subjects.add(rs.getString(1))
+            for( String subject : subjects )
+                ClaimCurrent.rewrite(c, subject)
+            c.commit()
+            c.setAutoCommit(true)
             final int runs = count(c, 'SELECT count(*) FROM run')
             exec(c, "PRAGMA page_size=${PAGE_SIZE}".toString())
             update(c, 'VACUUM INTO ?', [(Object) out.toAbsolutePath().toString()])

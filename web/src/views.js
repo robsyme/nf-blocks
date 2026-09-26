@@ -40,13 +40,15 @@ export async function home(ex) {
     unreadableRuns(ex))
 }
 
-/** Where a page sits in the whole list, and links to the pages either side (DESIGN.md §15, [data-page]). */
+/** Where a page sits in the whole list, and links to the pages either side (DESIGN.md §15, [data-page]). A route may already carry a query. */
 function pager(route, page, noun) {
   if (page.total === 0) return null
+  const at = (offset) => `${route}${route.includes('?') ? '&' : '?'}offset=${offset}`
+  const label = page.first === 0 ? `no ${noun} on this page; there are ${page.total}` : `showing ${page.first}-${page.last} of ${page.total} ${noun}`
   return h('p', { 'data-page': '', 'data-first': page.first, 'data-last': page.last, 'data-total': page.total, class: 'muted' },
-    `showing ${page.first}-${page.last} of ${page.total} ${noun}`,
-    page.prev !== null ? [' ', h('a', { href: `${route}?offset=${page.prev}`, 'data-page-prev': '' }, 'previous page')] : null,
-    page.next !== null ? [' ', h('a', { href: `${route}?offset=${page.next}`, 'data-page-next': '' }, 'next page')] : null)
+    label,
+    page.prev !== null ? [' ', h('a', { href: at(page.prev), 'data-page-prev': '' }, 'previous page')] : null,
+    page.next !== null ? [' ', h('a', { href: at(page.next), 'data-page-next': '' }, 'next page')] : null)
 }
 
 export async function pipeline(ex, name, offset = 0) {
@@ -58,6 +60,7 @@ export async function pipeline(ex, name, offset = 0) {
     h('h1', {}, name),
     h('p', {}, link(`#/latest/${enc(name)}`, 'Latest successful run')),
     pager(`#/pipeline/${enc(name)}`, page, 'runs'),
+    page.hidden ? h('p', { 'data-hidden-runs': page.hidden, class: 'muted' }, `${page.hidden} run${page.hidden === 1 ? '' : 's'} on this page hidden by a delete Claim`) : null,
     table(['run', 'status', 'finished', 'anomalies', 'from'], rows.map(({ r, anomalies }) => h('tr', {
       'data-run': r.completion_cid, 'data-pipeline': r.pipeline, 'data-status': r.status, 'data-source': r.source },
     h('td', {}, link(`#/run/${r.completion_cid}`, r.run_name ?? r.completion_cid)),
@@ -90,21 +93,27 @@ export async function run(ex, completionCid) {
       link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)')))))
 }
 
-export async function collection(ex, collectionCid, offset = 0) {
+export async function collection(ex, collectionCid, offset = 0, ctx) {
   const c = await ex.collection(collectionCid, { offset })
   return h('section', {},
     h('h1', {}, c.output), cid(collectionCid),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
     pager(`#/collection/${collectionCid}`, c, 'items'),
-    h('ul', {}, c.items.map(i => h('li', {}, link(`#/item/${collectionCid}/${i}`, h('code', { class: 'cid' }, `cas://${collectionCid}/${i}`))))))
+    h('ul', {}, c.items.map(i => h('li', {}, link(`#/item/${collectionCid}/${i}`, h('code', { class: 'cid' }, `cas://${collectionCid}/${i}`)),
+      ' ', pickButton(ctx, { address: i, via: [collectionCid] })))))
 }
 
 export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
   const view = it.view ?? {}
   const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString(), ctx.progress)]))
+  const holding = await ex.selectionsHolding(itemCid)
   return h('section', {},
-    h('h1', {}, 'Item'), h('p', {}, cid(`cas://${collectionCid}/${itemCid}`)),
+    h('h1', {}, 'Item'),
+    // `-` is an item reached with no collection (a Selection member picked by a query).
+    h('p', {}, collectionCid !== '-' ? cid(`cas://${collectionCid}/${itemCid}`) : cid(itemCid)),
+    h('p', {}, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })),
+    holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, link(`#/selection/${s}`, cid(s)))))] : null,
     h('h2', {}, 'Meta Map'),
     Object.keys(view).length ? table(['key', 'value'], Object.entries(view).filter(([, v]) => !(v && v.kind === 'Leaf'))
       .map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, shown(v))))) : h('p', { class: 'muted' }, 'none'),
@@ -155,7 +164,9 @@ export async function items(ex, completionCid, output, whereText, ctx) {
     whereForm(completionCid, output, where),
     h('p', {}, `${results.length} item${results.length === 1 ? '' : 's'}`),
     h('ul', {}, results.map(i => h('li', { 'data-item-result': i },
-      collectionCid ? link(`#/item/${collectionCid}/${i}`, cid(i)) : cid(i)))))
+      collectionCid ? link(`#/item/${collectionCid}/${i}`, cid(i)) : cid(i),
+      // Spec section 5.6: an item chosen by a query is picked with no via.
+      ' ', pickButton(ctx, { address: i, via: [] })))))
 }
 
 const TYPES = ['string', 'int', 'float', 'bool', 'null']
@@ -173,4 +184,174 @@ function whereForm(completionCid, output, where) {
       .filter(([path]) => path)
     location.hash = `#/items/${completionCid}/${enc(output)}?where=${enc(JSON.stringify(next))}`
   } }, rows, h('div', {}, h('button', { type: 'button', onclick: () => addRow() }, 'Add a condition'), ' ', h('button', { type: 'submit' }, 'Filter')))
+}
+
+const flag = (text) => h('span', { class: 'warn' }, ` (${text})`)
+
+/** Adds an item or a Selection to the tray (spec section 5.6, [data-pick]). */
+export function pickButton(ctx, { address, via = [], kind = 'item' }) {
+  const inTray = ctx.tray.has(address)
+  return h('button', { type: 'button', 'data-pick': address, 'data-kind': kind, 'data-via': via.join(' '), disabled: inTray,
+    onclick: (event) => {
+      ctx.tray.add({ address, via, kind })
+      ctx.trayChanged()
+      event.currentTarget.textContent = 'In the tray'
+      event.currentTarget.disabled = true
+    } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
+}
+
+export async function selections(ex, { offset = 0, deleted = false }, ctx) {
+  const page = await ex.selectionPage({ offset, showDeleted: deleted })
+  const route = deleted ? '#/selections?deleted=1' : '#/selections'
+  return h('section', {},
+    h('h1', {}, deleted ? 'Deleted Selections' : 'Selections'),
+    // With showDeleted, hiddenCount counts the current rows left out, so it is shown only in the current view.
+    h('p', {}, deleted ? link('#/selections', 'Show current Selections')
+      : [link('#/selections?deleted=1', 'Show deleted'), page.hiddenCount ? ` (${page.hiddenCount} on this page)` : '']),
+    pager(route, page, 'Selections'),
+    page.rows.length === 0 ? h('p', { class: 'muted' }, deleted ? 'No deleted Selections.' : 'No Selections in this member yet.')
+      : table(['name', 'first seen', 'by', 'state', ''], page.rows.map(r => h('tr', {
+        'data-selection': r.cid, 'data-deletion': r.state.deletion, 'data-source': r.source, 'data-names': JSON.stringify(r.state.names) },
+      h('td', {}, link(`#/selection/${r.cid}`, r.state.names.length ? r.state.names.join(' / ') : h('span', { class: 'muted' }, 'unnamed')),
+        r.state.nameConflicted ? flag('names in conflict') : null, r.error ? errorNode(r.error) : null),
+      h('td', {}, r.firstSeen ?? ''), h('td', {}, r.assertedBy ?? ''),
+      h('td', {}, r.state.deletion === 'conflicted' ? flag('deletion in conflict') : r.state.deletion === 'deleted' ? 'deleted' : ''),
+      h('td', {}, deleted ? undoButton(r.cid, r.state, ctx) : null)))))
+}
+
+function undoButton(cid, state, ctx) {
+  if (!ctx.write.available || !ctx.write.here) return null
+  const status = h('span', {})
+  return [h('button', { type: 'button', 'data-undo': cid, onclick: (event) => ctx.write.run(status, async () => {
+    await ctx.write.writer.undo(cid, state.deletionClaims)
+    return { href: `#/selection/${cid}` }
+  }, event.currentTarget) }, 'Undo'), status]
+}
+
+export async function selection(ex, selectionCid, ctx) {
+  let s
+  try {
+    s = await ex.selection(selectionCid)
+  } catch (e) {
+    if (e.code === 'block_missing') e.message = `Selection ${selectionCid} is not in this member; it may be held in another one`
+    throw e
+  }
+  const st = s.state
+  const status = h('div', { id: 'write-status' })
+  const byCid = new Map(st.current.map(c => [c.cid, c]))
+  // A Selection may have thousands of members: the table renders at once and
+  // each row's "held in" cell fills in when its own lookup answers, so one
+  // slow or failing member (a hash mismatch, say) never holds up the view or
+  // fails it outright (final review finding 2).
+  const members = s.members.map((m) => {
+    // Spec section 7.1a: members shown as Item Occurrences, copyable as links.
+    const copy = (uri) => h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(uri).catch(() => {}) }, 'Copy')
+    const where = m.kind === 'selection'
+      ? link(`#/selection/${m.address}`, cid(m.address))
+      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(`cas://${m.address}`)]
+        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(`cas://${v}/${m.address}`)]))
+    const held = h('td', { 'data-held-for': m.address, class: 'muted' }, '...')
+    const tr = h('tr', { 'data-member': m.address, 'data-kind': m.kind }, h('td', {}, where), h('td', {}, m.kind), held)
+    return { m, held, tr }
+  })
+  for (const { m, held, tr } of members) {
+    ex.held(m.kind, m.address).then(
+      (state) => {
+        tr.dataset.held = state
+        held.textContent = state === 'here' ? 'this member' : 'another member'
+        held.classList.remove('muted')
+      },
+      (e) => {
+        const node = errorNode(e)
+        node.textContent = `unavailable (${node.textContent})`
+        held.replaceChildren(node)
+        held.classList.remove('muted')
+      })
+  }
+  return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
+    h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'), cid(selectionCid),
+    st.nameConflicted ? h('p', { class: 'warn' }, 'More than one name is current. Renaming supersedes them all.') : null,
+    h('ul', {}, st.nameClaims.map(c => byCid.get(c)).filter(c => c.verb === 'set').map(c => h('li', {
+      'data-name': c.value, 'data-claim': c.cid, 'data-conflicted': c.conflicted ? '' : null },
+    String(c.value), ' ', h('span', { class: 'muted' }, `named by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
+    st.deletion === 'none' ? null : h('div', { class: 'warn' },
+      h('p', {}, st.deletion === 'deleted' ? 'Deleted: hidden from the list of Selections until undone.'
+        : 'Deletion in conflict: these Claims are all current, so it stays visible.'),
+      h('ul', {}, st.deletionClaims.map(c => byCid.get(c)).map(c => h('li', { 'data-deletion-claim': c.cid, 'data-verb': c.verb },
+        `${c.verb} by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
+    h('dl', {}, h('dt', {}, 'first seen in this member'), h('dd', {}, s.firstSeen ?? 'unknown'),
+      h('dt', {}, 'assembled by'), h('dd', {}, s.block.asserted_by)),
+    actions(selectionCid, st, ctx, status),
+    status,
+    h('h2', {}, `Members (${s.members.length})`),
+    table(['member', 'kind', 'held in'], members.map(({ tr }) => tr)),
+    ctx.write.served ? h('p', {}, 'Samplesheet: ',
+      h('a', { href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'CSV'), ' ',
+      h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null)
+}
+
+function actions(selectionCid, st, ctx, status) {
+  if (!ctx.write.available) return h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason)
+  if (!ctx.write.here) {
+    return h('div', {},
+      h('p', { 'data-unavailable': '', class: 'muted' }, `Rename, delete and undo write to the writable member, ${ctx.write.writable}. `,
+        link(ctx.write.hrefFor(`#/selection/${selectionCid}`), 'Open this Selection there'), '.'),
+      h('p', {}, pickButton(ctx, { address: selectionCid, kind: 'selection' })))
+  }
+  const name = h('input', { id: 'rename-name', placeholder: 'New name', value: '' })
+  return h('div', {},
+    h('p', {}, name, ' ', h('button', { type: 'button', id: 'rename-save', onclick: (event) => ctx.write.run(status, async () => {
+      if (!name.value.trim()) throw Object.assign(new Error('type a name first'), { code: 'invalid' })
+      await ctx.write.writer.rename(selectionCid, name.value.trim(), st.nameClaims)
+      return { href: `#/selection/${selectionCid}` }
+    }, event.currentTarget) }, 'Rename')),
+    h('p', {},
+      st.deletion === 'deleted' ? null : h('button', { type: 'button', id: 'delete', onclick: (event) => ctx.write.run(status, async () => {
+        await ctx.write.writer.remove(selectionCid, st.deletionClaims)
+        return { href: `#/selection/${selectionCid}` }
+      }, event.currentTarget) }, 'Delete'),
+      st.deletion === 'none' ? null : [' ', h('button', { type: 'button', id: 'undo', onclick: (event) => ctx.write.run(status, async () => {
+        await ctx.write.writer.undo(selectionCid, st.deletionClaims)
+        return { href: `#/selection/${selectionCid}` }
+      }, event.currentTarget) }, 'Undo delete')],
+      ' ', pickButton(ctx, { address: selectionCid, kind: 'selection' })))
+}
+
+export function compose(ex, ctx) {
+  const entries = ctx.tray.entries()
+  const status = h('div', { id: 'write-status' })
+  const name = h('input', { id: 'compose-name', placeholder: 'A name for this Selection' })
+  const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
+  const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
+    const members = ctx.tray.toMembers()
+    const dry = await ctx.write.writer.selection(members, { dryRun: true })
+    if (dry.exists) {
+      status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-names': JSON.stringify(dry.names) },
+        `This Selection already exists${dry.names.length ? ` as ${dry.names.join(', ')}` : ', unnamed'}. `,
+        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ',
+        h('button', { type: 'button', onclick: () => status.replaceChildren() }, 'cancel'), '.'))
+      return { outcome: 'exists' }
+    }
+    const written = await ctx.write.writer.selection(members)
+    ctx.tray.clear()
+    ctx.trayChanged()
+    if (name.value.trim()) {
+      try {
+        await ctx.write.writer.rename(written.address, name.value.trim(), [])
+      } catch (e) {
+        throw Object.assign(e, { saved: written.address })
+      }
+    }
+    return { address: written.address, href: `#/selection/${written.address}` }
+  }, event.currentTarget) }, 'Save')
+  return h('section', {},
+    h('h1', {}, 'Compose a Selection'),
+    ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
+    entries.length === 0 ? h('p', { class: 'muted' }, 'The tray is empty. Add items from a run, a collection, an item or a query.')
+      : table(['member', 'kind', 'picked from', ''], entries.map(e => h('tr', { 'data-tray-entry': e.address, 'data-kind': e.kind },
+        h('td', {}, cid(e.address)), h('td', {}, e.kind), h('td', {}, e.via.length ? e.via.map(v => h('div', {}, cid(v))) : h('span', { class: 'muted' }, 'a query')),
+        h('td', {}, h('button', { type: 'button', onclick: () => { ctx.tray.remove(e.address); ctx.trayChanged(); ctx.rerender() } }, 'Remove'))))),
+    ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only member is another Selection is legal, but the explorer does not make one: add an item too.') : null,
+    h('p', {}, name, ' ', save),
+    status)
 }

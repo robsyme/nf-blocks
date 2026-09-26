@@ -10,12 +10,16 @@ import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.Cid
+import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.RunCompletion
 import robsyme.cas.core.RunManifest
+import robsyme.cas.core.Selection
+import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogKind
 import robsyme.cas.nio.CasFileSystemProvider
 import robsyme.cas.nio.CasPath
 import spock.lang.Specification
@@ -236,5 +240,116 @@ class CasExtensionTest extends Specification {
         then:
         items.size() == 1
         (items[0] as List)[1] == null
+    }
+
+    // -------------------------------------------------------- fromStore(selection:)
+
+    private Cid itemOf(Cid completion, String sample) {
+        final Index index = Index.open(indexFile)
+        try {
+            return index.items(completion, 'aligned', [sample: sample])[0]
+        }
+        finally {
+            index.close()
+        }
+    }
+
+    private Cid alignedCollectionOf(Cid completion) {
+        final Index index = Index.open(indexFile)
+        try {
+            return index.collectionsOf(completion).aligned
+        }
+        finally {
+            index.close()
+        }
+    }
+
+    private Cid storeSelection(List<Selection.Member> members, boolean logged = true) {
+        final Cid cid = cas.store.putDagCbor(new Selection('test', members, []).toCbor())
+        if( logged )
+            StoreLog.append(cas.store, StoreLogKind.SELECTION, cid, System.currentTimeMillis())
+        return cid
+    }
+
+    def 'fromStore(selection:) flattens nesting and emits each item once, restored (spec section 10)'() {
+        given:
+        final Map run = alignedRun()
+        final Cid coll = alignedCollectionOf((Cid) run.completion)
+        final Cid a = itemOf((Cid) run.completion, 'A'), b = itemOf((Cid) run.completion, 'B'), c = itemOf((Cid) run.completion, 'C')
+        final Cid inner = storeSelection([Selection.item(a, [coll]), Selection.item(b, [coll])])
+        final Cid outer = storeSelection([Selection.selection(inner), Selection.item(b, []), Selection.item(c, [coll])])
+
+        when:
+        final List items = drain(ext.fromStore(selection: "cas://${outer}".toString()))
+
+        then: 'A, B and C once each, in item-CID order'
+        final Map<Cid, Map> metaOf = [(a): [sample: 'A'], (b): [sample: 'B'], (c): [sample: 'C']]
+        items.collect { (it as List)[0] } == [a, b, c].sort { it.toString() }.collect { metaOf[it] }
+        items.every { (it as List)[1] instanceof CasPath }
+    }
+
+    def 'a bare cid works, and a Selection whose block was never logged is read too'() {
+        given:
+        final Map run = alignedRun()
+        final Cid a = itemOf((Cid) run.completion, 'A')
+        final Cid s = storeSelection([Selection.item(a, [])], false)
+
+        expect:
+        drain(ext.fromStore(selection: s.toString())).size() == 1
+    }
+
+    def 'a deleted Selection still emits its items (spec section 10: with a warning)'() {
+        given:
+        final Map run = alignedRun()
+        final Cid s = storeSelection([Selection.item(itemOf((Cid) run.completion, 'A'), [])])
+        final Cid delete = cas.store.putDagCbor(Fixtures.claim(s, 'delete', null, null, []))
+        StoreLog.append(cas.store, StoreLogKind.CLAIM, delete, System.currentTimeMillis())
+
+        expect:
+        drain(ext.fromStore(selection: s.toString())).size() == 1
+    }
+
+    def 'a nested Selection the composition does not hold fails at the call, naming it (Review Focus 5)'() {
+        given:
+        final Map run = alignedRun()
+        final Cid absent = Fixtures.cidOf([kind: 'Selection', n: 99])
+        final Cid s = storeSelection([Selection.selection(absent), Selection.item(itemOf((Cid) run.completion, 'A'), [])])
+
+        when:
+        ext.fromStore(selection: s.toString())
+
+        then:
+        final IllegalStateException e = thrown()
+        e.message.contains(absent.toString())
+    }
+
+    def 'selection refuses run, output, where and pipeline beside it, and an address that is not a Selection'() {
+        given:
+        final Map run = alignedRun()
+
+        when:
+        ext.fromStore(opts)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        opts << [
+            [selection: 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua', output: 'aligned'],
+            [selection: 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua', run: 'latest'],
+            [selection: 'not a cid'],
+        ]
+    }
+
+    def 'a RunCompletion address is not a Selection'() {
+        given:
+        final Map run = alignedRun()
+
+        when:
+        ext.fromStore(selection: run.completion.toString())
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('not a Selection')
     }
 }

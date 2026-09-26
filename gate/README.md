@@ -69,11 +69,12 @@ block, not as a silently different value. Order violations raise
 7. Reads the read-back references out of the store (`assert.py --refs`) and
    passes them to the consumer as `--lid` and `--cas`, because neither exists
    before the producer has run.
-8. `python3 gate/assert.py "$GATE_ROOT"`, then the browser tier
-   (`gate/browser/tier.sh`, below). Exits non-zero when either tier fails.
+8. `python3 gate/assert.py "$GATE_ROOT"`, then browser tier A
+   (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
+   both below. Exits non-zero when any tier fails.
 
 Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/`,
-`browser/` and the snapshots first. Every one of them is evidence, and stale
+`browser/`, `browser-b/`, `selection/` and the snapshots first. Every one of them is evidence, and stale
 evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
 the zip just built on every run that builds.
 
@@ -102,7 +103,7 @@ skips it.
 After `fail`, gate.sh keeps that run's Index Snapshot as
 `snapshot-after-fail.sqlite`. `browser_assert.py prepare` then lays out four
 member copies under `$GATE_ROOT/browser/site/stores/`, each holding what a
-member publishes (`blocks/`, `log/`, `index/v2.sqlite`, `index.html`, never
+member publishes (`blocks/`, `log/`, `index/v3.sqlite`, `index.html`, never
 `coords/` or `nf/`):
 
 | store | snapshot | for |
@@ -110,7 +111,7 @@ member publishes (`blocks/`, `log/`, `index/v2.sqlite`, `index.html`, never
 | `current` | the store's own, after `elsewhere` | A1, A5 |
 | `stale` | the one kept after `fail`, two runs behind | A3 |
 | `tampered` | as `stale`, with one byte of `elsewhere`'s RunCompletion changed | A4 |
-| `year` | only `index/v2.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
+| `year` | only `index/v3.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
 
 The year snapshot takes minutes to generate, so it is cached in
 `GATE_YEAR_CACHE` (default `$TMPDIR/nf-blocks-gate-year`), keyed by
@@ -149,6 +150,64 @@ from the Gate's own hashes and block reads, and `sqlite3` for the year file:
 A failing line: read `browser/observed.json` for that step and
 `browser/drive.log`. Assertions 6 and 7 are the cloud part.
 
+## Browser tier B (Selections)
+
+Tier B, milestone 2, assertions 8 to 13 of spec section 1.3. It is local:
+`gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
+Playwright, and needs no network beyond what `explore` itself asks for.
+`GATE_SKIP_BROWSER=1` skips it with tier A.
+
+The page writes, so it never touches the store the other tiers read.
+`browser_b_assert.py prepare` copies `store/` (without `index/` and
+`index.html`) to `browser-b/store`, and `tier_b.sh` serves that copy as the
+one writable member `lab` through `nf-blocks:explore` (`asserted_by = 'gate'`,
+its own index under `browser-b/cache`). `prepare` picks, from the Gate's own
+read of the blocks, item A and B of `cold`'s `aligned`, B again through
+`again`'s `aligned` (the same OutputItem in another collection) and C of
+`stats`, and hashes `A.bam`, `B.bam` and `C.stats` in `pipeline-a/work`.
+
+`drive.mjs` then plays five steps with the launch token `explore` printed:
+compose `first` = {A, B}; compose `second` = {`first`, B, C}; rename
+`second`; delete it and undo; and two pages renaming it from the same view.
+While `explore` is still up, `browser_b_assert.py probe` replays the page's
+own rename bytes, sends three POSTs that must be refused, and fetches the
+samplesheet of `second` as CSV and JSON. `explore` stops, and
+`gate/selection` runs in `$GATE_ROOT/selection` over the copy (member `lab`)
+and its own `browser-b/store-out` (member `out`), staging `second` through
+`fromStore(selection:)` and through the CSV's `1` column, and publishing the
+sha256 of each staged file. `browser_b_assert.py check` recomputes every
+address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
+
+- B8: each Selection the page wrote has the Gate's address for the page's
+  own request, the endpoint answered it, the page shows it, and the block
+  in the store reads back equal to the Gate's; `second` has exactly the
+  members {`first`}, B via `again` and C via `stats`.
+- B9: the pipeline exits 0 and `fromStore(selection:)` staged exactly
+  `A.bam`, `B.bam` and `C.stats`, one HASH task each (counted from each
+  task's `.command.run`, since a file staged twice publishes one hash), each
+  hashing as its work file does.
+- B10: every Claim the page wrote (names, rename, delete, undo) has the
+  Gate's address and is in the store, the rename, delete and undo are about
+  the Gate's `second`, and the undo supersedes the delete; the page lists the deleted Selection
+  only as deleted, and the undo clears it; the replayed rename answers
+  `200`, `written: false` and the same address, writes no block and leaves
+  one `log/` entry for it.
+- B11: of the two racing sessions the first is `written`, the second
+  `stale_supersedes` and shown as `[data-error]`; the Gate's own current
+  state of `second` (`dagjson.claim_state`) is the one name `third-a`.
+- B12: no token `403`, a foreign `Origin` `403`, `text/plain` `415`. The
+  three send a Selection no step wrote ({C via `stats`} alone, its Gate
+  address in `probes.json`); the store must not hold it afterwards, and the
+  block and log counts must not change.
+- B13: both exports answer `200`, their `1` cells are exactly
+  `cas://<cid>/<name>` for A, B and C (by item CID), and the cells stage
+  once each and hash as B9's files do.
+
+Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
+`selection.log` (and `selection-nextflow.log`), beside `scenario.json`,
+`observed.json`, `probes.json`, `expected.json` and the two samplesheets.
+A failing line: read that step in `observed.json` and `drive.log` first.
+
 ## The cloud browser tier
 
 `gate/cloud/cloud.sh`, assertions 6 and 7: real S3 (CORS, ranged GETs,
@@ -181,6 +240,8 @@ plugins/                 NXF_PLUGINS_DIR for these runs only
 cache/nf-blocks/*.sqlite the indexes; the producer's is selected by pipeline
 store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
+browser/ browser-b/      browser tiers A and B: inputs, observations, logs
+selection/               tier B's selection pipeline launch directory
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
 consumer/                the second pipeline
 logs/<name>/             stdout.log stderr.log nextflow.log exit

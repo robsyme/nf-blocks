@@ -55,10 +55,33 @@ class ExploreCommandTest extends Specification {
         started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
 
         then:
-        Files.isRegularFile(tempDir.resolve('lab/index/v2.sqlite'))
-        out.toString().trim() == "nf-blocks explorer: ${started.server.url}"
-        RawHttp.send(started.server.port, 'GET', '/m/lab/index/v2.sqlite').status == 200
+        Files.isRegularFile(tempDir.resolve('lab/index/v3.sqlite'))
+        out.toString().trim() ==~ /nf-blocks explorer: http:\/\/127\.0\.0\.1:\d+\/\?token=[a-z2-7]{26}/
+        RawHttp.send(started.server.port, 'GET', '/m/lab/index/v3.sqlite').status == 200
         RawHttp.send(started.server.port, 'GET', '/members.json').text().contains('"shared"')
+    }
+
+    def 'the samplesheet export indexes a Selection whose block was never logged, as fromStore(selection:) does (final review finding 4)'() {
+        given:
+        final LocalBlockStore lab = new LocalBlockStore(tempDir.resolve('lab'), 'lab', true)
+        final Cid manifest = lab.putDagCbor(Fixtures.runManifest())
+        final Cid item = lab.putDagCbor(Fixtures.outputItem([[sample: 'A']]))
+        final Cid collection = lab.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', [[item, ['aligned/A.bam']]]))
+        Files.createDirectories(tempDir.resolve('shared'))
+        // Starting once first lets the index's one-time block scan (Index.scanOnce)
+        // finish with nothing to find, so the Selection added below stays truly
+        // unindexed rather than being swept up by that scan.
+        started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
+        // Copied straight into the store afterwards, with no Store Log entry: never logged.
+        final Cid selection = lab.putDagCbor(Fixtures.selection([[item: [address: item, via: [collection]]]]))
+
+        when:
+        final def csv = RawHttp.send(started.server.port, 'GET', "/api/samplesheet/${selection}.csv")
+
+        then:
+        csv.status == 200
+        csv.text().readLines()[0] == 'sample'
+        csv.text().readLines()[1] == 'A'
     }
 
     def 'membersOf builds S3MemberFiles for a remote alias and LocalMemberFiles for a local one, writable first'() {

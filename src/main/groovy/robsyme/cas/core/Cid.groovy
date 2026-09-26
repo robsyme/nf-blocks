@@ -67,6 +67,13 @@ final class Cid implements Comparable<Cid> {
             throw new IllegalArgumentException("unsupported cid codec $codec: nf-blocks addresses only raw ($RAW) and dag-cbor ($DAG_CBOR)")
     }
 
+    /** The inverse of {@link #bytes()}: a binary CID, as a Selection's derived_from holds it. */
+    static Cid fromBytes(byte[] binary) {
+        if( binary == null || binary.length == 0 )
+            throw new IllegalArgumentException('an empty binary cid')
+        return parse(BASE32_PREFIX + Multibase.base32Encode(binary))
+    }
+
     static boolean isCid(String text) {
         try {
             parse(text)

@@ -12,6 +12,7 @@ Needs boto3 and an AWS session (AWS_PROFILE, default scidev).
 """
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -21,6 +22,17 @@ TAGS = [{"Key": "purpose", "Value": "nf-blocks Gate cloud browser tier - throwaw
 CORS = {"CORSRules": [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["range"],
                        "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"],
                        "MaxAgeSeconds": 3000}]}
+
+# An Index Snapshot key, at any nesting depth (a member subdirectory, or
+# directly under the year/ prefix): DESIGN.md §15 "What a member serves".
+_SNAPSHOT_KEY = re.compile(r'(^|/)index/v\d+\.sqlite$')
+
+
+def cache_control_for(key):
+    """The Cache-Control this key gets, matching what nf-blocks:explore sends
+    for the same two kinds of file (ExploreServer.groovy): the snapshot is
+    revalidated every load, a block is immutable and cached for a year."""
+    return 'no-cache' if _SNAPSHOT_KEY.search(key) else 'public, max-age=31536000, immutable'
 
 
 def session():
@@ -72,7 +84,8 @@ def upload(s3, bucket, root, prefix=""):
         for name in files:
             full = os.path.join(dirpath, name)
             key = prefix + os.path.relpath(full, root).replace(os.sep, "/")
-            s3.upload_file(full, bucket, key, Config=config)
+            s3.upload_file(full, bucket, key, Config=config,
+                            ExtraArgs={"CacheControl": cache_control_for(key)})
             count += 1
             total += os.path.getsize(full)
     print("uploaded %d objects, %d MB to %s in %.0f s" % (count, total // 1_000_000, bucket, time.time() - started), file=sys.stderr)

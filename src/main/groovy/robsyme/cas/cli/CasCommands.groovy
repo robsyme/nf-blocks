@@ -1,5 +1,6 @@
 package robsyme.cas.cli
 
+import java.nio.file.Files
 import java.nio.file.Paths
 
 import groovy.transform.CompileStatic
@@ -10,6 +11,8 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.Put
+import robsyme.cas.core.PutError
 import robsyme.cas.explore.ExploreCommand
 
 /**
@@ -21,7 +24,7 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'snapshot']
+    static final List<String> VERBS = ['explore', 'put', 'snapshot']
 
     int exec(Launcher launcher, String pluginId, String cmd, List<String> args) {
         final Map config
@@ -39,6 +42,10 @@ class CasCommands {
     }
 
     int run(String cmd, List<String> args, Map config, PrintStream out, PrintStream err) {
+        return run(cmd, args, config, out, err, System.in)
+    }
+
+    int run(String cmd, List<String> args, Map config, PrintStream out, PrintStream err, InputStream stdin) {
         if( !(cmd in VERBS) ) {
             err.println(usage(cmd))
             return 2
@@ -49,6 +56,8 @@ class CasCommands {
                     return snapshot(Options.parse(args, [] as Set), config, out)
                 case 'explore':
                     return ExploreCommand.run(args, config, out, err)
+                case 'put':
+                    return put(Options.parse(args, ['dry-run'] as Set), config, out, stdin)
             }
             return 2
         }
@@ -67,7 +76,42 @@ class CasCommands {
         final String head = cmd ? "unknown command 'nf-blocks:${cmd}'" : 'no command given'
         return "${head}; usage: nextflow plugin nf-blocks:<command>\ncommands:\n" +
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
+            '  put <file|-> [--dry-run]  build and write one Selection or Claim from DAG-JSON\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
+    }
+
+    /** Builds and writes one client-constructible block (spec section 9.2); the body goes to stdout either way. */
+    private static int put(Options options, Map config, PrintStream out, InputStream stdin) {
+        if( options.positionals.size() != 1 )
+            throw new UsageException("put takes one file (or - for stdin), got ${options.positionals ?: 'none'}")
+        final String dry = options.flag('dry-run')
+        if( !(dry in [null, 'true', 'false']) )
+            throw new UsageException("--dry-run is a flag, got '${dry}'")
+        final String source = options.positionals[0]
+        final byte[] body = source == '-' ? readCapped(stdin, source) : readCapped(Files.newInputStream(Paths.get(source)), source)
+        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final Index index = cas.openIndex()
+        try {
+            out.println(new String(cas.newPut(index).put(body, dry == 'true').body(), 'UTF-8'))
+            return 0
+        }
+        catch( PutError e ) {
+            out.println(new String(e.body(), 'UTF-8'))
+            return 1
+        }
+        finally {
+            index.close()
+        }
+    }
+
+    /** At most one byte past the builder's request cap, so the builder refuses it with too_large. */
+    private static byte[] readCapped(InputStream input, String source) {
+        try {
+            return input.readNBytes((int) Put.MAX_REQUEST_BYTES + 1)
+        }
+        finally {
+            input.close()
+        }
     }
 
     /** Catches the index up from every member's Store Log, then rewrites the writable member's snapshot. */

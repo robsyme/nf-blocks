@@ -59,6 +59,7 @@ try {
   assert.equal(await page.$eval('#snapshot-mode', e => e.dataset.mode), 'range')
   assert.equal(await page.$eval('#stale', e => e.dataset.staleCount), '2')
   assert.equal(await page.$eval('#stale', e => e.dataset.log), 'read')
+  assert.equal(await page.evaluate(() => document.body.dataset.write), 'unavailable')
 
   await go(page, '#/pipeline/demo')
   assert.deepEqual((await all(page, '[data-run]', ['run', 'source', 'status'])).map(r => [r.run, r.source, r.status]), [
@@ -71,6 +72,9 @@ try {
   await go(page, `#/collection/${runs.R1.collection}?offset=1`)
   assert.deepEqual(await all(page, '[data-page]', ['first', 'last', 'total']), [{ first: '2', last: '2', total: '2' }])
   assert.equal((await page.$$('[data-page-prev]')).length, 1)
+  await go(page, `#/collection/${runs.R1.collection}?offset=5`)
+  assert.deepEqual(await all(page, '[data-page]', ['first', 'total']), [{ first: '0', total: '2' }])
+  assert.match(await page.$eval('[data-page]', e => e.textContent), /^no items on this page; there are 2/)
 
   await go(page, `#/content/${content.B}`)
   assert.deepEqual((await all(page, '[data-producer]', ['completion', 'item', 'filename'])).map(p => p.completion).sort(),
@@ -108,7 +112,7 @@ try {
   // next query that reads a page it has not cached fails with snapshot_changed.
   const swapped = await context.newPage()
   await open(swapped, 'http://127.0.0.1:8841/index.html#/idle')
-  const snapshot = join(dir, 'index/v2.sqlite')
+  const snapshot = join(dir, 'index/v3.sqlite')
   copyFileSync(snapshot, snapshot + '.orig')
   writeFileSync(snapshot + '.tmp', Buffer.concat([readFileSync(snapshot), Buffer.alloc(4096)]))
   renameSync(snapshot + '.tmp', snapshot)
@@ -119,7 +123,7 @@ try {
 
   // A member whose Store Log no listing answers for (final review finding 6).
   mkdirSync(join(dir, 'nolog/index'), { recursive: true })
-  copyFileSync(join(dir, 'index/v2.sqlite'), join(dir, 'nolog/index/v2.sqlite'))
+  copyFileSync(join(dir, 'index/v3.sqlite'), join(dir, 'nolog/index/v3.sqlite'))
   const nolog = await context.newPage()
   await open(nolog, 'http://127.0.0.1:8841/index.html?store=nolog/#/idle')
   assert.equal(await nolog.$eval('#stale', e => e.dataset.log), 'unreadable')
@@ -131,6 +135,134 @@ try {
   await open(disk, `file://${join(dir, 'index.html')}#/`)
   assert.equal(await disk.evaluate(() => document.body.dataset.state), 'error')
   assert.equal(await disk.$eval('[data-error]', e => e.dataset.error), 'file_protocol')
+
+  // Composing against a stub POST /api/put (Task 14): members.json says the
+  // page may write, and each POST is recorded and answered with a canned body.
+  const S1 = 'bafyreieqfispnqxoy5soafwru7dgsenxgmkdhzhiy6fc7nfjzdi6r3ujmy' // any valid CID; no such block
+  const writeContext = await browser.newContext()
+  const posts = []
+  // Two aliases for the one fixture member: `main` writable, `other` not.
+  await writeContext.route(/\/members\.json$/, r => r.fulfill({ contentType: 'application/json',
+    body: JSON.stringify({ members: [{ alias: 'main', writable: true, base: './' }, { alias: 'other', writable: false, base: './' }], write: true }) }))
+  // While brokenLog is set, the Store Log listing is malformed, so the tail refresh after a write throws.
+  let brokenLog = false
+  await writeContext.route(/\/log\/$/, r => (brokenLog
+    ? r.fulfill({ contentType: 'application/json', body: '{"entries": 5}' }) : r.continue()))
+  await writeContext.route(/\/api\/put(\?.*)?$/, async (r) => {
+    const req = r.request()
+    posts.push({ url: req.url(), token: req.headers()['x-nf-blocks-token'], body: JSON.parse(req.postData()) })
+    const dry = req.url().endsWith('?dry_run=true')
+    // DAG-JSON with its keys sorted, as the server writes it.
+    const body = dry ? { address: { '/': S1 }, exists: false, names: [] } : { address: { '/': S1 }, block: {}, entry: 'e', written: true }
+    await r.fulfill({ status: 200, contentType: 'application/vnd.ipld.dag-json', body: JSON.stringify(body) })
+  })
+  const composer = await writeContext.newPage()
+  const composeErrors = []
+  composer.on('pageerror', e => composeErrors.push(String(e)))
+  await open(composer, `http://127.0.0.1:8841/?token=t#/item/${runs.R1.collection}/${item.A}`)
+  assert.equal(await composer.evaluate(() => document.body.dataset.write), 'available')
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '0')
+  await composer.click(`[data-pick="${item.A}"]`)
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '1')
+  await go(composer, '#/compose')
+  assert.deepEqual(await all(composer, '[data-tray-entry]', ['trayEntry', 'kind']), [{ trayEntry: item.A, kind: 'item' }])
+  await composer.fill('#compose-name', 'smoke, "one"')
+  // A double click is one attempt: the busy guard ignores the second click.
+  await composer.dblclick('#compose-save')
+  await composer.waitForFunction(() => document.body.dataset.writeSeq === '1')
+  assert.equal(await composer.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.equal(await composer.evaluate(() => document.body.dataset.written), S1)
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '0')
+  assert.deepEqual(posts.map(p => [new URL(p.url).pathname + new URL(p.url).search, p.token, p.body.kind]), [
+    ['/api/put?dry_run=true', 't', 'Selection'], ['/api/put', 't', 'Selection'], ['/api/put', 't', 'Claim']])
+  assert.deepEqual(posts[1].body.members, [{ item: { address: { '/': item.A }, via: [{ '/': runs.R1.collection }] } }])
+  assert.deepEqual([posts[2].body.subject, posts[2].body.verb, posts[2].body.attribute, posts[2].body.value, posts[2].body.supersedes],
+    [{ '/': S1 }, 'set', 'name', 'smoke, "one"', []])
+
+  // The write succeeds but the tail refresh throws: the outcome is still
+  // recorded, and the status says to reload.
+  await go(composer, `#/item/${runs.R1.collection}/${item.A}`)
+  await composer.click(`[data-pick="${item.A}"]`)
+  await go(composer, '#/compose')
+  brokenLog = true
+  await composer.click('#compose-save')
+  await composer.waitForFunction(() => document.body.dataset.writeSeq === '2')
+  brokenLog = false
+  assert.equal(await composer.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.match(await composer.$eval('[data-refresh-failed]', e => e.textContent), /^Saved, but the page could not refresh/)
+  assert.equal(posts.length, 5)
+  assert.equal(await composer.$eval('#compose-save', e => e.disabled), false)
+
+  // A deleted Selection SD in the Store Log tail: the deleted list offers
+  // [data-undo] per row, and undo supersedes the delete Claim D.
+  const { block, entryName } = await import(join(repo, 'web/test/fixture.mjs'))
+  const { CID } = await import(join(repo, 'web/node_modules/multiformats/dist/src/cid.js'))
+  const store = (b) => {
+    mkdirSync(join(dir, 'blocks', b.cid.toString().slice(-2)), { recursive: true })
+    writeFileSync(join(dir, 'blocks', b.cid.toString().slice(-2), b.cid.toString()), b.bytes)
+    return b.cid
+  }
+  const SD = store(block({ kind: 'Selection', schema: 1, asserted_by: 'smoke', derived_from: [],
+    members: [{ item: { address: CID.parse(item.A), via: [CID.parse(runs.R1.collection)] } }] }))
+  const D = store(block({ kind: 'Claim', schema: 1, asserted_by: 'smoke', subject: SD, verb: 'delete', attribute: null, value: null,
+    supersedes: [], timestamp: new Date().toISOString() }))
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 2000, 'selection', SD.toString())), '')
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 1000, 'claim', D.toString())), '')
+  const undoer = await writeContext.newPage()
+  undoer.on('pageerror', e => composeErrors.push(String(e)))
+  await open(undoer, 'http://127.0.0.1:8841/?token=t#/selections?deleted=1')
+  assert.deepEqual(await all(undoer, '[data-selection]', ['selection', 'deletion']), [{ selection: SD.toString(), deletion: 'deleted' }])
+  assert.deepEqual(await undoer.$$eval('[data-undo]', els => els.map(e => e.dataset.undo)), [SD.toString()])
+  assert.equal(await undoer.$('#undo'), null)
+  await undoer.click(`[data-undo="${SD}"]`)
+  await undoer.waitForFunction(() => document.body.dataset.writeSeq === '1')
+  assert.deepEqual([posts[5].body.subject, posts[5].body.verb, posts[5].body.supersedes], [{ '/': SD.toString() }, 'del', [{ '/': D.toString() }]])
+
+  // A Selection view renders (and its render counter still advances) even
+  // though one member's block fails the hash check: that row shows a
+  // per-cell error instead of failing the whole view (final review finding 2).
+  const goodItem = store(block({ kind: 'OutputItem', schema: 1, value: [{ sample: 'good' }] }))
+  const badBlock = block({ kind: 'OutputItem', schema: 1, value: [{ sample: 'bad' }] })
+  mkdirSync(join(dir, 'blocks', badBlock.cid.toString().slice(-2)), { recursive: true })
+  // The bad item's real path answers 200, but with bytes that do not hash to it.
+  writeFileSync(join(dir, 'blocks', badBlock.cid.toString().slice(-2), badBlock.cid.toString()), Buffer.from('not the right bytes'))
+  const membersForSM = [{ item: { address: goodItem, via: [] } }, { item: { address: badBlock.cid, via: [] } }]
+    .sort((a, b) => (a.item.address.toString() < b.item.address.toString() ? -1 : 1))
+  const SM = store(block({ kind: 'Selection', schema: 1, asserted_by: 'smoke', derived_from: [], members: membersForSM }))
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 500, 'selection', SM.toString())), '')
+  const mixedErrors = []
+  const mixed = await context.newPage()
+  mixed.on('pageerror', e => mixedErrors.push(String(e)))
+  await open(mixed, `http://127.0.0.1:8841/index.html#/selection/${SM}`)
+  assert.equal(await mixed.evaluate(() => document.body.dataset.state), 'ready')
+  await mixed.waitForSelector(`tr[data-member="${goodItem}"][data-held]`)
+  assert.equal(await mixed.$eval(`tr[data-member="${goodItem}"]`, e => e.dataset.held), 'here')
+  await mixed.waitForSelector(`tr[data-member="${badBlock.cid}"] [data-error]`)
+  assert.match(await mixed.$eval(`tr[data-member="${badBlock.cid}"] [data-error]`, e => e.textContent), /unavailable/)
+  assert.equal(await mixed.$eval(`tr[data-member="${badBlock.cid}"]`, e => e.dataset.held ?? null), null)
+  assert.deepEqual(mixedErrors, [])
+
+  // Viewed through the non-writable alias: no rename or delete, a link to the
+  // writable member instead; composing there opens the writable member and
+  // the outcome survives that navigation.
+  const elsewhere = await writeContext.newPage()
+  elsewhere.on('pageerror', e => composeErrors.push(String(e)))
+  await open(elsewhere, `http://127.0.0.1:8841/?token=t&member=other#/selection/${SD}`)
+  assert.equal(await elsewhere.$('#rename-save'), null)
+  assert.equal(await elsewhere.$('#delete'), null)
+  assert.match(await elsewhere.$eval('[data-unavailable] a', e => e.href), /member=main/)
+  await go(elsewhere, `#/item/${runs.R1.collection}/${item.A}`)
+  await elsewhere.click(`[data-pick="${item.A}"]`)
+  await go(elsewhere, '#/compose')
+  await elsewhere.click('#compose-save')
+  await elsewhere.waitForURL(/member=main/)
+  await elsewhere.waitForFunction(() => document.body.dataset.writeSeq === '1' && document.body.dataset.state !== 'loading')
+  assert.equal(await elsewhere.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.equal(await elsewhere.evaluate(() => document.body.dataset.written), S1)
+  assert.equal(await elsewhere.$eval('#tray', e => e.dataset.count), '0')
+  assert.equal(posts.length, 8)
+
+  assert.deepEqual(composeErrors, [])
 
   console.log('page smoke: ok')
 } finally {

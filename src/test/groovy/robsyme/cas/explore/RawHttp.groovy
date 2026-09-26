@@ -15,11 +15,22 @@ class RawHttp {
     }
 
     static Response send(int port, String method, String rawPath, Map<String, String> headers = [:]) {
+        return write(port, method, rawPath, headers, new byte[0])
+    }
+
+    /** A POST with a body: the caller need not compute Content-Length itself. */
+    static Response send(int port, String method, String rawPath, Map<String, String> headers, byte[] body) {
+        return write(port, method, rawPath, headers + ['Content-Length': String.valueOf(body.length)], body)
+    }
+
+    /** Writes `head` and then `body` before flushing; adds no header of its own. */
+    private static Response write(int port, String method, String rawPath, Map<String, String> headers, byte[] body) {
         final Map<String, String> all = [Host: "127.0.0.1:${port}".toString()] + headers
         new Socket('127.0.0.1', port).withCloseable { Socket s ->
             final String head = "${method} ${rawPath} HTTP/1.1\r\n" +
                 all.collect { k, v -> "${k}: ${v}\r\n" }.join('') + 'Connection: close\r\n\r\n'
             s.outputStream.write(head.getBytes('ISO-8859-1'))
+            s.outputStream.write(body)
             s.outputStream.flush()
             final byte[] raw = s.inputStream.readAllBytes()
             final String text = new String(raw, 'ISO-8859-1')

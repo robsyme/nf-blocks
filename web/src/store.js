@@ -13,18 +13,19 @@ function refuseFile(base) {
 export async function resolveStore(href, { fetchFn = (...a) => fetch(...a) } = {}) {
   const url = new URL(href)
   const store = url.searchParams.get('store')
-  if (store) return { base: refuseFile(withSlash(new URL(store, url).href)), members: null, member: null }
+  if (store) return { base: refuseFile(withSlash(new URL(store, url).href)), members: null, member: null, write: false }
   if (url.protocol === 'file:') refuseFile(url.href)
   try {
     const res = await fetchFn(new URL('members.json', url).href, { cache: 'no-store' })
     if (res.ok && (res.headers.get('Content-Type') ?? '').includes('application/json')) {
-      const { members } = await res.json()
+      const body = await res.json()
+      const { members } = body
       const wanted = url.searchParams.get('member')
       const member = members.find(m => m.alias === wanted) ?? members[0]
-      return { base: new URL(member.base, url).href, members, member: member.alias }
+      return { base: new URL(member.base, url).href, members, member: member.alias, write: body.write === true }
     }
   } catch {
     // Not served by explore.
   }
-  return { base: new URL('.', url).href, members: null, member: null }
+  return { base: new URL('.', url).href, members: null, member: null, write: false }
 }

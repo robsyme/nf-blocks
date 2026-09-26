@@ -41,9 +41,13 @@ import robsyme.cas.core.DagCbor
 import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.DirectoryManifestBuilder
 import robsyme.cas.core.HashBufferPool
+import robsyme.cas.core.Leaf
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.ManifestEntry
 import robsyme.cas.core.NoSuchBlockException
+import robsyme.cas.core.OutputCollection
+import robsyme.cas.core.OutputItem
+import robsyme.cas.core.Records
 import robsyme.cas.core.StoreRef
 
 /**
@@ -116,6 +120,8 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         long mtime
         Cid content           // the raw block of a file, or the manifest of a directory
         String linkTarget
+        // An Item Occurrence without a leaf name: a directory of the item's leaves by name (DESIGN.md §7).
+        Map<String, Leaf> occurrence
 
         static CasNode absent() { new CasNode(present: false) }
     }
@@ -134,10 +140,88 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                 throw new IOException("a raw Store URI carries at most one segment (the file name): '${p}'")
             return fileNode(cid)
         }
-        // a dag-cbor manifest
+        // A dag-cbor root: a Directory Manifest, or an Output Collection naming an Item Occurrence (DESIGN.md §7).
+        final Map root = blockOf(cid)
+        if( root != null && Records.kindOf(root) == Records.OUTPUT_COLLECTION )
+            return occurrence(cid, root, segs, p)
         if( segs.isEmpty() )
             return manifestNode(cid)
         return traverse(cid, segs, p)
+    }
+
+    /** A decoded metadata block, or null when the store does not hold it. */
+    private Map blockOf(Cid cid) {
+        if( !store().has(cid) )
+            return null
+        final InputStream input = store().open(cid)
+        try {
+            final Object value = DagCbor.decode(input.readAllBytes())
+            return value instanceof Map ? (Map) value : null
+        }
+        finally {
+            input.close()
+        }
+    }
+
+    /**
+     * cas://<collection>/<item>[/<leaf>[/<entry>...]]. The first segment names
+     * an occurrence when it is one of the collection's items; publish-path
+     * traversal of a collection is not built, so anything else is an error
+     * naming both readings.
+     */
+    private CasNode occurrence(Cid collectionCid, Map root, List<String> segs, CasPath p) {
+        final OutputCollection collection = OutputCollection.fromCbor(root)
+        if( segs.isEmpty() )
+            throw new IOException("cas: ${p} is an Output Collection; name one of its items, cas://${collectionCid}/<item>")
+        final String first = segs[0]
+        if( !Cid.isCid(first) || !collection.items.contains(Cid.parse(first)) )
+            throw new IOException("cas: '${first}' in ${p} is neither an item of collection ${collectionCid} (an Item Occurrence) " +
+                'nor a publish path this version can traverse')
+        final Cid itemCid = Cid.parse(first)
+        final Map itemBlock = blockOf(itemCid)
+        if( itemBlock == null )
+            return CasNode.absent()
+        final Map<String, Leaf> leaves = leavesByName(OutputItem.fromCbor(itemBlock).value, p)
+        if( segs.size() == 1 )
+            return new CasNode(present: true, directory: true, size: 0L, mtime: store().lastModifiedMillis(itemCid), occurrence: leaves)
+        final Leaf leaf = leaves.get(segs[1])
+        if( leaf == null || !leaf.addressed )
+            return CasNode.absent()
+        if( leaf.address.isRaw() )
+            return segs.size() == 2 ? fileNode(leaf.address) : CasNode.absent()
+        return segs.size() == 2 ? manifestNode(leaf.address) : traverse(leaf.address, segs.subList(2, segs.size()), p)
+    }
+
+    /** The item's named leaves by name; a name two leaves share is refused, naming both positions. */
+    private static Map<String, Leaf> leavesByName(Object value, CasPath p) {
+        final Map<String, Leaf> byName = new LinkedHashMap<String, Leaf>()
+        final Map<String, String> positions = new HashMap<String, String>()
+        collectLeaves(value, '', byName, positions, p)
+        return byName
+    }
+
+    private static void collectLeaves(Object value, String position, Map<String, Leaf> byName, Map<String, String> positions, CasPath p) {
+        if( value instanceof Leaf ) {
+            final Leaf leaf = (Leaf) value
+            if( leaf.name == null )
+                return
+            if( byName.containsKey(leaf.name) )
+                throw new IOException("cas: two leaves of the item in ${p} are named '${leaf.name}' (positions ${positions.get(leaf.name)} and ${position}); " +
+                    'address one by its content, cas://<cid>/<name>')
+            byName.put(leaf.name, leaf)
+            positions.put(leaf.name, position)
+            return
+        }
+        if( value instanceof Map ) {
+            for( Map.Entry e : ((Map) value).entrySet() )
+                collectLeaves(e.value, position ? "${position}.${e.key}".toString() : String.valueOf(e.key), byName, positions, p)
+            return
+        }
+        if( value instanceof List ) {
+            final List list = (List) value
+            for( int i = 0; i < list.size(); i++ )
+                collectLeaves(list[i], position ? "${position}.${i}".toString() : String.valueOf(i), byName, positions, p)
+        }
     }
 
     /** A raw block as a regular file node; absent when the store has no such block. */
@@ -322,6 +406,10 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         if( target.parent != null )
             Files.createDirectories(target.parent)
         final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
+        if( node.occurrence != null ) {
+            materialiseOccurrence(node.occurrence, target)
+            return
+        }
         // Content staging follows a directory coordinate's pointer to its manifest;
         // only the delete/overwrite path treats it as a single pointer file.
         if( node.directory || node.dirPointer ) {
@@ -403,6 +491,20 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                 default: // unresolvable
                     throw new AbortRunException("cas: manifest ${manifestCid} has an unresolvable entry '${entry.name}' (was '${entry.target}'); cannot materialise")
             }
+        }
+    }
+
+    /** Stages each addressed leaf of an occurrence under {@code dir} by its name. */
+    private void materialiseOccurrence(Map<String, Leaf> leaves, Path dir) throws IOException {
+        Files.createDirectories(dir)
+        for( Map.Entry<String, Leaf> e : leaves.entrySet() ) {
+            final Leaf leaf = e.value
+            if( !leaf.addressed )
+                continue
+            if( leaf.address.isRaw() )
+                materialiseFile(leaf.address, dir.resolve(e.key), false, true)
+            else
+                materialiseDirectory(leaf.address, dir.resolve(e.key))
         }
     }
 
@@ -500,7 +602,12 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             throw new NotDirectoryException(p.toString())
 
         final List<Path> children = new ArrayList<Path>()
-        if( node.content != null ) {
+        if( node.occurrence != null ) {
+            for( Map.Entry<String, Leaf> e : node.occurrence.entrySet() )
+                if( e.value.addressed )
+                    children.add(p.resolve(e.key))
+        }
+        else if( node.content != null ) {
             // A manifest, reached as a Store URI or through a coordinate pointer.
             final CasPath base = p.isStoreUri() ? p : storeUriPath(node.content)
             for( ManifestEntry entry : manifestOf(node.content).entries )

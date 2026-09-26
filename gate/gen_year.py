@@ -3,7 +3,7 @@
 
     python3 gate/gen_year.py <schema.sqlite> <out.sqlite>     # RUNS=1825 by default
 
-<schema.sqlite> is any schema-2 index or snapshot. Only its DDL is read, so
+<schema.sqlite> is any schema-3 index or snapshot. Only its DDL is read, so
 the synthetic file has exactly the plugin's tables and indexes. Scale and seed
 are the block explorer prototype's (spec section 1.3, assertion 2): 5 runs a
 day for 365 days, 20 pipelines, 4 outputs, 100 items per run, 3 files per item,
@@ -17,7 +17,7 @@ import random
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ITEMS = 100
 OUTPUTS = ['aligned', 'qc', 'variants', 'reports']
 LEAVES = 3
@@ -31,7 +31,7 @@ def cid(prefix='bafyrei'):
 
 
 def ddl_of(schema_path):
-    """CREATE statements of a schema-2 database, in creation order."""
+    """CREATE statements of a schema-3 database, in creation order."""
     con = sqlite3.connect('file:%s?mode=ro' % schema_path, uri=True)
     try:
         row = con.execute('SELECT version FROM schema_version').fetchone()
@@ -71,12 +71,12 @@ def build(schema_path, out_path, runs):
                      '2026-%02d-01T00:00:00.%03dZ' % (1 + r * 12 // runs, r % 1000), None))
         colls = {o: cid() for o in OUTPUTS}
         for o, c in colls.items():
-            con.execute('INSERT INTO collection VALUES (?,?,?)', (c, comp, o))
+            con.execute('INSERT INTO collection VALUES (?,?,?,?,?)', (c, 'output', comp, o, 'lab'))
         for i in range(ITEMS):
             item = cid()
             coll = colls[OUTPUTS[i % len(OUTPUTS)]]
             con.execute('INSERT OR IGNORE INTO item VALUES (?)', (item,))
-            con.execute('INSERT INTO collection_item VALUES (?,?)', (coll, item))
+            con.execute('INSERT INTO collection_item VALUES (?,?,?)', (coll, item, None))
             sample = random.choice(samples)
             attrs = [('id', 'string', sample), ('sample', 'string', sample),
                      ('lane', 'int', str(random.randint(1, 8))),

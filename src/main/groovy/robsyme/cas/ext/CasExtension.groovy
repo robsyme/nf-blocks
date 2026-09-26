@@ -11,6 +11,7 @@ import nextflow.plugin.extension.PluginExtensionPoint
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
+import robsyme.cas.core.ClaimState
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
 import robsyme.cas.core.Leaf
@@ -62,6 +63,8 @@ class CasExtension extends PluginExtensionPoint {
     }
 
     private List<Object> resolveItems(Map opts) {
+        if( opts?.containsKey('selection') )
+            return resolveSelection(opts)
         final String output = opts?.get('output') as String
         if( !output )
             throw new IllegalArgumentException("channel.fromStore needs an 'output' name")
@@ -119,6 +122,55 @@ class CasExtension extends PluginExtensionPoint {
             throw new IllegalArgumentException("run reference '${run}' is a ${kind ?: 'unknown'} block, not a run")
         }
         throw new IllegalArgumentException("unrecognised run reference '${run}': expected a cas:// Store URI, a lid://<hash>, or 'latest'")
+    }
+
+    /**
+     * fromStore(selection:) (block explorer spec section 10): every distinct
+     * item the Selection reaches, nested ones included, sorted by item CID,
+     * restored as a run's output is. A deleted Selection still emits: its
+     * address is an explicit, immutable request.
+     */
+    private List<Object> resolveSelection(Map opts) {
+        final List<String> clashing = ['run', 'output', 'where', 'pipeline'].findAll { String k -> opts.containsKey(k) }
+        if( clashing )
+            throw new IllegalArgumentException("channel.fromStore(selection: ...) takes no ${clashing.join(', ')}: a Selection names its items itself")
+        final Cid selection = selectionCid(opts.get('selection'))
+        Index index = null
+        try {
+            index = openIndex()
+            cas.catchUpIndex(index)
+            final Map block = loadBlock(selection)
+            if( block == null )
+                throw new IllegalStateException("selection ${selection} is not in any member of this composition")
+            if( Records.kindOf(block) != Records.SELECTION )
+                throw new IllegalArgumentException("${selection} is a ${Records.kindOf(block) ?: 'block with no kind'}, not a Selection")
+            index.ensureSelectionIndexed(cas.store, selection, cas.config.writableAlias)
+            final ClaimState state = index.claimState(selection)
+            if( state.hidden )
+                log.warn("selection ${selection} is hidden by a current delete Claim (${state.deletionClaims.join(', ')}); emitting its items anyway, as its address asks")
+            else if( state.deletion == ClaimState.CONFLICTED )
+                log.warn("selection ${selection} has a conflicted deletion (${state.deletionClaims.join(', ')}); emitting its items")
+            final List<Object> items = new ArrayList<Object>()
+            for( Cid itemCid : index.selectionItems(selection) ) {
+                final OutputItem item = loadItem(itemCid)
+                if( item == null )
+                    throw new IllegalStateException("output item ${itemCid} of selection ${selection} is not in any member of this composition")
+                items.add(restore(item.value, itemCid))
+            }
+            return items
+        }
+        finally {
+            index?.close()
+        }
+    }
+
+    private static Cid selectionCid(Object value) {
+        String text = value?.toString()
+        if( text?.startsWith(CAS_PREFIX) )
+            text = text.substring(CAS_PREFIX.length())
+        if( !text || !Cid.isCid(text) )
+            throw new IllegalArgumentException("channel.fromStore(selection: ...) takes a Selection address, cas://<cid> or <cid>, got '${value}'")
+        return Cid.parse(text)
     }
 
     // ------------------------------------------------------------- restore

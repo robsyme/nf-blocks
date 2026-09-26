@@ -82,6 +82,24 @@ work: a browser will not fetch from `file://`, and the page says so
 (`file_protocol`). A member served straight from a bucket needs the bucket
 policy and CORS rule in `DESIGN.md` §15.
 
+## Selections
+
+A Selection curates Output Items across runs into one named group, without
+copying anything: composing, renaming, deleting and undoing all happen from
+the page opened through `nf-blocks:explore` (the page needs its own
+`?token=` to write, so it must be opened through `explore`, not a plain
+static server). `nextflow plugin nf-blocks:put <file|-> [--dry-run]` builds and writes the
+same Selection or Claim blocks from a DAG-JSON file on the command line,
+sharing the endpoint's one builder; `-` reads stdin in-process, and from a
+real shell (Nextflow 26.04.6 refuses a bare `-`) use `/dev/stdin` instead.
+
+A Selection's items are consumed with `fromStore(selection: <address>)`
+(nested Selections flattened, each item once), or exported as a samplesheet
+from the page's Selection view: `GET
+/api/samplesheet/<selection cid>.csv` or `.json` from `explore`, one row per
+item, file columns holding `cas://<cid>/<name>` so the CSV only needs
+`-plugins nf-blocks` to stage. See `DESIGN.md` §16 for the full contract.
+
 ## Plugin development
 
 This project was created from the [Nextflow plugin template](https://www.nextflow.io/docs/latest/guides/gradle-plugin.html#gradle-plugin-create).

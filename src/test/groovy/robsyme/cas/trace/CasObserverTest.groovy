@@ -364,7 +364,7 @@ class CasObserverTest extends Specification {
         observer.onFlowCreate(session)
         observer.onFlowBegin()
         observer.onFlowComplete()
-        final Path snapshot = tempDir.resolve('store/index/v2.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
 
         then:
         Files.isRegularFile(snapshot)
@@ -378,7 +378,7 @@ class CasObserverTest extends Specification {
         bind(cfg)
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v2.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
 
@@ -397,7 +397,7 @@ class CasObserverTest extends Specification {
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
         // A directory where the snapshot file must go makes the atomic move fail.
-        Files.createDirectories(tempDir.resolve('store/index/v2.sqlite/blocker'))
+        Files.createDirectories(tempDir.resolve('store/index/v3.sqlite/blocker'))
 
         when:
         observer.onFlowCreate(session)

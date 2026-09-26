@@ -7,8 +7,11 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.cli.Options
 import robsyme.cas.cli.UsageException
+import robsyme.cas.core.Cid
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.Put
+import robsyme.cas.core.Samplesheet
 import software.amazon.awssdk.services.s3.S3Client
 
 /**
@@ -25,7 +28,11 @@ class ExploreCommand {
     static class Started {
         final ExploreServer server
         final CasSession cas
-        Started(ExploreServer server, CasSession cas) { this.server = server; this.cas = cas }
+        final Index index
+        final Put put
+        Started(ExploreServer server, CasSession cas, Index index, Put put) {
+            this.server = server; this.cas = cas; this.index = index; this.put = put
+        }
     }
 
     /** Blocks until interrupted. CmdPlugin calls System.exit when this returns. */
@@ -35,6 +42,10 @@ class ExploreCommand {
         Runtime.runtime.addShutdownHook(new Thread({
             try {
                 started.server.stop()
+                // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
+                synchronized( started.put ) {
+                    started.index.close()
+                }
                 refresh(started.cas, err)
             }
             finally {
@@ -52,11 +63,25 @@ class ExploreCommand {
         final CasConfig cas = CasConfig.fromSession(config)
         final CasSession session = new CasSession(cas)
         refresh(session, err)
-        final ExploreServer server = new ExploreServer(membersOf(cas), cas.writableAlias, IndexSnapshot.bundledPage())
+        final Index index = session.openIndex()
+        final String token = ExploreServer.newToken()
+        final Put put = session.newPut(index)
+        final ExploreServer.Exporter exporter = { Cid selection, String format ->
+            synchronized( put ) {
+                session.catchUpIndex(index)
+                // A Selection copied into the composition without its Store Log
+                // entry is indexed on the spot here too, the same way
+                // CasExtension.resolveSelection does (final review finding 4).
+                index.ensureSelectionIndexed(session.store, selection, session.config.writableAlias)
+                final Samplesheet sheet = Samplesheet.of(session.store, index.selectionItems(selection))
+                return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
+            }
+        } as ExploreServer.Exporter
+        final ExploreServer server = new ExploreServer(membersOf(cas), cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter)
             .start(options.intFlag('port', 0))
-        out.println("nf-blocks explorer: ${server.url}")
+        out.println("nf-blocks explorer: ${server.launchUrl}")
         out.flush()
-        return new Started(server, session)
+        return new Started(server, session, index, put)
     }
 
     /** Catches the index up and rewrites the writable member's snapshot at any size. Derived: a failure warns. */

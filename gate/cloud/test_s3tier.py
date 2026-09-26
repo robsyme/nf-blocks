@@ -8,7 +8,10 @@ real is Step 4, with Rob at the keyboard and his SSO session."""
 import contextlib
 import io
 import os
+import shutil
 import sys
+import tempfile
+import types
 import unittest
 import unittest.mock
 
@@ -224,6 +227,92 @@ class SetupDeletesEveryBucketItMadeEvenOnAPartialFailureTest(unittest.TestCase):
         self.assertEqual(len(deleted), 1, deleted)
         self.assertTrue(deleted[0].startswith("nf-blocks-gate-priv-"), deleted)
         self.assertIn("NOT deleted; delete it by hand", stderr.getvalue())
+
+
+# --------------------------------------------------------------------------
+# Task 17, step 2: an uploaded snapshot without Cache-Control can be served
+# stale from a browser's heuristic cache after it is rewritten (the page then
+# fails with snapshot_changed). upload() must pass boto3 CacheControl that
+# matches what nf-blocks:explore sends: 'no-cache' for index/v<N>.sqlite,
+# 'public, max-age=31536000, immutable' for everything else (a block).
+# --------------------------------------------------------------------------
+
+def _fake_boto3_s3_transfer():
+    """upload() does `from boto3.s3.transfer import TransferConfig` at call
+    time; boto3 need not be installed to test the CacheControl it passes, as
+    long as that import resolves to something. Registered in sys.modules only
+    for the duration of one test (unittest.mock.patch.dict), never touching
+    a real install."""
+    transfer_mod = types.ModuleType("boto3.s3.transfer")
+
+    class FakeTransferConfig:
+        def __init__(self, **kw):
+            self.kw = kw
+
+    transfer_mod.TransferConfig = FakeTransferConfig
+    s3_mod = types.ModuleType("boto3.s3")
+    s3_mod.transfer = transfer_mod
+    boto3_mod = types.ModuleType("boto3")
+    boto3_mod.s3 = s3_mod
+    return {"boto3": boto3_mod, "boto3.s3": s3_mod, "boto3.s3.transfer": transfer_mod}
+
+
+class FakeUploadClient:
+    def __init__(self):
+        self.calls = []  # (key, ExtraArgs)
+
+    def upload_file(self, _full, _bucket, key, Config=None, ExtraArgs=None):  # noqa: N803, matches boto3's own names
+        self.calls.append((key, ExtraArgs))
+
+
+class CacheControlForTest(unittest.TestCase):
+    def setUp(self):
+        self.s3tier = _fresh_import()
+
+    def test_a_snapshot_key_is_no_cache(self):
+        self.assertEqual(self.s3tier.cache_control_for("m/index/v3.sqlite"), "no-cache")
+        self.assertEqual(self.s3tier.cache_control_for("index/v3.sqlite"), "no-cache")
+        self.assertEqual(self.s3tier.cache_control_for("year/index/v3.sqlite"), "no-cache")
+
+    def test_anything_else_is_public_immutable_for_a_year(self):
+        self.assertEqual(self.s3tier.cache_control_for("m/blocks/ab/bafyabc"), "public, max-age=31536000, immutable")
+        self.assertEqual(self.s3tier.cache_control_for("m/log/20260101T000000.000Z-run-bafyxyz"),
+                          "public, max-age=31536000, immutable")
+        self.assertEqual(self.s3tier.cache_control_for("m/index.html"), "public, max-age=31536000, immutable")
+        # A file merely named like the snapshot, but not at that path, is not one.
+        self.assertEqual(self.s3tier.cache_control_for("m/blocks/ab/index/v3.sqlite.bak"),
+                          "public, max-age=31536000, immutable")
+
+
+class UploadPassesCacheControlPerFileTest(unittest.TestCase):
+    def setUp(self):
+        self.s3tier = _fresh_import()
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        os.makedirs(os.path.join(self.root, "m", "index"))
+        os.makedirs(os.path.join(self.root, "m", "blocks", "ab"))
+        with open(os.path.join(self.root, "m", "index", "v3.sqlite"), "w") as fh:
+            fh.write("snapshot bytes")
+        with open(os.path.join(self.root, "m", "blocks", "ab", "bafyreiabcxyz"), "w") as fh:
+            fh.write("block bytes")
+
+    def test_snapshot_gets_no_cache_block_gets_immutable(self):
+        client = FakeUploadClient()
+        with unittest.mock.patch.dict(sys.modules, _fake_boto3_s3_transfer()):
+            self.s3tier.upload(client, "bucket", self.root)
+        by_key = dict(client.calls)
+        self.assertEqual(by_key["m/index/v3.sqlite"], {"CacheControl": "no-cache"})
+        self.assertEqual(by_key["m/blocks/ab/bafyreiabcxyz"],
+                          {"CacheControl": "public, max-age=31536000, immutable"})
+
+    def test_a_prefix_still_lands_on_the_right_side_of_the_index_check(self):
+        client = FakeUploadClient()
+        with unittest.mock.patch.dict(sys.modules, _fake_boto3_s3_transfer()):
+            self.s3tier.upload(client, "bucket", self.root, prefix="year/")
+        by_key = dict(client.calls)
+        self.assertEqual(by_key["year/m/index/v3.sqlite"], {"CacheControl": "no-cache"})
+        self.assertEqual(by_key["year/m/blocks/ab/bafyreiabcxyz"],
+                          {"CacheControl": "public, max-age=31536000, immutable"})
 
 
 if __name__ == "__main__":

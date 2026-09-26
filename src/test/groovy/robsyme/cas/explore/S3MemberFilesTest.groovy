@@ -25,7 +25,7 @@ class S3MemberFilesTest extends Specification {
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('test', 'test')))
             .httpClientBuilder(UrlConnectionHttpClient.builder())
             .build()
-        s3.objects['bucket/member/index/v2.sqlite'] = snapshot
+        s3.objects['bucket/member/index/v3.sqlite'] = snapshot
         s3.objects["bucket/member/blocks/${CID[-2..-1]}/${CID}".toString()] = [0xa0] as byte[]
         (1..5).each { s3.objects["bucket/member/log/823277415999${it}-run-${CID}".toString()] = new byte[0] }
         s3.objects['bucket/elsewhere/log/x'] = new byte[0]
@@ -45,9 +45,9 @@ class S3MemberFilesTest extends Specification {
         final List<String> logNames = files.list('log')
 
         then:
-        files.open('index/v2.sqlite').size == 10240L
-        files.open('index/v3.sqlite') == null
-        files.open('index/v2.sqlite').read(4096, 100).withCloseable { it.readAllBytes() } == Arrays.copyOfRange(snapshot, 4096, 4196)
+        files.open('index/v3.sqlite').size == 10240L
+        files.open('index/v2.sqlite') == null
+        files.open('index/v3.sqlite').read(4096, 100).withCloseable { it.readAllBytes() } == Arrays.copyOfRange(snapshot, 4096, 4196)
         logNames.size() == 5
         logNames.every { it.endsWith(CID) && !it.contains('/') }
         // One full paginated traversal of 5 keys at page size 2: three requests.
@@ -57,17 +57,17 @@ class S3MemberFilesTest extends Specification {
     def 'an opened object reads only the version it opened: a replaced object fails the read (final review finding 1)'() {
         given:
         final S3MemberFiles files = new S3MemberFiles(client, 'bucket', 'member/')
-        final MemberFiles.Opened opened = files.open('index/v2.sqlite')
+        final MemberFiles.Opened opened = files.open('index/v3.sqlite')
         final String tag = opened.tag
 
         when:
-        s3.objects['bucket/member/index/v2.sqlite'] = snapshot.collect { byte b -> (byte) (b ^ 1) } as byte[]
+        s3.objects['bucket/member/index/v3.sqlite'] = snapshot.collect { byte b -> (byte) (b ^ 1) } as byte[]
         opened.read(0, 100).withCloseable { it.readAllBytes() }
 
         then:
         thrown(Exception)
         tag == s3.etagOf(snapshot)
-        files.open('index/v2.sqlite').tag != tag
+        files.open('index/v3.sqlite').tag != tag
     }
 
     def 'open parses bucket and prefix from the URI'() {
@@ -94,7 +94,7 @@ class S3MemberFilesTest extends Specification {
         final ExploreServer server = new ExploreServer(members, 'lab', 'x'.bytes).start(0)
 
         when:
-        final def r = RawHttp.send(server.port, 'GET', '/m/priv/index/v2.sqlite', [Range: 'bytes=0-4095'])
+        final def r = RawHttp.send(server.port, 'GET', '/m/priv/index/v3.sqlite', [Range: 'bytes=0-4095'])
         final def log = RawHttp.send(server.port, 'GET', '/m/priv/log/')
 
         then:

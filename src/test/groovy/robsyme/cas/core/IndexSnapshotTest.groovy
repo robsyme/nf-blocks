@@ -42,7 +42,7 @@ class IndexSnapshotTest extends Specification {
         index?.close()
     }
 
-    /** One run of one item per sample into a store; returns [completion, collection, items by sample]. */
+    /** One run of one item per sample into a store; returns [completion, collection, items by sample, manifest]. */
     private List run(LocalBlockStore store, String runName, List<String> samples) {
         final Cid manifest = store.putDagCbor(Fixtures.runManifest(run_name: runName, nf_run_hash: "hash-$runName"))
         final List<List> withPaths = []
@@ -56,7 +56,7 @@ class IndexSnapshotTest extends Specification {
         final Cid collection = store.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', withPaths))
         final Cid completion = store.putDagCbor(Fixtures.runCompletion(manifest, [collection]))
         StoreLog.append(store, StoreLogKind.RUN, completion, System.currentTimeMillis())
-        return [completion, collection, items]
+        return [completion, collection, items, manifest]
     }
 
     private void catchUp() {
@@ -92,7 +92,7 @@ class IndexSnapshotTest extends Specification {
         then:
         result.written
         result.runs == 1
-        file == labRoot.resolve('index/v2.sqlite')
+        file == labRoot.resolve('index/v3.sqlite')
         rows(file, 'SELECT completion_cid, member FROM run') == [[a[0].toString(), null]]
         rows(file, 'SELECT collection_cid FROM collection')*.get(0) == [a[1].toString()]
         rows(file, 'SELECT DISTINCT completion_cid FROM producer')*.get(0) == [a[0].toString()]
@@ -117,7 +117,7 @@ class IndexSnapshotTest extends Specification {
         rows(file, 'SELECT version FROM schema_version') == [[Index.SCHEMA_VERSION]]
         rows(file, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name") ==
             rows(index.file, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v2.sqlite']
+        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v3.sqlite']
     }
 
     def 'meta carries the member watermark and the time it was written'() {
@@ -211,7 +211,7 @@ class IndexSnapshotTest extends Specification {
         failures == []
         rows(file, 'PRAGMA integrity_check') == [['ok']]
         rows(file, 'SELECT count(*) FROM run') == [[4]]
-        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v2.sqlite']
+        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v3.sqlite']
     }
 
     def 'the page is written beside the snapshot only when its bytes differ'() {
@@ -223,5 +223,84 @@ class IndexSnapshotTest extends Specification {
         Files.readAllBytes(labRoot.resolve('index.html')) == page
         !IndexSnapshot.writePage(labRoot, page)
         IndexSnapshot.writePage(labRoot, '<!doctype html><title>y</title>'.bytes)
+    }
+
+    def 'a run logged in two members is in both snapshots (milestone 1 decision 1, fixed)'() {
+        given:
+        final List a = run(lab, 'a', ['A'])
+        // The same run's closure arrives in shared too, as a Bundle merge would leave it.
+        for( Cid cid : [(Cid) a[0], (Cid) a[1], (Cid) a[3]] + ((Map<String, Cid>) a[2]).values() )
+            shared.put(cid, lab.open(cid), lab.size(cid))
+        StoreLog.append(shared, StoreLogKind.RUN, (Cid) a[0], System.currentTimeMillis())
+        catchUp()
+
+        expect:
+        rows(IndexSnapshot.write(index, 'lab', labRoot, 0L).path, 'SELECT completion_cid FROM run') == [[a[0].toString()]]
+        rows(IndexSnapshot.write(index, 'shared', sharedRoot, 0L).path, 'SELECT completion_cid FROM run') == [[a[0].toString()]]
+    }
+
+    def 'the snapshot carries the member own log_entry rows, member written as NULL'() {
+        given:
+        final List a = run(lab, 'a', ['A'])
+        run(shared, 'b', ['B'])
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, 'SELECT cid, kind, member FROM log_entry') == [[a[0].toString(), 'run', null]]
+    }
+
+    def 'a run found only by the block scan (no log entry) stays in its member snapshot'() {
+        given:
+        final Cid manifest = lab.putDagCbor(Fixtures.runManifest())
+        final Cid completion = lab.putDagCbor(Fixtures.runCompletion(manifest, []))
+        catchUp()                                      // the first catch-up scans lab's blocks once
+
+        expect:
+        rows(IndexSnapshot.write(index, 'lab', labRoot, 0L).path, 'SELECT completion_cid FROM run') == [[completion.toString()]]
+    }
+
+    def 'a member snapshot holds its own Claims, current state recomputed from them alone'() {
+        given:
+        final Cid subject = Fixtures.cidOf([kind: 'Selection', schema: 1])
+        final Cid first = lab.putDagCbor(Fixtures.claim(subject, 'set', 'name', 'first', []))
+        StoreLog.append(lab, StoreLogKind.CLAIM, first, System.currentTimeMillis())
+        // The rename is logged in shared only, so lab's snapshot must not see it.
+        final Cid second = shared.putDagCbor(Fixtures.claim(subject, 'set', 'name', 'second', [first]))
+        StoreLog.append(shared, StoreLogKind.CLAIM, second, System.currentTimeMillis())
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        index.claimState(subject).names == ['second']                       // the cache index sees both members
+        rows(file, 'SELECT claim_cid FROM claim') == [[first.toString()]]
+        rows(file, 'SELECT count(*) FROM claim_supersedes') == [[0]]
+        rows(file, 'SELECT claim_cid, value, conflicted FROM claim_current') == [[first.toString(), 'first', 0]]
+    }
+
+    def 'a member snapshot carries its own Selections; an item held elsewhere keeps its row but no metadata'() {
+        given:
+        final List a = run(lab, 'a', ['A'])
+        final List b = run(shared, 'b', ['B'])
+        final Cid itemA = ((Map<String, Cid>) a[2]).A
+        final Cid itemB = ((Map<String, Cid>) b[2]).B
+        final Cid mine = lab.putDagCbor(new Selection('ada', [Selection.item(itemA, [(Cid) a[1]]), Selection.item(itemB, [(Cid) b[1]])], []).toCbor())
+        StoreLog.append(lab, StoreLogKind.SELECTION, mine, System.currentTimeMillis())
+        final Cid theirs = shared.putDagCbor(new Selection('bob', [Selection.item(itemB, [])], []).toCbor())
+        StoreLog.append(shared, StoreLogKind.SELECTION, theirs, System.currentTimeMillis())
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, "SELECT collection_cid FROM collection WHERE kind = 'selection'") == [[mine.toString()]]
+        rows(file, "SELECT item_cid FROM collection_item WHERE collection_cid = '${mine}' ORDER BY item_cid")*.get(0) ==
+            [itemA.toString(), itemB.toString()].sort()
+        rows(file, "SELECT DISTINCT item_cid FROM item_attr ORDER BY item_cid")*.get(0) == [itemA.toString()]
     }
 }
