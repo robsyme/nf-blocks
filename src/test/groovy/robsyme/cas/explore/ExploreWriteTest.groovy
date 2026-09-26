@@ -1,8 +1,11 @@
 package robsyme.cas.explore
 
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 import groovy.json.JsonSlurper
+import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagJson
 import robsyme.cas.core.Fixtures
@@ -13,6 +16,27 @@ import robsyme.cas.core.Samplesheet
 import robsyme.cas.core.StoreLog
 import spock.lang.Specification
 import spock.lang.TempDir
+
+/**
+ * A {@link LocalBlockStore} (so {@code StoreLog.of} still recognises it) whose
+ * {@code put} pauses until released, so a test can hold a write in flight.
+ */
+class SlowWritable extends LocalBlockStore {
+    private final CountDownLatch started
+    private final CountDownLatch proceed
+
+    SlowWritable(Path root, String alias, CountDownLatch started, CountDownLatch proceed) {
+        super(root, alias, true)
+        this.started = started; this.proceed = proceed
+    }
+
+    @Override
+    void put(Cid cid, InputStream input, long expectedSize) {
+        started.countDown()
+        proceed.await(10, TimeUnit.SECONDS)
+        super.put(cid, input, expectedSize)
+    }
+}
 
 /** Spec section 9.5: the write endpoint's safety, and that it is the builder. */
 class ExploreWriteTest extends Specification {
@@ -106,6 +130,22 @@ class ExploreWriteTest extends Specification {
         }
     }
 
+    def 'a lone surrogate or an out-of-range integer in the request is 400 invalid, never 500 (final review finding 1)'() {
+        given:
+        final byte[] loneSurrogate = ('{"kind":"Claim","subject":{"/":"' + item + '"},"verb":"set","attribute":"x","value":"\\ud800",' +
+            '"supersedes":[],"timestamp":"2026-09-25T10:00:00.000Z"}').getBytes('UTF-8')
+        final byte[] hugeInteger = ('{"kind":"Claim","subject":{"/":"' + item + '"},"verb":"set","attribute":"x","value":184467440737095516160000,' +
+            '"supersedes":[],"timestamp":"2026-09-25T10:00:00.000Z"}').getBytes('UTF-8')
+
+        expect:
+        post('/api/put', good(), loneSurrogate).with {
+            status == 400 && ((Map) DagJson.decode(body)).error == 'invalid'
+        }
+        post('/api/put', good(), hugeInteger).with {
+            status == 400 && ((Map) DagJson.decode(body)).error == 'invalid'
+        }
+    }
+
     def 'a builder refusal keeps its status and body'() {
         when:
         final def r = post('/api/put', good(), '{"kind":"Selection","members":[],"derived_from":[]}'.getBytes('UTF-8'))
@@ -127,6 +167,49 @@ class ExploreWriteTest extends Specification {
             [members: [[alias: 'lab', writable: true, base: 'm/lab/']], write: true]
         server.launchUrl == "http://127.0.0.1:${server.port}/?token=${token}"
         token ==~ /[a-z2-7]{26}/
+    }
+
+    def 'stop() lets a write already in flight finish rather than interrupting it (final review finding 5)'() {
+        given:
+        final CountDownLatch started = new CountDownLatch(1)
+        final CountDownLatch proceed = new CountDownLatch(1)
+        final BlockStore slowWritable = new SlowWritable(tempDir.resolve('lab'), 'lab', started, proceed)
+        final Put slowPut = new Put(store, slowWritable, index, 'ada', { -> System.currentTimeMillis() },
+            { -> index.catchUp(store, StoreLog.of(store), 'lab') })
+        final LinkedHashMap<String, MemberFiles> slowMembers = new LinkedHashMap<>()
+        slowMembers.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        final ExploreServer slow = new ExploreServer(slowMembers, 'lab', '<!doctype html>'.bytes, slowPut, token).start(0)
+        final Map<String, String> slowHeaders = ['Content-Type': 'application/vnd.ipld.dag-json', 'X-NF-Blocks-Token': token,
+            Origin: "http://127.0.0.1:${slow.port}".toString()]
+        RawHttp.Response response = null
+        Throwable failure = null
+
+        when:
+        final Thread writer = Thread.start {
+            try {
+                response = RawHttp.send(slow.port, 'POST', '/api/put', slowHeaders, request())
+            }
+            catch( Throwable t ) {
+                failure = t
+            }
+        }
+        started.await(5, TimeUnit.SECONDS)
+        // stop() begins (and, fixed, waits for the exchange) before the latch
+        // that lets the write itself proceed is released, so a fix that
+        // interrupts the write on the way in would abort it here.
+        final Thread stopper = Thread.start { slow.stop() }
+        Thread.sleep(200)
+        proceed.countDown()
+        writer.join(10_000)
+        stopper.join(10_000)
+
+        then:
+        failure == null
+        response != null
+        response.status == 200
+        final Map body = (Map) DagJson.decode(response.body)
+        body.written == true
+        store.has((Cid) body.address)
     }
 
     def 'GET /api/samplesheet/<selection>.csv and .json answer the export'() {

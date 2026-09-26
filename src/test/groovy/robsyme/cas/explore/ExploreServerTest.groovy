@@ -182,6 +182,15 @@ class ExploreServerTest extends Specification {
         RawHttp.send(server.port, 'POST', '/m/lab/index/v3.sqlite').with { status == 405 && headers['allow'] == 'GET, HEAD' }
     }
 
+    def 'every response carries X-Content-Type-Options: nosniff (final review finding 7)'() {
+        expect:
+        get('/').headers['x-content-type-options'] == 'nosniff'
+        get('/members.json').headers['x-content-type-options'] == 'nosniff'
+        get('/m/lab/log/').headers['x-content-type-options'] == 'nosniff'
+        get("/m/lab/blocks/${CID[-2..-1]}/${CID}").headers['x-content-type-options'] == 'nosniff'
+        get('/m/lab/index/v3.sqlite').headers['x-content-type-options'] == 'nosniff'
+    }
+
     def 'no CORS headers are sent'() {
         expect:
         !get('/m/lab/index/v3.sqlite', [Origin: "http://127.0.0.1:${server.port}".toString()]).headers.keySet().any { it.startsWith('access-control') }

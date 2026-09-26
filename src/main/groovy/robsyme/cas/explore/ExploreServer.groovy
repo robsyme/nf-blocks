@@ -5,6 +5,7 @@ import java.security.SecureRandom
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 import java.util.regex.Matcher
 import java.util.regex.Pattern
 
@@ -99,9 +100,26 @@ class ExploreServer {
 
     String getLaunchUrl() { token ? "${url}?token=${token}".toString() : url }
 
+    /**
+     * Stops accepting new exchanges and waits for exchanges already in flight
+     * to finish before the executor's threads are touched, so a write or an
+     * export under way (both hold {@code Put}'s monitor) completes rather
+     * than being interrupted mid-write (final review finding 5). Only a
+     * request that outlives the grace period is cut off.
+     */
     void stop() {
-        server?.stop(0)
-        executor?.shutdownNow()
+        server?.stop(10)
+        if( executor != null ) {
+            executor.shutdown()
+            try {
+                if( !executor.awaitTermination(10, TimeUnit.SECONDS) )
+                    executor.shutdownNow()
+            }
+            catch( InterruptedException e ) {
+                Thread.currentThread().interrupt()
+                executor.shutdownNow()
+            }
+        }
     }
 
     private void handle(HttpExchange exchange) {
@@ -128,7 +146,11 @@ class ExploreServer {
             route(exchange, exchange.requestURI.rawPath)
         }
         catch( Exception e ) {
-            log.warn("explore: ${exchange.requestMethod} ${exchange.requestURI} failed: ${e.message}", e)
+            // The raw path only (final review finding 8): the full request URI
+            // may carry a query string, and this endpoint's only query
+            // parameter is dry_run, but a client could still send ?token=...
+            // by mistake (the token belongs in a header, never a query).
+            log.warn("explore: ${exchange.requestMethod} ${exchange.requestURI.rawPath} failed: ${e.message}", e)
             try {
                 text(exchange, 500, 'internal error')
             }
@@ -272,6 +294,7 @@ class ExploreServer {
         headers.set('Content-Type', type)
         headers.set('Accept-Ranges', 'bytes')
         headers.set('Cache-Control', cache)
+        headers.set('X-Content-Type-Options', 'nosniff')
         if( opened.tag )
             headers.set('ETag', opened.tag)
         final ByteRange range
@@ -319,6 +342,7 @@ class ExploreServer {
     private static void bytes(HttpExchange exchange, int status, String type, byte[] body) {
         exchange.responseHeaders.set('Content-Type', type)
         exchange.responseHeaders.set('Cache-Control', 'no-cache')
+        exchange.responseHeaders.set('X-Content-Type-Options', 'nosniff')
         if( exchange.requestMethod == 'HEAD' ) {
             exchange.sendResponseHeaders(status, -1)
             return
