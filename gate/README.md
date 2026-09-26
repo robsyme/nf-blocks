@@ -282,6 +282,21 @@ byte was read. Assertion 0's exit check makes the same distinction. Clearing
 this properly needs the Test Pipeline to offer a non-copy publish mode for the
 resumed run, which is not the Gate's file.
 
+**Browser assertion A1's producer count is 3 or 4, and that is expected.** A1
+compares the page's producers of `A.bam`'s content with the Gate's own set, so
+the page must match exactly whichever it is. The set moves because of `fail`:
+Nextflow notifies a workflow output only when its channel closes, and `fail`
+aborts on `MAYBE_FAIL`'s exit 7 before some channels have, so its RunCompletion
+holds `aligned` in some runs and nothing at all in others (six runs on
+2026-09-26: four with `fail`, one without, one not captured). `resumed` is
+never a producer: its `aligned` collection is complete, but the locked source
+stops PublishDir's copy, so its `A.bam` leaf is never-published and has no
+address. A1 therefore also requires the Gate's set to include `cold`, `again`
+and `elsewhere` and to exclude `resumed`, and its PASS line names the runs it
+matched. This is a different race from assertion 4's, and the Test Pipeline is
+left as it is: making `MAYBE_FAIL` wait on `ALIGN` would narrow the race
+without closing it.
+
 Assertion 10's leak scan has **no exemptions**: every dag-cbor block is searched
 whole, `RunManifest.params` and `RunManifest.config` included. DESIGN §6
 specifies a portability scrub for those two — it drops the `cas`, `lineage`,
