@@ -10,8 +10,8 @@
 #   GATE_SKIP_BUILD=1 gate/gate.sh  # reuse the plugin already in GATE_ROOT
 #   GATE_SKIP_BROWSER=1 gate/gate.sh  # lineage tier only
 #
-# Exit status is assert.py's, or the browser tier's (gate/browser/tier.sh)
-# when the lineage tier passed.
+# Exit status is assert.py's, else browser tier A's (gate/browser/tier.sh),
+# else browser tier B's (gate/browser/tier_b.sh): any tier failing fails it.
 
 set -euo pipefail
 
@@ -37,7 +37,8 @@ export NXF_ANSI_LOG=false
 # none. The built plugin is the one thing worth keeping.
 rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/cache" \
        "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt \
-       "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite"
+       "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite" \
+       "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/logs"
 
@@ -224,9 +225,12 @@ echo
 lineage=0
 python3 "$REPO/gate/assert.py" "$GATE_ROOT" || lineage=$?
 browser=0
+browser_b=0
 if [[ -z "${GATE_SKIP_BROWSER:-}" ]]; then
     echo
     NEXTFLOW="$NEXTFLOW" "$REPO/gate/browser/tier.sh" "$GATE_ROOT" || browser=$?
+    echo
+    NEXTFLOW="$NEXTFLOW" "$REPO/gate/browser/tier_b.sh" "$GATE_ROOT" || browser_b=$?
 fi
-# Either tier failing fails the Gate.
-exit $(( lineage != 0 ? lineage : browser ))
+# Any tier failing fails the Gate.
+exit $(( lineage != 0 ? lineage : browser != 0 ? browser : browser_b ))
