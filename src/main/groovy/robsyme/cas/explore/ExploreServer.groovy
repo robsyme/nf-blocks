@@ -15,6 +15,7 @@ import com.sun.net.httpserver.HttpServer
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import robsyme.cas.core.Cid
 import robsyme.cas.core.Multibase
 import robsyme.cas.core.Put
 import robsyme.cas.core.PutError
@@ -29,10 +30,16 @@ import robsyme.cas.core.PutError
 @CompileStatic
 class ExploreServer {
 
+    /** The samplesheet export of a Selection (decision 1 of the milestone 2 plan). */
+    static interface Exporter {
+        byte[] samplesheet(Cid selection, String format)
+    }
+
     private static final Pattern MEMBER = ~/^\/m\/([a-z][a-z0-9_-]{0,31})\/(.*)$/
     private static final Pattern BLOCK = ~/^blocks\/([a-z2-7]{2})\/(b[a-z2-7]{58})$/
     private static final Pattern SNAPSHOT = ~/^index\/v\d{1,4}\.sqlite$/
     private static final Pattern LOG_ENTRY = ~/^\d{13}-[a-z]+-b[a-z2-7]{58}$/
+    private static final Pattern SAMPLESHEET = ~/^\/api\/samplesheet\/(b[a-z2-7]{58})\.(csv|json)$/
     private static final byte[] NO_PAGE = ('<!doctype html><meta charset="utf-8"><title>nf-blocks</title>' +
         '<p>This build of nf-blocks carries no explorer page. Build it with <code>./gradlew assemble</code>.').getBytes('UTF-8')
 
@@ -45,6 +52,7 @@ class ExploreServer {
     private final byte[] page
     private final Put put
     private final String token
+    private final Exporter exporter
     private HttpServer server
     private ExecutorService executor
 
@@ -53,11 +61,16 @@ class ExploreServer {
     }
 
     ExploreServer(LinkedHashMap<String, MemberFiles> members, String writableAlias, byte[] page, Put put, String token) {
+        this(members, writableAlias, page, put, token, null)
+    }
+
+    ExploreServer(LinkedHashMap<String, MemberFiles> members, String writableAlias, byte[] page, Put put, String token, Exporter exporter) {
         this.members = members
         this.writableAlias = writableAlias
         this.page = page ?: NO_PAGE
         this.put = put
         this.token = token
+        this.exporter = exporter
     }
 
     /** 16 random bytes as base32: what the printed URL carries (decision 12). */
@@ -147,6 +160,11 @@ class ExploreServer {
             bytes(exchange, 200, 'application/json', membersJson())
             return
         }
+        final Matcher sheet = SAMPLESHEET.matcher(path)
+        if( sheet.matches() && exporter != null ) {
+            samplesheet(exchange, Cid.parse(sheet.group(1)), sheet.group(2))
+            return
+        }
         final Matcher member = MEMBER.matcher(path)
         if( !member.matches() || !members.containsKey(member.group(1)) ) {
             text(exchange, 404, 'not found')
@@ -205,6 +223,19 @@ class ExploreServer {
         catch( PutError e ) {
             dagJson(exchange, e.status, e.body())
         }
+    }
+
+    private void samplesheet(HttpExchange exchange, Cid selection, String format) {
+        final byte[] body
+        try {
+            body = exporter.samplesheet(selection, format)
+        }
+        catch( IllegalStateException | IllegalArgumentException e ) {
+            text(exchange, 404, e.message)
+            return
+        }
+        exchange.responseHeaders.set('Content-Disposition', "attachment; filename=\"selection-${selection.toString().take(16)}.${format}\"".toString())
+        bytes(exchange, 200, format == 'csv' ? 'text/csv; charset=utf-8' : 'application/json', body)
     }
 
     private static void dagJson(HttpExchange exchange, int status, byte[] body) {

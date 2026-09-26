@@ -9,6 +9,7 @@ import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.Put
+import robsyme.cas.core.Samplesheet
 import robsyme.cas.core.StoreLog
 import spock.lang.Specification
 import spock.lang.TempDir
@@ -126,5 +127,34 @@ class ExploreWriteTest extends Specification {
             [members: [[alias: 'lab', writable: true, base: 'm/lab/']], write: true]
         server.launchUrl == "http://127.0.0.1:${server.port}/?token=${token}"
         token ==~ /[a-z2-7]{26}/
+    }
+
+    def 'GET /api/samplesheet/<selection>.csv and .json answer the export'() {
+        given:
+        final Map written = (Map) DagJson.decode(post('/api/put', good()).body)
+        final Cid selection = (Cid) written.address
+        server.stop()
+        final ExploreServer.Exporter exporter = { Cid s, String format ->
+            index.catchUp(store, StoreLog.of(store), 'lab')
+            final Samplesheet sheet = Samplesheet.of(store, index.selectionItems(s))
+            return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
+        } as ExploreServer.Exporter
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        server = new ExploreServer(members, 'lab', '<!doctype html>'.bytes, null, null, exporter).start(0)
+
+        when:
+        final def csv = RawHttp.send(server.port, 'GET', "/api/samplesheet/${selection}.csv")
+        final def json = RawHttp.send(server.port, 'GET', "/api/samplesheet/${selection}.json")
+        final def absent = RawHttp.send(server.port, 'GET', "/api/samplesheet/${Fixtures.cidOf([kind: 'Selection', n: 99])}.csv")
+
+        then:
+        csv.status == 200
+        csv.headers['content-type'] == 'text/csv; charset=utf-8'
+        csv.headers['content-disposition'] == "attachment; filename=\"selection-${selection.toString().take(16)}.csv\""
+        csv.text().readLines()[0] == 'sample'
+        json.status == 200
+        new JsonSlurper().parseText(json.text()) == [[sample: 'A']]
+        absent.status == 404
     }
 }
