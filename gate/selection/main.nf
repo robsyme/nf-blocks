@@ -51,7 +51,7 @@ workflow {
 
     ch_sheet = channel
         .fromPath(params.samplesheet)
-        .splitCsv(header: true)
+        .splitCsv(header: true, quote: '"')   // RFC 4180: list cells are quoted JSON with commas
         .map { row -> tuple('samplesheet', file(row['1'])) }
 
     HASH(ch_store.mix(ch_sheet))
