@@ -141,8 +141,13 @@ try {
   const S1 = 'bafyreieqfispnqxoy5soafwru7dgsenxgmkdhzhiy6fc7nfjzdi6r3ujmy' // any valid CID; no such block
   const writeContext = await browser.newContext()
   const posts = []
+  // Two aliases for the one fixture member: `main` writable, `other` not.
   await writeContext.route(/\/members\.json$/, r => r.fulfill({ contentType: 'application/json',
-    body: JSON.stringify({ members: [{ alias: 'main', writable: true, base: './' }], write: true }) }))
+    body: JSON.stringify({ members: [{ alias: 'main', writable: true, base: './' }, { alias: 'other', writable: false, base: './' }], write: true }) }))
+  // While brokenLog is set, the Store Log listing is malformed, so the tail refresh after a write throws.
+  let brokenLog = false
+  await writeContext.route(/\/log\/$/, r => (brokenLog
+    ? r.fulfill({ contentType: 'application/json', body: '{"entries": 5}' }) : r.continue()))
   await writeContext.route(/\/api\/put(\?.*)?$/, async (r) => {
     const req = r.request()
     posts.push({ url: req.url(), token: req.headers()['x-nf-blocks-token'], body: JSON.parse(req.postData()) })
@@ -162,7 +167,8 @@ try {
   await go(composer, '#/compose')
   assert.deepEqual(await all(composer, '[data-tray-entry]', ['trayEntry', 'kind']), [{ trayEntry: item.A, kind: 'item' }])
   await composer.fill('#compose-name', 'smoke, "one"')
-  await composer.click('#compose-save')
+  // A double click is one attempt: the busy guard ignores the second click.
+  await composer.dblclick('#compose-save')
   await composer.waitForFunction(() => document.body.dataset.writeSeq === '1')
   assert.equal(await composer.evaluate(() => document.body.dataset.writeOutcome), 'written')
   assert.equal(await composer.evaluate(() => document.body.dataset.written), S1)
@@ -172,6 +178,66 @@ try {
   assert.deepEqual(posts[1].body.members, [{ item: { address: { '/': item.A }, via: [{ '/': runs.R1.collection }] } }])
   assert.deepEqual([posts[2].body.subject, posts[2].body.verb, posts[2].body.attribute, posts[2].body.value, posts[2].body.supersedes],
     [{ '/': S1 }, 'set', 'name', 'smoke, "one"', []])
+
+  // The write succeeds but the tail refresh throws: the outcome is still
+  // recorded, and the status says to reload.
+  await go(composer, `#/item/${runs.R1.collection}/${item.A}`)
+  await composer.click(`[data-pick="${item.A}"]`)
+  await go(composer, '#/compose')
+  brokenLog = true
+  await composer.click('#compose-save')
+  await composer.waitForFunction(() => document.body.dataset.writeSeq === '2')
+  brokenLog = false
+  assert.equal(await composer.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.match(await composer.$eval('[data-refresh-failed]', e => e.textContent), /^Saved, but the page could not refresh/)
+  assert.equal(posts.length, 5)
+  assert.equal(await composer.$eval('#compose-save', e => e.disabled), false)
+
+  // A deleted Selection SD in the Store Log tail: the deleted list offers
+  // [data-undo] per row, and undo supersedes the delete Claim D.
+  const { block, entryName } = await import(join(repo, 'web/test/fixture.mjs'))
+  const { CID } = await import(join(repo, 'web/node_modules/multiformats/dist/src/cid.js'))
+  const store = (b) => {
+    mkdirSync(join(dir, 'blocks', b.cid.toString().slice(-2)), { recursive: true })
+    writeFileSync(join(dir, 'blocks', b.cid.toString().slice(-2), b.cid.toString()), b.bytes)
+    return b.cid
+  }
+  const SD = store(block({ kind: 'Selection', schema: 1, asserted_by: 'smoke', derived_from: [],
+    members: [{ item: { address: CID.parse(item.A), via: [CID.parse(runs.R1.collection)] } }] }))
+  const D = store(block({ kind: 'Claim', schema: 1, asserted_by: 'smoke', subject: SD, verb: 'delete', attribute: null, value: null,
+    supersedes: [], timestamp: new Date().toISOString() }))
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 2000, 'selection', SD.toString())), '')
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 1000, 'claim', D.toString())), '')
+  const undoer = await writeContext.newPage()
+  undoer.on('pageerror', e => composeErrors.push(String(e)))
+  await open(undoer, 'http://127.0.0.1:8841/?token=t#/selections?deleted=1')
+  assert.deepEqual(await all(undoer, '[data-selection]', ['selection', 'deletion']), [{ selection: SD.toString(), deletion: 'deleted' }])
+  assert.deepEqual(await undoer.$$eval('[data-undo]', els => els.map(e => e.dataset.undo)), [SD.toString()])
+  assert.equal(await undoer.$('#undo'), null)
+  await undoer.click(`[data-undo="${SD}"]`)
+  await undoer.waitForFunction(() => document.body.dataset.writeSeq === '1')
+  assert.deepEqual([posts[5].body.subject, posts[5].body.verb, posts[5].body.supersedes], [{ '/': SD.toString() }, 'del', [{ '/': D.toString() }]])
+
+  // Viewed through the non-writable alias: no rename or delete, a link to the
+  // writable member instead; composing there opens the writable member and
+  // the outcome survives that navigation.
+  const elsewhere = await writeContext.newPage()
+  elsewhere.on('pageerror', e => composeErrors.push(String(e)))
+  await open(elsewhere, `http://127.0.0.1:8841/?token=t&member=other#/selection/${SD}`)
+  assert.equal(await elsewhere.$('#rename-save'), null)
+  assert.equal(await elsewhere.$('#delete'), null)
+  assert.match(await elsewhere.$eval('[data-unavailable] a', e => e.href), /member=main/)
+  await go(elsewhere, `#/item/${runs.R1.collection}/${item.A}`)
+  await elsewhere.click(`[data-pick="${item.A}"]`)
+  await go(elsewhere, '#/compose')
+  await elsewhere.click('#compose-save')
+  await elsewhere.waitForURL(/member=main/)
+  await elsewhere.waitForFunction(() => document.body.dataset.writeSeq === '1' && document.body.dataset.state !== 'loading')
+  assert.equal(await elsewhere.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.equal(await elsewhere.evaluate(() => document.body.dataset.written), S1)
+  assert.equal(await elsewhere.$eval('#tray', e => e.dataset.count), '0')
+  assert.equal(posts.length, 8)
+
   assert.deepEqual(composeErrors, [])
 
   console.log('page smoke: ok')

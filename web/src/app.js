@@ -9,9 +9,9 @@ import { BlockFetcher } from './blocks.js'
 import { listLog } from './storelog.js'
 import { resolveStore } from './store.js'
 import { Explorer } from './model.js'
-import { Tray } from './tray.js'
+import { Tray, safeSessionStorage } from './tray.js'
 import { writer } from './write.js'
-import { h } from './html.js'
+import { h, link } from './html.js'
 import * as views from './views.js'
 
 const ROUTES = [
@@ -38,6 +38,8 @@ let sequence = 0
 let tray = null
 let write = null
 let store = null
+let busy = false
+const OUTCOME_KEY = 'nf-blocks-write-outcome'
 
 function finish(state) {
   document.body.dataset.state = state
@@ -108,37 +110,88 @@ function outcome(value) {
   document.body.dataset.writeSeq = String(Number(document.body.dataset.writeSeq ?? 0) + 1)
 }
 
+/** A write that ends by opening another member's page carries its outcome there (one sessionStorage key). */
+function carryOutcome() {
+  try {
+    const { writeOutcome, writeSeq, written } = document.body.dataset
+    safeSessionStorage()?.setItem(OUTCOME_KEY, JSON.stringify({ writeOutcome, writeSeq, written: written ?? null }))
+  } catch {
+    // Storage refused; the next page starts without the outcome.
+  }
+}
+
+function restoreOutcome() {
+  try {
+    const storage = safeSessionStorage()
+    const carried = storage?.getItem(OUTCOME_KEY)
+    if (!carried) return
+    storage.removeItem(OUTCOME_KEY)
+    const { writeOutcome, writeSeq, written } = JSON.parse(carried)
+    if (writeOutcome) document.body.dataset.writeOutcome = writeOutcome
+    if (writeSeq) document.body.dataset.writeSeq = writeSeq
+    if (written) document.body.dataset.written = written
+  } catch {
+    // Nothing readable carried over.
+  }
+}
+
 /**
  * One write attempt from a view: shows progress in `status`, refreshes the
  * tail so the page sees its own write (decision 14), opens `href`, then
- * records the outcome for a driver on body[data-write-*].
+ * records the outcome for a driver on body[data-write-*]. One attempt at a
+ * time: a second while one runs is ignored, and `button` stays disabled
+ * until the attempt ends. The outcome is recorded however the attempt ends.
  */
-async function runWrite(status, attempt) {
-  status.replaceChildren(h('p', { class: 'muted' }, 'Saving...'))
-  let done
+async function runWrite(status, attempt, button = null) {
+  if (busy) return
+  busy = true
+  if (button) button.disabled = true
+  let recorded = 'write_failed'
   try {
-    done = await attempt()
-  } catch (e) {
-    const node = views.errorNode(e)
-    if (e.code === 'stale_supersedes') node.append(' Someone changed this since the page loaded; reload to see the current state.')
-    status.replaceChildren(node)
-    outcome(e.code ?? 'write_failed')
-    return
+    status.replaceChildren(h('p', { class: 'muted' }, 'Saving...'))
+    let done
+    try {
+      done = await attempt()
+    } catch (e) {
+      recorded = e.code ?? 'write_failed'
+      const node = views.errorNode(e)
+      if (e.code === 'stale_supersedes') node.append(' Someone changed this since the page loaded; reload to see the current state.')
+      if (e.saved) {
+        // Composing wrote the Selection, then naming it failed.
+        document.body.dataset.written = e.saved
+        node.prepend('The Selection was saved, but naming it failed: ')
+        node.append(' ', link(write.hrefFor(`#/selection/${e.saved}`), 'Open it to name it'))
+        if (store.member === write.writable) await explorer.refreshTail(listLog).catch(() => {})
+      }
+      status.replaceChildren(node)
+      return
+    }
+    if (done?.outcome === 'exists') {
+      recorded = 'exists'
+      return
+    }
+    if (done?.address) document.body.dataset.written = done.address
+    recorded = 'written'
+    if (store.member !== write.writable) {
+      outcome(recorded)
+      recorded = null
+      carryOutcome()
+      location.assign(hrefIn(write.writable, done.href))
+      return
+    }
+    try {
+      await explorer.refreshTail(listLog)
+      history.pushState(null, '', done.href)
+      await render()
+    } catch (e) {
+      status.replaceChildren(h('p', { class: 'warn', 'data-refresh-failed': '' },
+        `Saved, but the page could not refresh (${e?.message ?? e}); reload to see it.`))
+    }
+  } finally {
+    busy = false
+    if (button?.isConnected) button.disabled = false
+    if (recorded) outcome(recorded)
   }
-  if (done?.outcome === 'exists') {
-    outcome('exists')
-    return
-  }
-  if (done?.address) document.body.dataset.written = done.address
-  if (store.member !== write.writable) {
-    outcome('written')
-    location.assign(hrefIn(write.writable, done.href))
-    return
-  }
-  await explorer.refreshTail(listLog)
-  history.pushState(null, '', done.href)
-  await render()
-  outcome('written')
 }
 
 function renderMembers(store) {
@@ -168,11 +221,14 @@ async function start() {
       : null
     write = {
       available: reason === null, reason, served: !!store.members, writable,
+      // Rename, delete and undo write Claims beside the Selection's own member: only offered there.
+      here: store.member !== null && store.member === writable,
       writer: reason === null ? writer({ endpoint: new URL('api/put', location.href).href.split('?')[0], token }) : null,
       hrefFor: (hash) => (store.member === writable ? hash : hrefIn(writable, hash)),
       run: runWrite,
     }
     document.body.dataset.write = write.available ? 'available' : 'unavailable'
+    restoreOutcome()
     updateTray()
     const cap = Number(new URL(location.href).searchParams.get('cap')) || DEFAULT_CAP_BYTES
     let mode = null

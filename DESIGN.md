@@ -973,8 +973,14 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   The page posts DAG-JSON to `POST /api/put` with the token in
   `X-NF-Blocks-Token`; composing first asks with `?dry_run=true` and offers
   the existing Selection instead of writing when one exists. A Selection is
-  written to the writable member, and the page opens it there. After a write
-  the page re-lists that member's Store Log, so it sees its own write.
+  written to the writable member, and the page opens it there, carrying the
+  write's outcome across that navigation in `sessionStorage` (one key).
+  Rename, delete and undo are offered only while the page views the writable
+  member; elsewhere `[data-unavailable]` links to the Selection there. One
+  write runs at a time: a second attempt while one runs is ignored, and the
+  clicked button is disabled until it ends. After a write the page re-lists
+  that member's Store Log, so it sees its own write; if that refresh fails the
+  outcome is still recorded and the status asks for a reload.
 - Pages: a pipeline's runs 50 at a time, a collection's items 500 at a time;
   `offset` counts snapshot rows. The Store Log tail's runs are all on the
   first page and counted in its span and in the total (`runCount` plus the
@@ -1018,13 +1024,15 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
 | `[data-exists]` | the dry run found the Selection: `data-exists` address, `data-names` JSON |
-| `[data-unavailable]` | why composing, rename and delete are unavailable |
+| `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
 | `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
 | `[data-name]` | one current name: `data-name` value, `data-claim`, `data-conflicted` when in conflict |
 | `[data-deletion-claim]` | one current deletion Claim: `data-deletion-claim` cid, `data-verb` |
 | `[data-member]` | one member: `data-member` address, `data-kind`, `data-held` (`here` or `elsewhere`) |
-| `#rename-name`, `#rename-save`, `#delete`, `#undo` | the actions |
+| `#rename-name`, `#rename-save`, `#delete`, `#undo` | the actions on the Selection view |
+| `[data-undo]` | an Undo button on a row of `#/selections?deleted=1`: `data-undo` the Selection's cid |
+| `[data-refresh-failed]` | the write succeeded but the page could not refresh afterwards |
 | `[data-samplesheet]` | `csv` or `json` export link (served by `explore` only) |
 | `[data-hidden-runs]` | on a pipeline page, how many runs a delete Claim hides |
 | `[data-error]` | an error: `data-error` code, `data-cid` when a block is to blame |

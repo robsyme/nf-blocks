@@ -220,12 +220,12 @@ export async function selections(ex, { offset = 0, deleted = false }, ctx) {
 }
 
 function undoButton(cid, state, ctx) {
-  if (!ctx.write.available) return null
+  if (!ctx.write.available || !ctx.write.here) return null
   const status = h('span', {})
-  return [h('button', { type: 'button', id: 'undo', onclick: () => ctx.write.run(status, async () => {
+  return [h('button', { type: 'button', 'data-undo': cid, onclick: (event) => ctx.write.run(status, async () => {
     await ctx.write.writer.undo(cid, state.deletionClaims)
     return { href: `#/selection/${cid}` }
-  }) }, 'Undo'), status]
+  }, event.currentTarget) }, 'Undo'), status]
 }
 
 export async function selection(ex, selectionCid, ctx) {
@@ -274,22 +274,28 @@ export async function selection(ex, selectionCid, ctx) {
 
 function actions(selectionCid, st, ctx, status) {
   if (!ctx.write.available) return h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason)
+  if (!ctx.write.here) {
+    return h('div', {},
+      h('p', { 'data-unavailable': '', class: 'muted' }, `Rename, delete and undo write to the writable member, ${ctx.write.writable}. `,
+        link(ctx.write.hrefFor(`#/selection/${selectionCid}`), 'Open this Selection there'), '.'),
+      h('p', {}, pickButton(ctx, { address: selectionCid, kind: 'selection' })))
+  }
   const name = h('input', { id: 'rename-name', placeholder: 'New name', value: '' })
   return h('div', {},
-    h('p', {}, name, ' ', h('button', { type: 'button', id: 'rename-save', onclick: () => ctx.write.run(status, async () => {
+    h('p', {}, name, ' ', h('button', { type: 'button', id: 'rename-save', onclick: (event) => ctx.write.run(status, async () => {
       if (!name.value.trim()) throw Object.assign(new Error('type a name first'), { code: 'invalid' })
       await ctx.write.writer.rename(selectionCid, name.value.trim(), st.nameClaims)
       return { href: `#/selection/${selectionCid}` }
-    }) }, 'Rename')),
+    }, event.currentTarget) }, 'Rename')),
     h('p', {},
-      st.deletion === 'deleted' ? null : h('button', { type: 'button', id: 'delete', onclick: () => ctx.write.run(status, async () => {
+      st.deletion === 'deleted' ? null : h('button', { type: 'button', id: 'delete', onclick: (event) => ctx.write.run(status, async () => {
         await ctx.write.writer.remove(selectionCid, st.deletionClaims)
         return { href: `#/selection/${selectionCid}` }
-      }) }, 'Delete'),
-      st.deletion === 'none' ? null : [' ', h('button', { type: 'button', id: 'undo', onclick: () => ctx.write.run(status, async () => {
+      }, event.currentTarget) }, 'Delete'),
+      st.deletion === 'none' ? null : [' ', h('button', { type: 'button', id: 'undo', onclick: (event) => ctx.write.run(status, async () => {
         await ctx.write.writer.undo(selectionCid, st.deletionClaims)
         return { href: `#/selection/${selectionCid}` }
-      }) }, 'Undo delete')],
+      }, event.currentTarget) }, 'Undo delete')],
       ' ', pickButton(ctx, { address: selectionCid, kind: 'selection' })))
 }
 
@@ -298,7 +304,7 @@ export function compose(ex, ctx) {
   const status = h('div', { id: 'write-status' })
   const name = h('input', { id: 'compose-name', placeholder: 'A name for this Selection' })
   const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
-  const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: () => ctx.write.run(status, async () => {
+  const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
     const members = ctx.tray.toMembers()
     const dry = await ctx.write.writer.selection(members, { dryRun: true })
     if (dry.exists) {
@@ -309,11 +315,17 @@ export function compose(ex, ctx) {
       return { outcome: 'exists' }
     }
     const written = await ctx.write.writer.selection(members)
-    if (name.value.trim()) await ctx.write.writer.rename(written.address, name.value.trim(), [])
     ctx.tray.clear()
     ctx.trayChanged()
+    if (name.value.trim()) {
+      try {
+        await ctx.write.writer.rename(written.address, name.value.trim(), [])
+      } catch (e) {
+        throw Object.assign(e, { saved: written.address })
+      }
+    }
     return { address: written.address, href: `#/selection/${written.address}` }
-  }) }, 'Save')
+  }, event.currentTarget) }, 'Save')
   return h('section', {},
     h('h1', {}, 'Compose a Selection'),
     ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
