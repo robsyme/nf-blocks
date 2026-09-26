@@ -80,6 +80,15 @@ class ExplorerQueriesTest extends Specification {
         'collectionItems'         | page.collectionItems
         'runCount'                | page.runCount
         'collectionItemCount'     | page.collectionItemCount
+        'selectionsKnown'         | page.selectionsKnown
+        'claimsKnown'             | page.claimsKnown
+        'claimsOf'                | page.claimsOf
+        'supersedesOf'            | page.supersedesOf
+        'selectionsPage'          | page.selectionsPage
+        'selectionCount'          | page.selectionCount
+        'firstSeen'               | page.firstSeen
+        'selectionsHolding'       | page.selectionsHolding
+        'successfulRunsOfPipeline' | page.successfulRunsOfPipeline
     }
 
     def 'the guard itself catches a scan'() {

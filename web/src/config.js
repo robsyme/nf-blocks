@@ -15,3 +15,5 @@ export const OVERLAP_MILLIS = 10 * 60 * 1000
 export const STALE_RUNS_NOTICE = 20
 /** Past this many block fetches for one query, likewise (spec section 5.4). */
 export const CLOSURE_FETCH_NOTICE = 2000
+/** The page size for the Selections list (spec section 5.6). */
+export const SELECTIONS_PAGE = 50

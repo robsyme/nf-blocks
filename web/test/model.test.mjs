@@ -2,20 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
-import { installReadOnlyVfs } from '../src/vfs/httpvfs.js'
-import { MemorySource } from '../src/vfs/sources.js'
 import { readFileSync } from 'node:fs'
-import { loadSqlite, makeDb } from './helpers.mjs'
+import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 import { blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
-
-let vfsCount = 0
-async function snapshotDb(bytes) {
-  const sqlite3 = await loadSqlite()
-  const name = `model-${++vfsCount}`
-  installReadOnlyVfs(sqlite3, name).register('snap', new MemorySource(bytes))
-  const db = new sqlite3.oo1.DB({ filename: 'file:snap?immutable=1', flags: 'r', vfs: name })
-  return { query: async (sql, params = []) => db.selectObjects(sql, params).map(r => ({ ...r })), close: async () => db.close() }
-}
 
 async function open(overrides = {}) {
   const now = Date.now()
@@ -99,7 +88,7 @@ test('a missing stale item keeps its collection membership without its attribute
   assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'C']]), [])
   const rows = await explorer.producersOf(member.content.A)
   assert.deepEqual(rows.map(r => [r.completion_cid, r.item_cid]), [[member.runs.R1.completion, member.item.A]])
-  const closure = explorer.closures.get(member.runs.R2.completion)
+  const closure = await explorer.closing.get(member.runs.R2.completion)
   assert.deepEqual(closure.missing, [{ cid: member.item.C, code: 'block_missing' }])
 })
 
@@ -113,7 +102,7 @@ test('a tampered stale item is likewise recorded missing rather than failing the
   const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items
   assert.deepEqual(await items(member.runs.R2.completion, []), [member.item.B, member.item.C].sort())
   assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'C']]), [])
-  const closure = explorer.closures.get(member.runs.R2.completion)
+  const closure = await explorer.closing.get(member.runs.R2.completion)
   assert.deepEqual(closure.missing, [{ cid: member.item.C, code: 'hash_mismatch' }])
 })
 

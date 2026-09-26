@@ -14,5 +14,14 @@
   "collectionByCid": "SELECT collection_cid, completion_cid, output_name FROM collection WHERE collection_cid = ?",
   "collectionItems": "SELECT item_cid FROM collection_item WHERE collection_cid = ? ORDER BY item_cid LIMIT ? OFFSET ?",
   "runCount": "SELECT count(*) AS n FROM run WHERE pipeline = ?",
-  "collectionItemCount": "SELECT count(*) AS n FROM collection_item WHERE collection_cid = ?"
+  "collectionItemCount": "SELECT count(*) AS n FROM collection_item WHERE collection_cid = ?",
+  "selectionsKnown": "SELECT collection_cid FROM collection WHERE collection_cid IN (SELECT value FROM json_each(?)) AND kind = 'selection'",
+  "claimsKnown": "SELECT claim_cid FROM claim WHERE claim_cid IN (SELECT value FROM json_each(?))",
+  "claimsOf": "SELECT claim_cid, subject_cid, verb, attribute, value, timestamp, asserted_by FROM claim WHERE subject_cid IN (SELECT value FROM json_each(?))",
+  "supersedesOf": "SELECT claim_cid, superseded_cid FROM claim_supersedes WHERE superseded_cid IN (SELECT claim_cid FROM claim WHERE subject_cid IN (SELECT value FROM json_each(?)))",
+  "selectionsPage": "SELECT l.cid AS selection_cid, l.written_at, c.asserted_by FROM log_entry l JOIN collection c ON c.collection_cid = l.cid WHERE l.kind = 'selection' ORDER BY l.written_at DESC, l.cid ASC LIMIT ? OFFSET ?",
+  "selectionCount": "SELECT count(*) AS n FROM log_entry WHERE kind = 'selection'",
+  "firstSeen": "SELECT written_at FROM log_entry WHERE cid = ? ORDER BY written_at LIMIT 1",
+  "selectionsHolding": "SELECT DISTINCT ci.collection_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE ci.item_cid = ? AND c.kind = 'selection' ORDER BY ci.collection_cid",
+  "successfulRunsOfPipeline": "SELECT completion_cid, finished_at FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 50"
 }

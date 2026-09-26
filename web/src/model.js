@@ -2,11 +2,12 @@
 // and, for runs newer than the snapshot, the same answers computed from their
 // verified blocks (spec sections 5.3 to 5.5).
 import SQL from './queries.json' with { type: 'json' }
-import { CLOSURE_FETCH_NOTICE, SNAPSHOT_PATH, STALE_RUNS_NOTICE } from './config.js'
+import { CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STALE_RUNS_NOTICE } from './config.js'
 import { BlockError } from './blocks.js'
 import { entriesSince } from './storelog.js'
 import { typedDecode } from './typed.js'
 import { attrRows, leavesOf, matches, metadataView, predicateRow } from './metadata.js'
+import { DELETED, claimState } from './claims.js'
 
 const byNewest = (a, b) => (a.finished_at > b.finished_at ? -1 : a.finished_at < b.finished_at ? 1
   : a.completion_cid < b.completion_cid ? -1 : a.completion_cid > b.completion_cid ? 1 : 0)
@@ -26,6 +27,7 @@ export const RUNS_PAGE = 50
 export const ITEMS_PAGE = 500
 
 const text = (cid) => (cid === null || cid === undefined ? null : cid.toString())
+const isoOf = (millis) => new Date(millis).toISOString()
 
 export class Explorer {
   constructor({ base, db, blocks, now }) {
@@ -35,8 +37,9 @@ export class Explorer {
     this.now = now
     this.watermark = null
     this.stale = []
+    this.tailSelections = []
+    this.tailClaims = []
     this.logReadable = true
-    this.closures = new Map()
     this.closing = new Map()
     this.fetchesForQuery = 0
   }
@@ -56,11 +59,103 @@ export class Explorer {
   async refreshTail(listFn) {
     const { names, readable } = await listFn(this.base, { watermark: this.watermark, nowMillis: this.now() })
     this.logReadable = readable
-    const runs = entriesSince(names, this.watermark, this.now()).filter(e => e.kind === 'run')
-    const unique = [...new Map(runs.map(e => [e.cid, e])).values()]
-    const known = unique.length === 0 ? new Set()
-      : new Set((await this.db.query(SQL.runsKnown, [JSON.stringify(unique.map(e => e.cid))])).map(r => r.completion_cid))
-    this.stale = await Promise.all(unique.filter(e => !known.has(e.cid)).map(e => this.staleRun(e)))
+    const since = entriesSince(names, this.watermark, this.now())
+    const unique = (kind) => [...new Map(since.filter(e => e.kind === kind).map(e => [e.cid, e])).values()]
+    const known = async (sql, entries, column) => (entries.length === 0 ? new Set()
+      : new Set((await this.db.query(sql, [JSON.stringify(entries.map(e => e.cid))])).map(r => r[column])))
+    const runs = unique('run')
+    const selections = unique('selection')
+    const claims = unique('claim')
+    const knownRuns = await known(SQL.runsKnown, runs, 'completion_cid')
+    const knownSelections = await known(SQL.selectionsKnown, selections, 'collection_cid')
+    const knownClaims = await known(SQL.claimsKnown, claims, 'claim_cid')
+    this.stale = await Promise.all(runs.filter(e => !knownRuns.has(e.cid)).map(e => this.staleRun(e)))
+    this.tailSelections = await Promise.all(selections.filter(e => !knownSelections.has(e.cid)).map(e => this.tailBlock(e, 'Selection')))
+    this.tailClaims = await Promise.all(claims.filter(e => !knownClaims.has(e.cid)).map(e => this.tailBlock(e, 'Claim')))
+  }
+
+  async tailBlock(entry, kind) {
+    try {
+      return { cid: entry.cid, entry, value: (await this.blocks.ofKind(entry.cid, kind)).value, error: null }
+    } catch (e) {
+      if (!(e instanceof BlockError)) throw e
+      return { cid: entry.cid, entry, value: null, error: e }
+    }
+  }
+
+  /** Every Claim this page can see about each subject: the snapshot's rows and the tail's blocks. */
+  async claimsFor(subjects) {
+    const wanted = [...new Set(subjects)]
+    const out = new Map(wanted.map(s => [s, []]))
+    if (wanted.length === 0) return out
+    const json = JSON.stringify(wanted)
+    const byCid = new Map()
+    for (const r of await this.db.query(SQL.claimsOf, [json])) {
+      const c = { cid: r.claim_cid, subject: r.subject_cid, verb: r.verb, attribute: r.attribute, value: r.value,
+        timestamp: r.timestamp, asserted_by: r.asserted_by, supersedes: [], source: 'snapshot' }
+      byCid.set(c.cid, c)
+      out.get(c.subject).push(c)
+    }
+    for (const s of await this.db.query(SQL.supersedesOf, [json]))
+      byCid.get(s.claim_cid)?.supersedes.push(s.superseded_cid)
+    for (const t of this.tailClaims.filter(t => t.value)) {
+      const subject = text(t.value.subject)
+      if (!out.has(subject)) continue
+      out.get(subject).push({ cid: t.cid, subject, verb: t.value.verb, attribute: t.value.attribute, value: t.value.value,
+        timestamp: t.value.timestamp, asserted_by: t.value.asserted_by, supersedes: t.value.supersedes.map(text), source: 'tail' })
+    }
+    return out
+  }
+
+  async claimStates(subjects) {
+    const claims = await this.claimsFor(subjects)
+    return new Map([...claims].map(([subject, list]) => [subject, { ...claimState(list), claims: list }]))
+  }
+
+  /** A page of this member's Selections, newest first seen first; the tail's all on the first page. */
+  async selectionPage({ offset = 0, limit = SELECTIONS_PAGE, showDeleted = false } = {}) {
+    const snapshot = (await this.db.query(SQL.selectionsPage, [limit, offset]))
+      .map(r => ({ cid: r.selection_cid, firstSeen: r.written_at, assertedBy: r.asserted_by, source: 'snapshot', error: null }))
+    const tail = offset === 0 ? this.tailSelections.map(t => ({ cid: t.cid, firstSeen: isoOf(t.entry.writtenAtMillis),
+      assertedBy: t.value?.asserted_by ?? null, source: 'tail', error: t.error })) : []
+    const rows = [...tail.sort((a, b) => (a.firstSeen > b.firstSeen ? -1 : 1)), ...snapshot]
+    const states = await this.claimStates(rows.map(r => r.cid))
+    const all = rows.map(r => ({ ...r, state: states.get(r.cid) }))
+    const shown = all.filter(r => (showDeleted ? r.state.deletion === DELETED : !r.state.hidden))
+    const [{ n }] = await this.db.query(SQL.selectionCount)
+    return { rows: shown, hiddenCount: all.length - shown.length,
+      ...span({ offset, limit, shown: snapshot.length, count: n, tail: tail.length }) }
+  }
+
+  async selection(cid) {
+    const block = (await this.blocks.ofKind(cid, 'Selection')).value
+    const state = (await this.claimStates([cid])).get(cid)
+    const [seen] = await this.db.query(SQL.firstSeen, [cid])
+    const tail = this.tailSelections.find(t => t.cid === cid)
+    return {
+      cid, block, state,
+      firstSeen: seen?.written_at ?? (tail ? isoOf(tail.entry.writtenAtMillis) : null),
+      members: block.members.map(m => (m.item
+        ? { kind: 'item', address: text(m.item.address), via: m.item.via.map(text) }
+        : { kind: 'selection', address: text(m.selection) })),
+    }
+  }
+
+  /** Whether this member holds a member's block (spec section 4: an item may be held in another member). */
+  async held(kind, address) {
+    try {
+      await this.blocks.ofKind(address, kind === 'selection' ? 'Selection' : 'OutputItem')
+      return 'here'
+    } catch (e) {
+      if (e instanceof BlockError && e.code === 'block_missing') return 'elsewhere'
+      throw e
+    }
+  }
+
+  async selectionsHolding(itemCid) {
+    const snapshot = (await this.db.query(SQL.selectionsHolding, [itemCid])).map(r => r.collection_cid)
+    const tail = this.tailSelections.filter(t => t.value?.members.some(m => text(m.item?.address) === itemCid)).map(t => t.cid)
+    return [...new Set([...snapshot, ...tail])].sort()
   }
 
   async staleRun(entry) {
@@ -95,7 +190,10 @@ export class Explorer {
     const rows = await this.runsOfPipeline(pipeline, { limit, offset })
     const [{ n }] = await this.db.query(SQL.runCount, [pipeline])
     const tail = this.stale.filter(s => s.row?.pipeline === pipeline).length
-    return { rows, ...span({ offset, limit, shown: rows.filter(r => r.source === 'snapshot').length, count: n, tail }) }
+    const states = await this.claimStates(rows.map(r => r.completion_cid))
+    const visible = rows.filter(r => !states.get(r.completion_cid).hidden)
+    return { rows: visible, hidden: rows.length - visible.length,
+      ...span({ offset, limit, shown: rows.filter(r => r.source === 'snapshot').length, count: n, tail }) }
   }
 
   async runsOfPipeline(pipeline, { limit = RUNS_PAGE, offset = 0 } = {}) {
@@ -195,9 +293,7 @@ export class Explorer {
       }
       outputs.set(c.block.name, { cid: c.cid, items })
     }
-    const result = { outputs, producers, missing }
-    this.closures.set(stale.cid, result)
-    return result
+    return { outputs, producers, missing }
   }
 
   async producersOf(contentCid, onProgress) {
@@ -210,7 +306,9 @@ export class Explorer {
 
   /**
    * Query 2 over the snapshot and the tail. With no stale candidate the SQL's
-   * answer stands, so the snapshot is not read again for its finish time.
+   * answer stands, so the snapshot is not read again for its finish time. A
+   * tail delete Claim can still hide a candidate the SQL did not know to
+   * exclude; only asked about when the tail holds any Claim at all.
    */
   async latestSuccessfulRun(pipeline) {
     const [best] = await this.db.query(SQL.latestSuccessfulRun, [pipeline])
@@ -218,7 +316,13 @@ export class Explorer {
     if (stale.length === 0) return best?.completion_cid ?? null
     const candidates = stale.map(s => s.row)
     if (best) candidates.push(await this.runRow(best.completion_cid))
-    return candidates.sort(byNewest)[0].completion_cid
+    if (this.tailClaims.length === 0) return candidates.sort(byNewest)[0].completion_cid
+    const states = await this.claimStates(candidates.map(c => c.completion_cid))
+    const visible = candidates.filter(c => !states.get(c.completion_cid).hidden).sort(byNewest)
+    if (visible.length) return visible[0].completion_cid
+    const more = await this.db.query(SQL.successfulRunsOfPipeline, [pipeline])
+    const moreStates = await this.claimStates(more.map(r => r.completion_cid))
+    return more.find(r => !moreStates.get(r.completion_cid).hidden)?.completion_cid ?? null
   }
 
   /**
