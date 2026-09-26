@@ -12,29 +12,34 @@ final class PutResult {
     final boolean here
     final List<String> names
     final List<Cid> nameClaims
+    final String deletion
+    final List<Cid> deletionClaims
     final Map<String, Object> block
     final String entry
     final boolean written
 
     private PutResult(Cid address, boolean dryRun, boolean exists, boolean here, List<String> names, List<Cid> nameClaims,
-                       Map<String, Object> block, String entry, boolean written) {
+                       String deletion, List<Cid> deletionClaims, Map<String, Object> block, String entry, boolean written) {
         this.address = address
         this.dryRun = dryRun
         this.exists = exists
         this.here = here
         this.names = names
         this.nameClaims = nameClaims
+        this.deletion = deletion
+        this.deletionClaims = deletionClaims
         this.block = block
         this.entry = entry
         this.written = written
     }
 
-    static PutResult dryRun(Cid address, boolean exists, boolean here, List<String> names, List<Cid> nameClaims) {
-        return new PutResult(address, true, exists, here, names, nameClaims, null, null, false)
+    static PutResult dryRun(Cid address, boolean exists, boolean here, List<String> names, List<Cid> nameClaims,
+                            String deletion, List<Cid> deletionClaims) {
+        return new PutResult(address, true, exists, here, names, nameClaims, deletion, deletionClaims, null, null, false)
     }
 
     static PutResult written(Cid address, Map<String, Object> block, String entry, boolean written) {
-        return new PutResult(address, false, true, true, null, null, block, entry, written)
+        return new PutResult(address, false, true, true, null, null, null, null, block, entry, written)
     }
 
     byte[] body() {
@@ -45,6 +50,8 @@ final class PutResult {
             out.put('here', here)
             out.put('names', names)
             out.put('name_claims', nameClaims)
+            out.put('deletion', deletion)
+            out.put('deletion_claims', deletionClaims)
         }
         else {
             out.put('block', block)

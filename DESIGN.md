@@ -1121,10 +1121,13 @@ decision 14).
 Response: `{"address": {"/": <cid>}, "block": <canonical block as DAG-JSON>,
 "entry": <Store Log entry name>, "written": <bool>}`. Dry run
 (`?dry_run=true`, decision 10): `{"address", "exists", "here", "names",
-"name_claims"}`, and writes nothing; `exists` is true when any member of the
-composition holds the block, `here` when the writable member does (decision
-21). `names` and `name_claims` are the composition's current name Claims'
-values and addresses, in claim-address order.
+"name_claims", "deletion", "deletion_claims"}`, and writes nothing; `exists`
+is true when any member of the composition holds the block, `here` when the
+writable member does (decision 21). `names` and `name_claims` are the
+composition's current name Claims' values and addresses, in claim-address
+order. `deletion` and `deletion_claims` are the composition's deletion state
+(`none`, `deleted` or `conflicted`) and its current deletion Claims'
+addresses, in claim-address order (decision 23).
 
 Errors are DAG-JSON `{"error": <code>, "message": <text>, "at": <JSON
 pointer into the request>}`, `400` (`409` for `not_writable`). Eight codes
@@ -1155,7 +1158,7 @@ option: -`), so from a shell stdin is `/dev/stdin`. A bare `--dry-run`
 reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
 `=true`). Staleness is member-scoped (decision 22): superseding a Claim
 that only a read-only member has already superseded succeeds and leaves a
-conflict; the dry run reports `here` and `name_claims`.
+conflict; the dry run reports `here` and `name_claims`, and `deletion`, `deletion_claims`.
 
 ### Samplesheet export
 
@@ -1302,6 +1305,15 @@ by item CID (decision 18).
     conflict in claim-address order. The presence check stays
     composition-wide, so `nf-blocks:put` can supersede a Claim another
     member holds: that is how a person settles a conflict between members.
+23. A Selection deleted in another member (ticket 10). The dry run reports
+    the composition's `deletion` and `deletion_claims`. Held only elsewhere
+    and `deleted` or `conflicted` there, the page labels the copy "Restore a
+    copy here": after the copy and its name Claim (when a name is set) it
+    writes a `del` Claim superseding every Claim in `deletion_claims`,
+    whether or not a name is set, so the Selection is live across the
+    composition. Held here but deleted elsewhere, the "already exists"
+    message names the deletion; the Selection view still reads only this
+    member's Claims (decision 22).
 
 ### Gate browser tier B
 

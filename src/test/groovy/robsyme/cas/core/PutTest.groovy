@@ -169,7 +169,8 @@ class PutTest extends Specification {
         again.here
         again.names == ['first']
         again.nameClaims == [named]
-        ((Map) DagJson.decode(again.body())) == [address: written, exists: true, here: true, names: ['first'], name_claims: [named]]
+        ((Map) DagJson.decode(again.body())) == [address: written, exists: true, here: true, names: ['first'], name_claims: [named],
+                                                  deletion: 'none', deletion_claims: []]
     }
 
     def 'a dry run says whether the writable member holds the block, and which Claims name it (ticket 09)'() {
@@ -188,7 +189,8 @@ class PutTest extends Specification {
         !dry.here
         dry.names == ['from-shared']
         dry.nameClaims == [named]
-        ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'], name_claims: [named]]
+        ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'], name_claims: [named],
+                                               deletion: 'none', deletion_claims: []]
 
         when: 'the real write copies the block into the writable member'
         final PutResult copied = sendTo(both, json)
@@ -200,6 +202,41 @@ class PutTest extends Specification {
 
         and: 'held in both members now, so here'
         sendTo(both, json, true).here
+    }
+
+    def 'a dry run reports the composition\'s deletion state, a deletion held elsewhere included (ticket 10)'() {
+        given:
+        final Put seed = seedShared()
+        final String json = selection(item(itemA, [collA]))
+        final Cid s = sendTo(seed, json).address
+        final Cid named = sendTo(seed, claim(s, 'set', 'name', '"from-shared"', [])).address
+        final Cid deleted = sendTo(seed, claim(s, 'delete', null, 'null', [])).address
+        final Put both = twoMembers()
+
+        when:
+        final PutResult dry = sendTo(both, json, true)
+
+        then:
+        dry.deletion == 'deleted'
+        dry.deletionClaims == [deleted]
+        ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'],
+                                               name_claims: [named], deletion: 'deleted', deletion_claims: [deleted]]
+
+        when: 'restored from lab: the copy, then a del superseding the deletion'
+        sendTo(both, json)
+        final Cid undone = sendTo(both, claim(s, 'del', null, 'null', [deleted], '2025-09-16T05:20:00.001Z')).address
+
+        then: 'none, but deletionClaims still names the del (ClaimState tracks the whole group, per "undo is a del superseding the delete" in claim-vectors.json)'
+        sendTo(both, json, true).deletion == 'none'
+        sendTo(both, json, true).deletionClaims == [undone]
+        !index.claimState(s).hidden
+
+        when: 'a second deletion in shared, alongside lab\'s del, is a conflict'
+        final Cid again = sendTo(seed, claim(s, 'delete', null, 'null', [], '2025-09-16T05:20:00.002Z')).address
+
+        then:
+        sendTo(both, json, true).deletion == 'conflicted'
+        sendTo(both, json, true).deletionClaims.toSet() == [undone, again].toSet()
     }
 
     def 'staleness counts the writable member\'s Claims; presence counts every member (ticket 09)'() {
