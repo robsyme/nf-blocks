@@ -2,10 +2,12 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { CID } from 'multiformats/cid'
+import * as dagJson from '@ipld/dag-json'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { loadSqlite, snapshotDb } from './helpers.mjs'
 import { block, blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
+import SQL from '../src/queries.json' with { type: 'json' }
 
 const claim = (subject, verb, attribute, value, supersedes, timestamp = '2026-09-01T10:00:00.000Z') =>
   ({ kind: 'Claim', schema: 1, asserted_by: 'test', subject, verb, attribute, value, supersedes, timestamp })
@@ -140,12 +142,18 @@ async function openLatest({ pipeline = 'q2', runs = [], preClaims = [], preSuper
   const blocks = new Map()
   const put = (value) => { const b = block(value); blocks.set(b.cid.toString(), b.bytes); return b.cid }
   const log = tailClaimDefs.map((c, i) => entryName(Date.now() - i, 'claim', put(c).toString()))
-  return Explorer.open({
+  const calls = []
+  const explorer = await Explorer.open({
     base: 'http://h/m/lab/',
-    openDb: async () => snapshotDb(bytes),
+    openDb: async () => {
+      const db = await snapshotDb(bytes)
+      return { query: async (sql, params) => { calls.push({ sql, params }); return db.query(sql, params) }, close: db.close }
+    },
     blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(blocks) }),
     listFn: async () => ({ names: log, readable: true }),
   })
+  explorer.calls = calls
+  return explorer
 }
 
 test('query 2: a tail delete of the snapshot\'s best run falls to the next one when there is no successful stale run, or to null (fix round 1, finding 1)', async () => {
@@ -188,4 +196,74 @@ test('query 2: a tail del undoing a snapshot delete brings the run back (fix rou
     tailClaimDefs: [claim(CID.parse(RE), 'del', null, null, [CID.parse(D0)])],
   })
   assert.equal(await explorer.latestSuccessfulRun('q2'), RE)
+})
+
+// Page minors (ticket 11, Q4 a): the latest-run query pages the snapshot's
+// unfiltered successful runs, newest first, sizes 1 then 50, so a tail
+// deletion of more than 50 runs cannot hide an older live one.
+
+test('query 2 pages the snapshot\'s successful runs, the first page of size 1 (page minors)', async () => {
+  const RA = rawCid('q2-page-a').toString()
+  const RB = rawCid('q2-page-b').toString()
+  const del = (cidText) => claim(CID.parse(cidText), 'delete', null, null, [])
+  const runs = [{ cid: RA, finishedAt: '2026-09-02T10:00:00.000Z' }, { cid: RB, finishedAt: '2026-09-01T10:00:00.000Z' }]
+  const explorer = await openLatest({ runs, tailClaimDefs: [del(RA)] })
+  assert.equal(await explorer.latestSuccessfulRun('q2'), RB)
+  const pages = explorer.calls.filter(c => c.sql === SQL.successfulRunsPage).map(c => c.params[1])
+  assert.deepEqual(pages, [1, 50])
+})
+
+test('query 2: a snapshot delete undone by a tail del is found on the first page (page minors)', async () => {
+  const RA = rawCid('q2-page-c').toString()
+  const RB = rawCid('q2-page-d').toString()
+  const D0 = rawCid('q2-page-c-delete').toString()
+  const runs = [{ cid: RA, finishedAt: '2026-09-02T10:00:00.000Z' }, { cid: RB, finishedAt: '2026-09-01T10:00:00.000Z' }]
+  const explorer = await openLatest({
+    runs,
+    preClaims: [{ cid: D0, subject: RA, verb: 'delete' }],
+    tailClaimDefs: [claim(CID.parse(RA), 'del', null, null, [CID.parse(D0)])],
+  })
+  assert.equal(await explorer.latestSuccessfulRun('q2'), RA)
+})
+
+test('query 2: a tail deleting the newest 55 of 60 runs still finds the 56th, not null (page minors)', async () => {
+  const base = Date.parse('2026-09-01T00:00:00.000Z')
+  const runs = Array.from({ length: 60 }, (_, i) => ({
+    cid: rawCid(`q2-many-${i}`).toString(),
+    finishedAt: new Date(base + (60 - i) * 60_000).toISOString(),
+  }))
+  const del = (cidText) => claim(CID.parse(cidText), 'delete', null, null, [])
+  const explorer = await openLatest({ runs, tailClaimDefs: runs.slice(0, 55).map(r => del(r.cid)) })
+  assert.equal(await explorer.latestSuccessfulRun('q2'), runs[55].cid)
+})
+
+test('claimsFor normalises a tail Claim\'s value to the snapshot\'s valueText convention: strings as themselves, else DAG-JSON text', async () => {
+  const decoder = new TextDecoder()
+  const subj = rawCid('q2-value-subject').toString()
+  const mapValue = { a: 1 }
+  const mapText = decoder.decode(dagJson.encode(mapValue))
+  const numberText = decoder.decode(dagJson.encode(5))
+  const preClaims = [{ cid: rawCid('q2-value-snap').toString(), subject: subj, verb: 'set', attribute: 'mapSnap', value: mapText }]
+  const tailClaimDefs = [
+    claim(CID.parse(subj), 'set', 'mapTail', mapValue, []),
+    claim(CID.parse(subj), 'set', 'strTail', 'hello', []),
+    claim(CID.parse(subj), 'set', 'numTail', 5, []),
+    claim(CID.parse(subj), 'set', 'nilTail', null, []),
+  ]
+  const explorer = await openLatest({ preClaims, tailClaimDefs })
+  const claims = (await explorer.claimsFor([subj])).get(subj)
+  const byAttr = (a) => claims.find(c => c.attribute === a)
+  assert.equal(byAttr('mapSnap').value, mapText)
+  assert.equal(byAttr('mapTail').value, mapText)
+  assert.equal(byAttr('strTail').value, 'hello')
+  assert.equal(byAttr('numTail').value, numberText)
+  assert.equal(byAttr('nilTail').value, null)
+})
+
+test('runPage issues one Claim query, not supersedesOf, when a run has no Claims (page minors)', async () => {
+  const RA = rawCid('q2-noclaims').toString()
+  const explorer = await openLatest({ pipeline: 'q2', runs: [{ cid: RA, finishedAt: '2026-09-01T10:00:00.000Z' }] })
+  await explorer.runPage('q2')
+  assert.ok(explorer.calls.some(c => c.sql === SQL.claimsOf))
+  assert.ok(!explorer.calls.some(c => c.sql === SQL.supersedesOf))
 })

@@ -1329,6 +1329,14 @@ by item CID (decision 18).
 24. Deferred minors from milestone 2's reviews (ticket 11). `Put`'s
     idempotent path ingests any Store Log entry it appends; DAG-JSON float
     literals over 64 characters are refused, as over-long integers are.
+    On the page: the latest successful run reads the snapshot's runs in
+    pages (1, then 50 at a time) until a visible one appears, so a tail
+    deletion of more than 50 runs cannot hide an older live run; tail Claim
+    values are normalised to the snapshot's text form; `runPage` skips the
+    supersedes query when there are no Claims; Copy says when it fails; a
+    Selection member picked by query copies as its bare address; the deleted
+    list says why Undo is unavailable; `page-smoke.mjs` is retired in favour
+    of tier B.
 
 ### Gate browser tier B
 

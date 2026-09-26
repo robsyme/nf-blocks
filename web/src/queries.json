@@ -23,5 +23,5 @@
   "selectionCount": "SELECT count(*) AS n FROM log_entry WHERE kind = 'selection'",
   "firstSeen": "SELECT written_at FROM log_entry WHERE cid = ? ORDER BY written_at LIMIT 1",
   "selectionsHolding": "SELECT DISTINCT ci.collection_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE ci.item_cid = ? AND c.kind = 'selection' ORDER BY ci.collection_cid",
-  "successfulRunsOfPipeline": "SELECT completion_cid, finished_at FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 50"
+  "successfulRunsPage": "SELECT completion_cid, finished_at FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT ? OFFSET ?"
 }

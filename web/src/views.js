@@ -15,6 +15,20 @@ function table(head, rows) {
   return h('div', { class: 'scroll' }, h('table', {}, h('tr', {}, head.map(t => h('th', {}, t))), rows))
 }
 
+/** What Copy on a Selection member copies (spec 7.1a): the bare item address when it has no via, else `cas://<via>/<address>`. */
+export const copyText = (address, via) => (via === '-' ? address : `cas://${via}/${address}`)
+
+/** What the Copy button should say after `clipboard.writeText(text)`; a missing clipboard counts as a rejection (page minors, ticket 11). */
+export async function copyOutcome(clipboard, text) {
+  if (!clipboard) return 'Copy failed'
+  try {
+    await clipboard.writeText(text)
+    return 'Copied'
+  } catch {
+    return 'Copy failed'
+  }
+}
+
 const shown = (value) => (value === null ? 'null' : typeof value === 'object' && typeof value.toString === 'function' && value['/']
   ? value.toString() : typeof value === 'object' ? JSON.stringify(value, (k, v) => (v && v['/'] ? v.toString() : v)) : String(value))
 
@@ -202,6 +216,13 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
     } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
 }
 
+/** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`. */
+function undoUnavailableNote(ctx) {
+  if (!ctx.write.available) return h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason)
+  return h('p', { 'data-unavailable': '', class: 'muted' }, `Undo writes to the writable member, ${ctx.write.writable}. `,
+    link(ctx.write.hrefFor('#/selections?deleted=1'), 'Open this list there'), '.')
+}
+
 export async function selections(ex, { offset = 0, deleted = false }, ctx) {
   const page = await ex.selectionPage({ offset, showDeleted: deleted })
   const route = deleted ? '#/selections?deleted=1' : '#/selections'
@@ -211,6 +232,7 @@ export async function selections(ex, { offset = 0, deleted = false }, ctx) {
     h('p', {}, deleted ? link('#/selections', 'Show current Selections')
       : [link('#/selections?deleted=1', 'Show deleted'), page.hiddenCount ? ` (${page.hiddenCount} on this page)` : '']),
     pager(route, page, 'Selections'),
+    deleted && (!ctx.write.available || !ctx.write.here) ? undoUnavailableNote(ctx) : null,
     page.rows.length === 0 ? h('p', { class: 'muted' }, deleted ? 'No deleted Selections.' : 'No Selections in this member yet.')
       : table(['name', 'first seen', 'by', 'state', ''], page.rows.map(r => h('tr', {
         'data-selection': r.cid, 'data-deletion': r.state.deletion, 'data-source': r.source, 'data-names': JSON.stringify(r.state.names) },
@@ -247,11 +269,13 @@ export async function selection(ex, selectionCid, ctx) {
   // fails it outright (final review finding 2).
   const members = s.members.map((m) => {
     // Spec section 7.1a: members shown as Item Occurrences, copyable as links.
-    const copy = (uri) => h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(uri).catch(() => {}) }, 'Copy')
+    const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
+      event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
+    } }, 'Copy')
     const where = m.kind === 'selection'
       ? link(`#/selection/${m.address}`, cid(m.address))
-      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(`cas://${m.address}`)]
-        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(`cas://${v}/${m.address}`)]))
+      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(copyText(m.address, v))]
+        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(copyText(m.address, v))]))
     const held = h('td', { 'data-held-for': m.address, class: 'muted' }, '...')
     const tr = h('tr', { 'data-member': m.address, 'data-kind': m.kind }, h('td', {}, where), h('td', {}, m.kind), held)
     return { m, held, tr }
