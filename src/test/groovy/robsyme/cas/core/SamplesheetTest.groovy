@@ -102,6 +102,25 @@ class SamplesheetTest extends Specification {
         parse(csv).find { it.sample == 'A' }.extra == ''
     }
 
+    def 'non-ASCII text survives CSV and JSON unchanged (Review Focus 3)'() {
+        given:
+        final String text = 'café – naïve ✓ 𝄞'
+        final Cid a = item([[sample: 'A', note: text], Fixtures.leaf('A.bam', bamA, 1L)])
+
+        when:
+        final Samplesheet sheet = Samplesheet.of(store, [a])
+        final String csv = sheet.csv()
+        final byte[] csvUtf8 = csv.getBytes('UTF-8')
+
+        then:
+        // quote() only quotes for a comma, a quote, CR or LF (controller ruling); this text
+        // has none of those, so it is written plain, both as a Java String and as UTF-8 bytes.
+        csv.contains(text)
+        new String(csvUtf8, 'UTF-8').contains(text)
+        parse(csv).find { it.sample == 'A' }.note == text
+        ((List<Map>) new JsonSlurper().parseText(sheet.json())).find { it.sample == 'A' }.note == text
+    }
+
     def 'JSON keeps nesting, types and absence'() {
         given:
         final Cid a = item([[sample: 'A', lane: 1L, depth: 1.5d, nested: [kit: 'truseq']], Fixtures.leaf('A.bam', bamA, 1L)])

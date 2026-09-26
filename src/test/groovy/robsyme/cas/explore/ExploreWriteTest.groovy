@@ -157,4 +157,35 @@ class ExploreWriteTest extends Specification {
         new JsonSlurper().parseText(json.text()) == [[sample: 'A']]
         absent.status == 404
     }
+
+    def 'GET /api/samplesheet carries non-ASCII text as UTF-8 (Review Focus 3)'() {
+        given:
+        final String text = 'café – naïve ✓ 𝄞'
+        final Cid manifest = store.putDagCbor(Fixtures.runManifest())
+        final Cid textItem = store.putDagCbor(Fixtures.outputItem([[sample: 'A', note: text]]))
+        final Cid textCollection = store.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', [[textItem, ['aligned/A']]]))
+        final byte[] selectionRequest = ('{"kind":"Selection","members":["cas://' + textCollection + '/' + textItem + '"],"derived_from":[]}').getBytes('UTF-8')
+        final Map written = (Map) DagJson.decode(post('/api/put', good(), selectionRequest).body)
+        final Cid selection = (Cid) written.address
+        server.stop()
+        final ExploreServer.Exporter exporter = { Cid s, String format ->
+            index.catchUp(store, StoreLog.of(store), 'lab')
+            final Samplesheet sheet = Samplesheet.of(store, index.selectionItems(s))
+            return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
+        } as ExploreServer.Exporter
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        server = new ExploreServer(members, 'lab', '<!doctype html>'.bytes, null, null, exporter).start(0)
+
+        when:
+        final def csv = RawHttp.send(server.port, 'GET', "/api/samplesheet/${selection}.csv")
+        final def json = RawHttp.send(server.port, 'GET', "/api/samplesheet/${selection}.json")
+
+        then:
+        csv.status == 200
+        csv.headers['content-type'] == 'text/csv; charset=utf-8'
+        csv.text().contains(text)
+        json.status == 200
+        ((List<Map>) new JsonSlurper().parseText(json.text())).find { it.sample == 'A' }.note == text
+    }
 }
