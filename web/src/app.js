@@ -166,8 +166,8 @@ async function runWrite(status, attempt, button = null) {
       status.replaceChildren(node)
       return
     }
-    if (done?.outcome === 'exists') {
-      recorded = 'exists'
+    if (done?.outcome === 'exists' || done?.outcome === 'elsewhere') {
+      recorded = done.outcome
       return
     }
     if (done?.address) document.body.dataset.written = done.address
