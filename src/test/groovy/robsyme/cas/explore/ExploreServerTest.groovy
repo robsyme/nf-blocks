@@ -72,7 +72,7 @@ class ExploreServerTest extends Specification {
         new JsonSlurper().parse(r.body) == [members: [
             [alias: 'lab', writable: true, base: 'm/lab/'],
             [alias: 'other', writable: false, base: 'm/other/'],
-        ]]
+        ], write: false]
     }
 
     def 'the snapshot is served whole, and by single ranges'() {

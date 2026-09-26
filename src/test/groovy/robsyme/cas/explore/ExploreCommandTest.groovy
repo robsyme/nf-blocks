@@ -56,7 +56,7 @@ class ExploreCommandTest extends Specification {
 
         then:
         Files.isRegularFile(tempDir.resolve('lab/index/v3.sqlite'))
-        out.toString().trim() == "nf-blocks explorer: ${started.server.url}"
+        out.toString().trim() ==~ /nf-blocks explorer: http:\/\/127\.0\.0\.1:\d+\/\?token=[a-z2-7]{26}/
         RawHttp.send(started.server.port, 'GET', '/m/lab/index/v3.sqlite').status == 200
         RawHttp.send(started.server.port, 'GET', '/members.json').text().contains('"shared"')
     }

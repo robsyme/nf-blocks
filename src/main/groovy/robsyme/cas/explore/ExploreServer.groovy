@@ -1,5 +1,7 @@
 package robsyme.cas.explore
 
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
@@ -13,6 +15,9 @@ import com.sun.net.httpserver.HttpServer
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import robsyme.cas.core.Multibase
+import robsyme.cas.core.Put
+import robsyme.cas.core.PutError
 
 /**
  * The explorer's loopback server (DESIGN.md §15, block explorer spec sections
@@ -31,16 +36,35 @@ class ExploreServer {
     private static final byte[] NO_PAGE = ('<!doctype html><meta charset="utf-8"><title>nf-blocks</title>' +
         '<p>This build of nf-blocks carries no explorer page. Build it with <code>./gradlew assemble</code>.').getBytes('UTF-8')
 
+    static final String TOKEN_HEADER = 'X-NF-Blocks-Token'
+    private static final Set<String> JSON_TYPES = ['application/json', 'application/vnd.ipld.dag-json'] as Set
+    private static final SecureRandom RANDOM = new SecureRandom()
+
     private final LinkedHashMap<String, MemberFiles> members
     private final String writableAlias
     private final byte[] page
+    private final Put put
+    private final String token
     private HttpServer server
     private ExecutorService executor
 
     ExploreServer(LinkedHashMap<String, MemberFiles> members, String writableAlias, byte[] page) {
+        this(members, writableAlias, page, null, null)
+    }
+
+    ExploreServer(LinkedHashMap<String, MemberFiles> members, String writableAlias, byte[] page, Put put, String token) {
         this.members = members
         this.writableAlias = writableAlias
         this.page = page ?: NO_PAGE
+        this.put = put
+        this.token = token
+    }
+
+    /** 16 random bytes as base32: what the printed URL carries (decision 12). */
+    static String newToken() {
+        final byte[] bytes = new byte[16]
+        RANDOM.nextBytes(bytes)
+        return Multibase.base32Encode(bytes)
     }
 
     ExploreServer start(int port) {
@@ -60,6 +84,8 @@ class ExploreServer {
 
     String getUrl() { "http://127.0.0.1:${port}/" }
 
+    String getLaunchUrl() { token ? "${url}?token=${token}".toString() : url }
+
     void stop() {
         server?.stop(0)
         executor?.shutdownNow()
@@ -69,6 +95,15 @@ class ExploreServer {
         try {
             if( !ownOrigin(exchange) ) {
                 text(exchange, 403, 'refused: this server answers only to its own origin')
+                return
+            }
+            if( exchange.requestMethod == 'POST' ) {
+                if( exchange.requestURI.rawPath == '/api/put' )
+                    write(exchange)
+                else {
+                    exchange.responseHeaders.set('Allow', 'GET, HEAD')
+                    text(exchange, 405, 'only /api/put takes a POST')
+                }
                 return
             }
             if( !(exchange.requestMethod in ['GET', 'HEAD']) ) {
@@ -139,7 +174,41 @@ class ExploreServer {
         final List<Map> list = members.keySet().collect { String alias ->
             [alias: alias, writable: alias == writableAlias, base: "m/${alias}/".toString()] as Map
         }
-        return JsonOutput.toJson([members: list]).getBytes('UTF-8')
+        return JsonOutput.toJson([members: list, write: put != null]).getBytes('UTF-8')
+    }
+
+    /** POST /api/put (spec sections 9.2 and 9.5): token, content type and size, then the builder. */
+    private void write(HttpExchange exchange) {
+        if( put == null || token == null ) {
+            text(exchange, 405, 'this server was started without a writable member')
+            return
+        }
+        final String given = exchange.requestHeaders.getFirst(TOKEN_HEADER)
+        if( given == null || !MessageDigest.isEqual(given.getBytes('UTF-8'), token.getBytes('UTF-8')) ) {
+            text(exchange, 403, 'refused: this needs the token in the URL nf-blocks:explore printed')
+            return
+        }
+        final String type = (exchange.requestHeaders.getFirst('Content-Type') ?: '').split(';')[0].trim().toLowerCase()
+        if( !JSON_TYPES.contains(type) ) {
+            text(exchange, 415, 'refused: send application/json or application/vnd.ipld.dag-json')
+            return
+        }
+        final byte[] body = exchange.requestBody.readNBytes((int) Put.MAX_REQUEST_BYTES + 1)
+        if( body.length > Put.MAX_REQUEST_BYTES ) {
+            text(exchange, 413, "refused: the body is over ${Put.MAX_REQUEST_BYTES} bytes")
+            return
+        }
+        final boolean dryRun = (exchange.requestURI.rawQuery ?: '').split('&').contains('dry_run=true')
+        try {
+            dagJson(exchange, 200, put.put(body, dryRun).body())
+        }
+        catch( PutError e ) {
+            dagJson(exchange, e.status, e.body())
+        }
+    }
+
+    private static void dagJson(HttpExchange exchange, int status, byte[] body) {
+        bytes(exchange, status, 'application/vnd.ipld.dag-json', body)
     }
 
     private static byte[] logJson(MemberFiles files) {

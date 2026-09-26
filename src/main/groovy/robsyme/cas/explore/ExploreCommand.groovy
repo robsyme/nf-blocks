@@ -25,7 +25,8 @@ class ExploreCommand {
     static class Started {
         final ExploreServer server
         final CasSession cas
-        Started(ExploreServer server, CasSession cas) { this.server = server; this.cas = cas }
+        final Index index
+        Started(ExploreServer server, CasSession cas, Index index) { this.server = server; this.cas = cas; this.index = index }
     }
 
     /** Blocks until interrupted. CmdPlugin calls System.exit when this returns. */
@@ -35,6 +36,7 @@ class ExploreCommand {
         Runtime.runtime.addShutdownHook(new Thread({
             try {
                 started.server.stop()
+                started.index.close()
                 refresh(started.cas, err)
             }
             finally {
@@ -52,11 +54,14 @@ class ExploreCommand {
         final CasConfig cas = CasConfig.fromSession(config)
         final CasSession session = new CasSession(cas)
         refresh(session, err)
-        final ExploreServer server = new ExploreServer(membersOf(cas), cas.writableAlias, IndexSnapshot.bundledPage())
+        final Index index = session.openIndex()
+        final String token = ExploreServer.newToken()
+        final ExploreServer server = new ExploreServer(membersOf(cas), cas.writableAlias, IndexSnapshot.bundledPage(),
+                session.newPut(index), token)
             .start(options.intFlag('port', 0))
-        out.println("nf-blocks explorer: ${server.url}")
+        out.println("nf-blocks explorer: ${server.launchUrl}")
         out.flush()
-        return new Started(server, session)
+        return new Started(server, session, index)
     }
 
     /** Catches the index up and rewrites the writable member's snapshot at any size. Derived: a failure warns. */

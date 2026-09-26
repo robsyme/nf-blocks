@@ -911,17 +911,18 @@ A directly browsed bucket needs the policy and CORS rule of spec section 6:
 ### `nf-blocks:explore`
 
 A JDK `HttpServer` bound to `InetAddress.getLoopbackAddress()`, port `--port`
-or ephemeral. Prints `nf-blocks explorer: http://127.0.0.1:<port>/` on stdout
-once it is listening, then blocks until the JVM is interrupted.
+or ephemeral. Prints `nf-blocks explorer: http://127.0.0.1:<port>/?token=<token>`
+on stdout once it is listening, then blocks until the JVM is interrupted.
 
 | Request | Answer |
 |---|---|
 | `GET /`, `GET /index.html` | the page |
-| `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/"}, ...]}`, writable first |
+| `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/"}, ...], "write": <bool>}`, writable first |
 | `GET` or `HEAD /m/<alias>/index/v<N>.sqlite` | the file, honouring one `Range`, with an `ETag` |
 | `GET` or `HEAD /m/<alias>/blocks/<xx>/<cid>` | the block, honouring one `Range`; `xx` must equal the cid's last two characters |
 | `GET /m/<alias>/log/` | listing form 1 |
-| anything else | `404`; a method other than `GET` or `HEAD` is `405` |
+| `POST /api/put[?dry_run=true]` | the same `Put` as `nf-blocks:put` (block explorer spec sections 9.2 and 9.5): `403` without the right `X-NF-Blocks-Token` header, `415` for a content type other than `application/json` or `application/vnd.ipld.dag-json` (parameters such as `charset` ignored), `413` over `Put.MAX_REQUEST_BYTES` (2 MiB), else the builder's status and DAG-JSON body with `Content-Type: application/vnd.ipld.dag-json` |
+| anything else | `404`; a method other than `GET`, `HEAD` (or `POST` on `/api/put`) is `405` |
 
 `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, and `Origin`, when
 sent, `http://127.0.0.1:<port>` or `http://localhost:<port>`; otherwise `403`.
@@ -1017,7 +1018,7 @@ statement, so Gate assertion 2's counts are the query's cost.
 5. Run-list anomalies come from each visible run's RunCompletion, fetched lazily.
 6. The page is one self-contained `index.html`.
 7. The whole-file cap is 64 MiB, `?cap=` per load.
-8. No launch token until the write endpoint (milestone 2); `Host` and `Origin`
-   checks from the start.
+8. The launch token (decision 12 of the milestone 2 plan) guards `POST`;
+   `GET`/`HEAD` stay token-free behind the `Host`/`Origin` check.
 9. S3 members are read-only and explore-only.
 10. Nothing is filtered by `delete` Claims until Claims exist (milestone 2).
