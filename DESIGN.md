@@ -486,8 +486,8 @@ as a CID (`Cid.parse` succeeds):
     after an item CID in the same collection. Without a leaf name the path
     is presented as a directory of the item's leaves by leaf name; with one,
     it is that file. Canonical form: CIDs in their string form, no trailing
-    slash. Built with the explorer's milestone 2 (block explorer spec
-    section 7.4).
+    slash. Built 2026-09-25 (milestone 2, Task 7): a leaf name two leaves of
+    one item share is refused, naming both positions.
 - **Publish Coordinate** `cas://<alias>/<relative path>`. The write-side name
   Nextflow's `PublishDir` hands us. Persisted in the writable member as a
   Pointer File tree under `coords/`: intermediate segments are real
