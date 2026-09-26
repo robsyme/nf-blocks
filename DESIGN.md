@@ -1034,15 +1034,18 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
 | `body[data-write]` | `available` or `unavailable` |
-| `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code |
+| `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |
 | `body[data-written]` | the address the last successful write made |
 | `#tray[data-count]` | items in the tray |
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
 | `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON, `data-deletion` the composition's deletion state (decision 23) |
+| `#exists-restore` | "Restore", on `[data-exists]` when the composition's `deletion` is not `none`: one `del` superseding `deletion_claims` (decision 23) |
 | `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21), `data-deletion` the composition's deletion state (decision 23) |
 | `#compose-copy` | "Save a copy here", or "Restore a copy here" when the dry run's deletion is not `none`: the write, the name Claim superseding `name_claims`, then a `del` superseding `deletion_claims` (decision 23) |
+| `[data-write-failed]` | the banner on the saved Selection's page after a partly failed save: `data-write-failed` the failed steps (`naming`, `restoring`), space-separated; `data-banner-for` the Selection's address; each error in a `[data-error]` (decision 23) |
+| `#retry-restore` | "Retry restore", in `[data-write-failed]` when restoring failed: resends the `del` with the same `supersedes` |
 | `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
 | `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
@@ -1312,11 +1315,14 @@ by item CID (decision 18).
     copy here": after the copy and its name Claim (when a name is set) it
     writes a `del` Claim superseding every Claim in `deletion_claims`,
     whether or not a name is set, so the Selection is live across the
-    composition. A `del` that fails after the copy saved is reported like a
-    failed naming, "The Selection was saved, but restoring it failed", with
-    the link to open it. Held here but deleted elsewhere, the "already exists"
-    message names the deletion; the Selection view still reads only this
-    member's Claims (decision 22). After a `del` restores a Selection,
+    composition. The `del` is tried even when naming fails. A save whose
+    naming or restoring failed opens the saved Selection with a banner naming
+    each failure and, for the `del`, Retry restore (ticket 11). Held here but
+    deleted in the composition, the "already exists" message names the
+    deletion and offers Restore (one `del` superseding `deletion_claims`;
+    ticket 11). Both messages say "in this composition", since the dry run
+    cannot tell which member holds a deletion. The Selection view still reads
+    only this member's Claims (decision 22). After a `del` restores a Selection,
     `deletion_claims` still names that current `del` Claim although
     `deletion` is `none`; clients act on `deletion`, not on whether
     `deletion_claims` is empty.

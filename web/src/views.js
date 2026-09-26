@@ -2,7 +2,8 @@
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
 import { h, link, cid } from './html.js'
-import { saveChoice, namingRequest, restoreRequest } from './save-choice.js'
+import { saveChoice } from './save-choice.js'
+import { saveSequence, retryRestore } from './save-flow.js'
 
 const enc = encodeURIComponent
 
@@ -318,6 +319,23 @@ function actions(selectionCid, st, ctx, status) {
       ' ', pickButton(ctx, { address: selectionCid, kind: 'selection' })))
 }
 
+/**
+ * The banner on the saved Selection's page after a save whose naming or
+ * restoring failed (DESIGN.md §16 decision 23). A naming failure needs no
+ * button, since Rename is on the page below; a restoring one offers Retry.
+ */
+export function failureBanner(address, failures, ctx) {
+  const status = h('div', { id: 'retry-status' })
+  return h('div', { class: 'warn', 'data-write-failed': failures.map(f => f.step).join(' '), 'data-banner-for': address },
+    failures.map(f => h('div', {},
+      h('p', {}, f.step === 'restoring' ? 'Saved, but restoring it failed:' : 'Saved, but naming it failed:'),
+      errorNode({ code: f.code, message: f.message }),
+      f.step === 'restoring' ? h('p', {}, h('button', { type: 'button', id: 'retry-restore', onclick: (e) => ctx.write.run(status, async () => {
+        await retryRestore(ctx.write.writer, address, f.retry)
+        return { address, href: `#/selection/${address}` }
+      }, e.currentTarget) }, 'Retry restore'), status) : null)))
+}
+
 const deletedNote = (deletion, where) => deletion === 'deleted' ? ` It is deleted ${where}.`
   : deletion === 'conflicted' ? ` Its deletion is in conflict ${where}.` : ''
 
@@ -329,26 +347,9 @@ export function compose(ex, ctx) {
   const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
     const members = ctx.tray.toMembers()
     const saveAndName = async (choice) => {
-      const written = await ctx.write.writer.selection(members)
-      ctx.tray.clear()
-      ctx.trayChanged()
-      const naming = namingRequest(choice, name.value)
-      if (naming) {
-        try {
-          await ctx.write.writer.rename(written.address, naming.name, naming.supersedes)
-        } catch (e) {
-          throw Object.assign(e, { saved: written.address, failed: 'naming' })
-        }
-      }
-      const restoring = restoreRequest(choice)
-      if (restoring) {
-        try {
-          await ctx.write.writer.undo(written.address, restoring.supersedes)
-        } catch (e) {
-          throw Object.assign(e, { saved: written.address, failed: 'restoring' })
-        }
-      }
-      return { address: written.address, href: `#/selection/${written.address}` }
+      const { address, failures } = await saveSequence(ctx.write.writer, members, choice, name.value,
+        { onSaved: () => { ctx.tray.clear(); ctx.trayChanged() } })
+      return { address, href: `#/selection/${address}`, failures }
     }
     const dry = await ctx.write.writer.selection(members, { dryRun: true })
     const choice = saveChoice(dry)
@@ -358,7 +359,12 @@ export function compose(ex, ctx) {
         : dry.names.length === 1 ? ` as ${dry.names[0]}` : ` as ${dry.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(dry.names) },
         `This Selection already exists${named}.${deletedNote(choice.deletion, 'in this composition')} `,
-        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ', cancel, '.'))
+        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'),
+        choice.restore.length ? [', ', h('button', { type: 'button', id: 'exists-restore', onclick: (e) => ctx.write.run(status, async () => {
+          await ctx.write.writer.undo(dry.address, choice.restore)
+          return { address: dry.address, href: `#/selection/${dry.address}` }
+        }, e.currentTarget) }, 'Restore')] : null,
+        ' or ', cancel, '.'))
       return { outcome: 'exists' }
     }
     if (choice.state === 'elsewhere') {
@@ -366,7 +372,7 @@ export function compose(ex, ctx) {
       const named = choice.names.length === 0 ? ', unnamed'
         : choice.names.length === 1 ? ` as ${choice.names[0]}` : ` as ${choice.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-held-elsewhere': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(choice.names) },
-        `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'there')} `,
+        `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'in this composition')} `,
         h('button', { type: 'button', id: 'compose-copy', onclick: (e) => ctx.write.run(status, () => saveAndName(choice), e.currentTarget) },
           choice.restore.length ? 'Restore a copy here' : 'Save a copy here'), ' or ', cancel, '.'))
       return { outcome: 'elsewhere' }
