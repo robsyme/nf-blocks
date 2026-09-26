@@ -55,6 +55,12 @@ class IndexSnapshot {
     private static final String COPY_LOG_ENTRIES =
         'INSERT INTO main.log_entry SELECT cid, kind, NULL, written_at FROM src.log_entry WHERE member = ?'
 
+    /** The Claims the member's Store Log announced; current state is recomputed from these alone (spec section 4). */
+    private static final List<String> COPY_CLAIMS = [
+        "INSERT INTO main.claim SELECT * FROM src.claim WHERE claim_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'claim')",
+        'INSERT INTO main.claim_supersedes SELECT * FROM src.claim_supersedes WHERE claim_cid IN (SELECT claim_cid FROM main.claim)',
+    ]
+
     /** Everything those runs reach, in dependency order. */
     private static final List<String> COPY_CLOSURE = [
         '''INSERT INTO main.collection SELECT * FROM src.collection
@@ -142,12 +148,25 @@ class IndexSnapshot {
             for( String sql : COPY_CLOSURE )
                 exec(c, sql)
             update(c, COPY_LOG_ENTRIES, [(Object) member])
+            update(c, COPY_CLAIMS[0], [(Object) member])
+            exec(c, COPY_CLAIMS[1])
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
             update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WRITTEN_AT_KEY, MILLIS.format(Instant.now())])
             c.commit()
             c.setAutoCommit(true)
             exec(c, 'DETACH DATABASE src')
+            // Running after the detach guarantees the unqualified table names
+            // in ClaimCurrent can only mean the snapshot's own tables.
+            c.setAutoCommit(false)
+            final List<String> subjects = new ArrayList<String>()
+            final ResultSet rs = c.createStatement().executeQuery('SELECT DISTINCT subject_cid FROM claim')
+            while( rs.next() )
+                subjects.add(rs.getString(1))
+            for( String subject : subjects )
+                ClaimCurrent.rewrite(c, subject)
+            c.commit()
+            c.setAutoCommit(true)
             final int runs = count(c, 'SELECT count(*) FROM run')
             exec(c, "PRAGMA page_size=${PAGE_SIZE}".toString())
             update(c, 'VACUUM INTO ?', [(Object) out.toAbsolutePath().toString()])

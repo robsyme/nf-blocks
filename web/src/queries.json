@@ -1,6 +1,6 @@
 {
   "producersOf": "SELECT content_cid, item_cid, collection_cid, completion_cid, filename FROM producer WHERE content_cid = ?",
-  "latestSuccessfulRun": "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 1",
+  "latestSuccessfulRun": "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 AND NOT EXISTS (SELECT 1 FROM claim_current cc JOIN claim k ON k.claim_cid = cc.claim_cid WHERE cc.subject_cid = run.completion_cid AND cc.attribute IS NULL AND k.verb = 'delete') ORDER BY finished_at DESC, completion_cid ASC LIMIT 1",
   "itemsBase": "SELECT ci.item_cid, ci.collection_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE c.completion_cid = ? AND c.output_name = ?",
   "itemsPredicate": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?)",
   "itemsPredicateNull": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value IS NULL)",

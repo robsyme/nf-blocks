@@ -40,8 +40,13 @@ class Index implements Closeable {
     static final String SQL_PRODUCERS_OF =
         'SELECT content_cid, item_cid, collection_cid, completion_cid, filename FROM producer WHERE content_cid = ?'
 
+    // Query 2 leaves out a run with a current delete Claim, a conflicted
+    // deletion included (lineage spec §9, block explorer spec section 8).
     static final String SQL_LATEST_SUCCESSFUL_RUN =
-        "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 ORDER BY finished_at DESC, completion_cid ASC LIMIT 1"
+        "SELECT completion_cid FROM run WHERE pipeline = ? AND status = 'succeeded' AND possibly_incomplete = 0 AND NOT EXISTS (SELECT 1 FROM claim_current cc JOIN claim k ON k.claim_cid = cc.claim_cid WHERE cc.subject_cid = run.completion_cid AND cc.attribute IS NULL AND k.verb = 'delete') ORDER BY finished_at DESC, completion_cid ASC LIMIT 1"
+
+    private static final String SQL_CONFLICTED_DELETIONS_OF_PIPELINE =
+        "SELECT DISTINCT run.completion_cid FROM run JOIN claim_current cc ON cc.subject_cid = run.completion_cid WHERE run.pipeline = ? AND cc.attribute IS NULL AND cc.conflicted = 1"
 
     // ci.collection_cid rides along so the page can link each item without a
     // second lookup; it is on the collection_item row already read, so it costs no page.
@@ -396,7 +401,11 @@ class Index implements Closeable {
         switch( kind ) {
             case StoreLogKind.RUN:
                 if( !isRunIndexed(cid) )
-                    ingestTolerant(store, cid, member)
+                    ingestTolerant(store, kind, cid, member)
+                return
+            case StoreLogKind.CLAIM:
+                if( !isClaimIndexed(cid) )
+                    ingestTolerant(store, kind, cid, member)
                 return
             default:
                 log.debug("store log entry for ${cid} is a ${kind.token}; not indexed by this build yet")
@@ -413,18 +422,19 @@ class Index implements Closeable {
         final String key = META_SCANNED + ':' + member
         if( meta(key) != null )
             return
-        final List<Cid> completions
+        final Map<String, List<Cid>> found
         try {
-            completions = runCompletionsIn(store)
+            found = blocksOfKinds(store, SCANNED_KINDS)
         }
         catch( IOException | UncheckedIOException e ) {
             // Not marked done, so the next catch-up scans again.
             log.warn("could not scan the blocks of store member '$member' (${e.message}); will retry")
             return
         }
-        for( Cid completion : completions )
-            if( !isRunIndexed(completion) )
-                ingestTolerant(store, completion, member)
+        for( Cid completion : found.get(Records.RUN_COMPLETION) )
+            ingestLogged(store, StoreLogKind.RUN, completion, member)
+        for( Cid claim : found.get(Records.CLAIM) )
+            ingestLogged(store, StoreLogKind.CLAIM, claim, member)
         setMeta(key, 'done')
     }
 
@@ -454,18 +464,22 @@ class Index implements Closeable {
     }
 
     /**
-     * Ingests one logged run. A block that cannot be read (a permission error,
-     * a stale network handle) is not an absence: it is recorded as `missing`
-     * so later catch-ups retry it, and the rest of the member still ingests.
+     * Ingests one logged block. A block that cannot be read (a permission
+     * error, a stale network handle) is not an absence: it is recorded as
+     * `missing` so later catch-ups retry it, and the rest of the member still ingests.
      */
-    private void ingestTolerant(BlockStore store, Cid completion, String member) {
+    private void ingestTolerant(BlockStore store, StoreLogKind kind, Cid cid, String member) {
         try {
-            ingestRun(store, completion, member)
+            switch( kind ) {
+                case StoreLogKind.RUN: ingestRun(store, cid, member); break
+                case StoreLogKind.CLAIM: ingestClaim(store, cid, member); break
+                default: return
+            }
         }
         catch( IOException | UncheckedIOException e ) {
-            warnOnce(completion.toString(), "run completion $completion could not be read (${e.message}); it will be retried")
-            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [completion.toString()])
-            insertMissing(null, completion)
+            warnOnce(cid.toString(), "${kind.token} ${cid} could not be read (${e.message}); it will be retried")
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [cid.toString()])
+            insertMissing(null, cid)
         }
     }
 
@@ -484,6 +498,47 @@ class Index implements Closeable {
         boolean found = false
         query('SELECT 1 FROM run WHERE completion_cid = ?', [completion.toString()]) { ResultSet rs -> found = true }
         return found
+    }
+
+    /**
+     * Indexes one Claim and rewrites its subject's claim_current. Idempotent.
+     * An absent block is a `missing` row, retried by later catch-ups.
+     */
+    void ingestClaim(BlockStore store, Cid claimCid, String member) {
+        final Map block = readBlock(store, claimCid, Records.CLAIM)
+        withTransaction {
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [claimCid.toString()])
+            if( block == null ) {
+                warnOnce(claimCid.toString(), "claim ${claimCid} has not arrived; it is indexed when it does")
+                insertMissing(null, claimCid)
+                return
+            }
+            final Claim claim = Claim.fromCbor(block)
+            update('INSERT OR REPLACE INTO claim(claim_cid, subject_cid, verb, attribute, value, timestamp, asserted_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [claimCid.toString(), claim.subject.toString(), claim.verb, claim.attribute, valueText(claim.value), claim.timestamp, claim.assertedBy])
+            update('DELETE FROM claim_supersedes WHERE claim_cid = ?', [claimCid.toString()])
+            for( Cid superseded : claim.supersedes )
+                update('INSERT INTO claim_supersedes(claim_cid, superseded_cid) VALUES (?, ?)', [claimCid.toString(), superseded.toString()])
+            ClaimCurrent.rewrite(connection, claim.subject.toString())
+        }
+    }
+
+    boolean isClaimIndexed(Cid claimCid) {
+        boolean found = false
+        query('SELECT 1 FROM claim WHERE claim_cid = ?', [claimCid.toString()]) { ResultSet rs -> found = true }
+        return found
+    }
+
+    /** The subject's current state from every Claim this index holds for it. */
+    ClaimState claimState(Cid subject) {
+        return ClaimCurrent.load(connection, subject.toString())
+    }
+
+    /** decision 4: a string as itself, null as NULL, anything else as DAG-JSON text. */
+    static String valueText(Object value) {
+        if( value == null )
+            return null
+        return value instanceof String ? (String) value : DagJson.encodeToString(value)
     }
 
     private static final java.time.format.DateTimeFormatter ISO_MILLIS =
@@ -535,8 +590,11 @@ class Index implements Closeable {
         deleteDatabase(temp)
         final Index fresh = Index.open(temp)
         try {
-            for( Cid completion : runCompletionsIn(store) )
+            final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS)
+            for( Cid completion : found.get(Records.RUN_COMPLETION) )
                 fresh.ingestRun(store, completion, member)
+            for( Cid claim : found.get(Records.CLAIM) )
+                fresh.ingestClaim(store, claim, member)
             fresh.setMeta(META_SCANNED + ':' + member, 'done')
             try {
                 for( StoreLogEntry entry : StoreLog.read(store) )
@@ -578,25 +636,51 @@ class Index implements Closeable {
         }
     }
 
-    /** Every RunCompletion in the store, found by decoding each `bafy…` block. */
-    private static List<Cid> runCompletionsIn(BlockStore store) {
-        final List<Cid> found = new ArrayList<Cid>()
+    /** The blocks of the kinds a store announces, found by decoding every `bafy…` block once. */
+    private static Map<String, List<Cid>> blocksOfKinds(BlockStore store, Collection<String> kinds) {
+        final Map<String, List<Cid>> found = new LinkedHashMap<String, List<Cid>>()
+        for( String kind : kinds )
+            found.put(kind, new ArrayList<Cid>())
         final Stream<Cid> blocks = store.listBlocks()
         try {
             for( Object element : blocks.toList() ) {
                 final Cid cid = (Cid) element
                 if( !cid.isDagCbor() )
                     continue
-                if( readBlock(store, cid, 'RunCompletion') != null )
-                    found.add(cid)
+                final String kind = kindAt(store, cid)
+                if( kind != null && found.containsKey(kind) )
+                    found.get(kind).add(cid)
             }
         }
         finally {
             blocks.close()
         }
-        Collections.sort(found)
+        for( List<Cid> list : found.values() )
+            Collections.sort(list)
         return found
     }
+
+    /** The kind of a metadata block, or null when it cannot be read or has none. */
+    private static String kindAt(BlockStore store, Cid cid) {
+        try {
+            if( store.size(cid) > MAX_BLOCK_BYTES )
+                return null
+            final InputStream input = store.open(cid)
+            try {
+                final Object value = DagCbor.decode(input.readAllBytes())
+                return value instanceof Map ? Records.kindOf((Map) value) : null
+            }
+            finally {
+                input.close()
+            }
+        }
+        catch( Exception e ) {
+            return null
+        }
+    }
+
+    /** What the scan and rebuild ingest, in dependency order: Claims refer to anything, so last. */
+    private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.CLAIM]
 
     // --------------------------------------------------------------- queries
 
@@ -615,6 +699,11 @@ class Index implements Closeable {
      * possibly incomplete. Ties on the finish time break by address.
      */
     Optional<Cid> latestSuccessfulRun(String pipeline) {
+        query(SQL_CONFLICTED_DELETIONS_OF_PIPELINE, [pipeline]) { ResultSet rs ->
+            warnOnce('conflicted-deletion:' + rs.getString(1),
+                "run ${rs.getString(1)} of pipeline '${pipeline}' has a conflicted deletion (more than one current Claim); " +
+                'the latest successful run leaves it out until a Claim superseding both resolves it')
+        }
         return firstCid(SQL_LATEST_SUCCESSFUL_RUN, [pipeline])
     }
 

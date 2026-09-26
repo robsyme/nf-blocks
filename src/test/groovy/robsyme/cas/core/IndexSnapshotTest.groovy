@@ -261,4 +261,24 @@ class IndexSnapshotTest extends Specification {
         expect:
         rows(IndexSnapshot.write(index, 'lab', labRoot, 0L).path, 'SELECT completion_cid FROM run') == [[completion.toString()]]
     }
+
+    def 'a member snapshot holds its own Claims, current state recomputed from them alone'() {
+        given:
+        final Cid subject = Fixtures.cidOf([kind: 'Selection', schema: 1])
+        final Cid first = lab.putDagCbor(Fixtures.claim(subject, 'set', 'name', 'first', []))
+        StoreLog.append(lab, StoreLogKind.CLAIM, first, System.currentTimeMillis())
+        // The rename is logged in shared only, so lab's snapshot must not see it.
+        final Cid second = shared.putDagCbor(Fixtures.claim(subject, 'set', 'name', 'second', [first]))
+        StoreLog.append(shared, StoreLogKind.CLAIM, second, System.currentTimeMillis())
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        index.claimState(subject).names == ['second']                       // the cache index sees both members
+        rows(file, 'SELECT claim_cid FROM claim') == [[first.toString()]]
+        rows(file, 'SELECT count(*) FROM claim_supersedes') == [[0]]
+        rows(file, 'SELECT claim_cid, value, conflicted FROM claim_current') == [[first.toString(), 'first', 0]]
+    }
 }

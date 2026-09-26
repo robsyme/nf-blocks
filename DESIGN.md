@@ -722,7 +722,11 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `runByNextflowHash(String) → Optional<Cid completion>`;
   `runByManifest(Cid) → Optional<Cid completion>`.
   `successful` = `status == 'succeeded' AND possibly_incomplete = 0`
-  (delete claims arrive later).
+  and no current `delete` Claim names the RunCompletion, a conflicted
+  deletion included; `latestSuccessfulRun` warns once per conflicted run it
+  leaves out. Claims are ingested from `claim` Store Log entries into `claim`
+  and `claim_supersedes`; `claim_current` is `ClaimState` (decision 5 of the
+  milestone 2 plan) per subject.
 - *Amended 2026-09-25:* the three load-bearing queries' SQL is held in public
   constants (`Index.SQL_PRODUCERS_OF`, `SQL_LATEST_SUCCESSFUL_RUN`,
   `SQL_ITEMS_BASE`, `SQL_ITEMS_PREDICATE`, `SQL_ITEMS_PREDICATE_NULL`,
@@ -774,7 +778,9 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
 - Rows: every `run` the member's Store Log announced (`log_entry.member`) or
   its blocks held at the first scan (`run.member`), and the rows reached from
   those runs, plus the member's `log_entry` rows with `member` NULL.
-  Selections and Claims: Tasks 4 and 6.
+  Claims: the `claim` and `claim_supersedes` rows of the Claims whose
+  `log_entry` names the member, with `claim_current` recomputed from those
+  alone. Selections: Task 6.
 - Same DDL as the cache index (`Index.ddl()`), same `schema_version`.
 - `meta` holds exactly `store_log_watermark` (the member's watermark in the
   cache index, a Store Log entry name; absent when the member has no log) and
