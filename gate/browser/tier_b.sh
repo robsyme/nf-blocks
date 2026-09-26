@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Gate browser tier B (block explorer spec section 1.3, assertions 8-15): the
+# Gate browser tier B (block explorer spec section 1.3, assertions 8-16): the
 # page composes, renames, deletes and undoes through nf-blocks:explore over a
 # copy of this Gate run's store; the Gate probes the write endpoint, fetches
 # the samplesheet, runs gate/selection, and checks it all with its own encoder.

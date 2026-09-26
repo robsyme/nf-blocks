@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-15):
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-16):
 Selections and Claims written through the page, all local, over a
 composition of a writable member and a read-only one.
 
@@ -136,6 +136,10 @@ def prepare(root):
     def selection(members):
         return dagjson.expected_selection({"kind": "Selection", "members": members, "derived_from": []}, ASSERTED_BY)
 
+    def deletion(subject):
+        return dagjson.expected_claim({"subject": cas.Cid(subject), "verb": "delete", "attribute": None, "value": None,
+                                       "supersedes": [], "timestamp": SHARED_TS}, ASSERTED_BY)
+
     # S3: what B.copy composes (A from cold's aligned), held only in shared, named there.
     s3 = _put_block(shared, selection([_item(a, [coll["aligned"]])]))
     _log(shared, "selection", s3, SHARED_MILLIS)
@@ -148,10 +152,23 @@ def prepare(root):
     _log(store, "claim", n1, SHARED_MILLIS)
     n2 = _put_block(shared, claim(s4, "shared-name", [n1]))
     _log(shared, "claim", n2, SHARED_MILLIS)
+    # S5: B from cold's aligned, held only in shared, named and deleted there (B.restore restores it).
+    s5 = _put_block(shared, selection([_item(b, [coll["aligned"]])]))
+    _log(shared, "selection", s5, SHARED_MILLIS)
+    n5 = _put_block(shared, claim(s5, "restored-name", []))
+    _log(shared, "claim", n5, SHARED_MILLIS)
+    d5 = _put_block(shared, deletion(s5))
+    _log(shared, "claim", d5, SHARED_MILLIS)
+    # S6: B from again's aligned, held in lab, deleted in shared (B.deleted names the deletion).
+    s6 = _put_block(store, selection([_item(b, [again_aligned])]))
+    _log(store, "selection", s6, SHARED_MILLIS)
+    d6 = _put_block(shared, deletion(s6))
+    _log(shared, "claim", d6, SHARED_MILLIS)
     expected = {"items": {"A": a, "B": b, "C": c},
                 "collections": {"aligned": coll["aligned"], "stats": coll["stats"], "again": again_aligned},
                 "files": {"A": _file(gate, "A.bam"), "B": _file(gate, "B.bam"), "C": _file(gate, "C.stats")},
-                "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2}}
+                "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2,
+                           "s5": s5, "n5": n5, "d5": d5, "s6": s6, "d6": d6}}
     q = "?token={token}"
     steps = [
         {"id": "B.first", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], a),
@@ -181,6 +198,12 @@ def prepare(root):
         {"id": "B.foreign", "server": "explore", "path": "", "query": q, "hash": "#/selection/%s" % s4,
          "actions": [{"extract": "before"}, {"fill": ["#rename-name", "lab-renamed"]}, {"click": "#rename-save"},
                      {"waitWrite": True}, {"extract": "after"}]},
+        {"id": "B.restore", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], b),
+         "actions": [{"click": "[data-pick]"}, {"hash": "#/compose"}, {"click": "#compose-save"}, {"waitWrite": True},
+                     {"extract": "offer"}, {"click": "#compose-copy"}, {"waitWrite": True}, {"extract": "after"}]},
+        {"id": "B.deleted", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (again_aligned, b),
+         "actions": [{"click": "[data-pick]"}, {"hash": "#/compose"}, {"click": "#compose-save"}, {"waitWrite": True},
+                     {"extract": "offer"}]},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})
@@ -360,7 +383,7 @@ def _read_sheet_csv(path):
 
 
 def evaluate(root):
-    """[(status, number, title, message)] for assertions 8-15."""
+    """[(status, number, title, message)] for assertions 8-16."""
     out = os.path.join(root, "browser-b")
     expected = _read_json(os.path.join(out, "expected.json"))
     observed = _observed(out)
@@ -656,6 +679,51 @@ def evaluate(root):
         return PASS, ("a rename in lab went through although shared holds a Claim superseding lab's; the composition "
                       "reports the two names as a conflict and lab's view shows its own")
 
+    def b16():
+        problems, sh = [], expected["shared"]
+        offer = extract("B.restore", "offer")
+        if offer.get("heldElsewhere") != sh["s5"] or offer.get("heldElsewhereDeletion") != "deleted":
+            problems.append("the dry run offered %r (deletion %r), expected S5 %s deleted in shared"
+                            % (offer.get("heldElsewhere"), offer.get("heldElsewhereDeletion"), sh["s5"]))
+        if offer.get("copyLabel") != "Restore a copy here":
+            problems.append("the copy button read %r, expected 'Restore a copy here'" % offer.get("copyLabel"))
+        if offer.get("composeName") != "restored-name":
+            problems.append("the name field held %r, expected shared's name restored-name" % offer.get("composeName"))
+        posts = _posts(seen("B.restore"))
+        sels = [p for p in posts if _kind(p) == "Selection"]
+        claims = [p for p in posts if _kind(p) == "Claim"]
+        verbs = [json.loads(p["body"]).get("verb") for p in claims]
+        if len(sels) != 1 or verbs != ["set", "del"]:
+            problems.append("B.restore: %d Selection POST(s) and Claim verbs %r, expected 1 and ['set', 'del']" % (len(sels), verbs))
+        else:
+            address, _b, found = verify_post("B.restore", sels[0], dagjson.expected_selection)
+            problems += found
+            if address != sh["s5"]:
+                problems.append("B.restore wrote %s, the Selection shared holds is %s" % (address, sh["s5"]))
+            for post in claims:
+                _c, block, found = verify_post("B.restore", post, dagjson.expected_claim)
+                problems += found
+                if _text(block["subject"]) != sh["s5"]:
+                    problems.append("a %s Claim is about %s, not S5" % (block["verb"], _text(block["subject"])))
+                want = [sh["n5"]] if block["verb"] == "set" else [sh["d5"]]
+                if [_text(x) for x in block["supersedes"]] != want:
+                    problems.append("the %s Claim supersedes %r, expected %r" % (block["verb"], [_text(x) for x in block["supersedes"]], want))
+        state = dagjson.claim_state(_claims_about(store, sh["s5"]) + _claims_about(shared_store, sh["s5"]))
+        if state["names"] != ["restored-name"] or state["deletion"] != "none":
+            problems.append("across both members S5 is named %r with deletion %r, expected restored-name and none"
+                            % (state["names"], state["deletion"]))
+        held = extract("B.deleted", "offer")
+        if held.get("exists") != sh["s6"] or held.get("existsDeletion") != "deleted":
+            problems.append("composing S6 showed exists %r with deletion %r, expected S6 %s deleted"
+                            % (held.get("exists"), held.get("existsDeletion"), sh["s6"]))
+        if _posts(seen("B.deleted")):
+            problems.append("B.deleted wrote %d request(s); the here path must write nothing" % len(_posts(seen("B.deleted"))))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("a Selection shared named and deleted was offered as 'Restore a copy here' with its name prefilled; one "
+                      "click wrote it into lab with a name Claim and a del superseding shared's, live across both members; "
+                      "composing a Selection lab holds and shared deleted named the deletion and wrote nothing")
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
@@ -664,6 +732,7 @@ def evaluate(root):
     run(13, "the samplesheet lists exactly the Selection's items, and its cells stage", b13)
     run(14, "a Selection held only in a read-only member is copied and named", b14)
     run(15, "a Claim in another member does not lock a rename; the disagreement is a conflict", b15)
+    run(16, "a copy deleted in another member is restored; a deletion held elsewhere is named", b16)
     return results
 
 

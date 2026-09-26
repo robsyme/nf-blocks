@@ -1,5 +1,5 @@
 # gate/test_browser_b_assert.py
-"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-15)
+"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-16)
 over a small hand-made world: blocks written with the Gate's own encoder into
 a writable member and a read-only one, a synthetic observed.json and
 probes.json, and a consumer store of hashes. Each
@@ -147,6 +147,49 @@ class World(object):
             "before": self.extract(view=self.s4, names=[{"name": "lab-name", "claim": self.n1, "conflicted": False}]),
             "after": self.extract(view=self.s4, names=[{"name": "lab-renamed", "claim": self.lab_renamed,
                                                         "conflicted": False}])}
+        self.build_deleted()
+
+    def build_deleted(self):
+        """S5 held, named and deleted only in shared, restored by B.restore; S6 in lab, deleted in shared (B.deleted)."""
+        def shared_claim(request):
+            cid = B._put_block(self.shared, dagjson.expected_claim(dagjson.loads(json.dumps(request)), "gate"))
+            B._log(self.shared, "claim", cid, 1767225600000)
+            return cid
+
+        s5_request = {"kind": "Selection", "members": [item_member("B", "aligned")], "derived_from": []}
+        s5_block = dagjson.expected_selection(dagjson.loads(json.dumps(s5_request)), "gate")
+        self.s5 = B._put_block(self.shared, s5_block)
+        B._log(self.shared, "selection", self.s5, 1767225600000)
+        self.n5 = shared_claim(claim_request(self.s5, "set", "name", "restored-name", [], self.tick()))
+        self.d5 = shared_claim(claim_request(self.s5, "delete", second=self.tick()))
+        s6_request = {"kind": "Selection", "members": [item_member("B", "again")], "derived_from": []}
+        self.s6 = self.put_block(dagjson.expected_selection(dagjson.loads(json.dumps(s6_request)), "gate"))
+        self.log(self.s6, "selection")
+        self.d6 = shared_claim(claim_request(self.s6, "delete", second=self.tick()))
+        self.expected["shared"].update(s5=self.s5, n5=self.n5, d5=self.d5, s6=self.s6, d6=self.d6)
+
+        self.post("B.restore", s5_request, 200, json.dumps({
+            "address": link(self.s5), "exists": True, "here": False, "names": ["restored-name"],
+            "name_claims": [link(self.n5)], "deletion": "deleted", "deletion_claims": [link(self.d5)]}), dry=True)
+        self.put_block(s5_block)
+        self.log(self.s5, "selection")
+        self.post("B.restore", s5_request, 200, self.response(self.s5))
+        self.restore_name = self.claim_post("B.restore", claim_request(self.s5, "set", "name", "restored-name", [self.n5],
+                                                                       self.tick()))
+        self.log(self.restore_name)
+        self.restore_del = self.claim_post("B.restore", claim_request(self.s5, "del", supersedes=[self.d5], second=self.tick()))
+        self.log(self.restore_del)
+        self.steps["B.restore"]["extracts"] = {
+            "offer": self.extract(writeOutcome="elsewhere", heldElsewhere=self.s5, heldElsewhereNames=["restored-name"],
+                                  heldElsewhereDeletion="deleted", copyLabel="Restore a copy here",
+                                  composeName="restored-name"),
+            "after": self.extract(written=self.s5, writeOutcome="written")}
+
+        self.post("B.deleted", s6_request, 200, json.dumps({
+            "address": link(self.s6), "exists": True, "here": True, "names": [], "name_claims": [],
+            "deletion": "deleted", "deletion_claims": [link(self.d6)]}), dry=True)
+        self.steps["B.deleted"]["extracts"] = {
+            "offer": self.extract(writeOutcome="exists", exists=self.s6, existsDeletion="deleted")}
 
     # -- building ---------------------------------------------------------
     def tick(self):
@@ -275,7 +318,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), [8, 9, 10, 11, 12, 13, 14, 15])
+        self.assertEqual(sorted(results), [8, 9, 10, 11, 12, 13, 14, 15, 16])
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -288,9 +331,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 16):
+        for n in range(8, 17):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 8 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 9 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -501,6 +544,33 @@ class CheckTest(unittest.TestCase):
         self.w.steps["B.foreign"]["extracts"]["after"]["names"].append(
             {"name": "shared-name", "claim": self.w.n2, "conflicted": True})
         self.assertFail(15, "lab-renamed alone")
+
+    # -- B16 --------------------------------------------------------------
+    def test_b16_the_whole_world_passes(self):
+        self.assertPass(16)
+
+    def test_b16_a_restore_without_the_del_claim_fails(self):
+        self.w.steps["B.restore"]["requests"].pop()
+        os.remove(os.path.join(self.w.store, "blocks", self.w.restore_del[-2:], self.w.restore_del))
+        status, message = self.status(16)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("['set']", message)
+        self.assertIn("deletion 'deleted'", message)
+
+    def test_b16_a_del_superseding_nothing_fails(self):
+        self.w.steps["B.restore"]["requests"].pop()
+        self.w.claim_post("B.restore", claim_request(self.w.s5, "del", second=42))
+        status, message = self.status(16)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("the del Claim supersedes []", message)
+
+    def test_b16_a_deletion_held_elsewhere_not_named_fails(self):
+        self.w.steps["B.deleted"]["extracts"]["offer"]["existsDeletion"] = "none"
+        self.assertFail(16, "composing S6")
+
+    def test_b16_a_restore_not_labelled_as_one_fails(self):
+        self.w.steps["B.restore"]["extracts"]["offer"]["copyLabel"] = "Save a copy here"
+        self.assertFail(16, "Restore a copy here")
 
 
 class MemberWriteTest(unittest.TestCase):
