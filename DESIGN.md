@@ -961,7 +961,20 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   `#/collection/<collection>[?offset=<n>]`, `#/item/<collection>/<item>`,
   `#/content/<cid>` (query 1), `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
-  (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`).
+  (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`),
+  `#/item/-/<item>` (an item with no collection, such as a Selection member
+  picked by a query), `#/selections[?offset=<n>][&deleted=1]` (this member's
+  Selections, 50 a page; `deleted=1` lists the deleted ones, each with undo),
+  `#/selection/<cid>` (one Selection: names, deletion, members, rename,
+  delete, undo, samplesheet links) and `#/compose` (the tray, and saving it
+  as a Selection) (milestone 2, §16).
+- Writing: only when the page was opened through `explore` with its
+  `?token=`, and `members.json` has `"write": true` and a writable member.
+  The page posts DAG-JSON to `POST /api/put` with the token in
+  `X-NF-Blocks-Token`; composing first asks with `?dry_run=true` and offers
+  the existing Selection instead of writing when one exists. A Selection is
+  written to the writable member, and the page opens it there. After a write
+  the page re-lists that member's Store Log, so it sees its own write.
 - Pages: a pipeline's runs 50 at a time, a collection's items 500 at a time;
   `offset` counts snapshot rows. The Store Log tail's runs are all on the
   first page and counted in its span and in the total (`runCount` plus the
@@ -993,10 +1006,27 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
-| `[data-page]` | on the pipeline and collection views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
+| `[data-page]` | on the pipeline, collection and Selections views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
+| `body[data-write]` | `available` or `unavailable` |
+| `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, or an error code |
+| `body[data-written]` | the address the last successful write made |
+| `#tray[data-count]` | items in the tray |
+| `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
+| `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
+| `#compose-name`, `#compose-save` | the new Selection's name, and save |
+| `[data-exists]` | the dry run found the Selection: `data-exists` address, `data-names` JSON |
+| `[data-unavailable]` | why composing, rename and delete are unavailable |
+| `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
+| `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
+| `[data-name]` | one current name: `data-name` value, `data-claim`, `data-conflicted` when in conflict |
+| `[data-deletion-claim]` | one current deletion Claim: `data-deletion-claim` cid, `data-verb` |
+| `[data-member]` | one member: `data-member` address, `data-kind`, `data-held` (`here` or `elsewhere`) |
+| `#rename-name`, `#rename-save`, `#delete`, `#undo` | the actions |
+| `[data-samplesheet]` | `csv` or `json` export link (served by `explore` only) |
+| `[data-hidden-runs]` | on a pipeline page, how many runs a delete Claim hides |
 | `[data-error]` | an error: `data-error` code, `data-cid` when a block is to blame |
 | `window.__nfBlocks.verified` | every cid whose bytes the page hashed and accepted |
 
@@ -1005,6 +1035,13 @@ Error codes: `no_snapshot`, `no_range_over_cap`, `cors_headers`,
 `schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`,
 `file_protocol` (the store resolved to a `file://` URL, which a browser will
 not fetch from: the page must be served, by any static server or `explore`).
+A write can also show, in its status and in `body[data-write-outcome]`, the
+transport refusals `forbidden` (`403`), `unsupported_media_type` (`415`),
+`too_large` (`413`) and `write_failed` (the server could not be reached, or
+answered with a status and body it does not document), and every `PutError`
+code: `not_found`, `wrong_kind`, `not_in_via`, `empty`, `stale_supersedes`,
+`clock_skew`, `too_large`, `not_writable`, `invalid`. The page itself uses
+`invalid` for a rename with no name typed.
 
 The query views (query 1, 2 and 3) read the snapshot only through their own
 statement, so Gate assertion 2's counts are the query's cost.
@@ -1030,3 +1067,20 @@ statement, so Gate assertion 2's counts are the query's cost.
    `GET`/`HEAD` stay token-free behind the `Host`/`Origin` check.
 9. S3 members are read-only and explore-only.
 10. Nothing is filtered by `delete` Claims until Claims exist (milestone 2).
+
+## 16. Selections (milestone 2)
+
+Specified in `../.scratch/block-explorer/spec.md` (sections 5.6, 7, 8 and 9);
+plan `docs/plans/2026-09-25-explorer-milestone-2.md`. The page's routes and
+DOM contract for Selections are in §15 above. The plan makes these decisions
+where the spec is silent, by its numbering: 1 the samplesheet export served by
+`explore`; 2 snapshot runs from the Store Log plus the block scan; 3 four
+extra indexes; 4 how `claim.value` is stored; 5 current state from Claims; 6
+Claim request rules; 7 the error code `invalid`; 8 `derived_from` as links or
+bytes; 9 idempotence first; 10 `?dry_run=true`; 11 `put` reads a path; 12
+the launch token; 13 a run's delete Claim names its RunCompletion; 14 the page
+sees its own write through the tail; 15 the tray in `sessionStorage`; 16
+nesting resolved through the index's recursive CTE; 17 an Item Occurrence
+without a leaf name; 18 samplesheet specifics; 19 `kind` and `asserted_by`
+on collection rows; 20 milestone 1's parked minors. Task 17 completes this
+section.

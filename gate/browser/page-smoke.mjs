@@ -59,6 +59,7 @@ try {
   assert.equal(await page.$eval('#snapshot-mode', e => e.dataset.mode), 'range')
   assert.equal(await page.$eval('#stale', e => e.dataset.staleCount), '2')
   assert.equal(await page.$eval('#stale', e => e.dataset.log), 'read')
+  assert.equal(await page.evaluate(() => document.body.dataset.write), 'unavailable')
 
   await go(page, '#/pipeline/demo')
   assert.deepEqual((await all(page, '[data-run]', ['run', 'source', 'status'])).map(r => [r.run, r.source, r.status]), [
@@ -71,6 +72,9 @@ try {
   await go(page, `#/collection/${runs.R1.collection}?offset=1`)
   assert.deepEqual(await all(page, '[data-page]', ['first', 'last', 'total']), [{ first: '2', last: '2', total: '2' }])
   assert.equal((await page.$$('[data-page-prev]')).length, 1)
+  await go(page, `#/collection/${runs.R1.collection}?offset=5`)
+  assert.deepEqual(await all(page, '[data-page]', ['first', 'total']), [{ first: '0', total: '2' }])
+  assert.match(await page.$eval('[data-page]', e => e.textContent), /^no items on this page; there are 2/)
 
   await go(page, `#/content/${content.B}`)
   assert.deepEqual((await all(page, '[data-producer]', ['completion', 'item', 'filename'])).map(p => p.completion).sort(),
@@ -131,6 +135,44 @@ try {
   await open(disk, `file://${join(dir, 'index.html')}#/`)
   assert.equal(await disk.evaluate(() => document.body.dataset.state), 'error')
   assert.equal(await disk.$eval('[data-error]', e => e.dataset.error), 'file_protocol')
+
+  // Composing against a stub POST /api/put (Task 14): members.json says the
+  // page may write, and each POST is recorded and answered with a canned body.
+  const S1 = 'bafyreieqfispnqxoy5soafwru7dgsenxgmkdhzhiy6fc7nfjzdi6r3ujmy' // any valid CID; no such block
+  const writeContext = await browser.newContext()
+  const posts = []
+  await writeContext.route(/\/members\.json$/, r => r.fulfill({ contentType: 'application/json',
+    body: JSON.stringify({ members: [{ alias: 'main', writable: true, base: './' }], write: true }) }))
+  await writeContext.route(/\/api\/put(\?.*)?$/, async (r) => {
+    const req = r.request()
+    posts.push({ url: req.url(), token: req.headers()['x-nf-blocks-token'], body: JSON.parse(req.postData()) })
+    const dry = req.url().endsWith('?dry_run=true')
+    // DAG-JSON with its keys sorted, as the server writes it.
+    const body = dry ? { address: { '/': S1 }, exists: false, names: [] } : { address: { '/': S1 }, block: {}, entry: 'e', written: true }
+    await r.fulfill({ status: 200, contentType: 'application/vnd.ipld.dag-json', body: JSON.stringify(body) })
+  })
+  const composer = await writeContext.newPage()
+  const composeErrors = []
+  composer.on('pageerror', e => composeErrors.push(String(e)))
+  await open(composer, `http://127.0.0.1:8841/?token=t#/item/${runs.R1.collection}/${item.A}`)
+  assert.equal(await composer.evaluate(() => document.body.dataset.write), 'available')
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '0')
+  await composer.click(`[data-pick="${item.A}"]`)
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '1')
+  await go(composer, '#/compose')
+  assert.deepEqual(await all(composer, '[data-tray-entry]', ['trayEntry', 'kind']), [{ trayEntry: item.A, kind: 'item' }])
+  await composer.fill('#compose-name', 'smoke, "one"')
+  await composer.click('#compose-save')
+  await composer.waitForFunction(() => document.body.dataset.writeSeq === '1')
+  assert.equal(await composer.evaluate(() => document.body.dataset.writeOutcome), 'written')
+  assert.equal(await composer.evaluate(() => document.body.dataset.written), S1)
+  assert.equal(await composer.$eval('#tray', e => e.dataset.count), '0')
+  assert.deepEqual(posts.map(p => [new URL(p.url).pathname + new URL(p.url).search, p.token, p.body.kind]), [
+    ['/api/put?dry_run=true', 't', 'Selection'], ['/api/put', 't', 'Selection'], ['/api/put', 't', 'Claim']])
+  assert.deepEqual(posts[1].body.members, [{ item: { address: { '/': item.A }, via: [{ '/': runs.R1.collection }] } }])
+  assert.deepEqual([posts[2].body.subject, posts[2].body.verb, posts[2].body.attribute, posts[2].body.value, posts[2].body.supersedes],
+    [{ '/': S1 }, 'set', 'name', 'smoke, "one"', []])
+  assert.deepEqual(composeErrors, [])
 
   console.log('page smoke: ok')
 } finally {

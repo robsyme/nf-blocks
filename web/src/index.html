@@ -15,7 +15,7 @@
   td, th { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
   .muted { color: var(--muted); } [data-error] { color: var(--bad); } #stale[data-notice] { color: var(--warn); }
   a { color: inherit; } form { display: grid; gap: .5rem; margin: 1rem 0; } fieldset { border: 1px solid var(--line); }
-  .scroll { overflow-x: auto; }
+  .scroll { overflow-x: auto; } .warn { color: var(--warn); }
 </style>
 </head>
 <body data-state="loading" data-render="0" data-route="open">
@@ -25,6 +25,8 @@
   <span id="snapshot-mode" class="muted"></span>
   <span id="stale"></span>
   <nav id="members"></nav>
+  <a href="#/selections">Selections</a>
+  <a id="tray" href="#/compose" data-count="0">Tray (0)</a>
 </header>
 <main id="main"><p class="muted">Opening the snapshot...</p></main>
 <!--APP-->
