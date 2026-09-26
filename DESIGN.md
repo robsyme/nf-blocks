@@ -1094,10 +1094,9 @@ statement, so Gate assertion 2's counts are the query's cost.
 
 ## 16. Selections (milestone 2)
 
-*Status 2026-09-25: milestone 2 accepted; Gate browser tier B 6 of 6 (all
-local). Cloud tier A6-A7 (`make gate-cloud`) pending: this milestone changes
-`explore`'s write endpoint and samplesheet route, so it must be run once more
-with Rob's `scidev` SSO session before this status line is amended to say so.*
+*Status 2026-09-26: milestone 2 accepted; Gate browser tier B 6 of 6 (all
+local); cloud tier A6-A7 (`make gate-cloud`) passed on the merged tree
+(`50f677e`), A6 at 7 / 43 requests.*
 
 Specified in `../.scratch/block-explorer/spec.md` (sections 5.6, 7, 8 and 9);
 plan `docs/plans/2026-09-25-explorer-milestone-2.md`. The page's routes and
@@ -1295,8 +1294,12 @@ the assertion can actually fail if a refusal ever let a block or a Store Log
 entry through; the earlier draft replayed an already-written Selection, which
 could not distinguish "refused" from "written".
 
-### Open
+### Resolved
 
-- **"Stale worker error code"**, parked by milestone 1 for milestone 2:
-  which error code, and when it goes stale, was never written down.
-  Not specific enough to act on here; open, awaiting Rob.
+- **"Stale worker error code"**, parked by milestone 1's final review: the
+  VFS kept `lastError` across worker requests, so a later, unrelated failure
+  could carry an earlier read's code and cause. Already fixed in milestone 1
+  (`65e63e8`): the worker calls `clearError()` at the start of every request,
+  and a unit test pins it. What remains is narrow and accepted: within one
+  request, a failed read that SQLite retries past, followed by a failure of
+  another kind, reports the read's code rather than `query_failed`.
