@@ -218,6 +218,30 @@ try {
   await undoer.waitForFunction(() => document.body.dataset.writeSeq === '1')
   assert.deepEqual([posts[5].body.subject, posts[5].body.verb, posts[5].body.supersedes], [{ '/': SD.toString() }, 'del', [{ '/': D.toString() }]])
 
+  // A Selection view renders (and its render counter still advances) even
+  // though one member's block fails the hash check: that row shows a
+  // per-cell error instead of failing the whole view (final review finding 2).
+  const goodItem = store(block({ kind: 'OutputItem', schema: 1, value: [{ sample: 'good' }] }))
+  const badBlock = block({ kind: 'OutputItem', schema: 1, value: [{ sample: 'bad' }] })
+  mkdirSync(join(dir, 'blocks', badBlock.cid.toString().slice(-2)), { recursive: true })
+  // The bad item's real path answers 200, but with bytes that do not hash to it.
+  writeFileSync(join(dir, 'blocks', badBlock.cid.toString().slice(-2), badBlock.cid.toString()), Buffer.from('not the right bytes'))
+  const membersForSM = [{ item: { address: goodItem, via: [] } }, { item: { address: badBlock.cid, via: [] } }]
+    .sort((a, b) => (a.item.address.toString() < b.item.address.toString() ? -1 : 1))
+  const SM = store(block({ kind: 'Selection', schema: 1, asserted_by: 'smoke', derived_from: [], members: membersForSM }))
+  writeFileSync(join(dir, 'log', entryName(Date.now() - 500, 'selection', SM.toString())), '')
+  const mixedErrors = []
+  const mixed = await context.newPage()
+  mixed.on('pageerror', e => mixedErrors.push(String(e)))
+  await open(mixed, `http://127.0.0.1:8841/index.html#/selection/${SM}`)
+  assert.equal(await mixed.evaluate(() => document.body.dataset.state), 'ready')
+  await mixed.waitForSelector(`tr[data-member="${goodItem}"][data-held]`)
+  assert.equal(await mixed.$eval(`tr[data-member="${goodItem}"]`, e => e.dataset.held), 'here')
+  await mixed.waitForSelector(`tr[data-member="${badBlock.cid}"] [data-error]`)
+  assert.match(await mixed.$eval(`tr[data-member="${badBlock.cid}"] [data-error]`, e => e.textContent), /unavailable/)
+  assert.equal(await mixed.$eval(`tr[data-member="${badBlock.cid}"]`, e => e.dataset.held ?? null), null)
+  assert.deepEqual(mixedErrors, [])
+
   // Viewed through the non-writable alias: no rename or delete, a link to the
   // writable member instead; composing there opens the writable member and
   // the outcome survives that navigation.

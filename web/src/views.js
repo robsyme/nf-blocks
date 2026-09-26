@@ -239,17 +239,35 @@ export async function selection(ex, selectionCid, ctx) {
   const st = s.state
   const status = h('div', { id: 'write-status' })
   const byCid = new Map(st.current.map(c => [c.cid, c]))
-  const members = await Promise.all(s.members.map(async (m) => {
-    const held = await ex.held(m.kind, m.address)
+  // A Selection may have thousands of members: the table renders at once and
+  // each row's "held in" cell fills in when its own lookup answers, so one
+  // slow or failing member (a hash mismatch, say) never holds up the view or
+  // fails it outright (final review finding 2).
+  const members = s.members.map((m) => {
     // Spec section 7.1a: members shown as Item Occurrences, copyable as links.
     const copy = (uri) => h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(uri).catch(() => {}) }, 'Copy')
     const where = m.kind === 'selection'
       ? link(`#/selection/${m.address}`, cid(m.address))
       : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(`cas://${m.address}`)]
         : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(`cas://${v}/${m.address}`)]))
-    return h('tr', { 'data-member': m.address, 'data-kind': m.kind, 'data-held': held },
-      h('td', {}, where), h('td', {}, m.kind), h('td', {}, held === 'here' ? 'this member' : 'another member'))
-  }))
+    const held = h('td', { 'data-held-for': m.address, class: 'muted' }, '...')
+    const tr = h('tr', { 'data-member': m.address, 'data-kind': m.kind }, h('td', {}, where), h('td', {}, m.kind), held)
+    return { m, held, tr }
+  })
+  for (const { m, held, tr } of members) {
+    ex.held(m.kind, m.address).then(
+      (state) => {
+        tr.dataset.held = state
+        held.textContent = state === 'here' ? 'this member' : 'another member'
+        held.classList.remove('muted')
+      },
+      (e) => {
+        const node = errorNode(e)
+        node.textContent = `unavailable (${node.textContent})`
+        held.replaceChildren(node)
+        held.classList.remove('muted')
+      })
+  }
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
     h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'), cid(selectionCid),
     st.nameConflicted ? h('p', { class: 'warn' }, 'More than one name is current. Renaming supersedes them all.') : null,
@@ -266,7 +284,7 @@ export async function selection(ex, selectionCid, ctx) {
     actions(selectionCid, st, ctx, status),
     status,
     h('h2', {}, `Members (${s.members.length})`),
-    table(['member', 'kind', 'held in'], members),
+    table(['member', 'kind', 'held in'], members.map(({ tr }) => tr)),
     ctx.write.served ? h('p', {}, 'Samplesheet: ',
       h('a', { href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'CSV'), ' ',
       h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null)

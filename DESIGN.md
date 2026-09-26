@@ -952,9 +952,16 @@ Every snapshot and block answer carries a strong `ETag` taken from the file as
 opened for that answer, never from a second look at the path: size,
 modification time and file key (inode) for a local member, the object's own
 `ETag` for an S3 one, whose reads are `GetObject` with `If-Match` on it (a
-replaced object is a `500`, never another object's bytes).
+replaced object is a `500`, never another object's bytes). Every response
+`explore` sends carries `X-Content-Type-Options: nosniff` (final review
+finding 7).
 
-The exit rewrite runs in a shutdown hook. Stop a backgrounded `explore` with
+The exit rewrite runs in a shutdown hook. `ExploreServer.stop()` stops
+accepting new exchanges and waits (up to a grace period) for one already in
+flight to finish before it touches the executor's threads, so a write or an
+export under way, both holding `Put`'s monitor, completes rather than being
+interrupted mid-write; only then does the hook take that same monitor and
+close the index (final review finding 5). Stop a backgrounded `explore` with
 `SIGTERM`: a job `&`-backgrounded from a non-interactive shell (a script, CI,
 the Gate) inherits `SIGINT` ignored, HotSpot leaves it ignored, and no hook
 runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
@@ -1038,7 +1045,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
 | `[data-name]` | one current name: `data-name` value, `data-claim`, `data-conflicted` when in conflict |
 | `[data-deletion-claim]` | one current deletion Claim: `data-deletion-claim` cid, `data-verb` |
-| `[data-member]` | one member: `data-member` address, `data-kind`, `data-held` (`here` or `elsewhere`) |
+| `[data-member]` | one member: `data-member` address, `data-kind`; `data-held` (`here` or `elsewhere`) once that member's own lookup answers -- the view renders before every member's lookup does (final review finding 2), so a row may briefly have none, and one whose lookup fails never gets it, showing `[data-error]` in its "held in" cell instead |
 | `#rename-name`, `#rename-save`, `#delete`, `#undo` | the actions on the Selection view |
 | `[data-undo]` | an Undo button on a row of `#/selections?deleted=1`: `data-undo` the Selection's cid |
 | `[data-refresh-failed]` | the write succeeded but the page could not refresh afterwards |
@@ -1207,6 +1214,14 @@ by item CID (decision 18).
    otherwise), present and not already superseded (`stale_supersedes`
    otherwise).
 7. Error code `invalid`, a ninth code beside spec section 9.4's eight (above).
+   `DagJson.decode` refuses, as `invalid`, naming the field: a string (a
+   value or a map key) holding a lone surrogate, reachable only through a
+   `\uXXXX` escape, which `DagCbor.encode` cannot turn into UTF-8; an integer
+   literal outside the range `DagCbor.encode` carries (-2^64 to 2^64-1); and
+   an integer literal of more than 40 digits, before `BigInteger` ever parses
+   it (final review findings 1 and 6). `Put` also wraps its own
+   `DagCbor.encode` call as a backstop, for a request built as a `Map`
+   directly rather than decoded from DAG-JSON.
 8. `derived_from` is accepted as links or as bytes in a request and always
    stored as bytes (binary CIDs), sorted by the CID's string form.
 9. Idempotence first. `Put` computes the address before any semantic check.
@@ -1246,7 +1261,12 @@ by item CID (decision 18).
     index's recursive CTE (spec section 11), after catch-up, and fail naming
     any nested Selection the index does not hold rather than emitting a
     partial set. Items come out sorted by CID string. `run`, `output` and
-    `where` are refused beside `selection`.
+    `where` are refused beside `selection`. Both callers ensure a Selection
+    copied into the composition without its Store Log entry is indexed
+    before that CTE runs, through the one shared method,
+    `Index.ensureSelectionIndexed` (final review finding 4): the samplesheet
+    export used to skip this, so its export of such a Selection failed
+    `not_found` where `fromStore(selection:)` succeeded.
 17. An Item Occurrence without a leaf name is a directory of the item's
     leaves by leaf name; a leaf name that two leaves of one item share is
     refused, naming both positions. Publish-path traversal of a collection
