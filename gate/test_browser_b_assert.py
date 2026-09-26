@@ -89,6 +89,8 @@ class World(object):
                                     "foreign_origin": {"status": 403, "body": "refused"},
                                     "text_plain": {"status": 415, "body": "refused"}},
                        "blocks_before": 20, "blocks_after_replay": 20, "blocks_after": 20,
+                       "log_before": 9, "log_after_replay": 9, "log_after": 9,
+                       "refusal_address": dcid("a Selection never written"),
                        "samplesheet_csv": 200, "samplesheet_json": 200}
         self.hashes = {source: {"%s.sha256" % f["name"]: f["sha256"] for f in FILES.values()}
                        for source in ("fromstore", "samplesheet")}
@@ -318,6 +320,20 @@ class CheckTest(unittest.TestCase):
         self.w.log(self.w.rename)
         self.assertFail(10, "log")
 
+    def test_b10_a_claim_about_another_subject_fails(self):
+        step = self.w.steps["B.rename"]
+        request = claim_request(self.w.s1, "set", "name", "second-renamed", [], 40)
+        cid = self.w.put_block(dagjson.expected_claim(dagjson.loads(json.dumps(request)), "gate"))
+        step["requests"][0].update(body=json.dumps(request), responseBody=self.w.response(cid))
+        self.assertFail(10, "subject")
+
+    def test_b10_an_undo_not_superseding_the_delete_fails(self):
+        step = self.w.steps["B.delete"]
+        request = claim_request(self.w.s2, "del", supersedes=[self.w.rename], second=41)
+        cid = self.w.put_block(dagjson.expected_claim(dagjson.loads(json.dumps(request)), "gate"))
+        step["requests"][1].update(body=json.dumps(request), responseBody=self.w.response(cid))
+        self.assertFail(10, "supersede")
+
     def test_b10_undo_missing_fails(self):
         self.w.steps["B.delete"]["requests"].pop()
         self.assertFail(10)
@@ -349,6 +365,20 @@ class CheckTest(unittest.TestCase):
     def test_b12_a_block_written_by_a_refusal_fails(self):
         self.w.probes["blocks_after"] = 21
         self.assertFail(12, "block")
+
+    def test_b12_the_refused_block_in_the_store_fails(self):
+        # An endpoint that wrote the block and then answered 403 or 415.
+        fresh = {"kind": "Selection", "schema": 1, "asserted_by": "gate", "members": [], "derived_from": []}
+        self.w.probes["refusal_address"] = self.w.put_block(fresh)
+        self.assertFail(12, "holds")
+
+    def test_b12_a_log_entry_written_by_a_refusal_fails(self):
+        self.w.probes["log_after"] = 10
+        self.assertFail(12, "log")
+
+    def test_b12_no_refusal_address_fails(self):
+        del self.w.probes["refusal_address"]
+        self.assertFail(12)
 
     # -- B13 --------------------------------------------------------------
     def test_b13_a_missing_row_fails(self):

@@ -201,18 +201,26 @@ def probe(root, port, token):
     selections = [p for p in _posts(observed.get("B.first") or {}) if _kind(p) == "Selection"]
     if not renames or not selections:
         raise cas.GateError("the driver recorded no rename or no Selection POST to probe with (see browser-b/drive.log)")
-    rename, selection_body = renames[0], selections[0]["body"]
+    rename = renames[0]
+    # The refusals send a Selection no step wrote ({C via stats} alone), so a
+    # refused POST that wrote anyway leaves a block check() can look for.
+    expected = _read_json(os.path.join(out, "expected.json"))
+    refused_body = json.dumps({"kind": "Selection", "derived_from": [], "members": [{"item": {
+        "address": {"/": expected["items"]["C"]}, "via": [{"/": expected["collections"]["stats"]}]}}]})
+    refusal_address = dagjson.address(dagjson.expected_selection(dagjson.loads(refused_body), ASSERTED_BY))
+    if cas.Store(os.path.join(out, "store")).has(refusal_address):
+        raise cas.GateError("the refusal probe's Selection %s is already in the store; it would prove nothing" % refusal_address)
     put = base + "/api/put"
-    results = {"blocks_before": _block_count(out), "log_before": _log_count(out)}
+    results = {"blocks_before": _block_count(out), "log_before": _log_count(out), "refusal_address": refusal_address}
     # The page's own bytes, replayed exactly: idempotence first (decision 9).
     results["replay"] = _post(put, rename["body"], {"X-NF-Blocks-Token": token, "Content-Type": "application/vnd.ipld.dag-json",
                                                      "Origin": origin})
     results["blocks_after_replay"], results["log_after_replay"] = _block_count(out), _log_count(out)
     results["refusals"] = {
-        "no_token": _post(put, selection_body, {"Content-Type": "application/json", "Origin": origin}),
-        "foreign_origin": _post(put, selection_body, {"X-NF-Blocks-Token": token, "Content-Type": "application/json",
+        "no_token": _post(put, refused_body, {"Content-Type": "application/json", "Origin": origin}),
+        "foreign_origin": _post(put, refused_body, {"X-NF-Blocks-Token": token, "Content-Type": "application/json",
                                                       "Origin": "http://evil.example"}),
-        "text_plain": _post(put, selection_body, {"X-NF-Blocks-Token": token, "Content-Type": "text/plain", "Origin": origin}),
+        "text_plain": _post(put, refused_body, {"X-NF-Blocks-Token": token, "Content-Type": "text/plain", "Origin": origin}),
     }
     results["blocks_after"], results["log_after"] = _block_count(out), _log_count(out)
     s2 = _saved(observed, "B.second")
@@ -405,9 +413,10 @@ def evaluate(root):
     def b10():
         problems = []
         p = probed()
-        s2 = _saved(observed, "B.second")
-        if not s2:
-            raise cas.GateError("B.second recorded no written Selection")
+        s2_posts = [x for x in _posts(seen("B.second")) if _kind(x) == "Selection"]
+        if len(s2_posts) != 1:
+            raise cas.GateError("B.second recorded %d Selection POSTs that write, expected 1" % len(s2_posts))
+        s2 = dagjson.address(dagjson.expected_selection(dagjson.loads(s2_posts[0]["body"]), ASSERTED_BY))
         verbs = {"B.rename": [("set", "name")], "B.delete": [("delete", None), ("del", None)]}
         claims = {}
         for step_id in ("B.first", "B.second", "B.rename", "B.delete"):
@@ -417,9 +426,14 @@ def evaluate(root):
                 if got != verbs[step_id]:
                     problems.append("%s: Claim POSTs %s, expected %s" % (step_id, got, verbs[step_id]))
             for post in posts:
-                address, _block, found = verify_post(step_id, post, dagjson.expected_claim)
+                address, block, found = verify_post(step_id, post, dagjson.expected_claim)
                 problems += found
                 claims.setdefault(step_id, []).append(address)
+                if step_id in verbs and _text(block["subject"]) != s2:
+                    problems.append("%s: a %s Claim's subject is %s, not S2 %s" % (step_id, block["verb"], _text(block["subject"]), s2))
+                if step_id == "B.delete" and block["verb"] == "del" and claims["B.delete"][0] not in [_text(x) for x in block["supersedes"]]:
+                    problems.append("B.delete: the undo supersedes %s, not the delete Claim %s"
+                                    % ([_text(x) for x in block["supersedes"]], claims["B.delete"][0]))
         rename = (claims.get("B.rename") or [None])[0]
         replay = p["replay"]
         if replay.get("status") != 200:
@@ -476,11 +490,19 @@ def evaluate(root):
         want = {"no_token": 403, "foreign_origin": 403, "text_plain": 415}
         got = {k: (p["refusals"].get(k) or {}).get("status") for k in want}
         problems = ["%s answered %s, expected %s" % (k, got[k], want[k]) for k in sorted(want) if got[k] != want[k]]
+        fresh = p.get("refusal_address")
+        if not fresh or not cas.is_cid(fresh):
+            problems.append("probes.json names no address for the refused Selection (%r)" % fresh)
+        elif store.has(fresh):
+            problems.append("the store holds %s, the Selection only the refused POSTs sent" % fresh)
         if p.get("blocks_after") != p.get("blocks_after_replay"):
             problems.append("the refused POSTs changed the block count from %s to %s" % (p.get("blocks_after_replay"), p.get("blocks_after")))
+        if p.get("log_after") != p.get("log_after_replay"):
+            problems.append("the refused POSTs changed the log entry count from %s to %s" % (p.get("log_after_replay"), p.get("log_after")))
         if problems:
             return FAIL, "; ".join(problems)
-        return PASS, "no token 403, a foreign Origin 403, text/plain 415, and no block written"
+        return PASS, ("no token 403, a foreign Origin 403, text/plain 415; the never-written Selection they sent is not "
+                      "in the store, and no block or log entry was added")
 
     def b13():
         p = probed()

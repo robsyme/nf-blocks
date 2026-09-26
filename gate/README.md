@@ -187,15 +187,18 @@ address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
   task's `.command.run`, since a file staged twice publishes one hash), each
   hashing as its work file does.
 - B10: every Claim the page wrote (names, rename, delete, undo) has the
-  Gate's address and is in the store; the page lists the deleted Selection
+  Gate's address and is in the store, the rename, delete and undo are about
+  the Gate's `second`, and the undo supersedes the delete; the page lists the deleted Selection
   only as deleted, and the undo clears it; the replayed rename answers
   `200`, `written: false` and the same address, writes no block and leaves
   one `log/` entry for it.
 - B11: of the two racing sessions the first is `written`, the second
   `stale_supersedes` and shown as `[data-error]`; the Gate's own current
   state of `second` (`dagjson.claim_state`) is the one name `third-a`.
-- B12: no token `403`, a foreign `Origin` `403`, `text/plain` `415`, and no
-  block written.
+- B12: no token `403`, a foreign `Origin` `403`, `text/plain` `415`. The
+  three send a Selection no step wrote ({C via `stats`} alone, its Gate
+  address in `probes.json`); the store must not hold it afterwards, and the
+  block and log counts must not change.
 - B13: both exports answer `200`, their `1` cells are exactly
   `cas://<cid>/<name>` for A, B and C (by item CID), and the cells stage
   once each and hash as B9's files do.
