@@ -183,7 +183,8 @@ class World(object):
             "offer": self.extract(writeOutcome="elsewhere", heldElsewhere=self.s5, heldElsewhereNames=["restored-name"],
                                   heldElsewhereDeletion="deleted", copyLabel="Restore a copy here",
                                   composeName="restored-name"),
-            "after": self.extract(written=self.s5, writeOutcome="written")}
+            "after": self.extract(written=self.s5, writeOutcome="written", view=self.s5, deletion="none",
+                                  names=[{"name": "restored-name", "claim": self.restore_name, "conflicted": False}])}
 
         self.post("B.deleted", s6_request, 200, json.dumps({
             "address": link(self.s6), "exists": True, "here": True, "names": [], "name_claims": [],
@@ -571,6 +572,10 @@ class CheckTest(unittest.TestCase):
     def test_b16_a_restore_not_labelled_as_one_fails(self):
         self.w.steps["B.restore"]["extracts"]["offer"]["copyLabel"] = "Save a copy here"
         self.assertFail(16, "Restore a copy here")
+
+    def test_b16_a_view_still_showing_the_deletion_after_the_restore_fails(self):
+        self.w.steps["B.restore"]["extracts"]["after"]["deletion"] = "deleted"
+        self.assertFail(16, "deletion 'deleted'")
 
 
 class MemberWriteTest(unittest.TestCase):

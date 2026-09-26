@@ -712,6 +712,14 @@ def evaluate(root):
         if state["names"] != ["restored-name"] or state["deletion"] != "none":
             problems.append("across both members S5 is named %r with deletion %r, expected restored-name and none"
                             % (state["names"], state["deletion"]))
+        after = extract("B.restore", "after")
+        if after.get("view") != sh["s5"] or after.get("deletion") != "none":
+            problems.append("lab's view after the restore showed %r with deletion %r, expected S5 %s and none"
+                            % (after.get("view"), after.get("deletion"), sh["s5"]))
+        names = after.get("names") or []
+        if [n["name"] for n in names] != ["restored-name"] or any(n["conflicted"] for n in names):
+            problems.append("lab's view after the restore named %r, expected restored-name alone and unconflicted"
+                            % [(n["name"], n["conflicted"]) for n in names])
         held = extract("B.deleted", "offer")
         if held.get("exists") != sh["s6"] or held.get("existsDeletion") != "deleted":
             problems.append("composing S6 showed exists %r with deletion %r, expected S6 %s deleted"
