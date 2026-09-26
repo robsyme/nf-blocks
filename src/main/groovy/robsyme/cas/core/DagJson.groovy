@@ -21,6 +21,19 @@ final class DagJson {
 
     static final int MAX_DEPTH = 64
 
+    /**
+     * A digit run longer than this is refused before {@link BigInteger}'s
+     * decimal parser (super-linear in the digit count) ever sees it: nothing
+     * dag-cbor can encode needs more than the 20 digits of 2^64-1, and this
+     * request is decoded while {@code Put}'s lock is held (final review
+     * finding 6).
+     */
+    private static final int MAX_INTEGER_DIGITS = 40
+
+    /** dag-cbor's integer range (DagCbor.writeBigInteger): an unsigned 64-bit magnitude either side of zero. */
+    private static final BigInteger DAG_CBOR_MAX = new BigInteger('18446744073709551615')
+    private static final BigInteger DAG_CBOR_MIN = new BigInteger('-18446744073709551616')
+
     static class DagJsonException extends IllegalArgumentException {
         final String at
         DagJsonException(String message, String at) {
@@ -74,6 +87,29 @@ final class DagJson {
 
         DagJsonException fail(String message, String at) {
             return new DagJsonException("${message} at offset ${pos}".toString(), at)
+        }
+
+        /**
+         * A lone (unpaired) UTF-16 surrogate, reachable only through a \\u
+         * escape (a raw one cannot survive as UTF-8 bytes), decodes to a
+         * String {@link DagCbor#encode} refuses; refuse it here instead, at
+         * the field that holds it, in a key or a value alike (final review
+         * finding 1).
+         */
+        void checkNoLoneSurrogate(String text, String at) {
+            for( int i = 0; i < text.length(); i++ ) {
+                final char c = text.charAt(i)
+                if( Character.isHighSurrogate(c) ) {
+                    if( i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1)) ) {
+                        i++
+                        continue
+                    }
+                }
+                else if( !Character.isLowSurrogate(c) ) {
+                    continue
+                }
+                throw fail(String.format("a lone (unpaired) surrogate \\u%04x cannot be encoded", (int) c), at)
+            }
         }
 
         Object value(String at, int depth) {
@@ -137,7 +173,14 @@ final class DagJson {
                     throw fail('a float out of range', at)
                 return d
             }
+            // finding 6: refuse an unreasonably long digit run before BigInteger parses it.
+            if( text.length() > MAX_INTEGER_DIGITS )
+                throw fail("an integer literal of ${text.length()} digits is over the limit of ${MAX_INTEGER_DIGITS}", at)
             final BigInteger big = new BigInteger(text)
+            // finding 1: refuse here, with the field, what DagCbor.encode would
+            // otherwise throw on deep inside Put with no field pointer.
+            if( big.bitLength() >= 64 && (big.compareTo(DAG_CBOR_MAX) > 0 || big.compareTo(DAG_CBOR_MIN) < 0) )
+                throw fail("an integer out of dag-cbor's range (${DAG_CBOR_MIN} to ${DAG_CBOR_MAX}): ${text}", at)
             return big.bitLength() < 64 ? (Object) big.longValue() : (Object) big
         }
 
@@ -147,7 +190,11 @@ final class DagJson {
             while( true ) {
                 if( pos >= s.length() ) throw fail('a string ended early', at)
                 final char c = s.charAt(pos++)
-                if( c == (char) '"' ) return out.toString()
+                if( c == (char) '"' ) {
+                    final String text = out.toString()
+                    checkNoLoneSurrogate(text, at)
+                    return text
+                }
                 if( c < (char) 0x20 ) throw fail('an unescaped control character in a string', at)
                 if( c != (char) '\\' ) {
                     out.append(c)

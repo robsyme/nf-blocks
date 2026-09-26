@@ -1,6 +1,5 @@
 package robsyme.cas.core
 
-import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 
 /**
@@ -13,6 +12,9 @@ import groovy.transform.CompileStatic
  */
 @CompileStatic
 final class Samplesheet {
+
+    /** Non-ASCII text stays itself in a list/map cell and in the JSON export, rather than \\uXXXX (final review finding 3). */
+    private static final groovy.json.JsonGenerator GENERATOR = new groovy.json.JsonGenerator.Options().disableUnicodeEscaping().build()
 
     @CompileStatic
     static final class Row {
@@ -86,7 +88,10 @@ final class Samplesheet {
                 entry.put(fileColumnNames.get(file.key), file.value)
             out.add(entry)
         }
-        return JsonOutput.prettyPrint(JsonOutput.toJson(out)) + '\n'
+        // JsonOutput.prettyPrint re-lexes the text and re-escapes non-ASCII
+        // characters regardless of GENERATOR's own options, undoing the fix
+        // above; GENERATOR's own (compact) output is used as-is instead.
+        return GENERATOR.toJson(out) + '\n'
     }
 
     // ------------------------------------------------------------------ plumbing
@@ -167,7 +172,7 @@ final class Samplesheet {
         if( value instanceof String )
             return (String) value
         if( value instanceof List || value instanceof Map )
-            return JsonOutput.toJson(value)
+            return GENERATOR.toJson(value)
         return MetadataView.scalar(path, value).value
     }
 

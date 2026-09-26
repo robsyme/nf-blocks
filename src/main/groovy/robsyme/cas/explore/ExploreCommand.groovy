@@ -69,6 +69,10 @@ class ExploreCommand {
         final ExploreServer.Exporter exporter = { Cid selection, String format ->
             synchronized( put ) {
                 session.catchUpIndex(index)
+                // A Selection copied into the composition without its Store Log
+                // entry is indexed on the spot here too, the same way
+                // CasExtension.resolveSelection does (final review finding 4).
+                index.ensureSelectionIndexed(session.store, selection, session.config.writableAlias)
                 final Samplesheet sheet = Samplesheet.of(session.store, index.selectionItems(selection))
                 return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
             }

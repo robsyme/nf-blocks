@@ -605,6 +605,32 @@ class Index implements Closeable {
     }
 
     /**
+     * Indexes a Selection block present in {@code store} but not yet indexed
+     * (copied into the composition without its Store Log entry, block
+     * explorer spec section 11), and every nested one the store holds; a
+     * nested one the store lacks is left for {@link #selectionItems} to name.
+     * Both {@code fromStore(selection:)} (CasExtension) and the samplesheet
+     * export (ExploreCommand) call this before reading selectionItems, so the
+     * two callers cannot index differently (final review finding 4).
+     */
+    void ensureSelectionIndexed(BlockStore store, Cid selection, String member) {
+        ensureSelectionIndexedRecursive(store, selection, member, new HashSet<Cid>())
+    }
+
+    private void ensureSelectionIndexedRecursive(BlockStore store, Cid selection, String member, Set<Cid> seen) {
+        if( !seen.add(selection) )
+            return
+        final Map block = readBlock(store, selection, Records.SELECTION)
+        if( block == null )
+            return
+        if( !isSelectionIndexed(selection) )
+            ingestSelection(store, selection, member)
+        for( Selection.Member m : Selection.fromCbor(block).members )
+            if( m.nested )
+                ensureSelectionIndexedRecursive(store, m.address, member, seen)
+    }
+
+    /**
      * Every distinct item the Selection reaches, sorted by CID string. Refuses
      * to answer with a partial set: a Selection reached but not indexed (not
      * arrived, or held in a member this composition does not include) fails.

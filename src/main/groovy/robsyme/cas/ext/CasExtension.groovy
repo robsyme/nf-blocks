@@ -17,7 +17,6 @@ import robsyme.cas.core.Index
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Records
-import robsyme.cas.core.Selection
 import robsyme.cas.core.StoreRef
 
 /**
@@ -145,7 +144,7 @@ class CasExtension extends PluginExtensionPoint {
                 throw new IllegalStateException("selection ${selection} is not in any member of this composition")
             if( Records.kindOf(block) != Records.SELECTION )
                 throw new IllegalArgumentException("${selection} is a ${Records.kindOf(block) ?: 'block with no kind'}, not a Selection")
-            ensureIndexed(index, selection, new HashSet<Cid>())
+            index.ensureSelectionIndexed(cas.store, selection, cas.config.writableAlias)
             final ClaimState state = index.claimState(selection)
             if( state.hidden )
                 log.warn("selection ${selection} is hidden by a current delete Claim (${state.deletionClaims.join(', ')}); emitting its items anyway, as its address asks")
@@ -172,25 +171,6 @@ class CasExtension extends PluginExtensionPoint {
         if( !text || !Cid.isCid(text) )
             throw new IllegalArgumentException("channel.fromStore(selection: ...) takes a Selection address, cas://<cid> or <cid>, got '${value}'")
         return Cid.parse(text)
-    }
-
-    /**
-     * A Selection block present in the store but never logged (copied without
-     * its Store Log entry) is indexed on the spot, and so is each nested one
-     * the store holds; a nested one the store lacks is left for
-     * selectionItems to name.
-     */
-    private void ensureIndexed(Index index, Cid selection, Set<Cid> seen) {
-        if( !seen.add(selection) )
-            return
-        final Map block = loadBlock(selection)
-        if( block == null || Records.kindOf(block) != Records.SELECTION )
-            return
-        if( !index.isSelectionIndexed(selection) )
-            index.ingestSelection(cas.store, selection, cas.config.writableAlias)
-        for( Selection.Member m : Selection.fromCbor(block).members )
-            if( m.nested )
-                ensureIndexed(index, m.address, seen)
     }
 
     // ------------------------------------------------------------- restore

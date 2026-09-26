@@ -212,6 +212,13 @@ class PutTest extends Specification {
             [claim(itemA, 'del', null, 'null', [absentSelection]), 'stale_supersedes', '/supersedes/0'],
             [claim(itemA, 'del', null, 'null', [itemB]), 'wrong_kind', '/supersedes/0'],
             [claim(itemA, 'del', null, 'null', [otherSubjectClaim]), 'wrong_kind', '/supersedes/0'],
+            // final review finding 1: a lone surrogate or an out-of-range
+            // integer in the request text is refused by DagJson at decode
+            // time, with a field, rather than reaching DagCbor.encode.
+            [claim(itemA, 'set', 'x', '"\\ud800"', []), 'invalid', '/value'],
+            [claim(itemA, 'set', 'x', '184467440737095516160000', []), 'invalid', '/value'],
+            ['{"kind":"Claim","subject":' + link(itemA) + ',"verb":"set","attribute":"\\ud800","value":"x","supersedes":[],"timestamp":"' + TS + '"}',
+             'invalid', '/attribute'],
         ]
 
         when:
@@ -223,6 +230,26 @@ class PutTest extends Specification {
         then:
         wrong == []
         (store.listBlocks().withCloseable { it.count() } as int) == blocksBefore
+    }
+
+    def 'a request built directly as a Map, bypassing DagJson, with content dag-cbor cannot encode is invalid (final review finding 1 backstop)'() {
+        given:
+        final String loneSurrogate = new String(Character.toChars(0xD800))
+
+        when:
+        put.put([kind: 'Claim', subject: itemA, verb: 'set', attribute: 'x', value: loneSurrogate, supersedes: [], timestamp: TS], false)
+
+        then:
+        final PutError e = thrown()
+        e.code == 'invalid'
+
+        when:
+        put.put([kind: 'Claim', subject: itemA, verb: 'set', attribute: 'x', value: new BigInteger('184467440737095516160000'),
+                 supersedes: [], timestamp: TS], false)
+
+        then:
+        final PutError e2 = thrown()
+        e2.code == 'invalid'
     }
 
     def 'an encoded Selection over 1 MiB is too_large, before any member is looked up'() {

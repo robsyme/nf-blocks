@@ -121,6 +121,24 @@ class SamplesheetTest extends Specification {
         ((List<Map>) new JsonSlurper().parseText(sheet.json())).find { it.sample == 'A' }.note == text
     }
 
+    def 'a list-valued Meta Map key with non-ASCII text is not unicode-escaped, in the CSV cell or the JSON (final review finding 3)'() {
+        given:
+        final Cid a = item([[sample: 'A', tags: ['café', 'naïve']], Fixtures.leaf('A.bam', bamA, 1L)])
+
+        when:
+        final Samplesheet sheet = Samplesheet.of(store, [a])
+        final String csv = sheet.csv()
+        final String json = sheet.json()
+
+        then:
+        csv.contains('café') && csv.contains('naïve')
+        !csv.contains('\\u')
+        json.contains('café') && json.contains('naïve')
+        !json.contains('\\u')
+        parse(csv).find { it.sample == 'A' }.tags == '["café","naïve"]'
+        ((List<Map>) new JsonSlurper().parseText(json)).find { it.sample == 'A' }.tags == ['café', 'naïve']
+    }
+
     def 'JSON keeps nesting, types and absence'() {
         given:
         final Cid a = item([[sample: 'A', lane: 1L, depth: 1.5d, nested: [kit: 'truseq']], Fixtures.leaf('A.bam', bamA, 1L)])

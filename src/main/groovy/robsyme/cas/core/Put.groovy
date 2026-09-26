@@ -38,7 +38,7 @@ class Put {
     private static final class Draft {
         Map<String, Object> block
         StoreLogKind logKind
-        /** Where a too_large refusal points. */
+        /** Where a too_large refusal points, and the backstop encode refusal below (final review finding 1). */
         String sizeAt
         Closure validate
     }
@@ -97,7 +97,17 @@ class Put {
         else
             throw new PutError(PutError.WRONG_KIND, "a client may build a Selection or a Claim, not ${kind}", '/kind')
 
-        final byte[] bytes = DagCbor.encode(draft.block)
+        final byte[] bytes
+        try {
+            bytes = DagCbor.encode(draft.block)
+        }
+        catch( IllegalArgumentException e ) {
+            // Backstop (final review finding 1): DagJson already refuses a lone
+            // surrogate or an out-of-range integer while decoding a request, but
+            // a caller that builds the request as a Map directly, bypassing
+            // DagJson, can still reach content dag-cbor cannot encode.
+            throw invalid("the request cannot be encoded: ${e.message}", draft.sizeAt)
+        }
         if( bytes.length > MAX_BLOCK_BYTES )
             throw new PutError(PutError.TOO_LARGE, "the encoded ${kind} is ${bytes.length} bytes, over ${MAX_BLOCK_BYTES}; " +
                 'split it into nested Selections', draft.sizeAt)
@@ -271,7 +281,9 @@ class Put {
                 break
         }
         final Claim claim = new Claim(assertedBy, (Cid) subject, (String) verb, (String) attribute, value, supersedes, (String) timestamp)
-        return new Draft(claim.toCbor(), StoreLogKind.CLAIM, '', { -> validateClaim(claim, supersedes, timestampMillis) })
+        // '/value' is the most likely place for content dag-cbor cannot encode
+        // (an arbitrary Claim value) and, for too_large, as good a guess as any.
+        return new Draft(claim.toCbor(), StoreLogKind.CLAIM, '/value', { -> validateClaim(claim, supersedes, timestampMillis) })
     }
 
     private void validateClaim(Claim claim, List<Cid> requested, long timestampMillis) {

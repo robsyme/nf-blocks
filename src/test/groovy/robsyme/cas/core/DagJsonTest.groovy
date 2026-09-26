@@ -3,8 +3,11 @@ package robsyme.cas.core
 
 import java.nio.file.Path
 
+import java.util.concurrent.TimeUnit
+
 import groovy.json.JsonSlurper
 import spock.lang.Specification
+import spock.lang.Timeout
 
 /** Spec section 9.1: requests and responses are DAG-JSON, as @ipld/dag-json writes it. */
 class DagJsonTest extends Specification {
@@ -78,6 +81,19 @@ class DagJsonTest extends Specification {
         '1 2'                                   | ''
         ''                                      | ''
         '{"k~/":x}'                             | '/k~0~1'
+        // final review finding 1: a lone (unpaired) surrogate, in a value, a
+        // map key and an array element, cannot become a string dag-cbor
+        // encodes; DagJson refuses it rather than leaving it for DagCbor.encode.
+        '"\\ud800"'                             | ''
+        '"\\udc00"'                             | ''
+        '{"a":"\\ud800"}'                       | '/a'
+        '{"\\ud800":1}'                         | ''
+        '["ok","\\ud800"]'                      | '/1'
+        // final review finding 1: an integer outside the range dag-cbor
+        // encodes (-2^64 to 2^64-1; DagCbor.writeBigInteger).
+        '18446744073709551616'                  | ''
+        '-18446744073709551617'                 | ''
+        '{"a":184467440737095516160000}'        | '/a'
     }
 
     def 'deep nesting is refused, not a stack overflow (Review Focus 4)'() {
@@ -87,6 +103,19 @@ class DagJsonTest extends Specification {
         then:
         final DagJson.DagJsonException e = thrown()
         e.message.contains('nested deeper than 64')
+    }
+
+    @Timeout(value = 2, unit = TimeUnit.SECONDS)
+    def 'a 2 MiB run of digits is refused fast, before BigInteger ever parses it (final review finding 6)'() {
+        given:
+        final String huge = '1' * (2 * 1024 * 1024)
+
+        when:
+        DagJson.decode(huge)
+
+        then:
+        final DagJson.DagJsonException e = thrown()
+        e.message.contains('digits')
     }
 
     def 'bytes that are not UTF-8 are refused'() {
