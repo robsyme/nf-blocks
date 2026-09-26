@@ -1302,14 +1302,15 @@ by item CID (decision 18).
 
 ### Gate browser tier B
 
-Six assertions (spec section 1.3, tier B), all local: a Selection made in
+Eight assertions (spec section 1.3, tier B), all local: a Selection made in
 the page has the Gate's own address (8); `fromStore(selection:)` receives
 each distinct item once, nested included (9); rename, delete and undo are
 Claims at the Gate's addresses, and a replay writes nothing (10); two
 sessions renaming from one view surface a conflict, not an overwrite (11); a
 POST without the token, from another Origin, or as `text/plain` is refused,
 and writes nothing (12); the samplesheet lists exactly the Selection's items,
-and its cells stage (13). B12 probes with a Selection no step has written, so
+and its cells stage (13); a read-only member's Selection is copied and named
+(14); a Claim in another member does not lock a rename (15). B12 probes with a Selection no step has written, so
 the assertion can actually fail if a refusal ever let a block or a Store Log
 entry through; the earlier draft replayed an already-written Selection, which
 could not distinguish "refused" from "written".

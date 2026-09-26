@@ -1,7 +1,8 @@
 # gate/test_browser_b_assert.py
-"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-13)
-over a small hand-made world: blocks written with the Gate's own encoder, a
-synthetic observed.json and probes.json, and a consumer store of hashes. Each
+"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-15)
+over a small hand-made world: blocks written with the Gate's own encoder into
+a writable member and a read-only one, a synthetic observed.json and
+probes.json, and a consumer store of hashes. Each
 assertion has one passing and at least one failing case."""
 import csv
 import hashlib
@@ -84,6 +85,10 @@ class World(object):
             "a": self.extract(writeOutcome="written", names=[{"name": "third-a", "claim": third_a, "conflicted": False}]),
             "b": self.extract(writeOutcome="stale_supersedes", errors=[{"error": "stale_supersedes", "cid": None}])}
 
+        self.shared = os.path.join(self.out, "shared")
+        os.makedirs(self.shared)
+        self.build_shared()
+
         self.probes = {"replay": {"status": 200, "body": self.response(self.rename, False)},
                        "refusals": {"no_token": {"status": 403, "body": "refused"},
                                     "foreign_origin": {"status": 403, "body": "refused"},
@@ -91,13 +96,57 @@ class World(object):
                        "blocks_before": 20, "blocks_after_replay": 20, "blocks_after": 20,
                        "log_before": 9, "log_after_replay": 9, "log_after": 9,
                        "refusal_address": dcid("a Selection never written"),
-                       "samplesheet_csv": 200, "samplesheet_json": 200}
+                       "samplesheet_csv": 200, "samplesheet_json": 200,
+                       "foreign_dry": {"status": 200, "body": json.dumps({
+                           "address": link(self.s4), "exists": True, "here": True, "names": ["lab-renamed", "shared-name"],
+                           "name_claims": [link(self.n2), link(self.lab_renamed)]})}}
         self.hashes = {source: {"%s.sha256" % f["name"]: f["sha256"] for f in FILES.values()}
                        for source in ("fromstore", "samplesheet")}
         order = sorted("ABC", key=lambda k: ITEMS[k])
         self.sheet = [{"sample": k, "1": "cas://%s/%s" % (FILES[k]["cid"], FILES[k]["name"])} for k in order]
         self.exit = "0"
         self.tasks = ["%s:%s" % (source, f["name"]) for source in ("fromstore", "samplesheet") for f in FILES.values()]
+
+    def build_shared(self):
+        """S3 held and named only in shared, copied by B.copy; S4 in lab, renamed by shared and then by B.foreign."""
+        def claim(subject, value, supersedes):
+            return dagjson.expected_claim(dagjson.loads(json.dumps(
+                claim_request(subject, "set", "name", value, supersedes, self.tick()))), "gate")
+
+        s3_request = {"kind": "Selection", "members": [item_member("A", "aligned")], "derived_from": []}
+        s3_block = dagjson.expected_selection(dagjson.loads(json.dumps(s3_request)), "gate")
+        self.s3 = B._put_block(self.shared, s3_block)
+        B._log(self.shared, "selection", self.s3, 1767225600000)
+        self.n_s = B._put_block(self.shared, claim(self.s3, "from-shared", []))
+        B._log(self.shared, "claim", self.n_s, 1767225600000)
+        s4_request = {"kind": "Selection", "members": [item_member("C", "stats")], "derived_from": []}
+        self.s4 = self.put_block(dagjson.expected_selection(dagjson.loads(json.dumps(s4_request)), "gate"))
+        self.log(self.s4, "selection")
+        self.n1 = self.put_block(claim(self.s4, "lab-name", []))
+        self.log(self.n1)
+        self.n2 = B._put_block(self.shared, claim(self.s4, "shared-name", [self.n1]))
+        B._log(self.shared, "claim", self.n2, 1767225600000)
+        self.expected["shared"] = {"s3": self.s3, "n_s": self.n_s, "s4": self.s4, "n1": self.n1, "n2": self.n2}
+
+        self.post("B.copy", s3_request, 200, json.dumps({"address": link(self.s3), "exists": True, "here": False,
+                                                         "names": ["from-shared"], "name_claims": [link(self.n_s)]}), dry=True)
+        self.put_block(s3_block)
+        self.log(self.s3, "selection")
+        self.post("B.copy", s3_request, 200, self.response(self.s3))
+        self.copy_name = self.claim_post("B.copy", claim_request(self.s3, "set", "name", "from-shared", [self.n_s], self.tick()))
+        self.log(self.copy_name)
+        self.steps["B.copy"]["extracts"] = {
+            "offer": self.extract(writeOutcome="elsewhere", heldElsewhere=self.s3, heldElsewhereNames=["from-shared"],
+                                  composeName="from-shared"),
+            "after": self.extract(written=self.s3, writeOutcome="written")}
+
+        self.lab_renamed = self.claim_post("B.foreign", claim_request(self.s4, "set", "name", "lab-renamed", [self.n1],
+                                                                      self.tick()))
+        self.log(self.lab_renamed)
+        self.steps["B.foreign"]["extracts"] = {
+            "before": self.extract(view=self.s4, names=[{"name": "lab-name", "claim": self.n1, "conflicted": False}]),
+            "after": self.extract(view=self.s4, names=[{"name": "lab-renamed", "claim": self.lab_renamed,
+                                                        "conflicted": False}])}
 
     # -- building ---------------------------------------------------------
     def tick(self):
@@ -226,7 +275,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), [8, 9, 10, 11, 12, 13])
+        self.assertEqual(sorted(results), [8, 9, 10, 11, 12, 13, 14, 15])
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -239,9 +288,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 14):
+        for n in range(8, 16):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 6 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 8 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -400,6 +449,73 @@ class CheckTest(unittest.TestCase):
     def test_b13_samplesheet_hashes_must_match(self):
         self.w.hashes["samplesheet"]["B.bam.sha256"] = "2" * 64
         self.assertFail(13, "samplesheet")
+
+
+    # -- B14 --------------------------------------------------------------
+    def test_b14_a_dry_run_not_offering_a_copy_fails(self):
+        self.w.steps["B.copy"]["extracts"]["offer"].update(writeOutcome="written", heldElsewhere=None)
+        self.assertFail(14, "elsewhere")
+
+    def test_b14_a_name_not_prefilled_fails(self):
+        self.w.steps["B.copy"]["extracts"]["offer"]["composeName"] = ""
+        self.assertFail(14, "from-shared")
+
+    def test_b14_a_name_claim_not_superseding_shareds_fails(self):
+        del self.w.steps["B.copy"]["requests"][-1]
+        self.w.claim_post("B.copy", claim_request(self.w.s3, "set", "name", "from-shared", [], 40))
+        status, message = self.status(14)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("superseding", message)
+        self.assertIn("conflicted True", message)
+
+    def test_b14_a_copy_without_a_log_entry_fails(self):
+        for name in os.listdir(os.path.join(self.w.store, "log")):
+            if name.endswith("-selection-" + self.w.s3):
+                os.remove(os.path.join(self.w.store, "log", name))
+        self.assertFail(14, "log/")
+
+    def test_b14_no_copy_fails(self):
+        self.w.steps["B.copy"]["requests"] = self.w.steps["B.copy"]["requests"][:1]
+        self.assertFail(14, "0 Selection and 0 Claim")
+
+    # -- B15 --------------------------------------------------------------
+    def test_b15_a_rename_superseding_the_other_members_claim_fails(self):
+        # The page (or the endpoint) made lab's rename supersede shared's Claim too: no conflict remains.
+        self.w.steps["B.foreign"]["requests"] = []
+        self.w.claim_post("B.foreign", claim_request(self.w.s4, "set", "name", "lab-renamed", [self.w.n1, self.w.n2], 41))
+        status, message = self.status(15)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("the rename supersedes", message)
+        self.assertIn("expected a conflict", message)
+
+    def test_b15_a_refused_rename_fails(self):
+        self.w.steps["B.foreign"]["requests"] = []
+        self.assertFail(15, "0 Claim POSTs")
+
+    def test_b15_a_dry_run_not_here_fails(self):
+        self.w.probes["foreign_dry"]["body"] = json.dumps({"address": link(self.w.s4), "exists": True, "here": False,
+                                                           "names": ["lab-renamed", "shared-name"], "name_claims": []})
+        self.assertFail(15, "dry run of S4")
+
+    def test_b15_a_view_showing_the_other_members_name_fails(self):
+        self.w.steps["B.foreign"]["extracts"]["after"]["names"].append(
+            {"name": "shared-name", "claim": self.w.n2, "conflicted": True})
+        self.assertFail(15, "lab-renamed alone")
+
+
+class MemberWriteTest(unittest.TestCase):
+    def test_a_block_and_its_log_entry_land_where_the_plugin_reads_them(self):
+        root = tempfile.mkdtemp()
+        try:
+            block = {"kind": "Claim", "schema": 1, "asserted_by": "gate", "subject": cas.Cid(ITEMS["A"]), "verb": "set",
+                     "attribute": "name", "value": "x", "supersedes": [], "timestamp": "2026-01-01T00:00:00.000Z"}
+            cid = B._put_block(root, block)
+            B._log(root, "claim", cid, 1767225600000)
+            store = cas.Store(root)
+            self.assertEqual(store.read_block(cid), block)
+            self.assertEqual(store.store_log(), [("%013d" % (9999999999999 - 1767225600000), "claim", cid)])
+        finally:
+            shutil.rmtree(root)
 
 
 class PostsTest(unittest.TestCase):

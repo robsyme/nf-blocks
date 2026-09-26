@@ -59,6 +59,9 @@ const EXTRACT_B = () => ({
   names: [...document.querySelectorAll('[data-name]')].map((e) => ({ name: e.dataset.name, claim: e.dataset.claim, conflicted: 'conflicted' in e.dataset })),
   members: [...document.querySelectorAll('[data-member]')].map((e) => ({ address: e.dataset.member, kind: e.dataset.kind, held: e.dataset.held })),
   errors: [...document.querySelectorAll('[data-error]')].map((e) => ({ error: e.dataset.error, cid: e.dataset.cid ?? null })),
+  composeName: document.getElementById('compose-name')?.value ?? null,
+  heldElsewhere: document.querySelector('[data-held-elsewhere]')?.dataset.heldElsewhere ?? null,
+  heldElsewhereNames: JSON.parse(document.querySelector('[data-held-elsewhere]')?.dataset.names ?? 'null'),
 })
 
 const writeSeq = (page) => page.evaluate(() => Number(document.body.dataset.writeSeq ?? 0))

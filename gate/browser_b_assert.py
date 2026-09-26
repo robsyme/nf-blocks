@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-13):
-Selections and Claims written through the page, all local.
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-15):
+Selections and Claims written through the page, all local, over a
+composition of a writable member and a read-only one.
 
     python3 gate/browser_b_assert.py prepare <GATE_ROOT>
     python3 gate/browser_b_assert.py probe <GATE_ROOT> <port> <token>
@@ -8,11 +9,13 @@ Selections and Claims written through the page, all local.
 
 prepare copies this Gate run's store to $GATE_ROOT/browser-b/store (the
 member `lab` of the explore server tier_b.sh starts, so tier B's writes never
-touch the store tier A and the lineage tier read), works out which items and
+touch the store tier A and the lineage tier read), builds a read-only member
+`shared` beside it with the Gate's own encoder, works out which items and
 files the scenario picks from the Gate's own read of the blocks and its own
 hashes, and writes the scenario drive.mjs plays. probe runs while explore is
 still up: it replays one of the page's own writes, sends three POSTs the
-endpoint must refuse, and fetches the samplesheet export. check recomputes
+endpoint must refuse, dry-runs a Selection both members name, and fetches the
+samplesheet export. check recomputes
 every address with the Gate's encoder (gate/dagjson.py) and compares it, the
 store, the probes and the selection pipeline's hashes with those answers.
 Nothing the plugin or the page reports is taken on trust.
@@ -73,6 +76,28 @@ def _file(gate, name):
     return {"name": name, "sha256": next(iter(digests)), "cid": cas.cid_of_file(paths[0])}
 
 
+SHARED_TS = "2026-01-01T00:00:00.000Z"
+SHARED_MILLIS = 1767225600000
+HORIZON_MILLIS = 9999999999999   # StoreLog.HORIZON_MILLIS
+
+
+def _put_block(root, block):
+    """Write the Gate's own encoding of `block` into a member directory, as a member stores it."""
+    data = cas.encode(block)
+    cid = cas.cid_dagcbor(data)
+    path = os.path.join(root, "blocks", cid[-2:], cid)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return cid
+
+
+def _log(root, kind, cid, millis):
+    """A Store Log entry: an empty file log/<13-digit reverse ts>-<kind>-<cid> (StoreLog.entryName)."""
+    os.makedirs(os.path.join(root, "log"), exist_ok=True)
+    open(os.path.join(root, "log", "%013d-%s-%s" % (HORIZON_MILLIS - millis, kind, cid)), "a").close()
+
+
 def prepare(root):
     gate = A.Gate(root)
     out = os.path.join(root, "browser-b")
@@ -81,10 +106,13 @@ def prepare(root):
     shutil.copytree(gate.store.root, store, ignore=shutil.ignore_patterns("index", "index.html"))
     os.makedirs(os.path.join(out, "cache"))
     os.makedirs(os.path.join(out, "store-out"))
+    # `shared`: a second, read-only member (only blocks/ and log/, which is all a member's reader lists).
+    shared = os.path.join(out, "shared")
+    os.makedirs(shared)
     with open(os.path.join(out, "explore.config"), "w") as fh:
         fh.write("lineage.enabled = true\nlineage.store.location = 'cas://lab'\n"
-                 "cas {\n  stores { lab { location = '%s' } }\n  asserted_by = '%s'\n"
-                 "  index { path = '%s' }\n}\n" % (store, ASSERTED_BY, os.path.join(out, "cache", "index.sqlite")))
+                 "cas {\n  stores {\n    lab { location = '%s' }\n    shared { location = '%s' }\n  }\n"
+                 "  asserted_by = '%s'\n  index { path = '%s' }\n}\n" % (store, shared, ASSERTED_BY, os.path.join(out, "cache", "index.sqlite")))
     cold, again = gate.run("cold"), gate.run("again")
     coll = {name: cid for name, (cid, _b) in cold.collections(gate).items()}
     again_aligned = again.collections(gate)["aligned"][0]
@@ -100,9 +128,30 @@ def prepare(root):
         raise cas.GateError("item B of `again` is not the block of `cold`; the nesting test needs one item in two collections")
     if again_aligned == coll["aligned"]:
         raise cas.GateError("`again`'s aligned collection is `cold`'s; B would not be picked through two collections")
+
+    def claim(subject, value, supersedes):
+        return dagjson.expected_claim({"subject": cas.Cid(subject), "verb": "set", "attribute": "name", "value": value,
+                                       "supersedes": [cas.Cid(s) for s in supersedes], "timestamp": SHARED_TS}, ASSERTED_BY)
+
+    def selection(members):
+        return dagjson.expected_selection({"kind": "Selection", "members": members, "derived_from": []}, ASSERTED_BY)
+
+    # S3: what B.copy composes (A from cold's aligned), held only in shared, named there.
+    s3 = _put_block(shared, selection([_item(a, [coll["aligned"]])]))
+    _log(shared, "selection", s3, SHARED_MILLIS)
+    n_s = _put_block(shared, claim(s3, "from-shared", []))
+    _log(shared, "claim", n_s, SHARED_MILLIS)
+    # S4: held and named in lab; shared renamed it, superseding lab's Claim.
+    s4 = _put_block(store, selection([_item(c, [coll["stats"]])]))
+    _log(store, "selection", s4, SHARED_MILLIS)
+    n1 = _put_block(store, claim(s4, "lab-name", []))
+    _log(store, "claim", n1, SHARED_MILLIS)
+    n2 = _put_block(shared, claim(s4, "shared-name", [n1]))
+    _log(shared, "claim", n2, SHARED_MILLIS)
     expected = {"items": {"A": a, "B": b, "C": c},
                 "collections": {"aligned": coll["aligned"], "stats": coll["stats"], "again": again_aligned},
-                "files": {"A": _file(gate, "A.bam"), "B": _file(gate, "B.bam"), "C": _file(gate, "C.stats")}}
+                "files": {"A": _file(gate, "A.bam"), "B": _file(gate, "B.bam"), "C": _file(gate, "C.stats")},
+                "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2}}
     q = "?token={token}"
     steps = [
         {"id": "B.first", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], a),
@@ -126,6 +175,12 @@ def prepare(root):
                      {"page": 0, "click": "#rename-save"}, {"page": 0, "waitWrite": True},
                      {"page": 1, "click": "#rename-save"}, {"page": 1, "waitWrite": True},
                      {"page": 0, "extract": "a"}, {"page": 1, "extract": "b"}]},
+        {"id": "B.copy", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], a),
+         "actions": [{"click": "[data-pick]"}, {"hash": "#/compose"}, {"click": "#compose-save"}, {"waitWrite": True},
+                     {"extract": "offer"}, {"click": "#compose-copy"}, {"waitWrite": True}, {"extract": "after"}]},
+        {"id": "B.foreign", "server": "explore", "path": "", "query": q, "hash": "#/selection/%s" % s4,
+         "actions": [{"extract": "before"}, {"fill": ["#rename-name", "lab-renamed"]}, {"click": "#rename-save"},
+                     {"waitWrite": True}, {"extract": "after"}]},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})
@@ -202,11 +257,15 @@ def probe(root, port, token):
     if not renames or not selections:
         raise cas.GateError("the driver recorded no rename or no Selection POST to probe with (see browser-b/drive.log)")
     rename = renames[0]
-    # The refusals send a Selection no step wrote ({C via stats} alone), so a
-    # refused POST that wrote anyway leaves a block check() can look for.
+    # The refusals send a Selection no step wrote ({A via aligned, C via stats};
+    # {C via stats} alone is S4, which prepare put in lab), so a refused POST
+    # that wrote anyway leaves a block check() can look for.
     expected = _read_json(os.path.join(out, "expected.json"))
-    refused_body = json.dumps({"kind": "Selection", "derived_from": [], "members": [{"item": {
-        "address": {"/": expected["items"]["C"]}, "via": [{"/": expected["collections"]["stats"]}]}}]})
+
+    def member(key, coll):
+        return {"item": {"address": {"/": expected["items"][key]}, "via": [{"/": expected["collections"][coll]}]}}
+
+    refused_body = json.dumps({"kind": "Selection", "derived_from": [], "members": [member("A", "aligned"), member("C", "stats")]})
     refusal_address = dagjson.address(dagjson.expected_selection(dagjson.loads(refused_body), ASSERTED_BY))
     if cas.Store(os.path.join(out, "store")).has(refusal_address):
         raise cas.GateError("the refusal probe's Selection %s is already in the store; it would prove nothing" % refusal_address)
@@ -223,6 +282,10 @@ def probe(root, port, token):
         "text_plain": _post(put, refused_body, {"X-NF-Blocks-Token": token, "Content-Type": "text/plain", "Origin": origin}),
     }
     results["blocks_after"], results["log_after"] = _block_count(out), _log_count(out)
+    # S4's request as a dry run: the composition-wide answer once lab renamed it and shared's Claim still stands (B15).
+    foreign_body = json.dumps({"kind": "Selection", "members": [member("C", "stats")], "derived_from": []})
+    results["foreign_dry"] = _post(put + "?dry_run=true", foreign_body, {"X-NF-Blocks-Token": token,
+                                   "Content-Type": "application/vnd.ipld.dag-json", "Origin": origin})
     s2 = _saved(observed, "B.second")
     for fmt in ("csv", "json"):
         status, body = _get("%s/api/samplesheet/%s.%s" % (base, s2, fmt)) if s2 else (None, b"")
@@ -230,9 +293,9 @@ def probe(root, port, token):
         with open(os.path.join(out, "samplesheet." + fmt), "wb") as fh:
             fh.write(body)
     _write_json(os.path.join(out, "probes.json"), results)
-    print("browser tier B: probed %s (replay %s; refusals %s; samplesheet %s / %s)"
+    print("browser tier B: probed %s (replay %s; refusals %s; S4 dry run %s; samplesheet %s / %s)"
           % (base, results["replay"]["status"], [r["status"] for r in results["refusals"].values()],
-             results["samplesheet_csv"], results["samplesheet_json"]))
+             results["foreign_dry"]["status"], results["samplesheet_csv"], results["samplesheet_json"]))
     return 0
 
 
@@ -297,13 +360,14 @@ def _read_sheet_csv(path):
 
 
 def evaluate(root):
-    """[(status, number, title, message)] for assertions 8-13."""
+    """[(status, number, title, message)] for assertions 8-15."""
     out = os.path.join(root, "browser-b")
     expected = _read_json(os.path.join(out, "expected.json"))
     observed = _observed(out)
     probes_path = os.path.join(out, "probes.json")
     probes = _read_json(probes_path) if os.path.isfile(probes_path) else None
     store = cas.Store(os.path.join(out, "store"))
+    shared_store = cas.Store(os.path.join(out, "shared"))
     items, colls, files = expected["items"], expected["collections"], expected["files"]
     want_hashes = {"%s.sha256" % files[k]["name"]: files[k]["sha256"] for k in sorted(files)}
 
@@ -528,12 +592,77 @@ def evaluate(root):
             return FAIL, "; ".join(problems)
         return PASS, "CSV and JSON list exactly A, B and C as cas://<cid>/<name>, and those cells stage and hash as expected"
 
+    def b14():
+        problems, sh = [], expected["shared"]
+        offer = extract("B.copy", "offer")
+        if offer.get("writeOutcome") != "elsewhere" or offer.get("heldElsewhere") != sh["s3"]:
+            problems.append("the dry run offered %r for %r, expected elsewhere for S3 %s"
+                            % (offer.get("writeOutcome"), offer.get("heldElsewhere"), sh["s3"]))
+        if offer.get("composeName") != "from-shared":
+            problems.append("the name field held %r, expected shared's name from-shared" % offer.get("composeName"))
+        posts = _posts(seen("B.copy"))
+        sels = [p for p in posts if _kind(p) == "Selection"]
+        claims = [p for p in posts if _kind(p) == "Claim"]
+        if len(sels) != 1 or len(claims) != 1:
+            problems.append("B.copy: %d Selection and %d Claim POSTs that write, expected 1 and 1" % (len(sels), len(claims)))
+        else:
+            address, _block, found = verify_post("B.copy", sels[0], dagjson.expected_selection)
+            problems += found
+            if address != sh["s3"]:
+                problems.append("B.copy wrote %s, the Selection shared holds is %s" % (address, sh["s3"]))
+            _c, block, found = verify_post("B.copy", claims[0], dagjson.expected_claim)
+            problems += found
+            if block["value"] != "from-shared" or [_text(x) for x in block["supersedes"]] != [sh["n_s"]]:
+                problems.append("the copy's name Claim is %r superseding %r, expected from-shared superseding %s"
+                                % (block["value"], [_text(x) for x in block["supersedes"]], sh["n_s"]))
+        if len([e for e in store.store_log() if e[1] == "selection" and e[2] == sh["s3"]]) != 1:
+            problems.append("lab's log/ does not hold exactly one selection entry for S3")
+        state = dagjson.claim_state(_claims_about(store, sh["s3"]) + _claims_about(shared_store, sh["s3"]))
+        if state["names"] != ["from-shared"] or state["name_conflicted"]:
+            problems.append("across both members S3 is named %r (conflicted %r), expected from-shared alone"
+                            % (state["names"], state["name_conflicted"]))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("a Selection only shared held was offered as a copy with shared's name prefilled; one click wrote it "
+                      "into lab at the Gate's address with a name Claim superseding shared's, one current name across both")
+
+    def b15():
+        problems, sh = [], expected["shared"]
+        before = [(n["name"], n["claim"]) for n in extract("B.foreign", "before").get("names") or []]
+        if before != [("lab-name", sh["n1"])]:
+            problems.append("lab's view of S4 showed %r, expected lab-name from %s" % (before, sh["n1"]))
+        claims = [p for p in _posts(seen("B.foreign")) if _kind(p) == "Claim"]
+        if len(claims) != 1:
+            problems.append("B.foreign: %d Claim POSTs that write, expected 1" % len(claims))
+        else:
+            _c, block, found = verify_post("B.foreign", claims[0], dagjson.expected_claim)
+            problems += found
+            if [_text(x) for x in block["supersedes"]] != [sh["n1"]]:
+                problems.append("the rename supersedes %r, expected lab's %s" % ([_text(x) for x in block["supersedes"]], sh["n1"]))
+        state = dagjson.claim_state(_claims_about(store, sh["s4"]) + _claims_about(shared_store, sh["s4"]))
+        if sorted(state["names"]) != ["lab-renamed", "shared-name"] or not state["name_conflicted"]:
+            problems.append("across both members S4 is named %r (conflicted %r), expected a conflict of lab-renamed and shared-name"
+                            % (state["names"], state["name_conflicted"]))
+        after = [(n["name"], n["conflicted"]) for n in extract("B.foreign", "after").get("names") or []]
+        if after != [("lab-renamed", False)]:
+            problems.append("lab's view after the rename showed %r, expected lab-renamed alone" % after)
+        dry = probed().get("foreign_dry") or {}
+        body = dagjson.loads(dry["body"]) if dry.get("status") == 200 else {}
+        if body.get("here") is not True or len(body.get("names") or []) != 2:
+            problems.append("the endpoint's dry run of S4 answered %s %r, expected here and two names" % (dry.get("status"), body))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("a rename in lab went through although shared holds a Claim superseding lab's; the composition "
+                      "reports the two names as a conflict and lab's view shows its own")
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
     run(11, "two sessions renaming from one view: a surfaced conflict, not an overwrite", b11)
     run(12, "a POST without the token, from another Origin, or as text/plain is refused", b12)
     run(13, "the samplesheet lists exactly the Selection's items, and its cells stage", b13)
+    run(14, "a Selection held only in a read-only member is copied and named", b14)
+    run(15, "a Claim in another member does not lock a rename; the disagreement is a conflict", b15)
     return results
 
 
