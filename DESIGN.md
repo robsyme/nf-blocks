@@ -984,19 +984,20 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   `#/selection/<cid>` (one Selection: names, deletion, members, rename,
   delete, undo, samplesheet links) and `#/compose` (the tray, and saving it
   as a Selection) (milestone 2, §16).
-- Writing: only when the page was opened through `explore` with its
-  `?token=`, and `members.json` has `"write": true` and a writable member.
-  The page posts DAG-JSON to `POST /api/put` with the token in
-  `X-NF-Blocks-Token`; composing first asks with `?dry_run=true` and offers
-  the existing Selection instead of writing when one exists. A Selection is
-  written to the writable member, and the page opens it there, carrying the
-  write's outcome across that navigation in `sessionStorage` (one key).
-  Rename, delete and undo are offered only while the page views the writable
-  member; elsewhere `[data-unavailable]` links to the Selection there. One
-  write runs at a time: a second attempt while one runs is ignored, and the
-  clicked button is disabled until it ends. After a write the page re-lists
-  that member's Store Log, so it sees its own write; if that refresh fails the
-  outcome is still recorded and the status asks for a reload.
+- Writing: only when the page was opened through `explore` with its `?token=`,
+  and `members.json` has `"write": true` and a writable member. The page posts
+  DAG-JSON to `POST /api/put` with the token in `X-NF-Blocks-Token`; composing
+  first asks with `?dry_run=true` and offers the existing Selection instead of
+  writing when the writable member holds it (`here`), or a copy of it when
+  only another member does (decision 21). A Selection is written to the
+  writable member, and the page opens it there, carrying the write's outcome
+  across that navigation in `sessionStorage` (one key). Rename, delete and
+  undo are offered only while the page views the writable member; elsewhere
+  `[data-unavailable]` links to the Selection there. One write runs at a time:
+  a second attempt while one runs is ignored, and the clicked button is
+  disabled until it ends. After a write the page re-lists that member's Store
+  Log, so it sees its own write; if that refresh fails the outcome is still
+  recorded and the status asks for a reload.
 - Pages: a pipeline's runs 50 at a time, a collection's items 500 at a time;
   `offset` counts snapshot rows. The Store Log tail's runs are all on the
   first page and counted in its span and in the total (`runCount` plus the
@@ -1039,7 +1040,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
-| `[data-exists]` | the dry run found the Selection: `data-exists` address, `data-names` JSON |
+| `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON |
 | `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21) |
 | `#compose-copy` | "Save a copy here": the write, then the name Claim superseding `name_claims` |
 | `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
@@ -1152,7 +1153,9 @@ or error body (DAG-JSON) on stdout, exit 0 or 1. `put` reads a path
 26.04.6's launcher refuses a bare `-` before any plugin runs (`Unknown
 option: -`), so from a shell stdin is `/dev/stdin`. A bare `--dry-run`
 reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
-`=true`).
+`=true`). Staleness is member-scoped (decision 22): superseding a Claim
+that only a read-only member has already superseded succeeds and leaves a
+conflict; the dry run reports `here` and `name_claims`.
 
 ### Samplesheet export
 
@@ -1215,7 +1218,7 @@ by item CID (decision 18).
    at most 256 characters; `add` is refused (out of the slice); every
    superseded address must be about the same subject (`wrong_kind`
    otherwise), present and not already superseded (`stale_supersedes`
-   otherwise; superseded by a Claim logged in the writable member; decision 22).
+   otherwise, counting only Claims logged in the writable member; decision 22).
 7. Error code `invalid`, a ninth code beside spec section 9.4's eight (above).
    `DagJson.decode` refuses, as `invalid`, naming the field: a string (a
    value or a map key) holding a lone surrogate, reachable only through a
@@ -1303,17 +1306,17 @@ by item CID (decision 18).
 ### Gate browser tier B
 
 Eight assertions (spec section 1.3, tier B), all local: a Selection made in
-the page has the Gate's own address (8); `fromStore(selection:)` receives
-each distinct item once, nested included (9); rename, delete and undo are
-Claims at the Gate's addresses, and a replay writes nothing (10); two
-sessions renaming from one view surface a conflict, not an overwrite (11); a
-POST without the token, from another Origin, or as `text/plain` is refused,
-and writes nothing (12); the samplesheet lists exactly the Selection's items,
-and its cells stage (13); a read-only member's Selection is copied and named
-(14); a Claim in another member does not lock a rename (15). B12 probes with a Selection no step has written, so
-the assertion can actually fail if a refusal ever let a block or a Store Log
-entry through; the earlier draft replayed an already-written Selection, which
-could not distinguish "refused" from "written".
+the page has the Gate's own address (8); `fromStore(selection:)` receives each
+distinct item once, nested included (9); rename, delete and undo are Claims at
+the Gate's addresses, and a replay writes nothing (10); two sessions renaming
+from one view surface a conflict, not an overwrite (11); a POST without the
+token, from another Origin, or as `text/plain` is refused, and writes nothing
+(12); the samplesheet lists exactly the Selection's items, and its cells stage
+(13); a read-only member's Selection is copied and named (14); a Claim in
+another member does not lock a rename (15). B12 probes with a Selection no
+step has written, so the assertion can actually fail if a refusal ever let a
+block or a Store Log entry through; the earlier draft replayed an already-
+written Selection, which could not distinguish "refused" from "written".
 
 ### Resolved
 

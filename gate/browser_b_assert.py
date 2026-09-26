@@ -648,8 +648,9 @@ def evaluate(root):
             problems.append("lab's view after the rename showed %r, expected lab-renamed alone" % after)
         dry = probed().get("foreign_dry") or {}
         body = dagjson.loads(dry["body"]) if dry.get("status") == 200 else {}
-        if body.get("here") is not True or len(body.get("names") or []) != 2:
-            problems.append("the endpoint's dry run of S4 answered %s %r, expected here and two names" % (dry.get("status"), body))
+        if body.get("here") is not True or sorted(body.get("names") or []) != ["lab-renamed", "shared-name"]:
+            problems.append("the endpoint's dry run of S4 answered %s %r, expected here and names lab-renamed, shared-name"
+                            % (dry.get("status"), body))
         if problems:
             return FAIL, "; ".join(problems)
         return PASS, ("a rename in lab went through although shared holds a Claim superseding lab's; the composition "

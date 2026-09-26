@@ -24,6 +24,16 @@ test('held only elsewhere in conflict: no prefill, every current name Claim supe
   assert.deepEqual(c.supersedes, ['bafy1', 'bafy2'])
 })
 
+test('held only elsewhere with a conflicted name_claims group: no prefill', () => {
+  assert.deepEqual(saveChoice(dry({ exists: true, names: ['a'], name_claims: ['bafy1', 'bafy2'] })),
+    { state: 'elsewhere', names: ['a'], prefill: '', supersedes: ['bafy1', 'bafy2'] })
+})
+
+test('a missing here reads as held here, so an older server never looks elsewhere', () => {
+  const { here, ...rest } = dry({ exists: true, names: ['a'] })
+  assert.equal(saveChoice(rest).state, 'here')
+})
+
 test('a cleared name writes no Claim; an edited one still supersedes', () => {
   const c = saveChoice(dry({ exists: true, names: ['x'], name_claims: ['bafyN'] }))
   assert.equal(namingRequest(c, '   '), null)

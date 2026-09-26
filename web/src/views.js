@@ -343,8 +343,10 @@ export function compose(ex, ctx) {
     const choice = saveChoice(dry)
     const cancel = h('button', { type: 'button', onclick: () => status.replaceChildren() }, 'cancel')
     if (choice.state === 'here') {
+      const named = dry.names.length === 0 ? ', unnamed'
+        : dry.names.length === 1 ? ` as ${dry.names[0]}` : ` as ${dry.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-names': JSON.stringify(dry.names) },
-        `This Selection already exists${dry.names.length ? ` as ${dry.names.join(', ')}` : ', unnamed'}. `,
+        `This Selection already exists${named}. `,
         link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ', cancel, '.'))
       return { outcome: 'exists' }
     }

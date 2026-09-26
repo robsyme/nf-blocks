@@ -3,8 +3,10 @@
 export function saveChoice(dry) {
   if (!dry.exists) return { state: 'new', names: [], prefill: '', supersedes: [] }
   const names = dry.names ?? []
-  if (dry.here) return { state: 'here', names, prefill: '', supersedes: [] }
-  return { state: 'elsewhere', names, prefill: names.length === 1 ? names[0] : '', supersedes: dry.name_claims ?? [] }
+  if (dry.here ?? true) return { state: 'here', names, prefill: '', supersedes: [] }
+  const nameClaims = dry.name_claims ?? []
+  const prefill = names.length === 1 && nameClaims.length === 1 ? names[0] : ''
+  return { state: 'elsewhere', names, prefill, supersedes: nameClaims }
 }
 
 // The name Claim to write after a save, or null when no name was typed.
