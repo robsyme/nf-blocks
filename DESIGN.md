@@ -895,6 +895,15 @@ blocks/<xx>/<cid>          a block, xx = the cid's last two characters
 log/                       the Store Log listing (one of the three forms below)
 ```
 
+Upload `index/v<N>.sqlite` with `Cache-Control: no-cache` (a revalidation per
+load; blocks may be `immutable`): a snapshot uploaded without it can be served
+stale from a browser's heuristic cache after it is rewritten, and the page
+then fails with `snapshot_changed` rather than answering wrongly, but a user
+sees an error they did not need. `nf-blocks:explore` sends `no-cache` for the
+snapshot and `public, max-age=31536000, immutable` for a block
+(`ExploreServer.groovy`); `gate/cloud/s3tier.py`'s `upload` sends the same
+pair for a directly browsed bucket.
+
 The page lists `log/` in the first form that answers:
 
 1. `GET <base>log/` answering `200` with `Content-Type: application/json`:
@@ -1078,17 +1087,196 @@ statement, so Gate assertion 2's counts are the query's cost.
 
 ## 16. Selections (milestone 2)
 
+*Status 2026-09-25: milestone 2 accepted; Gate browser tier B 6 of 6 (all
+local). Cloud tier A6-A7 (`make gate-cloud`) pending: this milestone changes
+`explore`'s write endpoint and samplesheet route, so it must be run once more
+with Rob's `scidev` SSO session before this status line is amended to say so.*
+
 Specified in `../.scratch/block-explorer/spec.md` (sections 5.6, 7, 8 and 9);
 plan `docs/plans/2026-09-25-explorer-milestone-2.md`. The page's routes and
-DOM contract for Selections are in §15 above. The plan makes these decisions
-where the spec is silent, by its numbering: 1 the samplesheet export served by
-`explore`; 2 snapshot runs from the Store Log plus the block scan; 3 four
-extra indexes; 4 how `claim.value` is stored; 5 current state from Claims; 6
-Claim request rules; 7 the error code `invalid`; 8 `derived_from` as links or
-bytes; 9 idempotence first; 10 `?dry_run=true`; 11 `put` reads a path; 12
-the launch token; 13 a run's delete Claim names its RunCompletion; 14 the page
-sees its own write through the tail; 15 the tray in `sessionStorage`; 16
-nesting resolved through the index's recursive CTE; 17 an Item Occurrence
-without a leaf name; 18 samplesheet specifics; 19 `kind` and `asserted_by`
-on collection rows; 20 milestone 1's parked minors. Task 17 completes this
-section.
+DOM contract for Selections are in §15 above, amended in place as this
+milestone landed.
+
+### Block kinds a client builds; the write endpoint
+
+A client (`nf-blocks:put`, the endpoint, or the page) may build exactly two
+kinds: `Selection` and `Claim` (§6 has both schemas). A request is DAG-JSON,
+links as `{"/": "bafy…"}`, the block's own content without `kind`, `schema` or
+`asserted_by` (the server fills those three); `kind` in the request is
+checked against the two buildable kinds. The server normalises (sorts,
+dedupes), validates, encodes DAG-CBOR, writes to the writable member, appends
+a Store Log entry and ingests into its local index; it never rewrites the
+Index Snapshot on a write (the page sees its own write through the tail,
+decision 14).
+
+Response: `{"address": {"/": <cid>}, "block": <canonical block as DAG-JSON>,
+"entry": <Store Log entry name>, "written": <bool>}`. Dry run
+(`?dry_run=true`, decision 10): `{"address", "exists", "names"}`, and writes
+nothing; `exists` is true when any member of the composition holds the
+block.
+
+Errors are DAG-JSON `{"error": <code>, "message": <text>, "at": <JSON
+pointer into the request>}`, `400` (`409` for `not_writable`). Eight codes
+from spec section 9.4 -- `not_found`, `wrong_kind`, `not_in_via`, `empty`,
+`stale_supersedes`, `clock_skew`, `too_large`, `not_writable` -- plus a
+ninth, `invalid` (decision 7): the request is not DAG-JSON or does not have
+the block's shape (a missing or mistyped field, an unknown key, a `/` map
+that is not a link or bytes, `verb: "add"`). Transport refusals stay plain
+text, never this body: `403` (no or wrong `X-NF-Blocks-Token`, or a foreign
+`Host`/`Origin`), `415` (a content type other than `application/json` or
+`application/vnd.ipld.dag-json`; parameters such as `charset` ignored),
+`413` (a body over `Put.MAX_REQUEST_BYTES`, 2 MiB). The CLI prints the same
+error body and exits 1. The page itself uses `invalid` for a rename with no
+name typed.
+
+### `nf-blocks:put`
+
+```
+nextflow [-c <config>] plugin nf-blocks:put <file|-> [--dry-run]
+```
+
+Builds and writes one Selection or Claim from a DAG-JSON file, sharing
+`Put`'s one builder with `POST /api/put` (spec section 9.2). Prints the response
+or error body (DAG-JSON) on stdout, exit 0 or 1. `put` reads a path
+(decision 11): `-` reads stdin when called in-process, but Nextflow
+26.04.6's launcher refuses a bare `-` before any plugin runs (`Unknown
+option: -`), so from a shell stdin is `/dev/stdin`. A bare `--dry-run`
+reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
+`=true`).
+
+### Samplesheet export
+
+`GET /api/samplesheet/<selection cid>.csv` or `.json`, served by `explore`
+only (decision 1; no new verb, spec section 2's table stays at three), linked
+from the page's Selection view. One row per distinct item, sorted ascending
+by item CID (decision 18).
+
+- **Meta Map columns** come out in DAG-CBOR canonical key order (length,
+  then bytes), not the order the pipeline author wrote them in: a stored Meta
+  Map is decoded in that order (a Groovy `Map` built by `DagCbor.decode`),
+  and the samplesheet reads columns from the decoded map, never re-sorting
+  them. Nested maps are flattened to dotted names.
+- **File columns** are in first-seen order, named by the leaf's structural
+  path in the item -- tuple index or record key, nested positions joined by
+  `.` (`1` for `[meta, bam]`, `1.0` for the first of `[meta, [chunks...]]`)
+  -- never by file name. A position that collides with a Meta Map column name
+  is written `file.<position>`.
+- **Cell values**: an addressed raw leaf is `cas://<cid>/<name>` (the form
+  `fromStore` restores, §13); a directory leaf is `cas://<manifest cid>`; any
+  other leaf is blank. In CSV a list or map value is its JSON text, a scalar
+  is the index's text form (`MetadataView.scalar`); a string, however long,
+  exports in full -- never the index's sha256 digest, which is a storage
+  artifact of the index, not a value to carry into an export. JSON keeps the
+  Meta Map's own nesting, types and absence, then adds the file columns.
+- **CSV quoting is RFC 4180**: a field is quoted (its own quotes doubled)
+  only when it holds a comma, a quote, a CR or an LF. Non-ASCII text is
+  never quoted for that reason alone; it round-trips as UTF-8, unmangled, in
+  both CSV and JSON.
+
+### Decisions made where the spec is silent, as built
+
+1. The samplesheet export is served by `nf-blocks:explore` at `GET
+   /api/samplesheet/<selection cid>.csv` and `.json` (above). No new verb.
+2. Snapshot runs are those the member's Store Log announced, plus those found
+   in its blocks (`run.member`, for a store written before the Store Log,
+   §12). Fixes milestone 1's decision 1: a RunCompletion in two members now
+   appears in both snapshots.
+3. Four indexes beyond spec section 11, so the page's queries pass
+   `ExplorerQueriesTest`'s no-scan guard: `log_entry(cid, member)` unique,
+   `log_entry(kind, written_at DESC)`, `claim(subject_cid)`,
+   `claim_current(subject_cid, attribute)`. `log_entry.written_at` is
+   ISO-8601 UTC with milliseconds; `log_entry` keeps the earliest entry per
+   `(cid, member)` ("first seen in this member").
+4. `claim.value` and `claim_current.value` hold a string value as itself,
+   null as NULL, any other value as its DAG-JSON text.
+5. Current state (spec section 8) is one set of rules implemented twice, in
+   `ClaimState.groovy` and `web/src/claims.js`, both pinned by
+   `web/test/fixtures/claim-vectors.json`: the current Claims of a subject
+   are those no Claim of that subject supersedes; they group by `attribute`,
+   with `delete` and `del` (attribute null) forming the deletion group; a
+   group with more than one current Claim is conflicted. Names are the
+   values of the current `set name` Claims, in claim-address order.
+   Deletion is `deleted` when the deletion group's one current Claim is a
+   `delete`, `conflicted` when the group has more than one, `none`
+   otherwise. Only `deleted` hides.
+6. Claim request rules, checked by `Put` before writing: `set` needs an
+   attribute and a non-null value; `delete` has neither; `del` has no value
+   and supersedes at least one Claim; a `name` value is a non-empty string of
+   at most 256 characters; `add` is refused (out of the slice); every
+   superseded address must be about the same subject (`wrong_kind`
+   otherwise), present and not already superseded (`stale_supersedes`
+   otherwise).
+7. Error code `invalid`, a ninth code beside spec section 9.4's eight (above).
+8. `derived_from` is accepted as links or as bytes in a request and always
+   stored as bytes (binary CIDs), sorted by the CID's string form.
+9. Idempotence first. `Put` computes the address before any semantic check.
+   A block the writable member already holds is success with `"written":
+   false`, without re-checking `supersedes`, the clock or membership, and
+   reuses the block's existing Store Log entry (one is appended only if none
+   exists). A retried request therefore never fails with `stale_supersedes`
+   or `clock_skew` against itself.
+10. `dry_run` on the endpoint is the query parameter `?dry_run=true`, since it
+    is not block content. `exists` is true when any member of the
+    composition holds the block.
+11. `put` reads a path (above).
+12. The launch token is 26 base32 characters, printed as `?token=<t>` in the
+    URL `explore` prints, and sent by the page as the header
+    `X-NF-Blocks-Token`. Only `POST` needs it.
+13. A run's delete Claim names its RunCompletion. Query 2's SQL excludes runs
+    with a current `delete` Claim, conflicted deletions included, and
+    `Index.latestSuccessfulRun` warns about each conflicted one it leaves
+    out; the page's query 2 view does the same, re-checking a tail Claim
+    each time rather than trusting a cached filter. The page's run *lists*
+    (a pipeline's runs) hide only runs whose deletion is `deleted`, not
+    conflicted ones, filtering the page of rows it shows and saying how many
+    it hid. The UI offers no run deletion (spec section 5.6).
+14. The page sees its own write through the tail: after a write it re-lists
+    the writable member's Store Log. Composing works from any member's view;
+    the Selection is written to the writable member. Rename, delete and undo
+    are offered only when the page views the writable member; elsewhere
+    `[data-unavailable]` links to the Selection there, since a Claim about a
+    Selection the writable member lacks cannot be seen there afterwards.
+    Composing from another member still navigates to the writable member
+    after saving, carrying the write's outcome across that navigation in
+    `sessionStorage` (one key), restored on load.
+15. The page keeps the tray of picked items in `sessionStorage` (per tab,
+    wrapped in `try`), so picks survive switching member; the page works
+    without it.
+16. `fromStore(selection:)` and the samplesheet resolve nesting through the
+    index's recursive CTE (spec section 11), after catch-up, and fail naming
+    any nested Selection the index does not hold rather than emitting a
+    partial set. Items come out sorted by CID string. `run`, `output` and
+    `where` are refused beside `selection`.
+17. An Item Occurrence without a leaf name is a directory of the item's
+    leaves by leaf name; a leaf name that two leaves of one item share is
+    refused, naming both positions. Publish-path traversal of a collection
+    root stays unsupported, and the error names both readings (§7).
+18. Samplesheet specifics (above).
+19. Output Collection rows now carry `kind = 'output'` and `asserted_by`;
+    Selection rows carry `kind = 'selection'`, `completion_cid` and
+    `output_name` NULL.
+20. Three of milestone 1's four parked minors are fixed where their code is
+    touched: dead `Explorer.closures` removed (Task 13), the pager's label
+    past the end fixed (Task 14), `Cache-Control: no-cache` documented and
+    set on uploaded snapshots (this task, §15 "What a member serves" and
+    `gate/cloud/s3tier.py`). The fourth is open, below.
+
+### Gate browser tier B
+
+Six assertions (spec section 1.3, tier B), all local: a Selection made in
+the page has the Gate's own address (8); `fromStore(selection:)` receives
+each distinct item once, nested included (9); rename, delete and undo are
+Claims at the Gate's addresses, and a replay writes nothing (10); two
+sessions renaming from one view surface a conflict, not an overwrite (11); a
+POST without the token, from another Origin, or as `text/plain` is refused,
+and writes nothing (12); the samplesheet lists exactly the Selection's items,
+and its cells stage (13). B12 probes with a Selection no step has written, so
+the assertion can actually fail if a refusal ever let a block or a Store Log
+entry through; the earlier draft replayed an already-written Selection, which
+could not distinguish "refused" from "written".
+
+### Open
+
+- **"Stale worker error code"**, parked by milestone 1 for milestone 2:
+  which error code, and when it goes stale, was never written down.
+  Not specific enough to act on here; open, awaiting Rob.
