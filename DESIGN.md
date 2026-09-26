@@ -755,6 +755,13 @@ attached first. **Measured at v26.04.6:** there is no `NF.dsl2` (DSL1 is gone)
 and `CH.create()` is a non-buffering `DataflowBroadcast`, so eager binding
 without the igniter would drop items.
 
+`channel.fromStore(selection: <cid or cas://cid>)` (block explorer spec
+section 10) emits every distinct item the Selection reaches through nesting
+(`Index.selectionItems`), sorted by item CID, restored as above; a Selection
+hidden by a current `delete` Claim emits with a warning; a nested Selection
+the composition lacks fails the call, naming it. `run`, `output`, `where` and
+`pipeline` are refused beside `selection`.
+
 ## 14. The Gate (`gate/`)
 
 `gate/gate.sh` builds and installs the plugin into a throwaway
