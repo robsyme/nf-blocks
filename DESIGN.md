@@ -1040,9 +1040,9 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
-| `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON |
-| `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21) |
-| `#compose-copy` | "Save a copy here": the write, then the name Claim superseding `name_claims` |
+| `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON, `data-deletion` the composition's deletion state (decision 23) |
+| `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21), `data-deletion` the composition's deletion state (decision 23) |
+| `#compose-copy` | "Save a copy here", or "Restore a copy here" when the dry run's deletion is not `none`: the write, the name Claim superseding `name_claims`, then a `del` superseding `deletion_claims` (decision 23) |
 | `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
 | `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
@@ -1312,7 +1312,9 @@ by item CID (decision 18).
     copy here": after the copy and its name Claim (when a name is set) it
     writes a `del` Claim superseding every Claim in `deletion_claims`,
     whether or not a name is set, so the Selection is live across the
-    composition. Held here but deleted elsewhere, the "already exists"
+    composition. A `del` that fails after the copy saved is reported like a
+    failed naming, "The Selection was saved, but restoring it failed", with
+    the link to open it. Held here but deleted elsewhere, the "already exists"
     message names the deletion; the Selection view still reads only this
     member's Claims (decision 22). After a `del` restores a Selection,
     `deletion_claims` still names that current `del` Claim although
