@@ -305,24 +305,35 @@ export class Explorer {
   }
 
   /**
-   * Query 2 over the snapshot and the tail. With no stale candidate the SQL's
-   * answer stands, so the snapshot is not read again for its finish time. A
-   * tail delete Claim can still hide a candidate the SQL did not know to
-   * exclude; only asked about when the tail holds any Claim at all.
+   * Query 2 over the snapshot and the tail. With no tail Claim at all, the
+   * SQL's answer stands and the snapshot is read for at most one more row (as
+   * before this task): a run the tail's Claims might hide cannot exist.
+   * Once the tail holds any Claim, a snapshot run's exclusion may be stale
+   * (a delete Claim written after the snapshot, or a tail `del` undoing a
+   * snapshot delete), so every succeeded, complete candidate the snapshot or
+   * the tail knows about is re-checked here, excluding one only when its
+   * current deletion group holds a `delete` (decision 13: a conflicted
+   * deletion still excludes the run; `hidden` stays for the run lists, which
+   * do want a conflicted deletion shown, with its ambiguity, rather than
+   * hidden).
    */
   async latestSuccessfulRun(pipeline) {
-    const [best] = await this.db.query(SQL.latestSuccessfulRun, [pipeline])
-    const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0)
-    if (stale.length === 0) return best?.completion_cid ?? null
-    const candidates = stale.map(s => s.row)
-    if (best) candidates.push(await this.runRow(best.completion_cid))
-    if (this.tailClaims.length === 0) return candidates.sort(byNewest)[0].completion_cid
+    if (this.tailClaims.length === 0) {
+      const [best] = await this.db.query(SQL.latestSuccessfulRun, [pipeline])
+      const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0)
+      if (stale.length === 0) return best?.completion_cid ?? null
+      const candidates = stale.map(s => s.row)
+      if (best) candidates.push(await this.runRow(best.completion_cid))
+      return candidates.sort(byNewest)[0].completion_cid
+    }
+    const snapshot = await this.db.query(SQL.successfulRunsOfPipeline, [pipeline])
+    const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0).map(s => s.row)
+    const candidates = [...snapshot, ...stale]
+    if (candidates.length === 0) return null
     const states = await this.claimStates(candidates.map(c => c.completion_cid))
-    const visible = candidates.filter(c => !states.get(c.completion_cid).hidden).sort(byNewest)
-    if (visible.length) return visible[0].completion_cid
-    const more = await this.db.query(SQL.successfulRunsOfPipeline, [pipeline])
-    const moreStates = await this.claimStates(more.map(r => r.completion_cid))
-    return more.find(r => !moreStates.get(r.completion_cid).hidden)?.completion_cid ?? null
+    const excluded = (s) => s.deletionClaims.some(cid => s.claims.find(c => c.cid === cid)?.verb === 'delete')
+    const visible = candidates.filter(c => !excluded(states.get(c.completion_cid))).sort(byNewest)
+    return visible[0]?.completion_cid ?? null
   }
 
   /**

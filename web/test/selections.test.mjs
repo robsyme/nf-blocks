@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { CID } from 'multiformats/cid'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
-import { snapshotDb } from './helpers.mjs'
-import { block, blockFetch, buildMember, entryName } from './fixture.mjs'
+import { loadSqlite, snapshotDb } from './helpers.mjs'
+import { block, blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
 
 const claim = (subject, verb, attribute, value, supersedes, timestamp = '2026-09-01T10:00:00.000Z') =>
   ({ kind: 'Claim', schema: 1, asserted_by: 'test', subject, verb, attribute, value, supersedes, timestamp })
@@ -106,4 +107,85 @@ test('a run hidden by a tail delete Claim leaves the run list and query 2', asyn
 test('selectionsHolding finds the snapshot Selections an item is in', async () => {
   const { explorer, member, ids } = await open()
   assert.deepEqual(await explorer.selectionsHolding(member.item.A), [ids.S1])
+})
+
+/**
+ * A member built just for query 2 (latestSuccessfulRun) fix-round tests: a
+ * snapshot's `run` rows, optionally some of its own `claim`/`claim_supersedes`
+ * rows (a delete or an undo already in the snapshot), and the tail's own
+ * Claim blocks (real, decodable ones, since a real Claim's `supersedes` is a
+ * list of links). No watermark, so every tail entry is in scope and no run
+ * Store Log entries at all, so `this.stale` is always empty here.
+ */
+async function openLatest({ pipeline = 'q2', runs = [], preClaims = [], preSupersedes = [], tailClaimDefs = [] } = {}) {
+  const sqlite3 = await loadSqlite()
+  const db = new sqlite3.oo1.DB(':memory:')
+  let bytes
+  try {
+    db.exec('PRAGMA page_size=4096')
+    db.exec(readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'))
+    db.exec({ sql: 'INSERT INTO schema_version VALUES (3)' })
+    for (const r of runs)
+      db.exec({ sql: "INSERT INTO run(completion_cid, pipeline, status, possibly_incomplete, finished_at) VALUES (?, ?, 'succeeded', 0, ?)",
+        bind: [r.cid, pipeline, r.finishedAt] })
+    for (const c of preClaims)
+      db.exec({ sql: 'INSERT INTO claim VALUES (?, ?, ?, ?, ?, ?, ?)',
+        bind: [c.cid, c.subject, c.verb, c.attribute ?? null, c.value ?? null, c.timestamp ?? '2026-09-01T00:00:00.000Z', c.assertedBy ?? 'test'] })
+    for (const s of preSupersedes)
+      db.exec({ sql: 'INSERT INTO claim_supersedes VALUES (?, ?)', bind: [s.claim, s.superseded] })
+    bytes = sqlite3.capi.sqlite3_js_db_export(db)
+  } finally {
+    db.close()
+  }
+  const blocks = new Map()
+  const put = (value) => { const b = block(value); blocks.set(b.cid.toString(), b.bytes); return b.cid }
+  const log = tailClaimDefs.map((c, i) => entryName(Date.now() - i, 'claim', put(c).toString()))
+  return Explorer.open({
+    base: 'http://h/m/lab/',
+    openDb: async () => snapshotDb(bytes),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(blocks) }),
+    listFn: async () => ({ names: log, readable: true }),
+  })
+}
+
+test('query 2: a tail delete of the snapshot\'s best run falls to the next one when there is no successful stale run, or to null (fix round 1, finding 1)', async () => {
+  const RA = rawCid('q2-a').toString()
+  const RB = rawCid('q2-b').toString()
+  const del = (cid) => claim(CID.parse(cid), 'delete', null, null, [])
+  const runs = [{ cid: RA, finishedAt: '2026-09-02T10:00:00.000Z' }, { cid: RB, finishedAt: '2026-09-01T10:00:00.000Z' }]
+
+  const onlyBestDeleted = await openLatest({ runs, tailClaimDefs: [del(RA)] })
+  assert.equal(await onlyBestDeleted.latestSuccessfulRun('q2'), RB)
+
+  const bothDeleted = await openLatest({ runs, tailClaimDefs: [del(RA), del(RB)] })
+  assert.equal(await bothDeleted.latestSuccessfulRun('q2'), null)
+})
+
+test('query 2: a tail delete making a snapshot run\'s deletion conflicted excludes it, though the run list still shows it (fix round 1, finding 2)', async () => {
+  const RD = rawCid('q2-d').toString()
+  const D0 = rawCid('q2-d-delete').toString()
+  const U0 = rawCid('q2-d-undo').toString()
+  const explorer = await openLatest({
+    runs: [{ cid: RD, finishedAt: '2026-09-01T10:00:00.000Z' }],
+    // The snapshot already saw the delete undone...
+    preClaims: [{ cid: D0, subject: RD, verb: 'delete' }, { cid: U0, subject: RD, verb: 'del' }],
+    preSupersedes: [{ claim: U0, superseded: D0 }],
+    // ...but the tail holds a second delete, written without seeing the undo: conflicted, not hidden.
+    tailClaimDefs: [claim(CID.parse(RD), 'delete', null, null, [])],
+  })
+  assert.equal(await explorer.latestSuccessfulRun('q2'), null)
+  const page = await explorer.runPage('q2')
+  assert.ok(page.rows.some(r => r.completion_cid === RD))
+  assert.equal(page.hidden, 0)
+})
+
+test('query 2: a tail del undoing a snapshot delete brings the run back (fix round 1, finding 3)', async () => {
+  const RE = rawCid('q2-e').toString()
+  const D0 = rawCid('q2-e-delete').toString()
+  const explorer = await openLatest({
+    runs: [{ cid: RE, finishedAt: '2026-09-01T10:00:00.000Z' }],
+    preClaims: [{ cid: D0, subject: RE, verb: 'delete' }],
+    tailClaimDefs: [claim(CID.parse(RE), 'del', null, null, [CID.parse(D0)])],
+  })
+  assert.equal(await explorer.latestSuccessfulRun('q2'), RE)
 })
