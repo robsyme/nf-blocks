@@ -20,6 +20,7 @@ import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.Put
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
 
@@ -153,6 +154,15 @@ class CasSession {
     /** This composition's per-user cache index (DESIGN.md §12). The caller closes it. */
     Index openIndex() {
         return Index.open(IndexPaths.cachePath(config.localLocations(), config.indexOverride))
+    }
+
+    /**
+     * The one builder over this composition, writing to the writable member
+     * (block explorer spec section 9). The caller owns {@code index}; the
+     * builder uses it under its own lock.
+     */
+    Put newPut(Index index) {
+        return new Put(store, members()[0], index, assertedBy, { -> System.currentTimeMillis() }, { -> catchUpIndex(index) })
     }
 
     /**

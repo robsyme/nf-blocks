@@ -814,11 +814,17 @@ config comes from `ConfigBuilder` over the launch directory and `-c`, exactly as
 ```
 nextflow [-c <config>] plugin nf-blocks:snapshot
 nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
+nextflow [-c <config>] plugin nf-blocks:put <file> [--dry-run]
 ```
 
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
 on a usage error.
+
+`put` prints the response or error body (DAG-JSON) on stdout, exit 0 or 1.
+Nextflow 26.04.6's launcher refuses a bare `-` (`Unknown option: -`), so read
+stdin as `/dev/stdin`; `-` works for in-process callers. A bare `--dry-run`
+arrives as `--dry-run`, `true`.
 
 A **published** plugin needs none of what follows: once `nf-blocks` is on the
 plugin registry, an unpinned `nextflow plugin nf-blocks:<verb>` resolves and
