@@ -36,6 +36,28 @@ ifndef FORCE
 endif
 	$(GRADLE) installPlugin
 
+# Plugin commands (`nextflow plugin nf-blocks:<verb>`) start the plugin unpinned,
+# so an unpublished build is found only through NXF_PLUGINS_TEST_REPOSITORY naming
+# a plugins.json for the built zip, with NXF_OFFLINE unset (DESIGN.md section 15,
+# "Plugin verbs"). `make plugins-json` writes it and prints the export line;
+# `make explore` uses it. Both assume `make install FORCE=1` has run.
+NEXTFLOW ?= nextflow
+
+.PHONY: plugins-json
+plugins-json:
+	@mkdir -p build
+	@echo "export NXF_PLUGINS_TEST_REPOSITORY=file://$$(./gate/browser/plugin-repo.sh "$(CURDIR)" "$(CURDIR)/build")"
+
+# Serve the explorer over the stores a config names:
+#   make explore CONFIG=/path/to/nextflow.config ARGS='--port 8123'
+# Without CONFIG, Nextflow reads the nextflow.config in the current directory.
+.PHONY: explore
+explore:
+	@mkdir -p build
+	unset NXF_OFFLINE; \
+	NXF_PLUGINS_TEST_REPOSITORY="file://$$(./gate/browser/plugin-repo.sh "$(CURDIR)" "$(CURDIR)/build")" \
+	$(NEXTFLOW) $(if $(CONFIG),-c $(CONFIG)) plugin nf-blocks:explore $(ARGS)
+
 # Publish the plugin
 release:
 	$(GRADLE) releasePlugin

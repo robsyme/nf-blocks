@@ -82,6 +82,12 @@ work: a browser will not fetch from `file://`, and the page says so
 (`file_protocol`). A member served straight from a bucket needs the bucket
 policy and CORS rule in `DESIGN.md` §15.
 
+Until the plugin is published, `nextflow plugin` finds a local build only
+through `NXF_PLUGINS_TEST_REPOSITORY`. After `make install FORCE=1`, `make
+explore CONFIG=<config naming your cas stores> ARGS='--port 8123'` sets it and
+starts the explorer; `make plugins-json` prints the `export` line for running
+`snapshot` or `put` by hand.
+
 ## Selections
 
 A Selection curates Output Items across runs into one named group, without
