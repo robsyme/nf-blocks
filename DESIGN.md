@@ -1189,6 +1189,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |
 | `body[data-written]` | the address the last successful write made |
 | `#tray[data-count]` | items in the tray |
+| `#tray-unsaved` | shown, with a plain-prose note, while the tray's last write to `sessionStorage` failed |
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`); on query 3 results `data-via` is the run's Output Collection (milestone 3) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
@@ -1428,7 +1429,10 @@ by item CID (decision 18).
     `sessionStorage` (one key), restored on load.
 15. The page keeps the tray of picked items in `sessionStorage` (per tab,
     wrapped in `try`), so picks survive switching member; the page works
-    without it.
+    without it. When a write is refused (no storage, or a full quota after
+    "Add all"), the header shows `#tray-unsaved`, "The tray could not be
+    saved in this browser, so it will be lost on reload.", and the "Added N
+    to the tray." status repeats it (final review, 2026-09-27).
 16. `fromStore(selection:)` and the samplesheet resolve nesting through the
     index's recursive CTE (spec section 11), after catch-up, and fail naming
     any nested Selection the index does not hold rather than emitting a

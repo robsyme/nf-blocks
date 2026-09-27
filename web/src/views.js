@@ -7,6 +7,7 @@ import { saveSequence, retryRestore } from './save-flow.js'
 import { Previews } from './previews.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from './pairs.js'
 import { snippetBlock, snippetToggle } from './snippets.js'
+import { trayNote } from './tray.js'
 
 // Re-exported so this module's existing test and callers keep working (P8):
 // the Copy outcome text is html.js's, shared with snippets.js.
@@ -264,6 +265,9 @@ export async function pickAll(ex, tray, { items = null, collectionCid }) {
   return all.length
 }
 
+/** "Added N to the tray.", and the unsaved note when storage refused the write. */
+const added = (n, tray) => [`Added ${n} to the tray.`, trayNote(tray)].filter(Boolean).join(' ')
+
 function markInTray(list, addresses) {
   const only = addresses ? new Set(addresses) : null
   for (const button of list.querySelectorAll('[data-pick]')) {
@@ -390,7 +394,7 @@ export function itemRows(ex, ctx, { items, total = items.length, collectionCid =
     for (const box of list.querySelectorAll('input[type=checkbox]')) box.checked = false
     checked.clear()
     showChecked()
-    status.textContent = `Added ${picked.length} to the tray.`
+    status.textContent = added(picked.length, ctx.tray)
   })
   const addAll = h('button', { type: 'button', 'data-pick-all': '', 'data-via': via.join(' '), 'data-count': total, onclick: async (event) => {
     const button = event.currentTarget
@@ -400,7 +404,7 @@ export function itemRows(ex, ctx, { items, total = items.length, collectionCid =
       const n = await pickAll(ex, ctx.tray, { items: total === items.length ? items : null, collectionCid })
       ctx.trayChanged()
       markInTray(list, null)
-      status.textContent = `Added ${n} to the tray.`
+      status.textContent = added(n, ctx.tray)
     } catch (e) {
       status.replaceChildren(errorNode(e))
     } finally {

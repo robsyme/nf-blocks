@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { CID } from 'multiformats/cid'
-import { Tray } from '../src/tray.js'
+import { Tray, UNSAVED_NOTE, trayNote } from '../src/tray.js'
 import { block } from './fixture.mjs'
 
 const I1 = block({ n: 1 }).cid.toString()
@@ -58,4 +58,31 @@ test('addMany merges vias as add does and writes storage once', () => {
   assert.equal(t.size, 2)
   assert.deepEqual(t.entries().find(e => e.address === I1).via, [C1, C2].sort())
   assert.equal(writes.length, 1)
+})
+
+test('a storage write the browser refuses is reported, so the page can say the tray will not survive a reload', () => {
+  const full = { getItem: () => null, setItem: () => { throw new Error('QuotaExceededError') } }
+  const t = new Tray(full)
+  assert.equal(t.saved, true, 'nothing to lose yet')
+  assert.equal(trayNote(t), '')
+  t.addMany([{ address: I1, via: [C1] }, { address: I2 }])
+  assert.equal(t.size, 2, 'the tray still works for this page')
+  assert.equal(t.saved, false)
+  assert.equal(t.persist(), false)
+  assert.equal(trayNote(t), UNSAVED_NOTE)
+  assert.match(UNSAVED_NOTE, /could not be saved in this browser/)
+  assert.match(UNSAVED_NOTE, /lost on reload/)
+})
+
+test('a write that succeeds again clears the note', () => {
+  let refuse = true
+  const m = new Map()
+  const storage = { getItem: k => m.get(k) ?? null, setItem: (k, v) => { if (refuse) throw new Error('full'); m.set(k, v) } }
+  const t = new Tray(storage)
+  t.add({ address: I1, via: [], kind: 'item' })
+  assert.equal(t.saved, false)
+  refuse = false
+  t.remove(I1)
+  assert.equal(t.saved, true)
+  assert.equal(trayNote(t), '')
 })

@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { compose, copyOutcome, copyText, itemRows, pickAll, runLabelText, undoNote } from '../src/views.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
-import { Tray } from '../src/tray.js'
+import { Tray, UNSAVED_NOTE } from '../src/tray.js'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
@@ -155,6 +155,19 @@ test('Add all on a collection page reads every item, adds them with the collecti
   assert.deepEqual(ctx.tray.entries().map(e => e.via), every.map(() => ['coll']))
   assert.deepEqual(ctx.changed, [5], 'trayChanged after the items are in, so #tray[data-count] shows them')
   assert.ok(node.querySelectorAll('[data-pick]').every(b => b.disabled && b.textContent === 'In the tray'))
+})
+
+test('Add all into a tray the browser cannot save says so next to the count added', async () => {
+  installDom()
+  const every = ['i1', 'i2', 'i3']
+  const ex = rowModel()
+  const full = { getItem: () => null, setItem: () => { throw new Error('QuotaExceededError') } }
+  const ctx = rowCtx(new Tray(full))
+  const node = itemRows(ex, ctx, { items: every, collectionCid: 'coll', previews: new Previews(ex) })
+  await node.querySelector('[data-pick-all]').click()
+  assert.equal(ctx.tray.size, 3)
+  const status = node.querySelector('.row-actions').querySelectorAll('span').find(s => s.textContent.startsWith('Added'))
+  assert.equal(status.textContent, `Added 3 to the tray. ${UNSAVED_NOTE}`)
 })
 
 test('Add checked adds only the checked rows, with the collection as via', async () => {
