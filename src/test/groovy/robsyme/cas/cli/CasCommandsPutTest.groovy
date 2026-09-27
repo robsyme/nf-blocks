@@ -13,7 +13,7 @@ import robsyme.cas.core.StoreLog
 import spock.lang.Specification
 import spock.lang.TempDir
 
-/** Spec section 2 and 9.2: `nf-blocks:put <file|->`, with --dry-run, calling the one builder. */
+/** Spec section 2 and 9.2: `nf-blocks:put <file|/dev/stdin>`, with --dry-run, calling the one builder. */
 class CasCommandsPutTest extends Specification {
 
     @TempDir
@@ -202,5 +202,34 @@ class CasCommandsPutTest extends Specification {
         run(['-', '--name', '   '], request()) == 2
         run(['-', '--name', 'n' * 257], request()) == 2
         logSize() == 0
+    }
+    def '/dev/stdin reads the verb\'s own stdin stream, as - does'() {
+        when:
+        final int status = run(['/dev/stdin', '--dry-run', 'true'], request())
+
+        then:
+        status == 0
+        ((Map) DagJson.decode(out.toString().trim())).exists == false
+    }
+
+    def 'a pipe given as the file is read to its end, never sized or seeked'() {
+        given: 'a real FIFO, the shape of `items ... | put /dev/stdin` through a shell'
+        final Path fifo = tempDir.resolve('request.fifo')
+        assert new ProcessBuilder('mkfifo', fifo.toString()).inheritIO().start().waitFor() == 0
+        final byte[] bytes = request().getBytes('UTF-8')
+        final Thread writer = Thread.start { fifo.toFile().withOutputStream { OutputStream o -> o.write(bytes) } }
+
+        when:
+        final int status = run([fifo.toString(), '--name', 'piped'])
+        writer.join(10_000)
+        final List<Map> printed = bodies()
+
+        then:
+        err.toString() == ''
+        status == 0
+        printed.size() == 2
+        printed[0].written == true
+        printed[1].block.value == 'piped'
+        logSize() == 2
     }
 }

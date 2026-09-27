@@ -1,6 +1,5 @@
 package robsyme.cas.cli
 
-import java.nio.file.Files
 import java.nio.file.Paths
 
 import groovy.transform.CompileStatic
@@ -88,7 +87,7 @@ class CasCommands {
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
             '  items <output> [<path>=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
             '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
-            '  put <file|-> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
+            '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
             '                         nf-blocks:items ... --format selection | nextflow plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
@@ -100,13 +99,13 @@ class CasCommands {
      */
     private static int put(Options options, Map config, PrintStream out, PrintStream err, InputStream stdin, Closure<Long> clock) {
         if( options.positionals.size() != 1 )
-            throw new UsageException("put takes one file (or - for stdin), got ${options.positionals ?: 'none'}")
+            throw new UsageException("put takes one file (or /dev/stdin), got ${options.positionals ?: 'none'}")
         final String dry = options.flag('dry-run')
         if( !(dry in [null, 'true', 'false']) )
             throw new UsageException("--dry-run is a flag, got '${dry}'")
         final String name = nameOption(options.flag('name'))
         final String source = options.positionals[0]
-        final byte[] body = source == '-' ? readCapped(stdin) : readCapped(Files.newInputStream(Paths.get(source)))
+        final byte[] body = readCapped(source in STDIN_NAMES ? stdin : new FileInputStream(source))
         if( name != null ) {
             final String kind = requestKind(body)
             if( kind != null && kind != Records.SELECTION )
@@ -194,10 +193,23 @@ class CasCommands {
         }
     }
 
-    /** At most one byte past the builder's request cap, so the builder refuses it with too_large. */
+    /** The names put reads from the verb's own stdin stream rather than opening as a file. */
+    static final Set<String> STDIN_NAMES = ['-', '/dev/stdin'] as Set<String>
+
+    /**
+     * At most one byte past the builder's request cap, so the builder refuses it with too_large.
+     * A plain read loop: the input may be a pipe or FIFO, which cannot be sized or seeked
+     * (Files.newInputStream's readNBytes asks its channel for size() and fails with "Illegal seek").
+     */
     private static byte[] readCapped(InputStream input) {
         try {
-            return input.readNBytes((int) Put.MAX_REQUEST_BYTES + 1)
+            final int cap = (int) Put.MAX_REQUEST_BYTES + 1
+            final ByteArrayOutputStream bytes = new ByteArrayOutputStream()
+            final byte[] buffer = new byte[8192]
+            int n
+            while( bytes.size() < cap && (n = input.read(buffer, 0, Math.min(buffer.length, cap - bytes.size()))) != -1 )
+                bytes.write(buffer, 0, n)
+            return bytes.toByteArray()
         }
         finally {
             input.close()

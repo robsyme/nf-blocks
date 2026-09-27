@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-18):
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-19):
 Selections and Claims written through the page, all local, over a
 composition of a writable member and a read-only one.
 
     python3 gate/browser_b_assert.py prepare <GATE_ROOT>
     python3 gate/browser_b_assert.py probe <GATE_ROOT> <port> <token>
     python3 gate/browser_b_assert.py consumer <GATE_ROOT> <untyped|typed> <src dir> <dest dir>
+    python3 gate/browser_b_assert.py cli-args <GATE_ROOT>
     python3 gate/browser_b_assert.py check <GATE_ROOT>
 
 prepare copies this Gate run's store to $GATE_ROOT/browser-b/store (the
@@ -16,7 +17,10 @@ files the scenario picks from the Gate's own read of the blocks and its own
 hashes, and writes the scenario drive.mjs plays. probe runs while explore is
 still up: it replays one of the page's own writes, sends three POSTs the
 endpoint must refuse, dry-runs a Selection both members name, and fetches the
-samplesheet export. consumer copies a consumer pipeline with its marked call line replaced by the page's snippet, verbatim. check recomputes
+samplesheet export. cli-args prints the arguments of B19's command line,
+`items <output> <condition> --run <refs> --format selection | put /dev/stdin
+--name <name>`, which tier_b.sh runs through the real launcher once explore
+has stopped. consumer copies a consumer pipeline with its marked call line replaced by the page's snippet, verbatim. check recomputes
 every address with the Gate's encoder (gate/dagjson.py) and compares it, the
 store, the probes and the selection pipeline's hashes with those answers.
 Nothing the plugin or the page reports is taken on trust.
@@ -204,12 +208,21 @@ def prepare(root):
     _log(store, "selection", s6, SHARED_MILLIS)
     d6 = _put_block(shared, deletion(s6))
     _log(shared, "claim", d6, SHARED_MILLIS)
+    # B19: A in cold's and again's aligned, by lid:// and by cas://, piped from items into put --name.
+    cli_members = ["cas://%s/%s" % (coll["aligned"], a), "cas://%s/%s" % (again_aligned, item(again, "aligned", "A"))]
+    cli_address = dagjson.address(dagjson.expected_selection({"kind": "Selection", "members": cli_members, "derived_from": []}, ASSERTED_BY))
+    if cas.Store(store).has(cli_address) or cas.Store(shared).has(cli_address):
+        raise cas.GateError("B19's Selection %s is already in the store; the command line would prove nothing" % cli_address)
+    if not cold.nf_run_hash or not again.completion_cid:
+        raise cas.GateError("B19 needs cold's nf_run_hash and again's RunCompletion")
     expected = {"items": {"A": a, "B": b, "C": c},
                 "collections": {"aligned": coll["aligned"], "stats": coll["stats"], "again": again_aligned},
                 "files": {"A": _file(gate, "A.bam"), "B": _file(gate, "B.bam"), "C": _file(gate, "C.stats")},
                 "stats_items": stats_items,
                 "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2,
-                           "s5": s5, "n5": n5, "d5": d5, "s6": s6, "d6": d6}}
+                           "s5": s5, "n5": n5, "d5": d5, "s6": s6, "d6": d6},
+                "cli": {"output": "aligned", "condition": "sample=A", "name": "from-the-cli", "members": cli_members,
+                        "runs": "lid://%s,cas://%s" % (cold.nf_run_hash, again.completion_cid)}}
     q = "?token={token}"
     steps = [
         {"id": "B.first", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], a),
@@ -375,8 +388,15 @@ def probe(root, port, token):
 
 
 # --------------------------------------------------------------------------
-# consumer (explore has stopped)
+# cli-args and consumer (explore has stopped)
 # --------------------------------------------------------------------------
+
+def cli_args(root):
+    """B19's items arguments and put's name, space-separated, for tier_b.sh: <output> <condition> <refs> <name>."""
+    cli = _read_json(os.path.join(root, "browser-b", "expected.json"))["cli"]
+    print("%s %s %s %s" % (cli["output"], cli["condition"], cli["runs"], cli["name"]))
+    return 0
+
 
 def consumer(root, mode, src, dest):
     """Copy the consumer pipeline in `src` to `dest`, its marked line re-assigned to the page's [data-snippet=<mode>] text."""
@@ -458,7 +478,7 @@ def _read_sheet_csv(path):
 
 
 def evaluate(root):
-    """[(status, number, title, message)] for assertions 8-18."""
+    """[(status, number, title, message)] for assertions 8-19."""
     out = os.path.join(root, "browser-b")
     expected = _read_json(os.path.join(out, "expected.json"))
     observed = _observed(out)
@@ -895,6 +915,43 @@ def evaluate(root):
         return PASS, ("the page's typed snippet (%s), run verbatim with nextflow.enable.types, handed a Sample and a Kit record "
                       "to every task without an invalid argument type warning, and A, B and C hash as expected" % shown)
 
+    def b19():
+        cli = expected["cli"]
+        exit_path = os.path.join(out, "cli.exit")
+        if not os.path.isfile(exit_path):
+            raise cas.GateError("no browser-b/cli.exit: the items | put command line never ran")
+        with open(exit_path) as fh:
+            statuses = fh.read().split()
+        err_path = os.path.join(out, "cli-put.err")
+        err = open(err_path, encoding="utf-8", errors="replace").read().strip() if os.path.isfile(err_path) else ""
+        if statuses != ["0", "0"]:
+            return FAIL, ("items | put exited %s, expected 0 0; put said %r (see browser-b/cli-items.err, cli-put.err)"
+                          % (" ".join(statuses) or "<nothing>", err[-300:]))
+        problems = []
+        block = dagjson.expected_selection({"kind": "Selection", "members": cli["members"], "derived_from": []}, ASSERTED_BY)
+        address = dagjson.address(block)
+        out_path = os.path.join(out, "cli-put.out")
+        with open(out_path, encoding="utf-8") as fh:
+            printed = [dagjson.loads(line) for line in fh if line.startswith("{")]
+        answered = _text(printed[0].get("address")) if printed else None
+        if answered != address:
+            problems.append("put answered %s for the Selection, the Gate address is %s" % (answered, address))
+        try:
+            stored = cas.decode(store.read(address))
+        except cas.GateError as exc:
+            problems.append("the Selection: %s" % exc)
+        else:
+            if stored != block:
+                problems.append("block %s reads back as %r, the Gate built %r" % (address, stored, block))
+        state = dagjson.claim_state(_claims_about(store, address))
+        if state["names"] != [cli["name"]] or state["name_conflicted"]:
+            problems.append("the Selection's current names are %r, expected [%r]" % (state["names"], cli["name"]))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("`items %s %s --run %s --format selection | put /dev/stdin --name %s` through the launcher wrote "
+                      "the Selection at the Gate's address %s with one current name"
+                      % (cli["output"], cli["condition"], cli["runs"], cli["name"], address))
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
@@ -906,6 +963,7 @@ def evaluate(root):
     run(16, "a copy deleted in another member is restored; a Selection held here and deleted elsewhere is restored from the exists path", b16)
     run(17, "a per-run query pick keeps its collection, and Add all adds every item with it", b17)
     run(18, "the typed consumer receives records", b18)
+    run(19, "items --format selection piped into put /dev/stdin --name writes the named Selection", b19)
     return results
 
 
@@ -921,8 +979,8 @@ def check(root):
 
 
 def main(argv):
-    if len(argv) == 3 and argv[1] in ("prepare", "check"):
-        return {"prepare": prepare, "check": check}[argv[1]](argv[2])
+    if len(argv) == 3 and argv[1] in ("prepare", "check", "cli-args"):
+        return {"prepare": prepare, "check": check, "cli-args": cli_args}[argv[1]](argv[2])
     if len(argv) == 5 and argv[1] == "probe":
         return probe(argv[2], argv[3], argv[4])
     if len(argv) == 6 and argv[1] == "consumer" and argv[3] in ("untyped", "typed"):

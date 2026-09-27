@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Gate browser tier B (block explorer spec section 1.3, assertions 8-18): the
+# Gate browser tier B (block explorer spec section 1.3, assertions 8-19): the
 # page composes, renames, deletes and undoes through nf-blocks:explore over a
 # copy of this Gate run's store; the Gate probes the write endpoint, fetches
-# the samplesheet, runs gate/selection and gate/selection-typed on the page's
+# the samplesheet, pipes nf-blocks:items into nf-blocks:put --name through the
+# real launcher, runs gate/selection and gate/selection-typed on the page's
 # own snippets, and checks it all with its own encoder.
 #
 #   gate/browser/tier_b.sh <GATE_ROOT>        # NEXTFLOW and NXF_PLUGINS_DIR from gate.sh
@@ -48,6 +49,19 @@ node "$REPO/gate/browser/drive.mjs" "$B/scenario.json" "$B/observed.json" \
 python3 "$REPO/gate/browser_b_assert.py" probe "$GATE_ROOT" "$port" "$token" > "$B/probe.log" 2>&1 \
      || echo "browser tier B: the probe failed, see $B/probe.log" >&2
 stop
+
+# B19: the command-line route to a named Selection (DESIGN.md section 15), a
+# real pipe between two launchers, over the same store once explore has
+# stopped. -q keeps the "un-official plugin repository" banner that
+# NXF_PLUGINS_TEST_REPOSITORY prints off items' stdout; an installed release
+# prints none.
+read -r cli_output cli_condition cli_runs cli_name <<< "$(python3 "$REPO/gate/browser_b_assert.py" cli-args "$GATE_ROOT")"
+echo "--- browser tier B: items $cli_output $cli_condition --run $cli_runs --format selection | put /dev/stdin --name $cli_name"
+( cd "$B" && unset NXF_OFFLINE && export XDG_CACHE_HOME="$B/cache" NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" && set +e
+  "$NEXTFLOW" -q -c "$B/explore.config" plugin nf-blocks:items "$cli_output" "$cli_condition" --run "$cli_runs" \
+      --format selection 2> "$B/cli-items.err" \
+  | "$NEXTFLOW" -q -c "$B/explore.config" plugin nf-blocks:put /dev/stdin --name "$cli_name" > "$B/cli-put.out" 2> "$B/cli-put.err"
+  echo "${PIPESTATUS[*]}" > "$B/cli.exit" )
 
 s2="$(python3 -c 'import json,sys; o={s["id"]: s for s in json.load(open(sys.argv[1]))["steps"]}; print(o["B.second"]["extracts"]["after"]["written"] or "")' "$B/observed.json" 2> /dev/null || true)"
 # Each consumer runs the call line the page's Selection view showed for S2

@@ -186,10 +186,10 @@ A Selection curates Output Items across runs into one named group, without
 copying anything: composing, renaming, deleting and undoing all happen from
 the page opened through `nf-blocks:explore` (the page needs its own `?token=`
 to write, so it must be opened through `explore`, not a plain static server).
-`nextflow plugin nf-blocks:put <file|-> [--dry-run] [--name <name>]` builds and writes the
+`nextflow plugin nf-blocks:put <file|/dev/stdin> [--dry-run] [--name <name>]` builds and writes the
 same Selection or Claim blocks from a DAG-JSON file on the command line,
-sharing the endpoint's one builder; `-` reads stdin in-process, and from a
-real shell (Nextflow 26.04.6 refuses a bare `-`) use `/dev/stdin` instead.
+sharing the endpoint's one builder. `/dev/stdin` reads the request from a pipe
+or a redirect (Nextflow 26.04.6 refuses a bare `-` as an argument).
 Staleness is member-scoped (decision 22): superseding a Claim that only a
 read-only member has already superseded succeeds and leaves a conflict; the
 dry run reports `here` and `name_claims`.

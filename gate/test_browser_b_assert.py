@@ -1,5 +1,5 @@
 # gate/test_browser_b_assert.py
-"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-18)
+"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-19)
 over a small hand-made world: blocks written with the Gate's own encoder into
 a writable member and a read-only one, a synthetic observed.json and
 probes.json, and a consumer store of hashes. Each
@@ -99,6 +99,7 @@ class World(object):
         os.makedirs(self.shared)
         self.build_shared()
         self.build_picks()
+        self.build_cli()
         self.untyped = "channel.fromStore(selection: '%s')" % self.s2
         self.typed = "nextflow.Channel.fromStore(selection: '%s', records: true)" % self.s2
         self.ran = {"selection": None, "selection-typed": None}   # None: main.nf runs the page's snippet
@@ -225,6 +226,21 @@ class World(object):
             collection=self.extract(pickAll=[{"via": COLLS["stats"], "count": "3"}]),
             all=self.extract(tray="4"))
 
+    def build_cli(self):
+        """B19: `items aligned sample=A --run <cold>,<again> --format selection | put /dev/stdin --name from-the-cli`."""
+        members = ["cas://%s/%s" % (COLLS["aligned"], ITEMS["A"]), "cas://%s/%s" % (COLLS["again"], ITEMS["A"])]
+        self.expected["cli"] = {"output": "aligned", "condition": "sample=A", "runs": "lid://cold,cas://again",
+                                "name": "from-the-cli", "members": members}
+        block = dagjson.expected_selection({"kind": "Selection", "members": members, "derived_from": []}, "gate")
+        self.cli_selection = self.put_block(block)
+        self.log(self.cli_selection, "selection")
+        self.cli_claim = self.put_block(dagjson.expected_claim(dagjson.loads(json.dumps(
+            claim_request(self.cli_selection, "set", "name", "from-the-cli", second=self.tick()))), "gate"))
+        self.log(self.cli_claim)
+        self.cli_exit = "0 0"
+        self.cli_out = self.response(self.cli_selection) + "\n" + self.response(self.cli_claim) + "\n"
+        self.cli_err = ""
+
     # -- building ---------------------------------------------------------
     def tick(self):
         self.second += 1
@@ -294,6 +310,10 @@ class World(object):
         dump("expected.json", self.expected)
         dump("observed.json", {"steps": list(self.steps.values())})
         dump("probes.json", self.probes)
+        for name, text in (("cli.exit", self.cli_exit and self.cli_exit + "\n"), ("cli-put.out", self.cli_out), ("cli-put.err", self.cli_err)):
+            if text is not None:
+                with open(os.path.join(self.out, name), "w") as fh:
+                    fh.write(text)
         with open(os.path.join(self.out, "selection.exit"), "w") as fh:
             fh.write(self.exit + "\n")
         buf = io.StringIO()
@@ -377,7 +397,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), list(range(8, 19)))
+        self.assertEqual(sorted(results), list(range(8, 20)))
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -390,9 +410,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 19):
+        for n in range(8, 20):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 11 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 12 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -741,6 +761,40 @@ class CheckTest(unittest.TestCase):
     def test_b18_an_item_staged_twice_fails(self):
         self.w.typed_tasks.append("typed:B.bam")
         self.assertFail(18, "typed:B.bam")
+
+    # -- B19 --------------------------------------------------------------
+    def test_b19_the_whole_world_passes(self):
+        self.assertPass(19)
+
+    def test_b19_a_pipe_that_failed_fails_with_puts_error(self):
+        # What put printed before the fix: the launcher's pipe cannot be sized or seeked.
+        self.w.cli_exit = "0 1"
+        self.w.cli_out = ""
+        self.w.cli_err = "nf-blocks:put: Illegal seek\n"
+        self.assertFail(19, "Illegal seek")
+
+    def test_b19_no_exit_record_fails(self):
+        self.w.cli_exit = None
+        self.assertFail(19, "cli.exit")
+
+    def test_b19_a_selection_at_another_address_fails(self):
+        self.w.cli_out = self.w.response(dcid("another Selection")) + "\n" + self.w.response(self.w.cli_claim) + "\n"
+        self.assertFail(19, "Gate address")
+
+    def test_b19_a_selection_missing_from_the_store_fails(self):
+        cid = self.w.cli_selection
+        os.remove(os.path.join(self.w.store, "blocks", cid[-2:], cid))
+        self.assertFail(19, cid)
+
+    def test_b19_no_name_claim_fails(self):
+        cid = self.w.cli_claim
+        os.remove(os.path.join(self.w.store, "blocks", cid[-2:], cid))
+        self.assertFail(19, "from-the-cli")
+
+    def test_b19_two_current_names_fails(self):
+        self.w.put_block(dagjson.expected_claim(dagjson.loads(json.dumps(
+            claim_request(self.w.cli_selection, "set", "name", "other", second=self.w.tick()))), "gate"))
+        self.assertFail(19, "other")
 
 
 class SubstituteTest(unittest.TestCase):

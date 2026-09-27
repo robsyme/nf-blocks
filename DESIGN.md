@@ -110,8 +110,11 @@ cas {
   `outputDir`, and logs at info `outputDir not set; publishing to
   cas://<alias>`. It runs before `Session.groovy:472` copies
   `session.outputDir` into `WorkflowMetadata`, so `workflow.outputDir`, the
-  lineage WorkflowRun record and Platform payloads agree. `session.config` is
-  not changed, so the RunManifest records the config as written. An
+  lineage WorkflowRun record and Platform payloads agree. The RunManifest
+  records the config as written because it records
+  `session.resolvedConfig`, the text Nextflow rendered from the config files
+  before any observer ran, which never sees this default (`session.config`
+  is not changed either). An
   `outputDir` from `-output-dir`, or `cas://<alias>/sub`, is explicit: the
   factory leaves it to `onFlowCreate`'s check.
 - In the Walking Skeleton a member location is a local directory path. The
@@ -834,7 +837,7 @@ the composition lacks fails the call, naming it. `run`, `output`, `where` and
   which `nf-blocks:items --run` shares (§15); its errors say "run reference".
 - With none of `selection`, `run` or `output`, the call fails with
   "`fromStore` takes `selection: <address>`, or `run: <ref>` with `output:
-  <name>`; optionally `where: [...]` and `records: true`".
+  <name>`; optionally `where: [...]` and `records: true`."
 - A run that fails because `fromStore` cannot be found ends with a warning
   from `CasObserver.onFlowError` (§11), chosen by the exception, not the
   script mode. Untyped (method `Channel.fromStore`): "`fromStore` comes from
@@ -905,7 +908,7 @@ config comes from `ConfigBuilder` over the launch directory and `-c`, exactly as
 ```
 nextflow [-c <config>] plugin nf-blocks:snapshot
 nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
-nextflow [-c <config>] plugin nf-blocks:put <file> [--dry-run] [--name <name>]
+nextflow [-c <config>] plugin nf-blocks:put <file|/dev/stdin> [--dry-run] [--name <name>]
 nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --run <ref>[,<ref>...]
                                               [--pipeline <id>] [--format csv|json|occurrences|selection]
 ```
@@ -1272,15 +1275,17 @@ name typed.
 ### `nf-blocks:put`
 
 ```
-nextflow [-c <config>] plugin nf-blocks:put <file|-> [--dry-run] [--name <name>]
+nextflow [-c <config>] plugin nf-blocks:put <file|/dev/stdin> [--dry-run] [--name <name>]
 ```
 
 Builds and writes one Selection or Claim from a DAG-JSON file, sharing
 `Put`'s one builder with `POST /api/put` (spec section 9.2). Prints the response
 or error body (DAG-JSON) on stdout, exit 0 or 1. `put` reads a path
-(decision 11): `-` reads stdin when called in-process, but Nextflow
-26.04.6's launcher refuses a bare `-` before any plugin runs (`Unknown
-option: -`), so from a shell stdin is `/dev/stdin`. A bare `--dry-run`
+(decision 11). Nextflow 26.04.6's launcher refuses a bare `-` before any
+plugin runs (`Unknown option: -`), so from a shell stdin is `/dev/stdin`;
+the verb reads `/dev/stdin` (and `-`, when called in-process) from its own
+stdin stream, and reads any other path with a plain read loop that never
+sizes or seeks it, so a pipe, a FIFO or a redirect all work. A bare `--dry-run`
 reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
 `=true`). Staleness is member-scoped (decision 22): superseding a Claim
 that only a read-only member has already superseded succeeds and leaves a
@@ -1469,7 +1474,7 @@ by item CID (decision 18).
 
 ### Gate browser tier B
 
-Eleven assertions (spec section 1.3, tier B), all local: a Selection made in
+Twelve assertions (spec section 1.3, tier B), all local: a Selection made in
 the page has the Gate's own address (8); `fromStore(selection:)` receives each
 distinct item once, nested included (9); rename, delete and undo are Claims at
 the Gate's addresses, and a replay writes nothing (10); two sessions renaming
@@ -1479,7 +1484,9 @@ token, from another Origin, or as `text/plain` is refused, and writes nothing
 (13); a read-only member's Selection is copied and named (14); a Claim in
 another member does not lock a rename (15); a copy deleted in another member is
 restored (16); a per-run query pick keeps its collection, and Add all adds
-every item with it (17); the typed consumer receives records (18). B9's and
+every item with it (17); the typed consumer receives records (18);
+`items --format selection` piped into `put /dev/stdin --name` through the
+real launcher writes the named Selection at the Gate's address (19). B9's and
 B18's consumers run the call line the Selection view shows (`[data-snippet]`)
 verbatim, so a broken snippet fails the Gate. B12 probes with a Selection no
 step has written, so the assertion can actually fail if a refusal ever let a
@@ -1499,7 +1506,7 @@ written Selection, which could not distinguish "refused" from "written".
 ### Milestone 3: picking items for a downstream workflow
 
 *Status 2026-09-27: milestone 3 accepted; Gate lineage 11/0/6, browser tier A
-5/5, tier B 11/11 (all local).*
+5/5, tier B 12/12 (all local).*
 
 Plan `docs/plans/2026-09-27-explorer-milestone-3.md`, from the UX map
 `../.scratch/block-explorer/ux/map.md`; each ticket's `## Answer` holds the

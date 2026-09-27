@@ -152,7 +152,7 @@ A failing line: read `browser/observed.json` for that step and
 
 ## Browser tier B (Selections)
 
-Tier B, milestones 2 and 3, assertions 8 to 18 of spec section 1.3. It is local:
+Tier B, milestones 2 and 3, assertions 8 to 19 of spec section 1.3. It is local:
 `gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
 Playwright, and needs no network beyond what `explore` itself asks for.
 `GATE_SKIP_BROWSER=1` skips it with tier A.
@@ -183,7 +183,11 @@ query 3 over `cold`'s `aligned` (`sample` is `A`), add every item of `cold`'s
 of `second` in both snippet modes, untyped and typed. While `explore` is still up, `browser_b_assert.py probe`
 replays the page's own rename bytes, sends three POSTs that must be refused,
 dry-runs S4's request, and fetches the samplesheet of `second` as CSV and
-JSON. `explore` stops, and
+JSON. `explore` stops. `tier_b.sh` then pipes one launcher into another over
+the same copy, `nextflow -q plugin nf-blocks:items aligned sample=A --run
+lid://<cold>,cas://<again's RunCompletion> --format selection | nextflow -q
+plugin nf-blocks:put /dev/stdin --name from-the-cli` (`-q` keeps the
+`NXF_PLUGINS_TEST_REPOSITORY` banner off `items`' stdout), and
 `gate/selection` runs in `$GATE_ROOT/selection` over the copy (member `lab`)
 and its own `browser-b/store-out` (member `out`), staging `second` through
 the page's untyped snippet and through the CSV's `1` column, and publishing
@@ -247,8 +251,13 @@ and the Gate's DAG-CBOR encoder:
   task per file, and each published digest matches pipeline-a's work file.
   B9 likewise requires `gate/selection` to have run the untyped snippet,
   naming `second`.
+- B19: both launchers of the `items | put` pipe exit 0; `put` answers the
+  Gate's address for {A via `cold`'s `aligned` and via `again`'s `aligned`},
+  the block in the store reads back equal to the Gate's, and the Gate's
+  `dagjson.claim_state` of it is the one current name `from-the-cli`.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
+`cli-items.err`, `cli-put.out`, `cli-put.err` and `cli.exit` (B19),
 `selection.log` (and `selection-nextflow.log`), `selection-typed.log` (and
 `selection-typed-nextflow.log`), beside `scenario.json`,
 `observed.json`, `probes.json`, `expected.json` and the two samplesheets.
