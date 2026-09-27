@@ -337,7 +337,11 @@ class Put {
 
     private String entryFor(Cid address, StoreLogKind kind) {
         final StoreLogEntry existing = index.firstLogEntry(address, writable.alias())
-        return existing != null ? existing.name : append(address, kind)
+        if( existing != null )
+            return existing.name
+        final String name = append(address, kind)
+        ingest()
+        return name
     }
 
     private String append(Cid address, StoreLogKind kind) {

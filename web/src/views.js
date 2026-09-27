@@ -2,7 +2,8 @@
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
 import { h, link, cid } from './html.js'
-import { saveChoice, namingRequest, restoreRequest } from './save-choice.js'
+import { saveChoice } from './save-choice.js'
+import { saveSequence, retryRestore } from './save-flow.js'
 
 const enc = encodeURIComponent
 
@@ -13,6 +14,31 @@ export function errorNode(e) {
 function table(head, rows) {
   return h('div', { class: 'scroll' }, h('table', {}, h('tr', {}, head.map(t => h('th', {}, t))), rows))
 }
+
+/** What Copy on a Selection member copies (spec 7.1a): the bare item address when it has no via, else `cas://<via>/<address>`. */
+export const copyText = (address, via) => (via === '-' ? address : `cas://${via}/${address}`)
+
+/** What the Copy button should say after `clipboard.writeText(text)`; a missing clipboard counts as a rejection (page minors, ticket 11). */
+export async function copyOutcome(clipboard, text) {
+  if (!clipboard) return 'Copy failed'
+  try {
+    await clipboard.writeText(text)
+    return 'Copied'
+  } catch {
+    return 'Copy failed'
+  }
+}
+
+/**
+ * What the deleted Selections list's Undo-unavailable note says, or `null`
+ * when Undo is offered here and no note is shown (mirrors the Selection
+ * view's `actions()`). `href` is `ctx.write.hrefFor('#/selections?deleted=1')`,
+ * computed by the caller since it is `ctx`'s own method.
+ */
+export const undoNote = (available, here, reason, writable, href) => (!available
+  ? { kind: 'unavailable', reason }
+  : here ? null
+    : { kind: 'elsewhere', writable, href })
 
 const shown = (value) => (value === null ? 'null' : typeof value === 'object' && typeof value.toString === 'function' && value['/']
   ? value.toString() : typeof value === 'object' ? JSON.stringify(value, (k, v) => (v && v['/'] ? v.toString() : v)) : String(value))
@@ -201,6 +227,14 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
     } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
 }
 
+/** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
+function undoUnavailableNote(ctx) {
+  const note = undoNote(ctx.write.available, ctx.write.here, ctx.write.reason, ctx.write.writable, ctx.write.hrefFor('#/selections?deleted=1'))
+  if (!note) return null
+  return h('p', { 'data-unavailable': '', class: 'muted' }, note.kind === 'unavailable' ? note.reason
+    : [`Undo writes to the writable member, ${note.writable}. `, link(note.href, 'Open this list there'), '.'])
+}
+
 export async function selections(ex, { offset = 0, deleted = false }, ctx) {
   const page = await ex.selectionPage({ offset, showDeleted: deleted })
   const route = deleted ? '#/selections?deleted=1' : '#/selections'
@@ -210,6 +244,7 @@ export async function selections(ex, { offset = 0, deleted = false }, ctx) {
     h('p', {}, deleted ? link('#/selections', 'Show current Selections')
       : [link('#/selections?deleted=1', 'Show deleted'), page.hiddenCount ? ` (${page.hiddenCount} on this page)` : '']),
     pager(route, page, 'Selections'),
+    deleted ? undoUnavailableNote(ctx) : null,
     page.rows.length === 0 ? h('p', { class: 'muted' }, deleted ? 'No deleted Selections.' : 'No Selections in this member yet.')
       : table(['name', 'first seen', 'by', 'state', ''], page.rows.map(r => h('tr', {
         'data-selection': r.cid, 'data-deletion': r.state.deletion, 'data-source': r.source, 'data-names': JSON.stringify(r.state.names) },
@@ -246,11 +281,13 @@ export async function selection(ex, selectionCid, ctx) {
   // fails it outright (final review finding 2).
   const members = s.members.map((m) => {
     // Spec section 7.1a: members shown as Item Occurrences, copyable as links.
-    const copy = (uri) => h('button', { type: 'button', onclick: () => navigator.clipboard?.writeText(uri).catch(() => {}) }, 'Copy')
+    const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
+      event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
+    } }, 'Copy')
     const where = m.kind === 'selection'
       ? link(`#/selection/${m.address}`, cid(m.address))
-      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(`cas://${m.address}`)]
-        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(`cas://${v}/${m.address}`)]))
+      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(copyText(m.address, v))]
+        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(copyText(m.address, v))]))
     const held = h('td', { 'data-held-for': m.address, class: 'muted' }, '...')
     const tr = h('tr', { 'data-member': m.address, 'data-kind': m.kind }, h('td', {}, where), h('td', {}, m.kind), held)
     return { m, held, tr }
@@ -318,6 +355,23 @@ function actions(selectionCid, st, ctx, status) {
       ' ', pickButton(ctx, { address: selectionCid, kind: 'selection' })))
 }
 
+/**
+ * The banner on the saved Selection's page after a save whose naming or
+ * restoring failed (DESIGN.md §16 decision 23). A naming failure needs no
+ * button, since Rename is on the page below; a restoring one offers Retry.
+ */
+export function failureBanner(address, failures, ctx) {
+  const status = h('div', { id: 'retry-status' })
+  return h('div', { class: 'warn', 'data-write-failed': failures.map(f => f.step).join(' '), 'data-banner-for': address },
+    failures.map(f => h('div', {},
+      h('p', {}, f.step === 'restoring' ? 'Saved, but restoring it failed:' : 'Saved, but naming it failed:'),
+      errorNode({ code: f.code, message: f.message }),
+      f.step === 'restoring' ? h('p', {}, h('button', { type: 'button', id: 'retry-restore', onclick: (e) => ctx.write.run(status, async () => {
+        await retryRestore(ctx.write.writer, address, f.retry)
+        return { address, href: `#/selection/${address}` }
+      }, e.currentTarget) }, 'Retry restore'), status) : null)))
+}
+
 const deletedNote = (deletion, where) => deletion === 'deleted' ? ` It is deleted ${where}.`
   : deletion === 'conflicted' ? ` Its deletion is in conflict ${where}.` : ''
 
@@ -329,26 +383,9 @@ export function compose(ex, ctx) {
   const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
     const members = ctx.tray.toMembers()
     const saveAndName = async (choice) => {
-      const written = await ctx.write.writer.selection(members)
-      ctx.tray.clear()
-      ctx.trayChanged()
-      const naming = namingRequest(choice, name.value)
-      if (naming) {
-        try {
-          await ctx.write.writer.rename(written.address, naming.name, naming.supersedes)
-        } catch (e) {
-          throw Object.assign(e, { saved: written.address, failed: 'naming' })
-        }
-      }
-      const restoring = restoreRequest(choice)
-      if (restoring) {
-        try {
-          await ctx.write.writer.undo(written.address, restoring.supersedes)
-        } catch (e) {
-          throw Object.assign(e, { saved: written.address, failed: 'restoring' })
-        }
-      }
-      return { address: written.address, href: `#/selection/${written.address}` }
+      const { address, failures } = await saveSequence(ctx.write.writer, members, choice, name.value,
+        { onSaved: () => { ctx.tray.clear(); ctx.trayChanged() } })
+      return { address, href: `#/selection/${address}`, failures }
     }
     const dry = await ctx.write.writer.selection(members, { dryRun: true })
     const choice = saveChoice(dry)
@@ -358,7 +395,12 @@ export function compose(ex, ctx) {
         : dry.names.length === 1 ? ` as ${dry.names[0]}` : ` as ${dry.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(dry.names) },
         `This Selection already exists${named}.${deletedNote(choice.deletion, 'in this composition')} `,
-        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'), ' or ', cancel, '.'))
+        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'),
+        choice.restore.length ? [', ', h('button', { type: 'button', id: 'exists-restore', onclick: (e) => ctx.write.run(status, async () => {
+          await ctx.write.writer.undo(dry.address, choice.restore)
+          return { address: dry.address, href: `#/selection/${dry.address}` }
+        }, e.currentTarget) }, 'Restore')] : null,
+        ' or ', cancel, '.'))
       return { outcome: 'exists' }
     }
     if (choice.state === 'elsewhere') {
@@ -366,7 +408,7 @@ export function compose(ex, ctx) {
       const named = choice.names.length === 0 ? ', unnamed'
         : choice.names.length === 1 ? ` as ${choice.names[0]}` : ` as ${choice.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-held-elsewhere': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(choice.names) },
-        `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'there')} `,
+        `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'in this composition')} `,
         h('button', { type: 'button', id: 'compose-copy', onclick: (e) => ctx.write.run(status, () => saveAndName(choice), e.currentTarget) },
           choice.restore.length ? 'Restore a copy here' : 'Save a copy here'), ' or ', cancel, '.'))
       return { outcome: 'elsewhere' }

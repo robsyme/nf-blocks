@@ -11,6 +11,7 @@ import { resolveStore } from './store.js'
 import { Explorer } from './model.js'
 import { Tray, safeSessionStorage } from './tray.js'
 import { writer } from './write.js'
+import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
 import { h, link } from './html.js'
 import * as views from './views.js'
 
@@ -39,6 +40,8 @@ let tray = null
 let write = null
 let store = null
 let busy = false
+// A partly failed save's banner, waiting for the saved Selection's page to render.
+let pendingBanner = null
 const OUTCOME_KEY = 'nf-blocks-write-outcome'
 
 function finish(state) {
@@ -81,6 +84,10 @@ async function render() {
     if (!route) throw Object.assign(new Error(`there is no view for ${hash}`), { code: 'bad_route' })
     const node = await route[2](explorer, hash.match(route[1]), ctx)
     if (mine !== sequence) return
+    if (pendingBanner) {
+      if (hash === `#/selection/${pendingBanner.address}`) node.prepend(views.failureBanner(pendingBanner.address, pendingBanner.failures, ctx))
+      pendingBanner = null
+    }
     main.replaceChildren(node)
     updateStale()
     finish('ready')
@@ -110,11 +117,12 @@ function outcome(value) {
   document.body.dataset.writeSeq = String(Number(document.body.dataset.writeSeq ?? 0) + 1)
 }
 
-/** A write that ends by opening another member's page carries its outcome there (one sessionStorage key). */
+/** A write that ends by opening another member's page carries its outcome, and any failure banner, there (one sessionStorage key). */
 function carryOutcome() {
   try {
     const { writeOutcome, writeSeq, written } = document.body.dataset
-    safeSessionStorage()?.setItem(OUTCOME_KEY, JSON.stringify({ writeOutcome, writeSeq, written: written ?? null }))
+    safeSessionStorage()?.setItem(OUTCOME_KEY, JSON.stringify({ writeOutcome, writeSeq, written: written ?? null,
+      banner: pendingBanner ? bannerText(pendingBanner) : null }))
   } catch {
     // Storage refused; the next page starts without the outcome.
   }
@@ -126,10 +134,11 @@ function restoreOutcome() {
     const carried = storage?.getItem(OUTCOME_KEY)
     if (!carried) return
     storage.removeItem(OUTCOME_KEY)
-    const { writeOutcome, writeSeq, written } = JSON.parse(carried)
+    const { writeOutcome, writeSeq, written, banner } = JSON.parse(carried)
     if (writeOutcome) document.body.dataset.writeOutcome = writeOutcome
     if (writeSeq) document.body.dataset.writeSeq = writeSeq
     if (written) document.body.dataset.written = written
+    pendingBanner = bannerFrom(banner)
   } catch {
     // Nothing readable carried over.
   }
@@ -156,14 +165,6 @@ async function runWrite(status, attempt, button = null) {
       recorded = e.code ?? 'write_failed'
       const node = views.errorNode(e)
       if (e.code === 'stale_supersedes') node.append(' Someone changed this since the page loaded; reload to see the current state.')
-      if (e.saved) {
-        // Composing wrote the Selection, then naming or restoring it failed.
-        document.body.dataset.written = e.saved
-        const what = e.failed === 'restoring' ? 'restoring it' : 'naming it'
-        node.prepend(`The Selection was saved, but ${what} failed: `)
-        node.append(' ', link(write.hrefFor(`#/selection/${e.saved}`), e.failed === 'restoring' ? 'Open it' : 'Open it to name it'))
-        if (store.member === write.writable) await explorer.refreshTail(listLog).catch(() => {})
-      }
       status.replaceChildren(node)
       return
     }
@@ -172,21 +173,34 @@ async function runWrite(status, attempt, button = null) {
       return
     }
     if (done?.address) document.body.dataset.written = done.address
+    // A save whose naming or restoring failed still wrote the Selection: its
+    // page opens with a banner naming each failure (decision 23). Kept local
+    // until the render (or navigation) meant to show it, and only then
+    // assigned to `pendingBanner`, so a render already in flight cannot clear
+    // it first (final review finding 2).
+    const banner = done?.failures?.length ? { address: done.address, failures: done.failures } : null
     recorded = 'written'
     if (store.member !== write.writable) {
       outcome(recorded)
       recorded = null
+      pendingBanner = banner
       carryOutcome()
       location.assign(hrefIn(write.writable, done.href))
       return
     }
     try {
       await explorer.refreshTail(listLog)
+      pendingBanner = banner
       history.pushState(null, '', done.href)
       await render()
     } catch (e) {
-      status.replaceChildren(h('p', { class: 'warn', 'data-refresh-failed': '' },
-        `Saved, but the page could not refresh (${e?.message ?? e}); reload to see it.`))
+      const node = h('p', { class: 'warn', 'data-refresh-failed': '' },
+        `Saved, but the page could not refresh (${e?.message ?? e}); reload to see it.`)
+      // The render that would have shown `failureBanner` never happened: say
+      // the same thing here instead, with a link to the saved Selection
+      // (final review finding 1).
+      if (banner) for (const { text, href } of refreshFailureLines(banner, write.hrefFor)) node.append(' ', text, ' ', link(href, 'Open it'))
+      status.replaceChildren(node)
     }
   } finally {
     busy = false

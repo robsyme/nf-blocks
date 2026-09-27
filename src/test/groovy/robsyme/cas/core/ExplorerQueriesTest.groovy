@@ -88,7 +88,7 @@ class ExplorerQueriesTest extends Specification {
         'selectionCount'          | page.selectionCount
         'firstSeen'               | page.firstSeen
         'selectionsHolding'       | page.selectionsHolding
-        'successfulRunsOfPipeline' | page.successfulRunsOfPipeline
+        'successfulRunsPage'      | page.successfulRunsPage
     }
 
     def 'the guard itself catches a scan'() {

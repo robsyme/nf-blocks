@@ -203,7 +203,7 @@ def prepare(root):
                      {"extract": "offer"}, {"click": "#compose-copy"}, {"waitWrite": True}, {"extract": "after"}]},
         {"id": "B.deleted", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (again_aligned, b),
          "actions": [{"click": "[data-pick]"}, {"hash": "#/compose"}, {"click": "#compose-save"}, {"waitWrite": True},
-                     {"extract": "offer"}]},
+                     {"extract": "offer"}, {"click": "#exists-restore"}, {"waitWrite": True}, {"extract": "after"}]},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})
@@ -724,13 +724,31 @@ def evaluate(root):
         if held.get("exists") != sh["s6"] or held.get("existsDeletion") != "deleted":
             problems.append("composing S6 showed exists %r with deletion %r, expected S6 %s deleted"
                             % (held.get("exists"), held.get("existsDeletion"), sh["s6"]))
-        if _posts(seen("B.deleted")):
-            problems.append("B.deleted wrote %d request(s); the here path must write nothing" % len(_posts(seen("B.deleted"))))
+        posts = _posts(seen("B.deleted"))
+        verbs = [json.loads(p["body"]).get("verb") if _kind(p) == "Claim" else _kind(p) for p in posts]
+        if verbs != ["del"]:
+            problems.append("B.deleted: %d writing POST(s) %r, expected one del Claim" % (len(posts), verbs))
+        else:
+            _c, block, found = verify_post("B.deleted", posts[0], dagjson.expected_claim)
+            problems += found
+            if _text(block["subject"]) != sh["s6"]:
+                problems.append("the exists path's del is about %s, not S6" % _text(block["subject"]))
+            if [_text(x) for x in block["supersedes"]] != [sh["d6"]]:
+                problems.append("the exists path's del supersedes %r, expected shared's %s"
+                                % ([_text(x) for x in block["supersedes"]], sh["d6"]))
+        state = dagjson.claim_state(_claims_about(store, sh["s6"]) + _claims_about(shared_store, sh["s6"]))
+        if state["deletion"] != "none":
+            problems.append("across both members S6 has deletion %r, expected none" % state["deletion"])
+        restored = extract("B.deleted", "after")
+        if restored.get("view") != sh["s6"] or restored.get("deletion") != "none":
+            problems.append("lab's view after Restore on the exists path showed %r with deletion %r, expected S6 %s and none"
+                            % (restored.get("view"), restored.get("deletion"), sh["s6"]))
         if problems:
             return FAIL, "; ".join(problems)
         return PASS, ("a Selection shared named and deleted was offered as 'Restore a copy here' with its name prefilled; one "
                       "click wrote it into lab with a name Claim and a del superseding shared's, live across both members; "
-                      "composing a Selection lab holds and shared deleted named the deletion and wrote nothing")
+                      "composing a Selection lab holds and shared deleted named the deletion, and the 'already exists' "
+                      "path's Restore wrote one del superseding shared's, live across both members")
 
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
@@ -740,7 +758,7 @@ def evaluate(root):
     run(13, "the samplesheet lists exactly the Selection's items, and its cells stage", b13)
     run(14, "a Selection held only in a read-only member is copied and named", b14)
     run(15, "a Claim in another member does not lock a rename; the disagreement is a conflict", b15)
-    run(16, "a copy deleted in another member is restored; a deletion held elsewhere is named", b16)
+    run(16, "a copy deleted in another member is restored; a Selection held here and deleted elsewhere is restored from the exists path", b16)
     return results
 
 

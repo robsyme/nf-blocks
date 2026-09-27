@@ -1,6 +1,7 @@
 // The explorer's answers: the snapshot's rows through the plugin's own SQL,
 // and, for runs newer than the snapshot, the same answers computed from their
 // verified blocks (spec sections 5.3 to 5.5).
+import * as dagJson from '@ipld/dag-json'
 import SQL from './queries.json' with { type: 'json' }
 import { CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STALE_RUNS_NOTICE } from './config.js'
 import { BlockError } from './blocks.js'
@@ -28,6 +29,10 @@ export const ITEMS_PAGE = 500
 
 const text = (cid) => (cid === null || cid === undefined ? null : cid.toString())
 const isoOf = (millis) => new Date(millis).toISOString()
+
+const decoder = new TextDecoder()
+/** A Claim value as `claim.value` holds it (Index.valueText): a string as itself, null as itself, anything else as DAG-JSON text. */
+const valueText = (value) => (value === null || value === undefined || typeof value === 'string' ? value : decoder.decode(dagJson.encode(value)))
 
 export class Explorer {
   constructor({ base, db, blocks, now }) {
@@ -90,18 +95,22 @@ export class Explorer {
     if (wanted.length === 0) return out
     const json = JSON.stringify(wanted)
     const byCid = new Map()
-    for (const r of await this.db.query(SQL.claimsOf, [json])) {
+    const rows = await this.db.query(SQL.claimsOf, [json])
+    for (const r of rows) {
       const c = { cid: r.claim_cid, subject: r.subject_cid, verb: r.verb, attribute: r.attribute, value: r.value,
         timestamp: r.timestamp, asserted_by: r.asserted_by, supersedes: [], source: 'snapshot' }
       byCid.set(c.cid, c)
       out.get(c.subject).push(c)
     }
-    for (const s of await this.db.query(SQL.supersedesOf, [json]))
-      byCid.get(s.claim_cid)?.supersedes.push(s.superseded_cid)
+    // No Claim, no supersedes: a subject with nothing in `claim` cannot appear
+    // in `claim_supersedes` either, so this second query is skippable.
+    if (rows.length > 0)
+      for (const s of await this.db.query(SQL.supersedesOf, [json]))
+        byCid.get(s.claim_cid)?.supersedes.push(s.superseded_cid)
     for (const t of this.tailClaims.filter(t => t.value)) {
       const subject = text(t.value.subject)
       if (!out.has(subject)) continue
-      out.get(subject).push({ cid: t.cid, subject, verb: t.value.verb, attribute: t.value.attribute, value: t.value.value,
+      out.get(subject).push({ cid: t.cid, subject, verb: t.value.verb, attribute: t.value.attribute, value: valueText(t.value.value),
         timestamp: t.value.timestamp, asserted_by: t.value.asserted_by, supersedes: t.value.supersedes.map(text), source: 'tail' })
     }
     return out
@@ -310,30 +319,40 @@ export class Explorer {
    * before this task): a run the tail's Claims might hide cannot exist.
    * Once the tail holds any Claim, a snapshot run's exclusion may be stale
    * (a delete Claim written after the snapshot, or a tail `del` undoing a
-   * snapshot delete), so every succeeded, complete candidate the snapshot or
-   * the tail knows about is re-checked here, excluding one only when its
-   * current deletion group holds a `delete` (decision 13: a conflicted
-   * deletion still excludes the run; `hidden` stays for the run lists, which
-   * do want a conflicted deletion shown, with its ambiguity, rather than
-   * hidden).
+   * snapshot delete), so the snapshot's successful runs are read a page at a
+   * time, newest first (size 1, then 50, then 50, ...), each page's Claims
+   * checked until one row's current deletion group holds no `delete`
+   * (decision 13: a conflicted deletion still excludes the run; `hidden`
+   * stays for the run lists, which do want a conflicted deletion shown, with
+   * its ambiguity, rather than hidden) or a page comes back short. That
+   * candidate, if any, is compared against the visible stale candidates and
+   * the newest of the two wins, so a tail deletion of more than 50 runs
+   * cannot hide an older live one behind it.
    */
   async latestSuccessfulRun(pipeline) {
+    const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0).map(s => s.row)
     if (this.tailClaims.length === 0) {
       const [best] = await this.db.query(SQL.latestSuccessfulRun, [pipeline])
-      const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0)
       if (stale.length === 0) return best?.completion_cid ?? null
-      const candidates = stale.map(s => s.row)
+      const candidates = stale.slice()
       if (best) candidates.push(await this.runRow(best.completion_cid))
       return candidates.sort(byNewest)[0].completion_cid
     }
-    const snapshot = await this.db.query(SQL.successfulRunsOfPipeline, [pipeline])
-    const stale = this.stale.filter(s => s.row && s.row.pipeline === pipeline && s.row.status === 'succeeded' && s.row.possibly_incomplete === 0).map(s => s.row)
-    const candidates = [...snapshot, ...stale]
-    if (candidates.length === 0) return null
-    const states = await this.claimStates(candidates.map(c => c.completion_cid))
     const excluded = (s) => s.deletionClaims.some(cid => s.claims.find(c => c.cid === cid)?.verb === 'delete')
-    const visible = candidates.filter(c => !excluded(states.get(c.completion_cid))).sort(byNewest)
-    return visible[0]?.completion_cid ?? null
+    const staleStates = await this.claimStates(stale.map(r => r.completion_cid))
+    const visibleStale = stale.filter(r => !excluded(staleStates.get(r.completion_cid)))
+    let visible = null
+    for (let offset = 0, limit = 1; ; offset += limit, limit = RUNS_PAGE) {
+      const page = await this.db.query(SQL.successfulRunsPage, [pipeline, limit, offset])
+      if (page.length > 0) {
+        const states = await this.claimStates(page.map(r => r.completion_cid))
+        const found = page.find(r => !excluded(states.get(r.completion_cid)))
+        if (found) { visible = found; break }
+      }
+      if (page.length < limit) break
+    }
+    const candidates = visible ? [...visibleStale, visible] : visibleStale
+    return candidates.sort(byNewest)[0]?.completion_cid ?? null
   }
 
   /**

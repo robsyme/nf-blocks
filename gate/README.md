@@ -223,8 +223,9 @@ address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
   page offers "Restore a copy here" with the name prefilled, and one click
   writes it into `lab` with a name Claim and a `del` superseding `shared`'s
   deletion, so both members together show it live and named. Composing a
-  Selection `lab` holds and `shared` deleted names the deletion and writes
-  nothing.
+  Selection `lab` holds and `shared` deleted names the deletion, and its
+  Restore writes one `del` superseding `shared`'s, so S6 is live across both
+  members.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
 `selection.log` (and `selection-nextflow.log`), beside `scenario.json`,

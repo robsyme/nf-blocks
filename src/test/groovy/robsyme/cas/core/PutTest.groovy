@@ -1,5 +1,6 @@
 package robsyme.cas.core
 
+import java.nio.file.Files
 import java.nio.file.Path
 
 import spock.lang.Specification
@@ -141,6 +142,24 @@ class PutTest extends Specification {
         again.address == first.address
         again.entry == first.entry
         StoreLog.read(store).size() == 1
+    }
+
+    def 'the idempotent path ingests a Store Log entry it has to append (ticket 11)'() {
+        given: 'a Selection block the writable member holds, with its Store Log entry gone and a fresh index'
+        final String json = selection(item(itemA, [collA]))
+        final Cid s = send(json).address
+        Files.list(tempDir.resolve('store/log')).withCloseable { it.toList() }.each { Files.delete(it) }
+        index.close()
+        index = Index.open(tempDir.resolve('cache/fresh.sqlite'))
+        put = new Put(store, store, index, 'ada', { now }, { })   // no catch-up: only Put's own ingest can index the entry
+
+        when:
+        final PutResult again = send(json)
+
+        then:
+        !again.written
+        StoreLog.read(store).any { it.cid == s }
+        index.firstLogEntry(s, 'lab') != null
     }
 
     def 'a dry run writes nothing and reports existence and current names'() {

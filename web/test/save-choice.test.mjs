@@ -66,9 +66,14 @@ test('held only elsewhere and live: a plain copy, nothing to restore', () => {
   assert.equal(restoreRequest(c), null)
 })
 
-test('held here and deleted elsewhere: the here path carries the deletion, and never restores', () => {
+test('held here and deleted in the composition: the here path carries the restore list for its Restore button', () => {
   const c = saveChoice(dry({ exists: true, here: true, deletion: 'deleted', deletion_claims: ['bafyD'] }))
   assert.equal(c.state, 'here')
-  assert.equal(c.deletion, 'deleted')
-  assert.equal(restoreRequest(c), null)
+  assert.deepEqual(c.restore, ['bafyD'])
+  assert.deepEqual(restoreRequest(c), { supersedes: ['bafyD'] })
+})
+
+test('held here and live: nothing to restore, even with a current del in deletion_claims', () => {
+  const c = saveChoice(dry({ exists: true, here: true, deletion: 'none', deletion_claims: ['bafyU'] }))
+  assert.deepEqual(c.restore, [])
 })

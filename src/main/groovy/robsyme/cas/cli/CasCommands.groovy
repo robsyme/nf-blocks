@@ -88,7 +88,7 @@ class CasCommands {
         if( !(dry in [null, 'true', 'false']) )
             throw new UsageException("--dry-run is a flag, got '${dry}'")
         final String source = options.positionals[0]
-        final byte[] body = source == '-' ? readCapped(stdin, source) : readCapped(Files.newInputStream(Paths.get(source)), source)
+        final byte[] body = source == '-' ? readCapped(stdin) : readCapped(Files.newInputStream(Paths.get(source)))
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
         final Index index = cas.openIndex()
         try {
@@ -105,7 +105,7 @@ class CasCommands {
     }
 
     /** At most one byte past the builder's request cap, so the builder refuses it with too_large. */
-    private static byte[] readCapped(InputStream input, String source) {
+    private static byte[] readCapped(InputStream input) {
         try {
             return input.readNBytes((int) Put.MAX_REQUEST_BYTES + 1)
         }

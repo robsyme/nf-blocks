@@ -189,8 +189,11 @@ class World(object):
         self.post("B.deleted", s6_request, 200, json.dumps({
             "address": link(self.s6), "exists": True, "here": True, "names": [], "name_claims": [],
             "deletion": "deleted", "deletion_claims": [link(self.d6)]}), dry=True)
+        self.deleted_del = self.claim_post("B.deleted", claim_request(self.s6, "del", supersedes=[self.d6], second=self.tick()))
+        self.log(self.deleted_del)
         self.steps["B.deleted"]["extracts"] = {
-            "offer": self.extract(writeOutcome="exists", exists=self.s6, existsDeletion="deleted")}
+            "offer": self.extract(writeOutcome="exists", exists=self.s6, existsDeletion="deleted"),
+            "after": self.extract(view=self.s6, deletion="none")}
 
     # -- building ---------------------------------------------------------
     def tick(self):
@@ -576,6 +579,23 @@ class CheckTest(unittest.TestCase):
     def test_b16_a_view_still_showing_the_deletion_after_the_restore_fails(self):
         self.w.steps["B.restore"]["extracts"]["after"]["deletion"] = "deleted"
         self.assertFail(16, "deletion 'deleted'")
+
+    def test_b16_the_exists_path_without_a_claim_post_fails(self):
+        self.w.steps["B.deleted"]["requests"].pop()
+        os.remove(os.path.join(self.w.store, "blocks", self.w.deleted_del[-2:], self.w.deleted_del))
+        status, message = self.status(16)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("B.deleted: 0 writing POST(s)", message)
+        self.assertIn("across both members S6", message)
+
+    def test_b16_the_exists_path_del_superseding_another_claim_fails(self):
+        self.w.steps["B.deleted"]["requests"].pop()
+        self.w.claim_post("B.deleted", claim_request(self.w.s6, "del", supersedes=[self.w.d5], second=43))
+        self.assertFail(16, "the exists path's del supersedes")
+
+    def test_b16_the_exists_path_view_still_deleted_fails(self):
+        self.w.steps["B.deleted"]["extracts"]["after"]["deletion"] = "deleted"
+        self.assertFail(16, "after Restore on the exists path")
 
 
 class MemberWriteTest(unittest.TestCase):
