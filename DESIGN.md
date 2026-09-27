@@ -993,8 +993,10 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   writable member, and the page opens it there, carrying the write's outcome
   across that navigation in `sessionStorage` (one key). Rename, delete and
   undo are offered only while the page views the writable member; elsewhere
-  `[data-unavailable]` links to the Selection there. One write runs at a time:
-  a second attempt while one runs is ignored, and the clicked button is
+  `[data-unavailable]` links to the Selection there, and, on the deleted
+  Selections list (`#/selections?deleted=1`), where Undo is likewise offered
+  only there, to that list in the writable member instead. One write runs at a
+  time: a second attempt while one runs is ignored, and the clicked button is
   disabled until it ends. After a write the page re-lists that member's Store
   Log, so it sees its own write; if that refresh fails the outcome is still
   recorded and the status asks for a reload.
@@ -1044,9 +1046,9 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#exists-restore` | "Restore", on `[data-exists]` when the composition's `deletion` is not `none`: one `del` superseding `deletion_claims` (decision 23) |
 | `[data-held-elsewhere]` | the dry run found the Selection only in another member: `data-held-elsewhere` its address, `data-names` the composition's current names as JSON (decision 21), `data-deletion` the composition's deletion state (decision 23) |
 | `#compose-copy` | "Save a copy here", or "Restore a copy here" when the dry run's deletion is not `none`: the write, the name Claim superseding `name_claims`, then a `del` superseding `deletion_claims` (decision 23) |
-| `[data-write-failed]` | the banner on the saved Selection's page after a partly failed save: `data-write-failed` the failed steps (`naming`, `restoring`), space-separated; `data-banner-for` the Selection's address; each error in a `[data-error]` (decision 23) |
+| `[data-write-failed]` | the banner on the saved Selection's page after a partly failed save: `data-write-failed` the failed steps (`naming`, `restoring`), space-separated; `data-banner-for` the Selection's address; each error in a `[data-error]` (decision 23); a failed Retry adds its own `[data-error]` inside the banner's `#retry-status`, separate from the failed steps' |
 | `#retry-restore` | "Retry restore", in `[data-write-failed]` when restoring failed: resends the `del` with the same `supersedes` |
-| `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member) |
+| `[data-unavailable]` | why composing, rename and delete are unavailable (on the Selection view of a non-writable member, with a link to it in the writable member), and, the same way, why Undo is unavailable on the deleted Selections list (`#/selections?deleted=1`) |
 | `[data-selection]` | one row of `#/selections`: `data-selection` cid, `data-deletion`, `data-source`, `data-names` JSON |
 | `[data-selection-view]` | the Selection view: `data-selection-view` cid, `data-deletion` |
 | `[data-name]` | one current name: `data-name` value, `data-claim`, `data-conflicted` when in conflict |
@@ -1328,11 +1330,15 @@ by item CID (decision 18).
     `deletion_claims` is empty.
 24. Deferred minors from milestone 2's reviews (ticket 11). `Put`'s
     idempotent path ingests any Store Log entry it appends; DAG-JSON float
-    literals over 64 characters are refused, as over-long integers are.
-    On the page: the latest successful run reads the snapshot's runs in
-    pages (1, then 50 at a time) until a visible one appears, so a tail
-    deletion of more than 50 runs cannot hide an older live run; tail Claim
-    values are normalised to the snapshot's text form; `runPage` skips the
+    literals over 64 characters are refused, as over-long integers are. On
+    the page: the latest successful run reads the snapshot's runs in pages
+    (1, then 50 at a time) until a visible one appears, so a tail deletion
+    of more than 50 runs cannot hide an older live run; tail Claim values
+    are normalised to the snapshot's text form, matching `Index.valueText`
+    for strings, null, integers, booleans and maps with ASCII keys, but not
+    byte for byte for floats (Groovy writes `Double.toString`, e.g. `1.0`,
+    `@ipld/dag-json` writes `1`) or for maps with non-BMP keys (UTF-16 vs
+    UTF-8 key order); the page writes neither. `runPage` skips the
     supersedes query when there are no Claims; Copy says when it fails; a
     Selection member picked by query copies as its bare address; the deleted
     list says why Undo is unavailable; `page-smoke.mjs` is retired in favour

@@ -11,8 +11,8 @@ import { resolveStore } from './store.js'
 import { Explorer } from './model.js'
 import { Tray, safeSessionStorage } from './tray.js'
 import { writer } from './write.js'
-import { bannerText, bannerFrom } from './save-flow.js'
-import { h } from './html.js'
+import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
+import { h, link } from './html.js'
 import * as views from './views.js'
 
 const ROUTES = [
@@ -174,23 +174,33 @@ async function runWrite(status, attempt, button = null) {
     }
     if (done?.address) document.body.dataset.written = done.address
     // A save whose naming or restoring failed still wrote the Selection: its
-    // page opens with a banner naming each failure (decision 23).
-    if (done?.failures?.length) pendingBanner = { address: done.address, failures: done.failures }
+    // page opens with a banner naming each failure (decision 23). Kept local
+    // until the render (or navigation) meant to show it, and only then
+    // assigned to `pendingBanner`, so a render already in flight cannot clear
+    // it first (final review finding 2).
+    const banner = done?.failures?.length ? { address: done.address, failures: done.failures } : null
     recorded = 'written'
     if (store.member !== write.writable) {
       outcome(recorded)
       recorded = null
+      pendingBanner = banner
       carryOutcome()
       location.assign(hrefIn(write.writable, done.href))
       return
     }
     try {
       await explorer.refreshTail(listLog)
+      pendingBanner = banner
       history.pushState(null, '', done.href)
       await render()
     } catch (e) {
-      status.replaceChildren(h('p', { class: 'warn', 'data-refresh-failed': '' },
-        `Saved, but the page could not refresh (${e?.message ?? e}); reload to see it.`))
+      const node = h('p', { class: 'warn', 'data-refresh-failed': '' },
+        `Saved, but the page could not refresh (${e?.message ?? e}); reload to see it.`)
+      // The render that would have shown `failureBanner` never happened: say
+      // the same thing here instead, with a link to the saved Selection
+      // (final review finding 1).
+      if (banner) for (const { text, href } of refreshFailureLines(banner, write.hrefFor)) node.append(' ', text, ' ', link(href, 'Open it'))
+      status.replaceChildren(node)
     }
   } finally {
     busy = false

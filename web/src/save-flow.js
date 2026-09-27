@@ -47,3 +47,14 @@ export function bannerFrom(text) {
     return null
   }
 }
+
+/**
+ * Lines for the page's own refresh-failure notice (final review finding 1):
+ * when the render that would have shown `failureBanner` never happens
+ * because the post-save refresh itself failed, this states each failure the
+ * same way the banner does, plus a link to the saved Selection.
+ */
+export function refreshFailureLines(banner, hrefFor) {
+  const href = hrefFor(`#/selection/${banner.address}`)
+  return banner.failures.map(f => ({ text: `Saved, but ${f.step} it failed (${f.code}).`, href }))
+}

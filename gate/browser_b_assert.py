@@ -758,7 +758,7 @@ def evaluate(root):
     run(13, "the samplesheet lists exactly the Selection's items, and its cells stage", b13)
     run(14, "a Selection held only in a read-only member is copied and named", b14)
     run(15, "a Claim in another member does not lock a rename; the disagreement is a conflict", b15)
-    run(16, "a copy deleted in another member is restored; a deletion held elsewhere is named", b16)
+    run(16, "a copy deleted in another member is restored; a Selection held here and deleted elsewhere is restored from the exists path", b16)
     return results
 
 

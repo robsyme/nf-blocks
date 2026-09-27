@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { saveSequence, retryRestore, bannerText, bannerFrom } from '../src/save-flow.js'
+import { saveSequence, retryRestore, bannerText, bannerFrom, refreshFailureLines } from '../src/save-flow.js'
 
 const fail = (code) => Object.assign(new Error(code), { code })
 function fakeWriter({ renameFails, undoFails } = {}) {
@@ -60,6 +60,16 @@ test('a carried banner round-trips through JSON with code, message and retry int
   const banner = { address: r.address, failures: r.failures }
   assert.deepEqual(bannerFrom(bannerText(banner)), banner)
   assert.deepEqual(bannerFrom(bannerText(banner)).failures[1], { step: 'restoring', code: 'write_failed', message: 'write_failed', retry: ['bafyD'] })
+})
+
+test('refreshFailureLines: one line per failure, naming and restoring worded the same way as the banner, each linking to the saved Selection', () => {
+  const banner = { address: 'bafyS', failures: [{ step: 'naming', code: 'clock_skew', message: 'clock skew' },
+    { step: 'restoring', code: 'write_failed', message: 'write_failed', retry: ['bafyD'] }] }
+  const hrefFor = (hash) => `http://h/m/lab/${hash}`
+  assert.deepEqual(refreshFailureLines(banner, hrefFor), [
+    { text: 'Saved, but naming it failed (clock_skew).', href: 'http://h/m/lab/#/selection/bafyS' },
+    { text: 'Saved, but restoring it failed (write_failed).', href: 'http://h/m/lab/#/selection/bafyS' },
+  ])
 })
 
 test('an unreadable or empty carried banner reads as none', () => {
