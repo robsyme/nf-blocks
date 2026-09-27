@@ -1070,6 +1070,27 @@ def _bam_sha256(gate, sample):
     return next(iter(digests))
 
 
+# The consumer's writable member (lineage.store.location in gate/consumer). Its
+# config sets no outputDir, so the plugin must default it to this alias before
+# WorkflowMetadata copies it, and Nextflow's WorkflowRun record must say so.
+CONSUMER_OUTPUT_DIR = "cas://out"
+
+
+def _consumer_output_dir(gate):
+    """metadata.outputDir of the consumer's lineage WorkflowRun in store-out/nf/.
+
+    Nextflow's LinObserver writes it through the plugin's lineage store into
+    the writable member's nf/ tree; the Gate reads the JSON file directly.
+    """
+    runs = [spec for _key, spec in gate.store_out.nf_records("WorkflowRun")
+            if spec.get("name") == "consumer"]
+    if len(runs) != 1:
+        raise cas.GateError("expected one WorkflowRun named 'consumer' under "
+                            "%s, found %d"
+                            % (gate.store_out.path("nf"), len(runs)))
+    return (runs[0].get("metadata") or {}).get("outputDir")
+
+
 @assertion(6, "lid:// and cas:// references stage into a second pipeline",
            online_only=True)
 def assert_six(gate):
@@ -1091,13 +1112,22 @@ def assert_six(gate):
             problems.append("hashes/%s/%s says the staged bytes hash to %s, "
                             "expected %s (sha256 of A.bam in pipeline-a/work)"
                             % (source, name, digest, expected))
+    output_dir = _consumer_output_dir(gate)
+    if output_dir != CONSUMER_OUTPUT_DIR:
+        problems.append("the consumer's WorkflowRun record says outputDir is %r, "
+                        "expected %r: gate/consumer/nextflow.config sets no "
+                        "outputDir, so it must default to the lineage alias "
+                        "before WorkflowMetadata copies it (ticket 02)"
+                        % (output_dir, CONSUMER_OUTPUT_DIR))
     if problems:
         return FAIL, ("; ".join(problems) + ". Not covered in the skeleton: the "
                       "run-rooted cas://<runCid>/aligned/A/A.bam form and a glob "
                       "over a manifest.")
     return PASS, ("lid:// and cas:// each staged one file hashing to %s; the "
-                  "run-rooted form and the manifest glob are not in the skeleton"
-                  % expected)
+                  "consumer set no outputDir, published into %s, and its "
+                  "WorkflowRun names %s; the run-rooted form and the manifest "
+                  "glob are not in the skeleton"
+                  % (expected, gate.store_out.root, CONSUMER_OUTPUT_DIR))
 
 
 @assertion(7, "fromStore where sample == 'B' returns exactly one item",

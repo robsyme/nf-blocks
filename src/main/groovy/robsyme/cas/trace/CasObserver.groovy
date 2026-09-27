@@ -18,6 +18,7 @@ import nextflow.trace.event.WorkflowOutputEvent
 import nextflow.util.ConfigHelper
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
+import robsyme.cas.nio.CasPath
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
@@ -66,13 +67,23 @@ class CasObserver implements TraceObserverV2 {
     /**
      * The writable member is the alias in {@code lineage.store.location};
      * {@code outputDir} must name the same alias or provenance would split
-     * across two stores (DESIGN.md §2).
+     * across two stores (DESIGN.md §2). An unset {@code outputDir} was given
+     * the alias by {@link CasObserverFactory#defaultOutputDir}, which sets
+     * {@code session.outputDir} and leaves the config as written, so that is
+     * what is judged when the config names none.
      */
     private void validateOutputDir() {
-        final String outputDir = session.config?.get('outputDir') as String
+        final String configured = session.config?.get('outputDir') as String
+        final String outputDir = configured ?: defaultedOutputDir()
         final String outputAlias = CasConfig.aliasOf(outputDir)
         if( outputAlias != cas.config.writableAlias )
-            throw new AbortRunException("outputDir must publish through the lineage store 'cas://${cas.config.writableAlias}', but is '${outputDir ?: 'unset'}'")
+            throw new AbortRunException("outputDir must publish through the lineage store 'cas://${cas.config.writableAlias}', but is '${configured ?: 'unset'}'")
+    }
+
+    /** {@code session.outputDir} when the factory defaulted it to a cas path, else null. */
+    private String defaultedOutputDir() {
+        final Path current = session.outputDir
+        return current instanceof CasPath ? current.toString() : null
     }
 
     @Override
