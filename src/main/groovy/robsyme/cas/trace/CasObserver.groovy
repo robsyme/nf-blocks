@@ -15,6 +15,7 @@ import nextflow.trace.TraceObserverV2
 import nextflow.trace.event.FilePublishEvent
 import nextflow.trace.event.TaskEvent
 import nextflow.trace.event.WorkflowOutputEvent
+import nextflow.util.ConfigHelper
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Anomalies
@@ -218,6 +219,19 @@ class CasObserver implements TraceObserverV2 {
         return existing != null ? existing : writeRunManifest()
     }
 
+    /**
+     * The run's config as text for the RunManifest (DESIGN.md §6): Nextflow's
+     * own resolved config, the text Platform receives as `configText`, with
+     * closures rendered as source and secrets stripped. `CmdRun` computes it
+     * whenever `lineage.enabled` is set; the fallback renders `session.config`
+     * the same canonical way, closures as their object text.
+     */
+    private String configText() {
+        if( session.resolvedConfig != null )
+            return session.resolvedConfig
+        return ConfigHelper.toCanonicalString((session.config ?: [:]) as Map)
+    }
+
     private Cid writeRunManifest() {
         final WorkflowMetadata meta = session.workflowMetadata
         final Manifest manifest = meta?.manifest
@@ -233,7 +247,7 @@ class CasObserver implements TraceObserverV2 {
             resumed        : (meta?.resume ?: session.resumeMode),
             nextflowVersion: meta?.nextflow?.version?.toString() ?: 'unknown',
             params         : (session.params ?: [:]) as Map,
-            config         : (session.config ?: [:]) as Map,
+            config         : configText(),
             script         : null,
             startedAt      : iso(meta?.start),
         ]).toCbor(), 'RunManifest')

@@ -625,6 +625,21 @@ def assert_three(gate):
                         "non-null of cas.pipeline, manifest.name, projectName"
                         % (run.manifest_cid, pipeline, PIPELINE_IDENTITY))
 
+    # gate.config sets a closure (ext.args) and a unit literal (memory); a
+    # failed run is where a config dag-cbor could not encode used to abort
+    # the RunManifest and swallow onError. DESIGN section 6 records the
+    # resolved config as text.
+    config = (run.manifest or {}).get("config")
+    if not isinstance(config, str):
+        problems.append("RunManifest %s records config as %s; DESIGN section 6 "
+                        "records it as the resolved config text"
+                        % (run.manifest_cid, type(config).__name__))
+    else:
+        for needle in ("task.cpus", "1 GB"):
+            if needle not in config:
+                problems.append("RunManifest %s config text lacks %r, which "
+                                "gate.config sets" % (run.manifest_cid, needle))
+
     from_index = _latest_successful_from_index(gate, pipeline)
     from_log = _latest_successful_from_store_log(gate, pipeline)
     for source, latest in (("the index run table", from_index),

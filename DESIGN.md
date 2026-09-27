@@ -302,10 +302,17 @@ type RunManifest struct {
   resumed Bool
   nextflow_version String
   params {String:Any}
-  config {String:Any}
+  config RunConfig
   script nullable &Any
   started_at String
 }
+# The resolved config as text; a RunManifest written before 2026-09-27 holds
+# the scrubbed config map instead.
+type RunConfig union {
+  | String string
+  | ConfigMap map
+} representation kinded
+type ConfigMap {String:Any}
 
 type RunCompletion struct {
   schema Int
@@ -430,21 +437,40 @@ reference and no publish path.
   run_name: string, nf_run_hash: string,   // Nextflow's WorkflowRun lid key (LinObserver.executionHash)
   session_id: string, resumed: bool,
   nextflow_version: string,
-  params: Map, config: Map,     // scrubbed, see below
+  params: Map,                  // scrubbed, see below
+  config: string,               // the resolved config as text, scrubbed; see below (a Map before 2026-09-27)
   script: Cid|null,             // raw block of the main script
   started_at: string }
 ```
 
-**Portability scrub for `params` and `config`** (one function,
-`Records.scrub(Object)`, unit-tested): drop the top-level config scopes
+**Portability scrub for `params` and `config`** (`Records.scrub(Object)` for
+`params`, `Records.scrubText(String)` for `config`, both unit-tested).
+`scrub`: drop the top-level config scopes
 `cas`, `lineage`, `workDir`, `outputDir`, `launchDir`, `projectDir`, `homeDir`,
 `configFiles`, `scriptFile`, `commandLine`, `runName` and `resume`; convert
-`Path` values to strings; then replace every string value that starts with `/`
+`Path` values to strings, and any other value dag-cbor cannot encode (a
+`MemoryUnit`, a `Duration`, a closure) to its `toString()`; then replace every
+string value that starts with `/`
 or with a `<scheme>://` other than `lid://`/`cas://` by `"[redacted-location]"`,
 and every string equal to the OS user name by `"[redacted-user]"`. Measured at
 v26.04.6: `session.config` contains `cas.stores.<alias>.location` (an absolute
 host path), `outputDir` (a member alias) and `workDir`, so an unscrubbed copy
 breaks §6's rule and Gate assertion 10.
+
+*Amended 2026-09-27:* `config` is text. A config map could not be recorded
+whenever it held a value dag-cbor has no type for, and strict syntax allows
+both kinds nf-core uses: closures as dynamic process directives
+(`ext.args = { ... }`, `VariableScopeVisitor.java:170-180` at v26.04.6) and
+unit literals (`memory = 8.GB`). Every such run aborted writing its
+RunManifest. The text is `session.resolvedConfig`, which `CmdRun` builds
+whenever `lineage.enabled` is set (`CmdRun.groovy:419-422`): canonical config
+with closures as their source and secrets stripped, the text Platform
+receives as `configText` (`ConfigBuilder.resolveConfig`,
+`ConfigBuilder.groovy:897-915`). The fallback, when it is null, is
+`ConfigHelper.toCanonicalString(session.config)`. `scrubText` redacts token
+by token, looking inside quotes and brackets, so `workDir = '/x'` keeps its
+line with the path redacted; the dropped scopes stay in the text, with their
+paths redacted. Nothing reads `config` by machine: it is provenance for people.
 
 ### RunCompletion
 ```

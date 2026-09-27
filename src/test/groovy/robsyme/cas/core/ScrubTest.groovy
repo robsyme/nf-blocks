@@ -168,6 +168,37 @@ class ScrubTest extends Specification {
         Records.scrubText(null) == null
     }
 
+    def 'scrubText redacts a quoted or bracketed path, as config text writes one'() {
+        given:
+        final String user = System.getProperty('user.name')
+
+        expect:
+        Records.scrubText("workDir = '/Users/x/work'") == "workDir = '[redacted-location]'"
+        Records.scrubText('location = "/data/cas"') == 'location = "[redacted-location]"'
+        Records.scrubText("files = ['/a/b', 's3://bucket/c']") == "files = ['[redacted-location]', '[redacted-location]']"
+        Records.scrubText("owner = '${user}'".toString()) == "owner = '[redacted-user]'"
+
+        and: 'code and portable values keep their shape'
+        Records.scrubText("ext.args = { \"--x ${'$'}{task.cpus}\" }") == "ext.args = { \"--x ${'$'}{task.cpus}\" }"
+        Records.scrubText("input = 'cas://bafk/y'") == "input = 'cas://bafk/y'"
+
+        and: 'idempotent'
+        Records.scrubText(Records.scrubText("workDir = '/Users/x/work'")) == "workDir = '[redacted-location]'"
+    }
+
+    def 'a value dag-cbor cannot encode is recorded as its text'() {
+        given:
+        final Closure c = { -> 1 }
+
+        expect:
+        Records.scrub([memory: nextflow.util.MemoryUnit.of('8 GB')]) == [memory: '8 GB']
+        Records.scrub([time: nextflow.util.Duration.of('2h')]) == [time: '2h']
+        Records.scrub([f: c]).f instanceof String
+
+        and: 'what it can encode is kept as it is'
+        Records.scrub([b: true, n: 2.5, i: 3L]) == [b: true, n: 2.5, i: 3L]
+    }
+
     def 'a RunCompletion scrubs its error field so a failed run never leaks the launch path'() {
         given:
         final Cid run = Cid.parse('bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua')

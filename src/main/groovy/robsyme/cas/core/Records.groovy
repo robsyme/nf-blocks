@@ -100,7 +100,12 @@ class Records {
                 out.add(scrubValue(item))
             return out
         }
-        return value
+        if( value == null || value instanceof Boolean || value instanceof Number
+                || value instanceof Cid || value instanceof byte[] )
+            return value
+        // Anything else dag-cbor cannot encode (a MemoryUnit, a Duration, a
+        // Closure) is recorded as its text.
+        return scrubString(value.toString())
     }
 
     private static String scrubString(String text) {
@@ -145,19 +150,28 @@ class Records {
 
     private static final String TRAILING_PUNCT = ':;,.)]}>\'"'
 
+    /** Quotes and brackets that open a value, as in `workDir = '/x'` or `['/a', '/b']`. */
+    private static final String LEADING_PUNCT = '\'"([{<='
+
     private static String scrubToken(String token, String user) {
+        int begin = 0
+        while( begin < token.length() && LEADING_PUNCT.indexOf((int) token.charAt(begin)) >= 0 )
+            begin++
         int end = token.length()
-        while( end > 0 && TRAILING_PUNCT.indexOf((int) token.charAt(end - 1)) >= 0 )
+        while( end > begin && TRAILING_PUNCT.indexOf((int) token.charAt(end - 1)) >= 0 )
             end--
-        final String core = token.substring(0, end)
+        final String head = token.substring(0, begin)
+        final String core = token.substring(begin, end)
         final String tail = token.substring(end)
+        if( core.isEmpty() )
+            return token
         if( core.startsWith('/') )
-            return REDACTED_LOCATION + tail
+            return head + REDACTED_LOCATION + tail
         final java.util.regex.Matcher m = SCHEME.matcher(core)
         if( m.find() && !PORTABLE_SCHEMES.contains(m.group(1).toLowerCase()) )
-            return REDACTED_LOCATION + tail
+            return head + REDACTED_LOCATION + tail
         if( user != null && !user.isEmpty() && core == user )
-            return REDACTED_USER + tail
+            return head + REDACTED_USER + tail
         return token
     }
 
@@ -692,6 +706,10 @@ class OutputCollection {
  * What was run (DESIGN.md §6). Written at `onFlowBegin`, when the Nextflow run
  * key is known. `params` and `config` are scrubbed here rather than by the
  * caller, so a store-local path cannot reach a block by being forgotten.
+ *
+ * `config` is the resolved config as text (a String), which keeps closure
+ * source and cannot fail to encode. A block written before 2026-09-27 holds
+ * it as a Map, which still decodes.
  */
 @CompileStatic
 @EqualsAndHashCode
@@ -709,7 +727,7 @@ class RunManifest {
     final boolean resumed
     final String nextflowVersion
     final Map params
-    final Map config
+    final Object config
     final Cid script
     final String startedAt
 
@@ -725,7 +743,7 @@ class RunManifest {
         this.resumed = args.get('resumed') as boolean
         this.nextflowVersion = req(args, 'nextflowVersion')
         this.params = (Map) Records.scrub((Map) (args.get('params') ?: [:]))
-        this.config = (Map) Records.scrub((Map) (args.get('config') ?: [:]))
+        this.config = scrubConfig(args.get('config'))
         this.script = (Cid) args.get('script')
         this.startedAt = req(args, 'startedAt')
     }
@@ -735,6 +753,16 @@ class RunManifest {
         if( !value )
             throw new IllegalArgumentException("a run manifest needs '$field'")
         return value.toString()
+    }
+
+    private static Object scrubConfig(Object config) {
+        if( config == null )
+            return ''
+        if( config instanceof CharSequence )
+            return Records.scrubText(config.toString())
+        if( config instanceof Map )
+            return Records.scrub((Map) config)
+        throw new IllegalArgumentException("a run manifest's config is a String (or, in an old block, a Map), not ${config.getClass().name}")
     }
 
     Map<String, Object> toCbor() {
@@ -770,7 +798,7 @@ class RunManifest {
             resumed        : Records.require(block, 'resumed'),
             nextflowVersion: Records.string(Records.require(block, 'nextflow_version'), 'nextflow_version'),
             params         : (Map) Records.require(block, 'params'),
-            config         : (Map) Records.require(block, 'config'),
+            config         : Records.require(block, 'config'),
             script         : Records.cid(Records.require(block, 'script'), 'script'),
             startedAt      : Records.string(Records.require(block, 'started_at'), 'started_at'),
         ])
