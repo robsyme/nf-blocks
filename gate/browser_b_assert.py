@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-16):
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-18):
 Selections and Claims written through the page, all local, over a
 composition of a writable member and a read-only one.
 
     python3 gate/browser_b_assert.py prepare <GATE_ROOT>
     python3 gate/browser_b_assert.py probe <GATE_ROOT> <port> <token>
+    python3 gate/browser_b_assert.py consumer <GATE_ROOT> <untyped|typed> <src dir> <dest dir>
     python3 gate/browser_b_assert.py check <GATE_ROOT>
 
 prepare copies this Gate run's store to $GATE_ROOT/browser-b/store (the
@@ -15,7 +16,7 @@ files the scenario picks from the Gate's own read of the blocks and its own
 hashes, and writes the scenario drive.mjs plays. probe runs while explore is
 still up: it replays one of the page's own writes, sends three POSTs the
 endpoint must refuse, dry-runs a Selection both members name, and fetches the
-samplesheet export. check recomputes
+samplesheet export. consumer copies a consumer pipeline with its marked call line replaced by the page's snippet, verbatim. check recomputes
 every address with the Gate's encoder (gate/dagjson.py) and compares it, the
 store, the probes and the selection pipeline's hashes with those answers.
 Nothing the plugin or the page reports is taken on trust.
@@ -36,6 +37,7 @@ sys.path.insert(0, HERE)
 
 import cas  # noqa: E402
 import dagjson  # noqa: E402
+from browser_assert import where as _where  # noqa: E402  (the page's query 3 filter, shared with tier A)
 
 PASS, FAIL = "PASS", "FAIL"
 ASSERTED_BY = "gate"
@@ -98,6 +100,40 @@ def _log(root, kind, cid, millis):
     open(os.path.join(root, "log", "%013d-%s-%s" % (HORIZON_MILLIS - millis, kind, cid)), "a").close()
 
 
+SNIPPET_MARK = "// @snippet"
+
+
+def substitute(template, call):
+    """`template` with its one line ending in SNIPPET_MARK re-assigned to `call`, the page's [data-snippet] text, verbatim."""
+    if call is None or not call.strip():
+        raise cas.GateError("the page showed no snippet to run")
+    call = call.strip()
+    if "\n" in call or "\r" in call:
+        raise cas.GateError("the snippet is %d lines, expected one call line: %r" % (len(call.splitlines()), call))
+    lines = template.split("\n")
+    marked = [i for i, line in enumerate(lines) if line.rstrip().endswith(SNIPPET_MARK)]
+    if len(marked) != 1:
+        raise cas.GateError("the consumer template has %d lines ending in %r, expected 1" % (len(marked), SNIPPET_MARK))
+    line = lines[marked[0]]
+    indent = line[:len(line) - len(line.lstrip())]
+    name, sep, _rest = line.strip().partition("=")
+    if not sep or not name.strip():
+        raise cas.GateError("the marked line %r is not `<name> = <call>`" % line.strip())
+    lines[marked[0]] = "%s%s = %s   %s" % (indent, name.strip(), call, SNIPPET_MARK)
+    return "\n".join(lines)
+
+
+def snippet_call(path):
+    """The call a consumer's main.nf ran: the right-hand side of its marked line, without the mark; None without one."""
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.rstrip().endswith(SNIPPET_MARK):
+                return line.strip()[:-len(SNIPPET_MARK)].rstrip().partition("=")[2].strip()
+    return None
+
+
 def prepare(root):
     gate = A.Gate(root)
     out = os.path.join(root, "browser-b")
@@ -106,6 +142,7 @@ def prepare(root):
     shutil.copytree(gate.store.root, store, ignore=shutil.ignore_patterns("index", "index.html"))
     os.makedirs(os.path.join(out, "cache"))
     os.makedirs(os.path.join(out, "store-out"))
+    os.makedirs(os.path.join(out, "store-typed"))
     # `shared`: a second, read-only member (only blocks/ and log/, which is all a member's reader lists).
     shared = os.path.join(out, "shared")
     os.makedirs(shared)
@@ -124,6 +161,9 @@ def prepare(root):
         raise cas.GateError("no %s item with sample %s in run %s" % (output, sample, run.name))
 
     a, b, c = item(cold, "aligned", "A"), item(cold, "aligned", "B"), item(cold, "stats", "C")
+    stats_items = sorted(cid for cid, _b in cold.items(gate, "stats"))
+    if c not in stats_items or len(stats_items) < 2:
+        raise cas.GateError("cold's stats holds %r; B17's Add all needs C and at least one more item" % stats_items)
     if item(again, "aligned", "B") != b:
         raise cas.GateError("item B of `again` is not the block of `cold`; the nesting test needs one item in two collections")
     if again_aligned == coll["aligned"]:
@@ -167,6 +207,7 @@ def prepare(root):
     expected = {"items": {"A": a, "B": b, "C": c},
                 "collections": {"aligned": coll["aligned"], "stats": coll["stats"], "again": again_aligned},
                 "files": {"A": _file(gate, "A.bam"), "B": _file(gate, "B.bam"), "C": _file(gate, "C.stats")},
+                "stats_items": stats_items,
                 "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2,
                            "s5": s5, "n5": n5, "d5": d5, "s6": s6, "d6": d6}}
     q = "?token={token}"
@@ -204,6 +245,17 @@ def prepare(root):
         {"id": "B.deleted", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (again_aligned, b),
          "actions": [{"click": "[data-pick]"}, {"hash": "#/compose"}, {"click": "#compose-save"}, {"waitWrite": True},
                      {"extract": "offer"}, {"click": "#exists-restore"}, {"waitWrite": True}, {"extract": "after"}]},
+        # B17: a per-run query pick keeps its collection; Add all adds every item of a collection with it.
+        {"id": "B.picks", "server": "explore", "path": "", "query": q,
+         "hash": "#/items/%s/aligned%s" % (cold.completion_cid, _where("sample", "A")),
+         "actions": [{"extract": "query"}, {"click": '[data-pick="%s"]' % a},
+                     {"hash": "#/collection/%s" % coll["stats"]}, {"extract": "collection"},
+                     {"click": '[data-pick-all][data-via="%s"]' % coll["stats"]}, {"waitTray": 1 + len(stats_items)},
+                     {"extract": "all"}, {"hash": "#/compose"}, {"fill": ["#compose-name", "picked"]},
+                     {"click": "#compose-save"}, {"waitWrite": True}, {"extract": "after"}]},
+        # B9 and B18 run what the Selection view shows for S2, untyped and typed.
+        {"id": "B.snippets", "server": "explore", "path": "", "query": q, "hash": "#/selection/{S2}",
+         "actions": [{"snippetMode": "untyped"}, {"extract": "untyped"}, {"snippetMode": "typed"}, {"extract": "typed"}]},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})
@@ -323,6 +375,29 @@ def probe(root, port, token):
 
 
 # --------------------------------------------------------------------------
+# consumer (explore has stopped)
+# --------------------------------------------------------------------------
+
+def consumer(root, mode, src, dest):
+    """Copy the consumer pipeline in `src` to `dest`, its marked line re-assigned to the page's [data-snippet=<mode>] text."""
+    out = os.path.join(root, "browser-b")
+    extracts = (_observed(out).get("B.snippets") or {}).get("extracts") or {}
+    call = ((extracts.get(mode) or {}).get("snippets") or {}).get(mode)
+    try:
+        with open(os.path.join(src, "main.nf"), encoding="utf-8") as fh:
+            text = substitute(fh.read(), call)
+    except cas.GateError as exc:
+        sys.stderr.write("browser tier B: no %s consumer: %s (see browser-b/drive.log)\n" % (mode, exc))
+        return 2
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, "main.nf"), "w", encoding="utf-8") as fh:
+        fh.write(text)
+    shutil.copy(os.path.join(src, "nextflow.config"), os.path.join(dest, "nextflow.config"))
+    print("browser tier B: the %s consumer calls %s" % (mode, call.strip()))
+    return 0
+
+
+# --------------------------------------------------------------------------
 # check
 # --------------------------------------------------------------------------
 
@@ -360,11 +435,11 @@ def _claims_about(store, subject):
     return out
 
 
-def _staged(root, source):
-    """Sorted '<source>:<file name>' tags of every HASH task the selection pipeline ran for `source`, one per task.
+def _staged(root, source, launch="selection"):
+    """Sorted '<source>:<file name>' tags of every HASH task the pipeline in `launch` ran for `source`, one per task.
     Published hashes are keyed by file name, so a file staged twice shows only here (each task's .command.run header)."""
     out = []
-    for dirpath, _dirnames, filenames in os.walk(os.path.join(root, "selection", "work")):
+    for dirpath, _dirnames, filenames in os.walk(os.path.join(root, launch, "work")):
         if ".command.run" not in filenames:
             continue
         with open(os.path.join(dirpath, ".command.run"), encoding="utf-8", errors="replace") as fh:
@@ -383,7 +458,7 @@ def _read_sheet_csv(path):
 
 
 def evaluate(root):
-    """[(status, number, title, message)] for assertions 8-16."""
+    """[(status, number, title, message)] for assertions 8-18."""
     out = os.path.join(root, "browser-b")
     expected = _read_json(os.path.join(out, "expected.json"))
     observed = _observed(out)
@@ -394,9 +469,9 @@ def evaluate(root):
     items, colls, files = expected["items"], expected["collections"], expected["files"]
     want_hashes = {"%s.sha256" % files[k]["name"]: files[k]["sha256"] for k in sorted(files)}
 
-    def once_each(source):
+    def once_each(source, launch="selection"):
         want = sorted("%s:%s" % (source, files[k]["name"]) for k in files)
-        got = _staged(root, source)
+        got = _staged(root, source, launch)
         return [] if got == want else ["the pipeline hashed %s, expected each file once: %s" % (got, want)]
 
     def seen(step_id):
@@ -420,15 +495,29 @@ def evaluate(root):
             raise cas.GateError("no probes.json: the probe did not run (see browser-b/probe.log)")
         return probes
 
-    def pipeline_hashes():
-        exit_path = os.path.join(out, "selection.exit")
+    def pipeline_hashes(launch="selection", store_out="store-out"):
+        exit_path = os.path.join(out, launch + ".exit")
         status = "<none>"
         if os.path.isfile(exit_path):
             with open(exit_path) as fh:
                 status = fh.read().strip()
         if status != "0":
-            raise cas.GateError("the selection pipeline's exit status is %s (see browser-b/selection.log)" % status)
-        return A._consumer_hashes(SimpleNamespace(store_out=cas.Store(os.path.join(out, "store-out"))))
+            raise cas.GateError("the %s pipeline's exit status is %s (see browser-b/%s.log)" % (launch, status, launch))
+        return A._consumer_hashes(SimpleNamespace(store_out=cas.Store(os.path.join(out, store_out))))
+
+    def ran_snippet(mode, launch):
+        """Problems with the call `launch`'s main.nf ran, and the page's text: it must be [data-snippet=<mode>], naming S2."""
+        s2 = _saved(observed, "B.second")
+        shown = ((extract("B.snippets", mode).get("snippets") or {}).get(mode) or "").strip()
+        ran = snippet_call(os.path.join(root, launch, "main.nf"))
+        problems = []
+        if not shown:
+            problems.append('the Selection view of S2 showed no [data-snippet="%s"]' % mode)
+        elif ran != shown:
+            problems.append("%s/main.nf ran %r, not the page's %s snippet %r" % (launch, ran, mode, shown))
+        if shown and (not s2 or "'%s'" % s2 not in shown):
+            problems.append("the page's %s snippet %r does not name S2 %s" % (mode, shown, s2))
+        return problems, shown
 
     def verify_post(step_id, post, build):
         """The Gate's block for the request, and problems with its address, response and stored copy."""
@@ -488,14 +577,15 @@ def evaluate(root):
                       % (made["B.first"][0][:16], made["B.second"][0][:16]))
 
     def b9():
+        problems, shown = ran_snippet("untyped", "selection")
         got = pipeline_hashes().get("fromstore") or {}
-        problems = once_each("fromstore")
+        problems += once_each("fromstore")
         if got != want_hashes:
             problems.append("fromStore(selection:) staged %s, expected exactly %s" % (json.dumps(got, sort_keys=True), json.dumps(want_hashes, sort_keys=True)))
         if problems:
             return FAIL, "; ".join(problems)
-        return PASS, ("fromStore(selection: S2) staged A, B and C once each (A and B through the nested Selection, B also "
-                      "directly) and every file hashes as pipeline-a's work file does")
+        return PASS, ("the page's untyped snippet (%s), run verbatim, staged A, B and C once each (A and B through the "
+                      "nested Selection, B also directly) and every file hashes as pipeline-a's work file does" % shown)
 
     def b10():
         problems = []
@@ -750,6 +840,61 @@ def evaluate(root):
                       "composing a Selection lab holds and shared deleted named the deletion, and the 'already exists' "
                       "path's Restore wrote one del superseding shared's, live across both members")
 
+    def b17():
+        problems = []
+        aligned, stats, stats_items = colls["aligned"], colls["stats"], expected["stats_items"]
+        query = extract("B.picks", "query")
+        picks = [p for p in query.get("picks") or [] if p.get("address") == items["A"]]
+        if len(picks) != 1 or (picks[0].get("via") or "").split() != [aligned]:
+            problems.append("query 3's [data-pick] for A is %r, expected one with data-via %s (cold's aligned)" % (picks, aligned))
+        for label, ex, via, count in (("B.picks query", query, aligned, "1"),
+                                      ("B.picks collection", extract("B.picks", "collection"), stats, str(len(stats_items)))):
+            got = [(x.get("via"), x.get("count")) for x in ex.get("pickAll") or []]
+            if got != [(via, count)]:
+                problems.append("%s: [data-pick-all] is %r, expected one with data-via %s and data-count %s" % (label, got, via, count))
+        tray = extract("B.picks", "all").get("tray")
+        if tray != str(1 + len(stats_items)):
+            problems.append("after Add all the tray holds %r, expected %d (A and every item of stats)" % (tray, 1 + len(stats_items)))
+        posts = [p for p in _posts(seen("B.picks")) if _kind(p) == "Selection"]
+        if len(posts) != 1:
+            problems.append("B.picks: %d Selection POST(s) that write, expected 1" % len(posts))
+        else:
+            address, block, found = verify_post("B.picks", posts[0], dagjson.expected_selection)
+            problems += found
+            want = _members([_item(items["A"], [aligned])] + [_item(s, [stats]) for s in stats_items])
+            if block["members"] != want:
+                problems.append("B.picks: members %r, expected A via aligned and every stats item via stats: %r" % (block["members"], want))
+            written = extract("B.picks", "after").get("written")
+            if written != address:
+                problems.append("B.picks: the page's data-written is %s, the Gate's address %s" % (written, address))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("a pick from query 3 carried cold's aligned as its via, Add all put all %d items of stats in the tray "
+                      "with stats as theirs, and the saved Selection has the Gate's address with every via kept" % len(stats_items))
+
+    def b18():
+        problems, shown = ran_snippet("typed", "selection-typed")
+        if shown and not shown.startswith("nextflow.Channel.fromStore("):
+            problems.append("the page's typed snippet %r does not call nextflow.Channel.fromStore (DESIGN.md §13)" % shown)
+        if shown and "records: true" not in shown:
+            problems.append("the page's typed snippet %r does not pass records: true" % shown)
+        log = os.path.join(out, "selection-typed-nextflow.log")
+        if not os.path.isfile(log):
+            problems.append("no browser-b/selection-typed-nextflow.log: the typed consumer never started (see selection-typed.log)")
+        else:
+            with open(log, encoding="utf-8", errors="replace") as fh:
+                warned = [line.strip() for line in fh if "invalid argument type" in line]
+            if warned:
+                problems.append("the typed consumer's .nextflow.log warns %d time(s): %s" % (len(warned), warned[:2]))
+        got = pipeline_hashes("selection-typed", "store-typed").get("typed") or {}
+        problems += once_each("typed", "selection-typed")
+        if got != want_hashes:
+            problems.append("the typed consumer staged %s, expected %s" % (json.dumps(got, sort_keys=True), json.dumps(want_hashes, sort_keys=True)))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("the page's typed snippet (%s), run verbatim with nextflow.enable.types, handed a Sample and a Kit record "
+                      "to every task without an invalid argument type warning, and A, B and C hash as expected" % shown)
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
@@ -759,6 +904,8 @@ def evaluate(root):
     run(14, "a Selection held only in a read-only member is copied and named", b14)
     run(15, "a Claim in another member does not lock a rename; the disagreement is a conflict", b15)
     run(16, "a copy deleted in another member is restored; a Selection held here and deleted elsewhere is restored from the exists path", b16)
+    run(17, "a per-run query pick keeps its collection, and Add all adds every item with it", b17)
+    run(18, "the typed consumer receives records", b18)
     return results
 
 
@@ -778,6 +925,8 @@ def main(argv):
         return {"prepare": prepare, "check": check}[argv[1]](argv[2])
     if len(argv) == 5 and argv[1] == "probe":
         return probe(argv[2], argv[3], argv[4])
+    if len(argv) == 6 and argv[1] == "consumer" and argv[3] in ("untyped", "typed"):
+        return consumer(argv[2], argv[3], argv[4], argv[5])
     sys.stderr.write(__doc__)
     return 2
 

@@ -2,8 +2,13 @@
 // Tier B's pipeline (block explorer spec section 1.3 assertions 9 and 13):
 // read one Selection two ways and hash whatever Nextflow staged.
 //
-//   fromstore    channel.fromStore(selection: <cid>): every file of every item
+//   fromstore    the Selection view's untyped snippet: every file of every item
 //   samplesheet  the explorer's CSV export, column '1', staged with file()
+//
+// tier_b.sh copies this file through `browser_b_assert.py consumer`, which
+// replaces the line ending in `// @snippet` with the page's
+// [data-snippet="untyped"] text, verbatim (DESIGN.md §15): a broken snippet
+// fails B9. Run by hand, the line reads params.selection.
 //
 // It computes nothing: gate/browser_b_assert.py compares the digests with its
 // own hashes of pipeline-a's work files.
@@ -45,8 +50,9 @@ workflow {
     if( !params.selection || !params.samplesheet )
         error "selection pipeline needs --selection and --samplesheet (tier_b.sh passes both)"
 
-    ch_store = channel
-        .fromStore(selection: params.selection)
+    ch_items = channel.fromStore(selection: params.selection)   // @snippet
+
+    ch_store = ch_items
         .flatMap { item -> filesOf(item).collect { f -> tuple('fromstore', f) } }
 
     ch_sheet = channel

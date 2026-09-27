@@ -74,7 +74,7 @@ block, not as a silently different value. Order violations raise
    both below. Exits non-zero when any tier fails.
 
 Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/`,
-`browser/`, `browser-b/`, `selection/` and the snapshots first. Every one of them is evidence, and stale
+`browser/`, `browser-b/`, `selection/`, `selection-typed/` and the snapshots first. Every one of them is evidence, and stale
 evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
 the zip just built on every run that builds.
 
@@ -152,7 +152,7 @@ A failing line: read `browser/observed.json` for that step and
 
 ## Browser tier B (Selections)
 
-Tier B, milestone 2, assertions 8 to 16 of spec section 1.3. It is local:
+Tier B, milestones 2 and 3, assertions 8 to 18 of spec section 1.3. It is local:
 `gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
 Playwright, and needs no network beyond what `explore` itself asks for.
 `GATE_SKIP_BROWSER=1` skips it with tier A.
@@ -173,19 +173,29 @@ which `prepare` puts in `lab`. `shared` also holds S5 = {B via `aligned`},
 named `restored-name` and deleted there and held nowhere else, and a
 deletion of S6 = {B via `again`}, which `prepare` puts in `lab`.
 
-`drive.mjs` then plays nine steps with the launch token `explore` printed:
+`drive.mjs` then plays eleven steps with the launch token `explore` printed:
 compose `first` = {A, B}; compose `second` = {`first`, B, C}; rename
 `second`; delete it and undo; two pages renaming it from the same view;
 compose {A} and save the copy the page offers; rename S4 to `lab-renamed`;
-compose S5 and restore the copy the page offers; and compose S6. While `explore` is still up, `browser_b_assert.py probe`
+compose S5 and restore the copy the page offers; compose S6; pick A from
+query 3 over `cold`'s `aligned` (`sample` is `A`), add every item of `cold`'s
+`stats` with Add all, and save them as `picked`; and read the Selection view
+of `second` in both snippet modes, untyped and typed. While `explore` is still up, `browser_b_assert.py probe`
 replays the page's own rename bytes, sends three POSTs that must be refused,
 dry-runs S4's request, and fetches the samplesheet of `second` as CSV and
 JSON. `explore` stops, and
 `gate/selection` runs in `$GATE_ROOT/selection` over the copy (member `lab`)
 and its own `browser-b/store-out` (member `out`), staging `second` through
-`fromStore(selection:)` and through the CSV's `1` column, and publishing the
-sha256 of each staged file. `browser_b_assert.py check` recomputes every
-address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
+the page's untyped snippet and through the CSV's `1` column, and publishing
+the sha256 of each staged file. `browser_b_assert.py consumer` copies the
+pipeline first, putting the page's `[data-snippet]` text verbatim on the line
+of `main.nf` that ends in `// @snippet`, so a broken snippet fails the Gate.
+`gate/selection-typed` then runs the page's typed snippet the same way in
+`$GATE_ROOT/selection-typed`, into its own `browser-b/store-typed` and with
+no `outputDir` line: a typed script (`nextflow.enable.types = true`) whose
+process takes each item as `tuple(meta: Sample, kit: Kit, staged: Path)`.
+`browser_b_assert.py check` recomputes every address with `gate/dagjson.py`
+and the Gate's DAG-CBOR encoder:
 
 - B8: each Selection the page wrote has the Gate's address for the page's
   own request, the endpoint answered it, the page shows it, and the block
@@ -226,9 +236,21 @@ address with `gate/dagjson.py` and the Gate's DAG-CBOR encoder:
   Selection `lab` holds and `shared` deleted names the deletion, and its
   Restore writes one `del` superseding `shared`'s, so S6 is live across both
   members.
+- B17: query 3's `[data-pick]` for A carries `cold`'s `aligned` in
+  `data-via`; `[data-pick-all]` names the query's collection with count 1 on
+  the query page and `stats` with its item count on the collection page; Add
+  all fills the tray with every item of `stats`; and the saved Selection has
+  the Gate's address, with A via `aligned` and each `stats` item via `stats`.
+- B18: the typed snippet calls `nextflow.Channel.fromStore` with `records:
+  true` and names `second`; the typed consumer ran it verbatim, exited 0,
+  logged no `invalid argument type` warning in its `.nextflow.log`, ran one
+  task per file, and each published digest matches pipeline-a's work file.
+  B9 likewise requires `gate/selection` to have run the untyped snippet,
+  naming `second`.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
-`selection.log` (and `selection-nextflow.log`), beside `scenario.json`,
+`selection.log` (and `selection-nextflow.log`), `selection-typed.log` (and
+`selection-typed-nextflow.log`), beside `scenario.json`,
 `observed.json`, `probes.json`, `expected.json` and the two samplesheets.
 A failing line: read that step in `observed.json` and `drive.log` first.
 
@@ -266,6 +288,7 @@ store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
 browser/ browser-b/      browser tiers A and B: inputs, observations, logs
 selection/               tier B's selection pipeline launch directory
+selection-typed/         tier B's typed consumer launch directory
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
 consumer/                the second pipeline
 logs/<name>/             stdout.log stderr.log nextflow.log exit

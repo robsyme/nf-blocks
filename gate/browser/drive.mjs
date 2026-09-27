@@ -6,7 +6,8 @@
 // browser_b_assert.py do.
 //   node gate/browser/drive.mjs <scenario.json> <observed.json> <name>=<base url> ...
 //
-// Tier B's steps add `actions` (hash, click, fill, waitWrite, extract), may
+// Tier B's steps add `actions` (hash, click, fill, waitWrite, waitTray,
+// snippetMode, extract), may
 // open `pages` > 1 in one context (two sessions), and `save` attributes of
 // page 0 as variables that later steps' hashes, queries and selectors name as
 // {NAME}. A `name=value` argument that is not a URL (the launch token) is a
@@ -66,6 +67,11 @@ const EXTRACT_B = () => ({
   exists: document.querySelector('[data-exists]')?.dataset.exists ?? null,
   existsDeletion: document.querySelector('[data-exists]')?.dataset.deletion ?? null,
   copyLabel: document.getElementById('compose-copy')?.textContent ?? null,
+  // Milestone 3 (DESIGN.md §15): picks carry their collection, "Add all" names its own, and the consumer snippets.
+  picks: [...document.querySelectorAll('[data-pick]')].map((e) => ({ address: e.dataset.pick, kind: e.dataset.kind ?? null,
+    via: e.dataset.via ?? null })),
+  pickAll: [...document.querySelectorAll('[data-pick-all]')].map((e) => ({ via: e.dataset.via ?? null, count: e.dataset.count ?? null })),
+  snippets: Object.fromEntries(['untyped', 'typed'].map((m) => [m, document.querySelector(`[data-snippet="${m}"]`)?.textContent ?? null])),
 })
 
 const writeSeq = (page) => page.evaluate(() => Number(document.body.dataset.writeSeq ?? 0))
@@ -89,6 +95,14 @@ async function act(pages, action, record) {
     await page.waitForFunction((n) => Number(document.body.dataset.writeSeq ?? 0) > n, after, { timeout: 60_000 })
     // The write's own re-render (history.pushState, then render) may still be running.
     await page.waitForFunction(() => document.body.dataset.state !== 'loading', null, { timeout: 60_000 })
+  } else if (action.waitTray !== undefined) {
+    // "Add all" resolves the collection's items before the tray changes.
+    await page.waitForFunction((n) => document.getElementById('tray')?.dataset.count === String(n), action.waitTray, { timeout: 60_000 })
+  } else if (action.snippetMode) {
+    // The untyped | typed choice lives in localStorage (DESIGN.md §15, [data-snippet]); set it and reload.
+    await page.evaluate((m) => localStorage.setItem('nf-blocks.snippets', m), action.snippetMode)
+    await page.reload()
+    await waitRender(page, 0)
   } else if (action.extract) {
     record.extracts[action.extract] = await page.evaluate(EXTRACT_B)
   } else {

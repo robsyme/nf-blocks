@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Gate browser tier B (block explorer spec section 1.3, assertions 8-16): the
+# Gate browser tier B (block explorer spec section 1.3, assertions 8-18): the
 # page composes, renames, deletes and undoes through nf-blocks:explore over a
 # copy of this Gate run's store; the Gate probes the write endpoint, fetches
-# the samplesheet, runs gate/selection, and checks it all with its own encoder.
+# the samplesheet, runs gate/selection and gate/selection-typed on the page's
+# own snippets, and checks it all with its own encoder.
 #
 #   gate/browser/tier_b.sh <GATE_ROOT>        # NEXTFLOW and NXF_PLUGINS_DIR from gate.sh
 #
@@ -49,15 +50,28 @@ python3 "$REPO/gate/browser_b_assert.py" probe "$GATE_ROOT" "$port" "$token" > "
 stop
 
 s2="$(python3 -c 'import json,sys; o={s["id"]: s for s in json.load(open(sys.argv[1]))["steps"]}; print(o["B.second"]["extracts"]["after"]["written"] or "")' "$B/observed.json" 2> /dev/null || true)"
-echo "--- browser tier B: selection pipeline (selection ${s2:-<none>})"
-rm -rf "${GATE_ROOT:?}/selection" && mkdir -p "$GATE_ROOT/selection"
-cp "$REPO/gate/selection/main.nf" "$REPO/gate/selection/nextflow.config" "$GATE_ROOT/selection/"
-status=0
-( cd "$GATE_ROOT/selection" && GATE_B_STORE="$B/store" GATE_B_OUT="$B/store-out" XDG_CACHE_HOME="$B/cache-run" \
-  "$NEXTFLOW" run . -name selection --selection "$s2" --samplesheet "$B/samplesheet.csv" ) \
-  > "$B/selection.log" 2>&1 || status=$?
-echo "$status" > "$B/selection.exit"
-if [[ -f "$GATE_ROOT/selection/.nextflow.log" ]]; then cp "$GATE_ROOT/selection/.nextflow.log" "$B/selection-nextflow.log"; fi
+# Each consumer runs the call line the page's Selection view showed for S2
+# (step B.snippets), put verbatim on its `// @snippet` line; without one it
+# does not run, and B9 or B18 fails on the exit status recorded here.
+run_consumer() {   # <untyped|typed> <gate dir> <launch dir> <store-out> <cache> [args...]
+    local mode="$1" src="$2" launch="$3" store_out="$4" cache="$5"; shift 5
+    local name; name="$(basename "$launch")"
+    local status=0
+    echo "--- browser tier B: $name (selection ${s2:-<none>}, the page's $mode snippet)"
+    rm -rf "${launch:?}" && mkdir -p "$launch" "$store_out"
+    if python3 "$REPO/gate/browser_b_assert.py" consumer "$GATE_ROOT" "$mode" "$src" "$launch"; then
+        ( cd "$launch" && GATE_B_STORE="$B/store" GATE_B_OUT="$store_out" XDG_CACHE_HOME="$cache" \
+          "$NEXTFLOW" run . -name "$name" --selection "$s2" ${1+"$@"} ) > "$B/$name.log" 2>&1 || status=$?
+    else
+        status=no-snippet
+    fi
+    echo "$status" > "$B/$name.exit"
+    if [[ -f "$launch/.nextflow.log" ]]; then cp "$launch/.nextflow.log" "$B/$name-nextflow.log"; fi
+}
+
+run_consumer untyped "$REPO/gate/selection" "$GATE_ROOT/selection" "$B/store-out" "$B/cache-run" \
+    --samplesheet "$B/samplesheet.csv"
+run_consumer typed "$REPO/gate/selection-typed" "$GATE_ROOT/selection-typed" "$B/store-typed" "$B/cache-typed"
 
 echo
 python3 "$REPO/gate/browser_b_assert.py" check "$GATE_ROOT"

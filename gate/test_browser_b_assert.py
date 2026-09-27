@@ -1,5 +1,5 @@
 # gate/test_browser_b_assert.py
-"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-16)
+"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-18)
 over a small hand-made world: blocks written with the Gate's own encoder into
 a writable member and a read-only one, a synthetic observed.json and
 probes.json, and a consumer store of hashes. Each
@@ -32,6 +32,15 @@ CONTENT = {k: b"bytes of %s\n" % v.encode() for k, v in NAMES.items()}
 FILES = {k: {"name": NAMES[k], "sha256": hashlib.sha256(CONTENT[k]).hexdigest(), "cid": cas.cid_raw(CONTENT[k])}
          for k in NAMES}
 STAMP = "2026-09-25T10:00:%02d.000Z"
+STATS = sorted([ITEMS["C"], dcid("stats A"), dcid("stats B")])   # every item of cold's stats; C is one of them
+UNTYPED_TEMPLATE = ("include { fromStore } from 'plugin/nf-blocks'\n\nworkflow {\n"
+                    "    ch_items = channel.fromStore(selection: params.selection)   // @snippet\n}\n")
+TYPED_TEMPLATE = ("nextflow.enable.types = true\n\ninclude { fromStore } from 'plugin/nf-blocks'\n\nworkflow {\n"
+                  "    ch_items = nextflow.Channel.fromStore(selection: params.selection, records: true)   // @snippet\n}\n")
+
+
+def stats_member(cid):
+    return {"item": {"address": link(cid), "via": [link(COLLS["stats"])]}}
 
 
 def link(cid):
@@ -58,6 +67,7 @@ class World(object):
         os.makedirs(self.store)
         os.makedirs(self.store_out)
         self.expected = {"items": dict(ITEMS), "collections": dict(COLLS), "files": FILES}
+        self.expected["stats_items"] = list(STATS)
         self.steps = {}
         self.second = 0
 
@@ -88,6 +98,16 @@ class World(object):
         self.shared = os.path.join(self.out, "shared")
         os.makedirs(self.shared)
         self.build_shared()
+        self.build_picks()
+        self.untyped = "channel.fromStore(selection: '%s')" % self.s2
+        self.typed = "nextflow.Channel.fromStore(selection: '%s', records: true)" % self.s2
+        self.ran = {"selection": None, "selection-typed": None}   # None: main.nf runs the page's snippet
+        self.store_typed = os.path.join(self.out, "store-typed")
+        self.typed_hashes = {"%s.sha256" % f["name"]: f["sha256"] for f in FILES.values()}
+        self.typed_exit = "0"
+        self.typed_tasks = ["typed:%s" % f["name"] for f in FILES.values()]
+        self.typed_log = ("Sep-27 10:00:00.000 [main] INFO  nextflow.Session - Session start\n"
+                          "Sep-27 10:00:02.000 [Task submitter] INFO  nextflow.Session - [ab/cdef01] Submitted process > HASH (typed:A.bam)\n")
 
         self.probes = {"replay": {"status": 200, "body": self.response(self.rename, False)},
                        "refusals": {"no_token": {"status": 403, "body": "refused"},
@@ -195,6 +215,16 @@ class World(object):
             "offer": self.extract(writeOutcome="exists", exists=self.s6, existsDeletion="deleted"),
             "after": self.extract(view=self.s6, deletion="none")}
 
+    def build_picks(self):
+        """B.picks: A from query 3 over cold's aligned, then Add all on cold's stats; saved as `picked`."""
+        self.picked = self.compose("B.picks", [item_member("A", "aligned")] + [stats_member(s) for s in STATS], "picked")
+        self.steps["B.picks"].pop("saved", None)
+        self.steps["B.picks"]["extracts"].update(
+            query=self.extract(picks=[{"address": ITEMS["A"], "kind": "item", "via": COLLS["aligned"]}],
+                               pickAll=[{"via": COLLS["aligned"], "count": "1"}]),
+            collection=self.extract(pickAll=[{"via": COLLS["stats"], "count": "3"}]),
+            all=self.extract(tray="4"))
+
     # -- building ---------------------------------------------------------
     def tick(self):
         self.second += 1
@@ -247,7 +277,8 @@ class World(object):
     @staticmethod
     def extract(**kw):
         base = {"write": "available", "writeOutcome": "written", "writeSeq": "1", "written": None, "tray": "0",
-                "selections": [], "view": None, "deletion": None, "names": [], "members": [], "errors": []}
+                "selections": [], "view": None, "deletion": None, "names": [], "members": [], "errors": [],
+                "picks": [], "pickAll": [], "snippets": {"untyped": None, "typed": None}}
         base.update(kw)
         return base
 
@@ -272,28 +303,52 @@ class World(object):
         with open(os.path.join(self.out, "samplesheet.csv"), "w", newline="") as fh:
             fh.write(buf.getvalue())
         dump("samplesheet.json", self.sheet)
-        shutil.rmtree(self.store_out)
-        os.makedirs(self.store_out)
-        for source, files in self.hashes.items():
+        self.steps["B.snippets"] = {"id": "B.snippets", "requests": [], "pageErrors": [], "consoleErrors": [],
+                                    "extracts": {"untyped": self.extract(snippets={"untyped": self.untyped, "typed": None}),
+                                                 "typed": self.extract(snippets={"untyped": None, "typed": self.typed})}}
+        dump("observed.json", {"steps": list(self.steps.values())})
+        self.hash_store(self.store_out, self.hashes)
+        self.hash_store(self.store_typed, {"typed": self.typed_hashes})
+        with open(os.path.join(self.out, "selection-typed.exit"), "w") as fh:
+            fh.write(self.typed_exit + "\n")
+        log = os.path.join(self.out, "selection-typed-nextflow.log")
+        if self.typed_log is None:
+            if os.path.exists(log):
+                os.remove(log)
+        else:
+            with open(log, "w") as fh:
+                fh.write(self.typed_log)
+        for launch, template, call, tasks in (("selection", UNTYPED_TEMPLATE, self.untyped, self.tasks),
+                                              ("selection-typed", TYPED_TEMPLATE, self.typed, self.typed_tasks)):
+            os.makedirs(os.path.join(self.root, launch), exist_ok=True)
+            with open(os.path.join(self.root, launch, "main.nf"), "w") as fh:
+                fh.write(B.substitute(template, self.ran[launch] or call))
+            work = os.path.join(self.root, launch, "work")
+            shutil.rmtree(work, ignore_errors=True)
+            for n, tag in enumerate(tasks):
+                task = os.path.join(work, "%02x" % n, "task%d" % n)
+                os.makedirs(task)
+                with open(os.path.join(task, ".command.run"), "w") as fh:
+                    fh.write("#!/bin/bash\n### ---\n### name: 'HASH (%s)'\n### outputs:\n" % tag)
+        return self.root
+
+    @staticmethod
+    def hash_store(root, hashes):
+        """A consumer's member: each published hashes/<source>/<name> pointer resolving to sha256sum output."""
+        shutil.rmtree(root, ignore_errors=True)
+        os.makedirs(root)
+        for source, files in hashes.items():
             for name, digest in files.items():
                 data = ("%s  %s\n" % (digest, name[:-len(".sha256")])).encode()
                 cid = cas.cid_raw(data)
-                path = os.path.join(self.store_out, "blocks", cid[-2:], cid)
+                path = os.path.join(root, "blocks", cid[-2:], cid)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "wb") as fh:
                     fh.write(data)
-                pointer = os.path.join(self.store_out, "coords", "hashes", source, name)
+                pointer = os.path.join(root, "coords", "hashes", source, name)
                 os.makedirs(os.path.dirname(pointer), exist_ok=True)
                 with open(pointer, "w") as fh:
                     fh.write("cas://%s\n" % cid)
-        work = os.path.join(self.root, "selection", "work")
-        shutil.rmtree(work, ignore_errors=True)
-        for n, tag in enumerate(self.tasks):
-            task = os.path.join(work, "%02x" % n, "task%d" % n)
-            os.makedirs(task)
-            with open(os.path.join(task, ".command.run"), "w") as fh:
-                fh.write("#!/bin/bash\n### ---\n### name: 'HASH (%s)'\n### outputs:\n" % tag)
-        return self.root
 
     def results(self):
         return {number: (status, message) for status, number, _title, message in B.evaluate(self.write())}
@@ -322,7 +377,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), [8, 9, 10, 11, 12, 13, 14, 15, 16])
+        self.assertEqual(sorted(results), list(range(8, 19)))
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -335,9 +390,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 17):
+        for n in range(8, 19):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 9 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 11 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -394,6 +449,19 @@ class CheckTest(unittest.TestCase):
         # Two stagings of B publish one hashes/fromstore/B.bam.sha256; only the task count shows it.
         self.w.tasks.append("fromstore:B.bam")
         self.assertFail(9, "fromstore:B.bam")
+
+    def test_b9_a_consumer_not_running_the_pages_snippet_fails(self):
+        self.w.ran["selection"] = "channel.fromStore(selection: params.selection)"
+        self.assertFail(9, "not the page's untyped snippet")
+
+    def test_b9_a_snippet_naming_another_selection_fails(self):
+        self.w.untyped = "channel.fromStore(selection: '%s')" % self.w.s1
+        self.assertFail(9, "does not name S2")
+
+    def test_b9_no_snippet_shown_fails(self):
+        self.w.untyped = None
+        self.w.ran["selection"] = "channel.fromStore(selection: params.selection)"
+        self.assertFail(9, 'no [data-snippet="untyped"]')
 
     # -- B10 --------------------------------------------------------------
     def test_b10_a_claim_at_another_address_fails(self):
@@ -596,6 +664,117 @@ class CheckTest(unittest.TestCase):
     def test_b16_the_exists_path_view_still_deleted_fails(self):
         self.w.steps["B.deleted"]["extracts"]["after"]["deletion"] = "deleted"
         self.assertFail(16, "after Restore on the exists path")
+
+    # -- B17 --------------------------------------------------------------
+    def test_b17_the_whole_world_passes(self):
+        self.assertPass(17)
+
+    def test_b17_a_query_pick_without_its_collection_fails(self):
+        # Milestone 2's behaviour: an item chosen by a per-run query was picked with no via.
+        self.w.steps["B.picks"]["extracts"]["query"]["picks"][0]["via"] = ""
+        self.assertFail(17, "data-via")
+
+    def test_b17_a_member_saved_without_its_collection_fails(self):
+        step = self.w.steps["B.picks"]
+        request = {"kind": "Selection", "members": [{"item": {"address": link(ITEMS["A"]), "via": []}}]
+                   + [stats_member(s) for s in STATS], "derived_from": []}
+        cid = self.w.put_block(dagjson.expected_selection(dagjson.loads(json.dumps(request)), "gate"))
+        step["requests"][1].update(body=json.dumps(request), responseBody=self.w.response(cid))
+        step["extracts"]["after"]["written"] = cid
+        self.assertFail(17, "members")
+
+    def test_b17_add_all_adding_only_part_of_the_collection_fails(self):
+        step = self.w.steps["B.picks"]
+        request = {"kind": "Selection", "members": [item_member("A", "aligned")] + [stats_member(s) for s in STATS[:2]],
+                   "derived_from": []}
+        cid = self.w.put_block(dagjson.expected_selection(dagjson.loads(json.dumps(request)), "gate"))
+        step["requests"][1].update(body=json.dumps(request), responseBody=self.w.response(cid))
+        step["extracts"]["after"]["written"] = cid
+        step["extracts"]["all"]["tray"] = "3"
+        status, message = self.status(17)
+        self.assertEqual(status, B.FAIL, message)
+        self.assertIn("members", message)
+        self.assertIn("the tray holds '3'", message)
+
+    def test_b17_a_pick_all_count_other_than_the_collections_fails(self):
+        self.w.steps["B.picks"]["extracts"]["collection"]["pickAll"][0]["count"] = "2"
+        self.assertFail(17, "data-count 3")
+
+    def test_b17_no_pick_all_on_query_results_fails(self):
+        self.w.steps["B.picks"]["extracts"]["query"]["pickAll"] = []
+        self.assertFail(17, "B.picks query")
+
+    # -- B18 --------------------------------------------------------------
+    def test_b18_the_whole_world_passes(self):
+        self.assertPass(18)
+
+    def test_b18_an_invalid_argument_type_warning_fails(self):
+        # What a typed input logs when fromStore hands it a LinkedHashMap (TaskProcessor.groovy:1880).
+        self.w.typed_log += ("Sep-27 10:00:03.000 [Actor Thread 3] WARN  nextflow.processor.TaskProcessor - [HASH (typed:A.bam)] "
+                             "invalid argument type at index 0 -- expected a Sample but got a LinkedHashMap\n")
+        self.assertFail(18, "invalid argument type")
+
+    def test_b18_a_typed_snippet_without_records_fails(self):
+        self.w.typed = "nextflow.Channel.fromStore(selection: '%s')" % self.w.s2
+        self.assertFail(18, "records: true")
+
+    def test_b18_a_typed_snippet_through_the_channel_namespace_fails(self):
+        self.w.typed = "channel.fromStore(selection: '%s', records: true)" % self.w.s2
+        self.assertFail(18, "nextflow.Channel.fromStore")
+
+    def test_b18_a_consumer_not_running_the_pages_snippet_fails(self):
+        self.w.ran["selection-typed"] = "nextflow.Channel.fromStore(selection: params.selection, records: true)"
+        self.assertFail(18, "not the page's typed snippet")
+
+    def test_b18_a_failed_run_fails(self):
+        self.w.typed_exit = "1"
+        self.assertFail(18, "exit")
+
+    def test_b18_no_log_fails(self):
+        self.w.typed_log = None
+        self.assertFail(18, "selection-typed-nextflow.log")
+
+    def test_b18_a_wrong_digest_fails(self):
+        self.w.typed_hashes["C.stats.sha256"] = "3" * 64
+        self.assertFail(18, "staged")
+
+    def test_b18_an_item_staged_twice_fails(self):
+        self.w.typed_tasks.append("typed:B.bam")
+        self.assertFail(18, "typed:B.bam")
+
+
+class SubstituteTest(unittest.TestCase):
+    def test_the_marked_line_takes_the_call_and_keeps_its_indent_name_and_mark(self):
+        text = B.substitute(UNTYPED_TEMPLATE, "  channel.fromStore(selection: 'bafyx')  ")
+        self.assertIn("\n    ch_items = channel.fromStore(selection: 'bafyx')   // @snippet\n", text)
+        self.assertNotIn("params.selection", text)
+        path = os.path.join(tempfile.mkdtemp(), "main.nf")
+        try:
+            with open(path, "w") as fh:
+                fh.write(text)
+            self.assertEqual(B.snippet_call(path), "channel.fromStore(selection: 'bafyx')")
+        finally:
+            shutil.rmtree(os.path.dirname(path))
+
+    def test_no_call_is_refused(self):
+        for call in (None, "", "   "):
+            with self.assertRaises(cas.GateError):
+                B.substitute(UNTYPED_TEMPLATE, call)
+
+    def test_a_call_of_more_than_one_line_is_refused(self):
+        with self.assertRaisesRegex(cas.GateError, "one call line"):
+            B.substitute(UNTYPED_TEMPLATE, "channel\n.fromStore(selection: 'x')")
+
+    def test_a_template_without_exactly_one_mark_is_refused(self):
+        with self.assertRaisesRegex(cas.GateError, "expected 1"):
+            B.substitute("workflow {\n}\n", "channel.fromStore(selection: 'x')")
+        twice = UNTYPED_TEMPLATE.replace("}\n", "    ch_other = channel.empty()   // @snippet\n}\n")
+        with self.assertRaisesRegex(cas.GateError, "expected 1"):
+            B.substitute(twice, "channel.fromStore(selection: 'x')")
+
+    def test_a_marked_line_that_is_not_an_assignment_is_refused(self):
+        with self.assertRaisesRegex(cas.GateError, "not `<name> = <call>`"):
+            B.substitute("workflow {\n    channel.empty()   // @snippet\n}\n", "channel.fromStore(selection: 'x')")
 
 
 class MemberWriteTest(unittest.TestCase):

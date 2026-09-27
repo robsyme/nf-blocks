@@ -38,7 +38,7 @@ export NXF_ANSI_LOG=false
 rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/cache" \
        "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt \
        "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite" \
-       "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection"
+       "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection" "${GATE_ROOT:?}/selection-typed"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/logs"
 
