@@ -357,7 +357,7 @@ class RecordsTest extends Specification {
             resumed        : false,
             nextflowVersion: '26.04.6',
             params         : [genome: '/data/genome.fa', depth: 30L],
-            config         : [workDir: '/scratch', process: [cpus: 2L]],
+            config         : "workDir = '/scratch'\nprocess {\n    cpus = 2\n}\n",
             script         : null,
             startedAt      : '2026-09-03T12:00:00.000Z',
         ]
@@ -369,7 +369,7 @@ class RecordsTest extends Specification {
 
         expect: 'the scrub happened here, so a caller cannot forget it'
         manifest.params == [genome: '[redacted-location]', depth: 30L]
-        manifest.config == [process: [cpus: 2L]]
+        manifest.config == "workDir = '[redacted-location]'\nprocess {\n    cpus = 2\n}\n"
 
         and:
         manifest.toCbor().asserted_by == 'gate'
@@ -380,6 +380,27 @@ class RecordsTest extends Specification {
         and:
         RunManifest.fromCbor(roundTrip(manifest.toCbor())) == manifest
         dag(RunManifest.fromCbor(roundTrip(manifest.toCbor())).toCbor()) == dag(manifest.toCbor())
+    }
+
+    def 'a run manifest written before config became text still decodes'() {
+        given: 'an old block, config held as a map'
+        final Map<String, Object> old = new RunManifest(manifestArgs()).toCbor()
+        old.put('config', [process: [cpus: 2L]])
+
+        when:
+        final RunManifest decoded = RunManifest.fromCbor(roundTrip(old))
+
+        then:
+        decoded.config == [process: [cpus: 2L]]
+        dag(decoded.toCbor()) == dag(old)
+    }
+
+    def 'a run manifest config that is neither text nor a map is refused'() {
+        when:
+        new RunManifest(manifestArgs() + [config: 7])
+
+        then:
+        thrown(IllegalArgumentException)
     }
 
     def 'a run manifest needs the facts that identify the run'() {

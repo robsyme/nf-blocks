@@ -66,6 +66,7 @@ class CasCommandsTest extends Specification {
         expect:
         run('frobnicate') == 2
         err.toString().contains('explore')
+        err.toString().contains('items')
         err.toString().contains('put')
         err.toString().contains('snapshot')
     }

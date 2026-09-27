@@ -168,6 +168,37 @@ class ScrubTest extends Specification {
         Records.scrubText(null) == null
     }
 
+    def 'scrubText redacts a quoted or bracketed path, as config text writes one'() {
+        given:
+        final String user = System.getProperty('user.name')
+
+        expect:
+        Records.scrubText("workDir = '/Users/x/work'") == "workDir = '[redacted-location]'"
+        Records.scrubText('location = "/data/cas"') == 'location = "[redacted-location]"'
+        Records.scrubText("files = ['/a/b', 's3://bucket/c']") == "files = ['[redacted-location]', '[redacted-location]']"
+        Records.scrubText("owner = '${user}'".toString()) == "owner = '[redacted-user]'"
+
+        and: 'code and portable values keep their shape'
+        Records.scrubText("ext.args = { \"--x ${'$'}{task.cpus}\" }") == "ext.args = { \"--x ${'$'}{task.cpus}\" }"
+        Records.scrubText("input = 'cas://bafk/y'") == "input = 'cas://bafk/y'"
+
+        and: 'idempotent'
+        Records.scrubText(Records.scrubText("workDir = '/Users/x/work'")) == "workDir = '[redacted-location]'"
+    }
+
+    def 'a value dag-cbor cannot encode is recorded as its text'() {
+        given:
+        final Closure c = { -> 1 }
+
+        expect:
+        Records.scrub([memory: nextflow.util.MemoryUnit.of('8 GB')]) == [memory: '8 GB']
+        Records.scrub([time: nextflow.util.Duration.of('2h')]) == [time: '2h']
+        Records.scrub([f: c]).f instanceof String
+
+        and: 'what it can encode is kept as it is'
+        Records.scrub([b: true, n: 2.5, i: 3L]) == [b: true, n: 2.5, i: 3L]
+    }
+
     def 'a RunCompletion scrubs its error field so a failed run never leaks the launch path'() {
         given:
         final Cid run = Cid.parse('bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua')
@@ -180,5 +211,86 @@ class ScrubTest extends Specification {
         expect:
         rc.error == "Process failed in [redacted-location]; exit 7"
         !rc.error.contains('/scratch')
+    }
+    def 'scrubText redacts a path, a non-portable URI or the user name after = or : inside a token'() {
+        given:
+        final String user = System.getProperty('user.name')
+
+        expect:
+        Records.scrubText("containerOptions = '--volume=/home/x/data:/data'") ==
+            "containerOptions = '--volume=[redacted-location]:[redacted-location]'"
+        Records.scrubText("beforeScript = 'export TMPDIR=/scratch/x'") == "beforeScript = 'export TMPDIR=[redacted-location]'"
+        Records.scrubText("clusterOptions = '--account=${user}'".toString()) == "clusterOptions = '--account=[redacted-user]'"
+        Records.scrubText("args = '--in=s3://bucket/x --ref=file:///data/r'") == "args = '--in=[redacted-location] --ref=[redacted-location]'"
+        Records.scrubText("mount = '${user}:/data'".toString()) == "mount = '[redacted-user]:[redacted-location]'"
+
+        and: 'portable references, times and other colons keep their shape'
+        Records.scrubText("args = '--from=cas://bafk/y --lid=lid://abc/x'") == "args = '--from=cas://bafk/y --lid=lid://abc/x'"
+        Records.scrubText("time = '10:00:00' tag = 'a:b=c'") == "time = '10:00:00' tag = 'a:b=c'"
+
+        and: 'idempotent'
+        final String once = Records.scrubText("containerOptions = '--volume=/home/x/data:/data --account=${user}'".toString())
+        Records.scrubText(once) == once
+    }
+
+    def 'scrubConfigText redacts the value of any assignment whose key names a secret'() {
+        given:
+        final String text = """\
+            env {
+                FOO_API_KEY = 'sk-live-123'
+                GITHUB_PAT = "ghp_abc"
+                MY_TOKEN = 'tok'
+            }
+            azure.storage.accountKey = 'acct=='
+            azure {
+                batch {
+                    accountKey = 'batchkey'
+                }
+            }
+            aws {
+                accessKey = 'AKIA1'
+                secretKey = 'SECRET1'
+            }
+            tower.accessToken = 'twr'
+            db.password = 'pw1'
+            db.passwd = 'pw2'
+            git.credentials = 'cred'
+            other = [SERVICE_SECRET: 'svc', plain: 'keep']
+            publishDir.path = 'results'
+            params.pattern = '*.bam'
+            process.cpus = 2
+            """.stripIndent()
+
+        when:
+        final String scrubbed = Records.scrubConfigText(text)
+
+        then:
+        ['sk-live-123', 'ghp_abc', "'tok'", 'acct==', 'batchkey', 'AKIA1', 'SECRET1', 'twr', 'pw1', 'pw2', "'cred'", 'svc'].every { String secret ->
+            !scrubbed.contains(secret)
+        }
+        scrubbed.contains("FOO_API_KEY = '[secret]'")
+        scrubbed.contains("GITHUB_PAT = '[secret]'")
+        scrubbed.contains("azure.storage.accountKey = '[secret]'")
+        scrubbed.contains("        accountKey = '[secret]'")
+        scrubbed.contains("other = [SERVICE_SECRET: '[secret]', plain: 'keep']")
+
+        and: 'a key that only contains "pat" inside another word is not a secret'
+        scrubbed.contains("publishDir.path = 'results'")
+        scrubbed.contains("params.pattern = '*.bam'")
+        scrubbed.contains('process.cpus = 2')
+
+        and: 'idempotent, and the path and user scrub still applies'
+        Records.scrubConfigText(scrubbed) == scrubbed
+        Records.scrubConfigText("workDir = '/x/work'\napiKey = '/x/key'") == "workDir = '[redacted-location]'\napiKey = '[secret]'"
+        Records.scrubConfigText(null) == null
+    }
+
+    def 'a RunManifest records its config text through scrubConfigText'() {
+        when:
+        final RunManifest manifest = new RunManifest(RecordsTest.manifestArgs() +
+            [config: "env {\n    FOO_API_KEY = 'sk-live-123'\n}\nprocess.containerOptions = '--volume=/home/x:/data'\n"])
+
+        then:
+        manifest.config == "env {\n    FOO_API_KEY = '[secret]'\n}\nprocess.containerOptions = '--volume=[redacted-location]:[redacted-location]'\n"
     }
 }

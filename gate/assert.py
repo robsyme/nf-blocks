@@ -625,6 +625,21 @@ def assert_three(gate):
                         "non-null of cas.pipeline, manifest.name, projectName"
                         % (run.manifest_cid, pipeline, PIPELINE_IDENTITY))
 
+    # gate.config sets a closure (ext.args) and a unit literal (memory); a
+    # failed run is where a config dag-cbor could not encode used to abort
+    # the RunManifest and swallow onError. DESIGN section 6 records the
+    # resolved config as text.
+    config = (run.manifest or {}).get("config")
+    if not isinstance(config, str):
+        problems.append("RunManifest %s records config as %s; DESIGN section 6 "
+                        "records it as the resolved config text"
+                        % (run.manifest_cid, type(config).__name__))
+    else:
+        for needle in ("task.cpus", "1 GB"):
+            if needle not in config:
+                problems.append("RunManifest %s config text lacks %r, which "
+                                "gate.config sets" % (run.manifest_cid, needle))
+
     from_index = _latest_successful_from_index(gate, pipeline)
     from_log = _latest_successful_from_store_log(gate, pipeline)
     for source, latest in (("the index run table", from_index),
@@ -1055,6 +1070,59 @@ def _bam_sha256(gate, sample):
     return next(iter(digests))
 
 
+# The consumer's writable member (lineage.store.location in gate/consumer). Its
+# config sets no outputDir, so the plugin must default it to this alias before
+# WorkflowMetadata copies it, and Nextflow's WorkflowRun record must say so.
+CONSUMER_OUTPUT_DIR = "cas://out"
+
+
+def _consumer_output_dir(gate):
+    """metadata.outputDir of the consumer's lineage WorkflowRun in store-out/nf/.
+
+    Nextflow's LinObserver writes it through the plugin's lineage store into
+    the writable member's nf/ tree; the Gate reads the JSON file directly.
+    """
+    runs = [spec for _key, spec in gate.store_out.nf_records("WorkflowRun")
+            if spec.get("name") == "consumer"]
+    if len(runs) != 1:
+        raise cas.GateError("expected one WorkflowRun named 'consumer' under "
+                            "%s, found %d"
+                            % (gate.store_out.path("nf"), len(runs)))
+    return (runs[0].get("metadata") or {}).get("outputDir")
+
+
+# The plugin's own info line (CasObserverFactory.defaultOutputDir) when the
+# consumer's config sets no outputDir. Its presence in nextflow.log is also
+# the only Gate-visible proof that plugin log.* calls reach Nextflow's log at
+# all (Task 1b): the plugin's isolated classloader used to bind every @Slf4j
+# logger to the NOP implementation, silently dropping this and every other
+# plugin log call. The line goes to the logger `nextflow.cas`, which
+# Nextflow's console filter admits, so it must be on the consumer's console
+# (stdout.log) as well: plugin loggers named robsyme.cas.* reach only
+# nextflow.log.
+CONSUMER_OUTPUT_DIR_LOG_LINE = "outputDir not set; publishing to %s" % CONSUMER_OUTPUT_DIR
+
+
+def _consumer_log_has_output_dir_line(gate):
+    """True if the consumer's nextflow.log carries the plugin's default line."""
+    path = os.path.join(gate.root, "logs", "consumer", "nextflow.log")
+    if not os.path.isfile(path):
+        return False
+    with open(path, errors="replace") as fh:
+        return any(CONSUMER_OUTPUT_DIR_LOG_LINE in line for line in fh)
+
+
+def _consumer_console_has_output_dir_line(gate):
+    """True if the consumer's console (stdout.log or stderr.log) shows the plugin's default line."""
+    for name in ("stdout.log", "stderr.log"):
+        path = os.path.join(gate.root, "logs", "consumer", name)
+        if os.path.isfile(path):
+            with open(path, errors="replace") as fh:
+                if any(CONSUMER_OUTPUT_DIR_LOG_LINE in line for line in fh):
+                    return True
+    return False
+
+
 @assertion(6, "lid:// and cas:// references stage into a second pipeline",
            online_only=True)
 def assert_six(gate):
@@ -1076,13 +1144,30 @@ def assert_six(gate):
             problems.append("hashes/%s/%s says the staged bytes hash to %s, "
                             "expected %s (sha256 of A.bam in pipeline-a/work)"
                             % (source, name, digest, expected))
+    output_dir = _consumer_output_dir(gate)
+    if output_dir != CONSUMER_OUTPUT_DIR:
+        problems.append("the consumer's WorkflowRun record says outputDir is %r, "
+                        "expected %r: gate/consumer/nextflow.config sets no "
+                        "outputDir, so it must default to the lineage alias "
+                        "before WorkflowMetadata copies it (ticket 02)"
+                        % (output_dir, CONSUMER_OUTPUT_DIR))
+    if not _consumer_log_has_output_dir_line(gate):
+        problems.append("the consumer's nextflow.log has no 'outputDir not set' "
+                        "line from nf-blocks: plugin logging is not reaching "
+                        "Nextflow's log")
+    elif not _consumer_console_has_output_dir_line(gate):
+        problems.append("the consumer's console (logs/consumer/stdout.log) has "
+                        "no 'outputDir not set' line: nf-blocks logged it where "
+                        "Nextflow's console filter drops it")
     if problems:
         return FAIL, ("; ".join(problems) + ". Not covered in the skeleton: the "
                       "run-rooted cas://<runCid>/aligned/A/A.bam form and a glob "
                       "over a manifest.")
     return PASS, ("lid:// and cas:// each staged one file hashing to %s; the "
-                  "run-rooted form and the manifest glob are not in the skeleton"
-                  % expected)
+                  "consumer set no outputDir, published into %s, and its "
+                  "WorkflowRun names %s; the run-rooted form and the manifest "
+                  "glob are not in the skeleton"
+                  % (expected, gate.store_out.root, CONSUMER_OUTPUT_DIR))
 
 
 @assertion(7, "fromStore where sample == 'B' returns exactly one item",

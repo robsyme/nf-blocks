@@ -9,11 +9,12 @@ import { BlockFetcher } from './blocks.js'
 import { listLog } from './storelog.js'
 import { resolveStore } from './store.js'
 import { Explorer } from './model.js'
-import { Tray, safeSessionStorage } from './tray.js'
+import { Tray, safeSessionStorage, trayNote } from './tray.js'
 import { writer } from './write.js'
 import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
 import { h, link } from './html.js'
 import * as views from './views.js'
+import { PAIRS_CSS } from './pairs.js'
 
 const ROUTES = [
   ['home', /^#?\/?$/, (ex) => views.home(ex)],
@@ -110,6 +111,9 @@ function updateTray() {
   const el = document.getElementById('tray')
   el.dataset.count = String(tray.size)
   el.textContent = `Tray (${tray.size})`
+  const note = document.getElementById('tray-unsaved')
+  note.textContent = trayNote(tray)
+  note.hidden = !note.textContent
 }
 
 function outcome(value) {
@@ -220,6 +224,7 @@ function renderMembers(store) {
 }
 
 async function start() {
+  document.head.append(h('style', {}, PAIRS_CSS))
   window.__nfBlocks = { verified: [] }
   try {
     store = await resolveStore(location.href)

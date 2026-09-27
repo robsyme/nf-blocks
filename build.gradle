@@ -99,6 +99,20 @@ configurations.configureEach {
     exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
 }
 
+configurations.runtimeClasspath {
+    // The AWS SDK pulls in slf4j-api transitively, which would otherwise land
+    // in the plugin zip's lib/ alongside it. Nextflow's own pf4j classloader
+    // isolates each plugin, so a bundled slf4j-api with no logging provider
+    // wins the plugin's own org.slf4j.LoggerFactory static binding lookup and
+    // every @Slf4j log.* call silently falls back to the NOP logger. Excluding
+    // it here leaves slf4j-api out of the runtime/zip lib/ entirely, so the
+    // plugin's isolated classloader resolves org.slf4j from Nextflow's own
+    // classpath instead, which carries the Logback binding. slf4j-api stays
+    // available at compile time via Nextflow's compileOnly artifacts, so
+    // @Slf4j-generated code still compiles.
+    exclude group: 'org.slf4j'
+}
+
 tasks.withType(Test).configureEach {
     useJUnitPlatform()
     testLogging { exceptionFormat = 'full'; events 'failed' }

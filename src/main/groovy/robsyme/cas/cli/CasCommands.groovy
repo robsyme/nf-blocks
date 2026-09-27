@@ -1,6 +1,5 @@
 package robsyme.cas.cli
 
-import java.nio.file.Files
 import java.nio.file.Paths
 
 import groovy.transform.CompileStatic
@@ -9,10 +8,15 @@ import nextflow.cli.Launcher
 import nextflow.config.ConfigBuilder
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
+import robsyme.cas.core.Cid
+import robsyme.cas.core.Claim
+import robsyme.cas.core.DagJson
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
 import robsyme.cas.core.PutError
+import robsyme.cas.core.PutResult
+import robsyme.cas.core.Records
 import robsyme.cas.explore.ExploreCommand
 
 /**
@@ -24,7 +28,10 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'put', 'snapshot']
+    static final List<String> VERBS = ['explore', 'items', 'put', 'snapshot']
+
+    /** The verb's clock, which stamps the name Claim of put --name; a test seam. */
+    Closure<Long> clock = { -> System.currentTimeMillis() } as Closure<Long>
 
     int exec(Launcher launcher, String pluginId, String cmd, List<String> args) {
         final Map config
@@ -56,8 +63,10 @@ class CasCommands {
                     return snapshot(Options.parse(args, [] as Set), config, out)
                 case 'explore':
                     return ExploreCommand.run(args, config, out, err)
+                case 'items':
+                    return ItemsCommand.run(args, config, out, err)
                 case 'put':
-                    return put(Options.parse(args, ['dry-run'] as Set), config, out, stdin)
+                    return put(Options.parse(args, ['dry-run', 'name'] as Set), config, out, err, stdin, clock)
             }
             return 2
         }
@@ -76,38 +85,131 @@ class CasCommands {
         final String head = cmd ? "unknown command 'nf-blocks:${cmd}'" : 'no command given'
         return "${head}; usage: nextflow plugin nf-blocks:<command>\ncommands:\n" +
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
-            '  put <file|-> [--dry-run]  build and write one Selection or Claim from DAG-JSON\n' +
+            '  items <output> [<path>=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
+            '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
+            '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
+            '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
+            '                         nf-blocks:items ... --format selection | nextflow plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
     }
 
-    /** Builds and writes one client-constructible block (spec section 9.2); the body goes to stdout either way. */
-    private static int put(Options options, Map config, PrintStream out, InputStream stdin) {
+    /**
+     * Builds and writes one client-constructible block (spec section 9.2); the body goes to stdout either way.
+     * With --name, the Selection is then named (decision 8 of the milestone 3 plan).
+     */
+    private static int put(Options options, Map config, PrintStream out, PrintStream err, InputStream stdin, Closure<Long> clock) {
         if( options.positionals.size() != 1 )
-            throw new UsageException("put takes one file (or - for stdin), got ${options.positionals ?: 'none'}")
+            throw new UsageException("put takes one file (or /dev/stdin), got ${options.positionals ?: 'none'}")
         final String dry = options.flag('dry-run')
         if( !(dry in [null, 'true', 'false']) )
             throw new UsageException("--dry-run is a flag, got '${dry}'")
+        final String name = nameOption(options.flag('name'))
         final String source = options.positionals[0]
-        final byte[] body = source == '-' ? readCapped(stdin) : readCapped(Files.newInputStream(Paths.get(source)))
+        final byte[] body = readCapped(source in STDIN_NAMES ? stdin : new FileInputStream(source))
+        if( name != null ) {
+            final String kind = requestKind(body)
+            if( kind != null && kind != Records.SELECTION )
+                throw new UsageException("--name names a Selection; this request is a ${kind}")
+        }
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
         final Index index = cas.openIndex()
         try {
-            out.println(new String(cas.newPut(index).put(body, dry == 'true').body(), 'UTF-8'))
-            return 0
-        }
-        catch( PutError e ) {
-            out.println(new String(e.body(), 'UTF-8'))
-            return 1
+            final Put builder = cas.newPut(index)
+            PutResult saved = null
+            try {
+                saved = builder.put(body, dry == 'true')
+            }
+            catch( PutError e ) {
+                out.println(new String(e.body(), 'UTF-8'))
+                return 1
+            }
+            out.println(new String(saved.body(), 'UTF-8'))
+            return name == null ? 0 : nameSelection(builder, saved, body, name, dry == 'true', out, err, clock)
         }
         finally {
             index.close()
         }
     }
 
-    /** At most one byte past the builder's request cap, so the builder refuses it with too_large. */
+    /** --name's value, trimmed as the page trims a typed name; null when --name is absent. */
+    private static String nameOption(String value) {
+        if( value == null )
+            return null
+        final String name = value.trim()
+        if( !name )
+            throw new UsageException('--name needs a non-blank name')
+        if( name.length() > Put.MAX_NAME_CHARS )
+            throw new UsageException("--name is at most ${Put.MAX_NAME_CHARS} characters, got ${name.length()}")
+        return name
+    }
+
+    /** The request's kind, or null when it is not a DAG-JSON map with a string kind (the builder then refuses it). */
+    private static String requestKind(byte[] body) {
+        Object request = null
+        try {
+            request = DagJson.decode(body)
+        }
+        catch( Exception e ) {
+            return null
+        }
+        final Object kind = request instanceof Map ? ((Map) request).get('kind') : null
+        return kind instanceof String ? (String) kind : null
+    }
+
+    /**
+     * The set name Claim after a Selection (ticket 05 Q5), through the same
+     * builder, superseding the current name Claims the Selection's dry run
+     * reports; nothing when its one current name already equals {@code name}.
+     * The request is the page's (web/src/write.js, rename).
+     */
+    private static int nameSelection(Put builder, PutResult saved, byte[] body, String name, boolean dryRun,
+                                     PrintStream out, PrintStream err, Closure<Long> clock) {
+        try {
+            // A dry run already holds the current names; after a write, ask the builder for them.
+            final PutResult state = dryRun ? saved : builder.put(body, true)
+            if( state.names.size() == 1 && state.names[0] == name && state.nameClaims.size() == 1 ) {
+                err.println("nf-blocks:put: ${saved.address} is already named '${name}'; no name Claim ${dryRun ? 'would be' : 'is'} written")
+                return 0
+            }
+            final Map<String, Object> claim = new LinkedHashMap<String, Object>()
+            claim.put('kind', Records.CLAIM)
+            claim.put('subject', saved.address)
+            claim.put('verb', Claim.SET)
+            claim.put('attribute', Claim.NAME)
+            claim.put('value', name)
+            claim.put('supersedes', new ArrayList<Cid>(state.nameClaims))
+            claim.put('timestamp', Index.isoMillis(clock.call()))
+            if( dryRun ) {
+                out.println(DagJson.encodeToString(claim))
+                return 0
+            }
+            out.println(new String(builder.put((Object) claim, false).body(), 'UTF-8'))
+            return 0
+        }
+        catch( PutError e ) {
+            out.println(new String(e.body(), 'UTF-8'))
+            err.println("nf-blocks:put: saved ${saved.address}, naming failed: ${e.message}")
+            return 1
+        }
+    }
+
+    /** The names put reads from the verb's own stdin stream rather than opening as a file. */
+    static final Set<String> STDIN_NAMES = ['-', '/dev/stdin'] as Set<String>
+
+    /**
+     * At most one byte past the builder's request cap, so the builder refuses it with too_large.
+     * A plain read loop: the input may be a pipe or FIFO, which cannot be sized or seeked
+     * (Files.newInputStream's readNBytes asks its channel for size() and fails with "Illegal seek").
+     */
     private static byte[] readCapped(InputStream input) {
         try {
-            return input.readNBytes((int) Put.MAX_REQUEST_BYTES + 1)
+            final int cap = (int) Put.MAX_REQUEST_BYTES + 1
+            final ByteArrayOutputStream bytes = new ByteArrayOutputStream()
+            final byte[] buffer = new byte[8192]
+            int n
+            while( bytes.size() < cap && (n = input.read(buffer, 0, Math.min(buffer.length, cap - bytes.size()))) != -1 )
+                bytes.write(buffer, 0, n)
+            return bytes.toByteArray()
         }
         finally {
             input.close()

@@ -160,6 +160,49 @@ class SamplesheetTest extends Specification {
         Samplesheet.of(store, [a]).columns == ['1', 'file.1']
     }
 
+    def 'with occurrences: a leading occurrence column, one per row, in CSV and JSON; without, nothing changes'() {
+        given:
+        final Cid a = item([[sample: 'A'], Fixtures.leaf('A.bam', bamA, 1L)])
+        final String occ = "cas://${Fixtures.cidOf([kind: 'OutputCollection', n: 1])}/${a}".toString()
+
+        when:
+        final Samplesheet sheet = Samplesheet.of(store, [a], [occ])
+
+        then:
+        sheet.columns == ['occurrence', 'sample', '1']
+        sheet.csv().readLines() == ['occurrence,sample,1', "${occ},A,cas://${bamA}/A.bam".toString()]
+        new JsonSlurper().parseText(sheet.json()) == [[occurrence: occ, sample: 'A', '1': "cas://${bamA}/A.bam".toString()]]
+        Samplesheet.of(store, [a]).columns == ['sample', '1']
+    }
+
+    def 'with occurrences, a Meta Map key named occurrence is meta.occurrence and a file position so named is file.occurrence'() {
+        given:
+        final Cid t = item([[occurrence: 'first'], Fixtures.leaf('A.bam', bamA, 1L)])
+        final Cid r = item([sample: 'R', occurrence: Fixtures.leaf('R.bam', bamB, 1L)])
+        final Cid coll = Fixtures.cidOf([kind: 'OutputCollection', n: 1])
+        final List<Cid> items = [t, r].sort { it.toString() }
+        final List<String> occs = items.collect { Cid i -> "cas://${coll}/${i}".toString() }
+
+        when:
+        final Samplesheet sheet = Samplesheet.of(store, items, occs)
+        final List<Map> rows = (List<Map>) new JsonSlurper().parseText(sheet.json())
+
+        then:
+        sheet.columns[0] == 'occurrence'
+        sheet.columns as Set == ['occurrence', 'meta.occurrence', 'sample', '1', 'file.occurrence'] as Set
+        rows.find { it['meta.occurrence'] == 'first' }.occurrence == "cas://${coll}/${t}".toString()
+        rows.find { it.sample == 'R' }['file.occurrence'] == "cas://${bamB}/R.bam".toString()
+        Samplesheet.of(store, [t]).columns == ['occurrence', '1']
+    }
+
+    def 'occurrences must pair with items one to one'() {
+        when:
+        Samplesheet.of(store, [item([[sample: 'A']])], [])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     /** A small RFC 4180 reader, so the test does not trust the writer. */
     private static List<Map<String, String>> parse(String csv) {
         final List<List<String>> records = []

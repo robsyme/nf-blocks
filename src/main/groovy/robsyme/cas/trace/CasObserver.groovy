@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.time.OffsetDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -15,8 +16,10 @@ import nextflow.trace.TraceObserverV2
 import nextflow.trace.event.FilePublishEvent
 import nextflow.trace.event.TaskEvent
 import nextflow.trace.event.WorkflowOutputEvent
+import nextflow.util.ConfigHelper
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
+import robsyme.cas.nio.CasPath
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
@@ -53,6 +56,9 @@ class CasObserver implements TraceObserverV2 {
     /** join key -> the labels seen on its publish event, kept for the index layer. */
     private final ConcurrentHashMap<String, List<String>> labels = new ConcurrentHashMap<>()
 
+    /** The missing-fromStore hint is logged once per run, however often onFlowError fires. */
+    private final AtomicBoolean hinted = new AtomicBoolean(false)
+
     // --------------------------------------------------------------- lifecycle
 
     @Override
@@ -65,13 +71,23 @@ class CasObserver implements TraceObserverV2 {
     /**
      * The writable member is the alias in {@code lineage.store.location};
      * {@code outputDir} must name the same alias or provenance would split
-     * across two stores (DESIGN.md §2).
+     * across two stores (DESIGN.md §2). An unset {@code outputDir} was given
+     * the alias by {@link CasObserverFactory#defaultOutputDir}, which sets
+     * {@code session.outputDir} and leaves the config as written, so that is
+     * what is judged when the config names none.
      */
     private void validateOutputDir() {
-        final String outputDir = session.config?.get('outputDir') as String
+        final String configured = session.config?.get('outputDir') as String
+        final String outputDir = configured ?: defaultedOutputDir()
         final String outputAlias = CasConfig.aliasOf(outputDir)
         if( outputAlias != cas.config.writableAlias )
-            throw new AbortRunException("outputDir must publish through the lineage store 'cas://${cas.config.writableAlias}', but is '${outputDir ?: 'unset'}'")
+            throw new AbortRunException("outputDir must publish through the lineage store 'cas://${cas.config.writableAlias}', but is '${configured ?: 'unset'}'")
+    }
+
+    /** {@code session.outputDir} when the factory defaulted it to a cas path, else null. */
+    private String defaultedOutputDir() {
+        final Path current = session.outputDir
+        return current instanceof CasPath ? current.toString() : null
     }
 
     @Override
@@ -114,8 +130,30 @@ class CasObserver implements TraceObserverV2 {
         log.debug("cached task ${event?.handler?.task?.hash}")
     }
 
+    /**
+     * On a run that is already failing ({@code session.error} set by
+     * Session.abort, Session.groovy:819, before it notifies completion at 830),
+     * a failure here is logged rather than thrown: an AbortRunException would
+     * stop Session.notifyEvent (Session.groovy:1125-1128) before notifyError
+     * (831) reaches any observer, losing the fromStore hint and the user's own
+     * onError (ticket 07 Q2). A run with no error keeps rule 3's abort.
+     */
     @Override
     void onFlowComplete() {
+        final Throwable failing = session?.error
+        if( failing == null ) {
+            completeRun()
+            return
+        }
+        try {
+            completeRun()
+        }
+        catch( Exception e ) {
+            log.warn("the run is already failing (${failing.message ?: failing.class.name}), and nf-blocks could not record it either: ${e.message}", e)
+        }
+    }
+
+    private void completeRun() {
         // Fires twice on a failed run (no barrier on that path); the latch keeps
         // exactly one RunCompletion.
         if( !cas.claimCompletion() ) {
@@ -132,6 +170,21 @@ class CasObserver implements TraceObserverV2 {
         finally {
             cas.completionWritten()
         }
+    }
+
+    /**
+     * Session.abort calls this after onFlowComplete with {@code session.error}
+     * already set (Session.groovy:830-831), before the launcher prints the
+     * error. The hint goes to {@link ConsoleLog}, a logger Nextflow's console
+     * filter admits, so it is printed on the terminal just above that error
+     * (and in {@code .nextflow.log}). The event carries no handler there, so
+     * the error is read from the session.
+     */
+    @Override
+    void onFlowError(TaskEvent event) {
+        final String hint = FromStoreHint.of(session?.error)
+        if( hint != null && hinted.compareAndSet(false, true) )
+            ConsoleLog.LOG.warn(hint)
     }
 
     /** How long the losing notification waits for the winner's write. */
@@ -218,6 +271,22 @@ class CasObserver implements TraceObserverV2 {
         return existing != null ? existing : writeRunManifest()
     }
 
+    /**
+     * The run's config as text for the RunManifest (DESIGN.md §6): Nextflow's
+     * own resolved config, the text Platform receives as `configText`, with
+     * closures rendered as source and Nextflow's SECRET_KEYS masked. `CmdRun`
+     * computes it whenever `lineage.enabled` is set; the fallback renders
+     * `session.config` the same canonical way, closures as their object text,
+     * masking nothing. Either way RunManifest runs it through
+     * Records.scrubConfigText, which redacts secret-named keys' values, paths,
+     * non-portable URIs and the user name.
+     */
+    private String configText() {
+        if( session.resolvedConfig != null )
+            return session.resolvedConfig
+        return ConfigHelper.toCanonicalString((session.config ?: [:]) as Map)
+    }
+
     private Cid writeRunManifest() {
         final WorkflowMetadata meta = session.workflowMetadata
         final Manifest manifest = meta?.manifest
@@ -233,7 +302,7 @@ class CasObserver implements TraceObserverV2 {
             resumed        : (meta?.resume ?: session.resumeMode),
             nextflowVersion: meta?.nextflow?.version?.toString() ?: 'unknown',
             params         : (session.params ?: [:]) as Map,
-            config         : (session.config ?: [:]) as Map,
+            config         : configText(),
             script         : null,
             startedAt      : iso(meta?.start),
         ]).toCbor(), 'RunManifest')

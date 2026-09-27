@@ -9,6 +9,7 @@ run resolution, and the failure paths that must not be swallowed.
 """
 
 import importlib.util
+import json
 import os
 import shutil
 import sqlite3
@@ -533,6 +534,82 @@ class TestFailedRunPartiality(unittest.TestCase):
 class TestUserNeedle(unittest.TestCase):
     def test_the_os_user_name_is_determined(self):
         self.assertTrue(gate_assert.os_user_name())
+
+
+class TestConsumerOutputDir(TempTree):
+    """Assertion 6 reads the consumer's lineage WorkflowRun from store-out/nf/."""
+
+    def _workflow_run(self, key, name, metadata):
+        envelope = {"version": "lineage/v1beta1", "kind": "WorkflowRun",
+                    "spec": {"name": name, "sessionId": "s", "params": [],
+                             "config": {}, "metadata": metadata}}
+        self.write("store-out/nf/%s/.data.json" % key,
+                   json.dumps(envelope).encode("utf-8"))
+
+    def test_reads_the_consumer_runs_output_dir(self):
+        self._workflow_run("c0" * 16, "consumer", {"outputDir": "cas://out"})
+        self._workflow_run("c1" * 16, "someone-else", {"outputDir": "/tmp/results"})
+        self.write("store-out/nf/c0c0/task/.data.json",
+                   json.dumps({"kind": "TaskRun", "spec": {"name": "consumer"}}).encode("utf-8"))
+        gate = gate_assert.Gate(self.tmp)
+        self.assertEqual(gate_assert._consumer_output_dir(gate), "cas://out")
+
+    def test_a_record_without_metadata_reads_as_none(self):
+        self._workflow_run("c0" * 16, "consumer", None)
+        gate = gate_assert.Gate(self.tmp)
+        self.assertIsNone(gate_assert._consumer_output_dir(gate))
+
+    def test_no_consumer_record_is_an_error(self):
+        self._workflow_run("c1" * 16, "someone-else", {"outputDir": "cas://out"})
+        gate = gate_assert.Gate(self.tmp)
+        with self.assertRaises(cas.GateError) as ctx:
+            gate_assert._consumer_output_dir(gate)
+        self.assertIn("consumer", str(ctx.exception))
+        self.assertIn("found 0", str(ctx.exception))
+
+    def test_two_consumer_records_is_an_error(self):
+        self._workflow_run("c0" * 16, "consumer", {"outputDir": "cas://out"})
+        self._workflow_run("c2" * 16, "consumer", {"outputDir": "cas://out"})
+        gate = gate_assert.Gate(self.tmp)
+        with self.assertRaises(cas.GateError) as ctx:
+            gate_assert._consumer_output_dir(gate)
+        self.assertIn("found 2", str(ctx.exception))
+
+
+class TestConsumerLogHasOutputDirLine(TempTree):
+    """Assertion 6 also checks plugin log.* calls reach the consumer's nextflow.log."""
+
+    def test_the_line_present_is_true(self):
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO nextflow.cas - outputDir not "
+                   b"set; publishing to cas://out\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertTrue(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_the_line_absent_is_false(self):
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO nextflow.Session - Session start\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_no_log_file_is_false(self):
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_the_line_on_the_console_is_true(self):
+        self.write("logs/consumer/stdout.log",
+                   b"Launching `main.nf` [x] - revision: 1\noutputDir not set; publishing to cas://out\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertTrue(gate_assert._consumer_console_has_output_dir_line(gate))
+
+    def test_the_line_only_in_nextflow_log_is_not_on_the_console(self):
+        # Before the fix: a robsyme.cas.* logger, which Nextflow's console filter drops.
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO robsyme.cas.trace.CasObserverFactory - outputDir not "
+                   b"set; publishing to cas://out\n")
+        self.write("logs/consumer/stdout.log", b"Launching `main.nf` [x] - revision: 1\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_console_has_output_dir_line(gate))
 
 
 if __name__ == "__main__":
