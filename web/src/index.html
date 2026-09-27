@@ -23,6 +23,9 @@
   .row-pairs, .row-via, .row-cid { margin: .15rem 0 0 1.6rem; } .row-pairs:empty { display: none; }
   .chip { background: var(--chip); border-radius: 4px; padding: 0 5px; font-size: 12px; }
   .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: baseline; }
+  .snippet { display: flex; gap: .5rem; align-items: flex-start; margin: .35rem 0; }
+  .snippet pre { margin: 0; padding: .4rem .6rem; border: 1px solid var(--line); overflow-x: auto; flex: 1; }
+  .snippet-toggle button[aria-pressed=true] { font-weight: 600; }
 </style>
 </head>
 <body data-state="loading" data-render="0" data-route="open">

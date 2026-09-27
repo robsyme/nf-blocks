@@ -1,11 +1,16 @@
 // web/src/views.js
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
-import { h, link, cid } from './html.js'
+import { h, link, cid, copyOutcome } from './html.js'
 import { saveChoice } from './save-choice.js'
 import { saveSequence, retryRestore } from './save-flow.js'
 import { Previews } from './previews.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from './pairs.js'
+import { snippetBlock, snippetToggle } from './snippets.js'
+
+// Re-exported so this module's existing test and callers keep working (P8):
+// the Copy outcome text is html.js's, shared with snippets.js.
+export { copyOutcome }
 
 const enc = encodeURIComponent
 
@@ -19,17 +24,6 @@ function table(head, rows) {
 
 /** What Copy on a Selection member copies (spec 7.1a): the bare item address when it has no via, else `cas://<via>/<address>`. */
 export const copyText = (address, via) => (via === '-' ? address : `cas://${via}/${address}`)
-
-/** What the Copy button should say after `clipboard.writeText(text)`; a missing clipboard counts as a rejection (page minors, ticket 11). */
-export async function copyOutcome(clipboard, text) {
-  if (!clipboard) return 'Copy failed'
-  try {
-    await clipboard.writeText(text)
-    return 'Copied'
-  } catch {
-    return 'Copy failed'
-  }
-}
 
 /**
  * What the deleted Selections list's Undo-unavailable note says, or `null`
@@ -106,8 +100,12 @@ export async function pipeline(ex, name, offset = 0) {
 export async function run(ex, completionCid) {
   const { row, completion, collections } = await ex.run(completionCid)
   const a = completion.anomalies
+  // Decision 13: the run's lineage ID, which fromStore(run:) and nf-blocks:items --run accept.
+  const lid = row.nf_run_hash ? `lid://${row.nf_run_hash}` : null
   return h('section', {},
-    h('h1', {}, row.run_name ?? 'run'), cid(completionCid),
+    h('h1', {}, row.run_name ?? 'run'),
+    lid ? h('p', {}, h('code', { title: 'this run\'s lineage ID' }, lid)) : null,
+    cid(completionCid),
     h('dl', {},
       h('dt', {}, 'pipeline'), h('dd', {}, link(`#/pipeline/${enc(row.pipeline)}`, row.pipeline)),
       h('dt', {}, 'status'), h('dd', {}, completion.possibly_incomplete ? `${completion.status}, possibly incomplete` : completion.status),
@@ -115,8 +113,10 @@ export async function run(ex, completionCid) {
       h('dt', {}, 'anomalies'), h('dd', {}, `unresolvable ${a.unresolvable}, unaddressed ${a.unaddressed}, declined ${a.declined}, never published ${a.never_published}`),
       completion.error ? [h('dt', {}, 'error'), h('dd', {}, completion.error)] : null),
     h('h2', {}, 'Outputs'),
+    lid && collections.length ? h('p', {}, 'Read an output in a downstream workflow. Script kind: ', snippetToggle()) : null,
     h('ul', {}, collections.map(c => h('li', { 'data-collection': c.cid, 'data-output': c.output },
-      link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)')))))
+      link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)'),
+      lid ? snippetBlock({ kind: 'run', lid, output: c.output }) : null))))
 }
 
 export async function collection(ex, collectionCid, offset = 0, ctx) {
@@ -514,7 +514,10 @@ export async function selection(ex, selectionCid, ctx) {
     memberList,
     ctx.write.served ? h('p', {}, 'Samplesheet: ',
       h('a', { href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'CSV'), ' ',
-      h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null)
+      h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null,
+    h('h2', {}, 'Use it in a workflow'),
+    h('p', {}, 'Read this Selection in a downstream workflow. Script kind: ', snippetToggle()),
+    snippetBlock({ kind: 'selection', cid: selectionCid }))
 }
 
 function actions(selectionCid, st, ctx, status) {
