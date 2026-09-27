@@ -47,6 +47,7 @@ export class Explorer {
     this.logReadable = true
     this.closing = new Map()
     this.fetchesForQuery = 0
+    this.runLabels = new Map()
   }
 
   static async open({ base, openDb, blocks, listFn, now = () => Date.now() }) {
@@ -172,8 +173,8 @@ export class Explorer {
       const completion = (await this.blocks.ofKind(entry.cid, 'RunCompletion')).value
       const manifest = (await this.blocks.ofKind(text(completion.run), 'RunManifest')).value
       const row = { completion_cid: entry.cid, manifest_cid: text(completion.run), pipeline: manifest.pipeline,
-        run_name: manifest.run_name, status: completion.status, possibly_incomplete: completion.possibly_incomplete ? 1 : 0,
-        finished_at: completion.finished_at, source: 'tail' }
+        run_name: manifest.run_name, nf_run_hash: manifest.nf_run_hash ?? null, status: completion.status,
+        possibly_incomplete: completion.possibly_incomplete ? 1 : 0, finished_at: completion.finished_at, source: 'tail' }
       return { cid: entry.cid, entry, row, completion, manifest, error: null }
     } catch (e) {
       if (!(e instanceof BlockError)) throw e
@@ -244,9 +245,58 @@ export class Explorer {
     return { cid, output: block.name, completion, items, ...span({ offset, limit, shown: items.length, count: all.length }) }
   }
 
+  /** An item's block. `view` is read from the typed decoding, so its pairs type floats as the index does (metadata.js). */
   async item(collectionCid, itemCid) {
-    const { value } = (await this.blocks.ofKind(itemCid, 'OutputItem')).value
-    return { collection: collectionCid, cid: itemCid, value, view: metadataView(value), leaves: leavesOf(value) }
+    const block = await this.blocks.ofKind(itemCid, 'OutputItem')
+    const { value } = block.value
+    return { collection: collectionCid, cid: itemCid, value, view: metadataView(typedDecode(block.bytes).value), leaves: leavesOf(value) }
+  }
+
+  /**
+   * Every item CID of a collection, for "Add all N to the tray" (DESIGN.md
+   * §16 decision 12): the snapshot's rows, or a tail collection's block. No
+   * OutputItem is fetched.
+   */
+  async allItems(collectionCid) {
+    const [row] = await this.db.query(SQL.collectionByCid, [collectionCid])
+    if (row) return (await this.db.query(SQL.collectionAllItems, [collectionCid])).map(r => r.item_cid)
+    return (await this.blocks.ofKind(collectionCid, 'OutputCollection')).value.items.filter(Boolean).map(text)
+  }
+
+  /**
+   * The run a collection came from, named (DESIGN.md §16 decision 11): one
+   * lookup per collection however many rows ask. A collection neither the
+   * snapshot nor the tail knows (held in another member) is null, and is
+   * asked again next time, since a tail refresh may find it.
+   */
+  runLabel(collectionCid) {
+    if (!collectionCid) return Promise.resolve(null)
+    if (!this.runLabels.has(collectionCid)) {
+      this.runLabels.set(collectionCid, this.findRunLabel(collectionCid).then(
+        (label) => { if (!label) this.runLabels.delete(collectionCid); return label },
+        (e) => { this.runLabels.delete(collectionCid); throw e }))
+    }
+    return this.runLabels.get(collectionCid)
+  }
+
+  async findRunLabel(collectionCid) {
+    const [row] = await this.db.query(SQL.collectionByCid, [collectionCid])
+    let completion = row?.completion_cid ?? null
+    let output = row?.output_name ?? null
+    if (!row) {
+      const stale = this.stale.find(s => s.completion?.collections.some(c => text(c) === collectionCid))
+      if (!stale) return null
+      completion = stale.cid
+      try {
+        output = (await this.blocks.ofKind(collectionCid, 'OutputCollection')).value.name
+      } catch (e) {
+        if (!(e instanceof BlockError)) throw e
+        return null
+      }
+    }
+    if (!completion) return null
+    const run = await this.runRow(completion)
+    return { run_name: run?.run_name ?? null, output, completion }
   }
 
   /**

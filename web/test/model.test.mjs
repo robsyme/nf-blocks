@@ -5,6 +5,8 @@ import { BlockFetcher } from '../src/blocks.js'
 import { readFileSync } from 'node:fs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 import { blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
+import { Float } from '../src/typed.js'
+import { attrRows } from '../src/metadata.js'
 
 async function open(overrides = {}) {
   const now = Date.now()
@@ -180,6 +182,42 @@ test('an unreadable Store Log is recorded, so the page says so instead of "0 run
   assert.equal(explorer.staleCount, 0)
   const ok = await open()
   assert.equal(ok.explorer.logReadable, true)
+})
+
+test('a run row carries its nf_run_hash, from the snapshot and from a tail run\'s RunManifest (ticket 07 Q4)', async () => {
+  const { explorer, member } = await open()
+  assert.equal((await explorer.runRow(member.runs.R1.completion)).nf_run_hash, 'hash-R1')
+  assert.equal((await explorer.runRow(member.runs.R2.completion)).nf_run_hash, 'hash-R2')
+})
+
+test('runLabel names a collection by its run and output, from the snapshot or the tail, and null when neither knows it (decision 11)', async () => {
+  const { explorer, member } = await open()
+  assert.deepEqual(await explorer.runLabel(member.runs.R1.collection),
+    { run_name: 'R1', output: 'aligned', completion: member.runs.R1.completion })
+  assert.deepEqual(await explorer.runLabel(member.runs.R2.collection),
+    { run_name: 'R2', output: 'aligned', completion: member.runs.R2.completion })
+  assert.equal(await explorer.runLabel(rawCid('held elsewhere').toString()), null)
+  assert.equal(await explorer.runLabel(null), null)
+  assert.equal(explorer.runLabel(member.runs.R1.collection), explorer.runLabel(member.runs.R1.collection), 'one lookup per collection')
+})
+
+test('allItems lists every item of a collection past the page size without fetching an OutputItem (decision 12)', async () => {
+  const explorer = await openBig()
+  const all = await explorer.allItems('coll')
+  assert.equal(all.length, 1200)
+  assert.deepEqual([all[0], all[1199]], ['item0001', 'item1200'])
+  assert.equal(explorer.blocks.fetches, 0)
+  const { explorer: tail, member } = await open()
+  assert.deepEqual(await tail.allItems(member.runs.R2.collection), [member.item.B, member.item.C].sort())
+})
+
+test('an item\'s view keeps its floats floats, so its pairs are typed as the index types them', async () => {
+  const { explorer, member } = await open()
+  const it = await explorer.item(member.runs.R1.collection, member.item.A)
+  assert.ok(it.view.depth instanceof Float)
+  assert.deepEqual(attrRows(it.view).map(r => [r.path, r.type, r.value]).sort(),
+    [['depth', 'float', '1.5'], ['lane', 'int', '1'], ['sample', 'string', 'A']])
+  assert.equal(it.leaves[0].name, 'A.bam')
 })
 
 test('concurrent queries share one closure per stale run, so progress counts each item once (final review finding 7)', async () => {

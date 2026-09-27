@@ -78,6 +78,7 @@ class ExplorerQueriesTest extends Specification {
         'runsKnown'               | page.runsKnown
         'collectionByCid'         | page.collectionByCid
         'collectionItems'         | page.collectionItems
+        'collectionAllItems'      | page.collectionAllItems
         'runCount'                | page.runCount
         'collectionItemCount'     | page.collectionItemCount
         'selectionsKnown'         | page.selectionsKnown
