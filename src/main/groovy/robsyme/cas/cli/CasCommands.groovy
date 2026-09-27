@@ -24,7 +24,7 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'put', 'snapshot']
+    static final List<String> VERBS = ['explore', 'items', 'put', 'snapshot']
 
     int exec(Launcher launcher, String pluginId, String cmd, List<String> args) {
         final Map config
@@ -56,6 +56,8 @@ class CasCommands {
                     return snapshot(Options.parse(args, [] as Set), config, out)
                 case 'explore':
                     return ExploreCommand.run(args, config, out, err)
+                case 'items':
+                    return ItemsCommand.run(args, config, out, err)
                 case 'put':
                     return put(Options.parse(args, ['dry-run'] as Set), config, out, stdin)
             }
@@ -76,6 +78,8 @@ class CasCommands {
         final String head = cmd ? "unknown command 'nf-blocks:${cmd}'" : 'no command given'
         return "${head}; usage: nextflow plugin nf-blocks:<command>\ncommands:\n" +
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
+            '  items <output> [<path>=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
+            '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
             '  put <file|-> [--dry-run]  build and write one Selection or Claim from DAG-JSON\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
     }

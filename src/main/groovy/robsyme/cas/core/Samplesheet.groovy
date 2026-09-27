@@ -9,6 +9,7 @@ import groovy.transform.CompileStatic
  * index or record key, never file name). A file cell is cas://<cid>/<name>
  * for a file, cas://<manifest> for a directory, blank for any leaf without
  * an address. CSV is the flattened copy, JSON the lossless one.
+ * With occurrences, a leading `occurrence` column (decision 7 of the milestone 3 plan).
  */
 @CompileStatic
 final class Samplesheet {
@@ -31,19 +32,45 @@ final class Samplesheet {
         }
     }
 
+    static final String OCCURRENCE = 'occurrence'
+
     final List<Row> rows
     final List<String> columns
-    private final List<String> metaColumns
+    /** Null, or one Item Occurrence per row, written as the leading column. */
+    private final List<String> occurrences
+    /** Dotted path -> header, in column order. */
+    private final Map<String, String> metaColumnNames
+    /** Structural position -> header, in column order. */
     private final Map<String, String> fileColumnNames
 
-    private Samplesheet(List<Row> rows, List<String> metaColumns, Map<String, String> fileColumnNames) {
+    private Samplesheet(List<Row> rows, List<String> occurrences, Map<String, String> metaColumnNames, Map<String, String> fileColumnNames) {
         this.rows = rows
-        this.metaColumns = metaColumns
+        this.occurrences = occurrences
+        this.metaColumnNames = metaColumnNames
         this.fileColumnNames = fileColumnNames
-        this.columns = Collections.unmodifiableList(metaColumns + new ArrayList<String>(fileColumnNames.values()))
+        final List<String> header = new ArrayList<String>()
+        if( occurrences != null )
+            header.add(OCCURRENCE)
+        header.addAll(metaColumnNames.values())
+        header.addAll(fileColumnNames.values())
+        this.columns = Collections.unmodifiableList(header)
     }
 
     static Samplesheet of(BlockStore store, List<Cid> items) {
+        return of(store, items, null)
+    }
+
+    /**
+     * The samplesheet with a leading {@code occurrence} column, {@code occurrences[i]}
+     * for {@code items[i]} (nf-blocks:items, decision 7 of the milestone 3 plan).
+     * A Meta Map column whose path is {@code occurrence} is then written
+     * {@code meta.occurrence}, and a file position so named {@code file.occurrence},
+     * the rule a file position named like a Meta Map column already follows.
+     * {@code occurrences} null is the plain samplesheet.
+     */
+    static Samplesheet of(BlockStore store, List<Cid> items, List<String> occurrences) {
+        if( occurrences != null && occurrences.size() != items.size() )
+            throw new IllegalArgumentException("${items.size()} items but ${occurrences.size()} occurrences")
         final List<Row> rows = new ArrayList<Row>()
         final LinkedHashSet<String> metaColumns = new LinkedHashSet<String>()
         final LinkedHashSet<String> positions = new LinkedHashSet<String>()
@@ -59,19 +86,26 @@ final class Samplesheet {
             positions.addAll(files.keySet())
             rows.add(new Row(cid, meta, flat, files))
         }
-        // A position that is also a Meta Map column is written file.<position>.
+        final boolean leading = occurrences != null
+        final Map<String, String> metaNames = new LinkedHashMap<String, String>()
+        for( String column : metaColumns )
+            metaNames.put(column, leading && column == OCCURRENCE ? "meta.${column}".toString() : column)
+        // A position that is also a Meta Map column (or the occurrence column) is written file.<position>.
         final Map<String, String> names = new LinkedHashMap<String, String>()
         for( String position : positions )
-            names.put(position, metaColumns.contains(position) ? "file.${position}".toString() : position)
-        return new Samplesheet(rows, new ArrayList<String>(metaColumns), names)
+            names.put(position, metaColumns.contains(position) || (leading && position == OCCURRENCE) ? "file.${position}".toString() : position)
+        return new Samplesheet(rows, leading ? new ArrayList<String>(occurrences) : null, metaNames, names)
     }
 
     String csv() {
         final StringBuilder out = new StringBuilder()
         out.append(columns.collect { String c -> quote(c) }.join(',')).append('\n')
-        for( Row row : rows ) {
+        for( int r = 0; r < rows.size(); r++ ) {
+            final Row row = rows[r]
             final List<String> cells = new ArrayList<String>()
-            for( String column : metaColumns )
+            if( occurrences != null )
+                cells.add(quote(occurrences[r]))
+            for( String column : metaColumnNames.keySet() )
                 cells.add(quote(text(column, row.flat.get(column))))
             for( Map.Entry<String, String> file : fileColumnNames.entrySet() )
                 cells.add(quote(row.files.get(file.key) ?: ''))
@@ -82,8 +116,13 @@ final class Samplesheet {
 
     String json() {
         final List<Map<String, Object>> out = new ArrayList<Map<String, Object>>()
-        for( Row row : rows ) {
-            final Map<String, Object> entry = new LinkedHashMap<String, Object>(row.meta)
+        for( int r = 0; r < rows.size(); r++ ) {
+            final Row row = rows[r]
+            final Map<String, Object> entry = new LinkedHashMap<String, Object>()
+            if( occurrences != null )
+                entry.put(OCCURRENCE, occurrences[r])
+            for( Map.Entry<String, Object> m : row.meta.entrySet() )
+                entry.put(occurrences != null && m.key == OCCURRENCE ? "meta.${OCCURRENCE}".toString() : m.key, m.value)
             for( Map.Entry<String, String> file : row.files.entrySet() )
                 entry.put(fileColumnNames.get(file.key), file.value)
             out.add(entry)
