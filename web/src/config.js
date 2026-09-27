@@ -17,3 +17,7 @@ export const STALE_RUNS_NOTICE = 20
 export const CLOSURE_FETCH_NOTICE = 2000
 /** The page size for the Selections list (spec section 5.6). */
 export const SELECTIONS_PAGE = 50
+/** Item rows whose previews load without a click (DESIGN.md §16 decision 10, ticket 03 Q3). */
+export const PREVIEW_CAP = 100
+/** OutputItem fetches for previews in flight at once (DESIGN.md §16 decision 10). */
+export const PREVIEW_CONCURRENCY = 6
