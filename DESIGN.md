@@ -978,8 +978,12 @@ becomes `meta.occurrence`, and a file position named `occurrence` becomes
 `file.occurrence` (the samplesheet's existing collision rule). `occurrences`
 prints one occurrence per line. `selection` prints a complete `put` request
 whose members are those occurrence strings, the union across the runs, so
-the command-line route to a named Selection is `items ... --format selection
-| nextflow plugin nf-blocks:put /dev/stdin --name <name>`.
+the command-line route to a named Selection is `nextflow -q plugin
+nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put
+/dev/stdin --name <name>`. Both launchers take `-q`: Nextflow's console log
+writes to stdout, so a "Downloading plugin" line (the first use of a version)
+or the `NXF_PLUGINS_TEST_REPOSITORY` banner would otherwise reach `put` ahead
+of the request.
 
 A **published** plugin needs none of what follows: once `nf-blocks` is on the
 plugin registry, an unpinned `nextflow plugin nf-blocks:<verb>` resolves and

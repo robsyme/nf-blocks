@@ -207,9 +207,14 @@ them as a named Selection:
 
 ```bash
 nextflow plugin nf-blocks:items aligned nested.kit=truseq --run latest --pipeline cas-test-pipeline
-nextflow plugin nf-blocks:items aligned lane=2 --run lid://<run hash>,lid://<other run hash> --format selection \
-  | nextflow plugin nf-blocks:put /dev/stdin --name lane-2
+nextflow -q plugin nf-blocks:items aligned lane=2 --run lid://<run hash>,lid://<other run hash> --format selection \
+  | nextflow -q plugin nf-blocks:put /dev/stdin --name lane-2
 ```
+
+Both halves of the pipe take `-q`. Without it, anything Nextflow prints while
+`items` runs (a "Downloading plugin" line the first time a version is used,
+or the banner a local build prints through `NXF_PLUGINS_TEST_REPOSITORY`)
+goes into the pipe ahead of the request, and `put` refuses it.
 
 `items` never writes. By default it prints the samplesheet above with a
 leading `occurrence` column; `--format json` prints the same rows as JSON,

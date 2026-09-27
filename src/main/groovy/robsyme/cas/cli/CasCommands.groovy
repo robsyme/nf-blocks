@@ -89,7 +89,7 @@ class CasCommands {
             '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
             '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
-            '                         nf-blocks:items ... --format selection | nextflow plugin nf-blocks:put /dev/stdin --name <name>\n' +
+            '                         nextflow -q plugin nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
     }
 

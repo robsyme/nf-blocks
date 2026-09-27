@@ -52,9 +52,10 @@ stop
 
 # B19: the command-line route to a named Selection (DESIGN.md section 15), a
 # real pipe between two launchers, over the same store once explore has
-# stopped. -q keeps the "un-official plugin repository" banner that
-# NXF_PLUGINS_TEST_REPOSITORY prints off items' stdout; an installed release
-# prints none.
+# stopped. -q keeps Nextflow's console output off items' stdout: here the
+# "un-official plugin repository" banner NXF_PLUGINS_TEST_REPOSITORY prints,
+# and for a user the "Downloading plugin" line on a version's first use. The
+# documented command takes -q on both launchers for the same reason.
 read -r cli_output cli_condition cli_runs cli_name <<< "$(python3 "$REPO/gate/browser_b_assert.py" cli-args "$GATE_ROOT")"
 echo "--- browser tier B: items $cli_output $cli_condition --run $cli_runs --format selection | put /dev/stdin --name $cli_name"
 ( cd "$B" && unset NXF_OFFLINE && export XDG_CACHE_HOME="$B/cache" NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" && set +e

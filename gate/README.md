@@ -186,8 +186,10 @@ dry-runs S4's request, and fetches the samplesheet of `second` as CSV and
 JSON. `explore` stops. `tier_b.sh` then pipes one launcher into another over
 the same copy, `nextflow -q plugin nf-blocks:items aligned sample=A --run
 lid://<cold>,cas://<again's RunCompletion> --format selection | nextflow -q
-plugin nf-blocks:put /dev/stdin --name from-the-cli` (`-q` keeps the
-`NXF_PLUGINS_TEST_REPOSITORY` banner off `items`' stdout), and
+plugin nf-blocks:put /dev/stdin --name from-the-cli` (`-q` keeps
+Nextflow's console output, here the `NXF_PLUGINS_TEST_REPOSITORY` banner, off
+`items`' stdout, as the documented command does for a user's first-run
+"Downloading plugin" line), and
 `gate/selection` runs in `$GATE_ROOT/selection` over the copy (member `lab`)
 and its own `browser-b/store-out` (member `out`), staging `second` through
 the page's untyped snippet and through the CSV's `1` column, and publishing
