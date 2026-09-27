@@ -18,7 +18,7 @@ import robsyme.cas.core.Index
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Records
-import robsyme.cas.core.StoreRef
+import robsyme.cas.core.RunRef
 
 /**
  * The read-back channel factory (DESIGN.md §13):
@@ -36,9 +36,7 @@ import robsyme.cas.core.StoreRef
 @CompileStatic
 class CasExtension extends PluginExtensionPoint {
 
-    private static final String LID_PREFIX = 'lid://'
     private static final String CAS_PREFIX = 'cas://'
-    private static final String LATEST = 'latest'
 
     /** What fromStore takes, for a call that names none of it (ticket 07 Q3). */
     static final String USAGE =
@@ -119,36 +117,12 @@ class CasExtension extends PluginExtensionPoint {
         throw new IllegalArgumentException("fromStore's `records` takes true or false, got '${value}' (${type})")
     }
 
-    /** The RunCompletion address for the run reference in {@code opts.run}. */
+    /** The RunCompletion address for the run reference in {@code opts.run} (the shared resolver, RunRef). */
     private Cid resolveRun(Index index, Map opts) {
         final String run = opts?.get('run') as String
         if( !run )
             throw new IllegalArgumentException("channel.fromStore needs a 'run' reference")
-
-        if( run == LATEST ) {
-            final String pipeline = opts?.get('pipeline') as String
-            if( !pipeline )
-                throw new IllegalArgumentException("channel.fromStore(run: 'latest', ...) needs a 'pipeline' identity")
-            return index.latestSuccessfulRun(pipeline)
-                .orElseThrow { new IllegalStateException("no successful run of pipeline '${pipeline}' is recorded") }
-        }
-        if( run.startsWith(LID_PREFIX) ) {
-            final String hash = run.substring(LID_PREFIX.length())
-            return index.runByNextflowHash(hash)
-                .orElseThrow { new IllegalStateException("no run with nextflow run hash '${hash}' is recorded") }
-        }
-        if( run.startsWith(CAS_PREFIX) ) {
-            final Cid cid = StoreRef.parse(run).cid
-            final Map block = loadBlock(cid)
-            final String kind = block == null ? null : Records.kindOf(block)
-            if( kind == Records.RUN_COMPLETION )
-                return cid
-            if( kind == Records.RUN_MANIFEST )
-                return index.runByManifest(cid)
-                    .orElseThrow { new IllegalStateException("run manifest ${cid} has no RunCompletion; the run did not finish") }
-            throw new IllegalArgumentException("run reference '${run}' is a ${kind ?: 'unknown'} block, not a run")
-        }
-        throw new IllegalArgumentException("unrecognised run reference '${run}': expected a cas:// Store URI, a lid://<hash>, or 'latest'")
+        return RunRef.resolve(index, cas.store, run, opts?.get('pipeline') as String)
     }
 
     /**

@@ -74,6 +74,16 @@ class Index implements Closeable {
     static final String SQL_COLLECTIONS_OF =
         'SELECT output_name, collection_cid FROM collection WHERE completion_cid = ? ORDER BY output_name'
 
+    // nf-blocks:items (decision 7 of the milestone 3 plan): conditions match
+    // the value text of any type. DISTINCT, since a collection may list an item twice.
+    private static final String SQL_ITEM_HITS_BASE =
+        'SELECT DISTINCT ci.collection_cid, ci.item_cid FROM collection_item ci JOIN collection c ON c.collection_cid = ci.collection_cid WHERE c.completion_cid = ? AND c.output_name = ?'
+
+    private static final String SQL_ITEM_HITS_TEXT =
+        ' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.value = ?)'
+
+    private static final String SQL_ITEM_HITS_ORDER = ' ORDER BY ci.item_cid, ci.collection_cid'
+
     private static final String META_WATERMARK = 'store_log_watermark'
     private static final String META_SCANNED = 'block_scan'
     private static final String META_STALE = 'stale'
@@ -858,6 +868,35 @@ class Index implements Closeable {
         final List<Cid> items = new ArrayList<Cid>()
         query(sql.toString(), parameters) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
         return items
+    }
+
+    /**
+     * The items of one output of one run whose metadata view holds, for every
+     * condition, a row with that path and that value text, of any type
+     * (ticket 05 Q4: {@code lane=2} finds the int 2 and the string "2").
+     * A truncated row never matches. Each hit carries its collection. Sorted
+     * by item CID, then collection CID.
+     */
+    List<ItemHit> itemHitsByText(Cid completion, String outputName, Map<String, String> conditions) {
+        final StringBuilder sql = new StringBuilder(SQL_ITEM_HITS_BASE)
+        final List<Object> parameters = new ArrayList<Object>([completion.toString(), outputName] as List<Object>)
+        final Map<String, String> all = conditions ?: Collections.<String, String> emptyMap()
+        for( Map.Entry<String, String> condition : all.entrySet() ) {
+            if( condition.value != null && condition.value.getBytes('UTF-8').length > MetadataView.VALUE_CAP_BYTES ) {
+                // Stored as a digest with truncated = 1, which never matches.
+                log.warn("the condition on '${condition.key}' is longer than ${MetadataView.VALUE_CAP_BYTES} bytes and cannot be matched")
+                return []
+            }
+            sql.append(SQL_ITEM_HITS_TEXT)
+            parameters.add(condition.key)
+            parameters.add(condition.value)
+        }
+        sql.append(SQL_ITEM_HITS_ORDER)
+        final List<ItemHit> hits = new ArrayList<ItemHit>()
+        query(sql.toString(), parameters) { ResultSet rs ->
+            hits.add(new ItemHit(Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2))))
+        }
+        return hits
     }
 
     /** The run whose RunManifest carries this Nextflow run hash (`lid://<hash>`). */

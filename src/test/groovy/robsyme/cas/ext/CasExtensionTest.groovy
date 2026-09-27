@@ -244,6 +244,18 @@ class CasExtensionTest extends Specification {
         (items[0] as List)[1] == null
     }
 
+    def "fromStore(run: 'latest') without a pipeline is refused by the shared resolver"() {
+        given:
+        alignedRun()
+
+        when:
+        ext.fromStore(run: 'latest', output: 'aligned')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains("run reference 'latest' needs a pipeline")
+    }
+
     // -------------------------------------------------------- fromStore(selection:)
 
     private Cid itemOf(Cid completion, String sample) {
