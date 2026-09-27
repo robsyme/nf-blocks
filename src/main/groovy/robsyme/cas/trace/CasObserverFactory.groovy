@@ -35,8 +35,10 @@ class CasObserverFactory implements TraceObserverFactoryV2 {
      * is a bare {@code cas://<alias>} (the CasLinStoreFactory.canOpen test plus
      * CasConfig's alias rule) and the config sets no {@code outputDir};
      * {@code -output-dir} counts as set, since ConfigBuilder.groovy:570-571 copies
-     * it into the config. {@code session.config} is left as written, so the
-     * RunManifest records the config the user wrote. It never throws: a failure
+     * it into the config. {@code session.config} is left as written, and the
+     * RunManifest records {@code session.resolvedConfig}, which never sees this
+     * default. The info line goes to {@link ConsoleLog}, so it is printed on
+     * the terminal as well as in {@code .nextflow.log}. It never throws: a failure
      * leaves {@code outputDir} alone and {@code CasObserver.onFlowCreate} judges
      * the run as before.
      */
@@ -63,7 +65,7 @@ class CasObserverFactory implements TraceObserverFactoryV2 {
             log.warn("outputDir not set, and ${target} could not be resolved as its default: ${e.message}", e)
             return
         }
-        log.info("outputDir not set; publishing to ${target}")
+        ConsoleLog.LOG.info("outputDir not set; publishing to ${target}")
     }
 
     private static boolean isTrue(Object value) {

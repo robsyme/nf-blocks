@@ -85,16 +85,20 @@ class CasObserverTest extends Specification {
     private final List<ListAppender<ILoggingEvent>> appenders = []
 
     def cleanup() {
-        final Logger logger = (Logger) LoggerFactory.getLogger(CasObserver)
-        appenders.each { logger.detachAppender(it) }
+        appenders.each { ListAppender<ILoggingEvent> a -> ((Logger) LoggerFactory.getLogger(a.name)).detachAppender(a) }
         if( session != null )
             CasSession.unbind(session)
         Global.session = null
     }
 
-    private ListAppender<ILoggingEvent> capture() {
-        final Logger logger = (Logger) LoggerFactory.getLogger(CasObserver)
+    /**
+     * The events of one logger: CasObserver's own by default, or {@code 'nextflow.cas'}, where
+     * the fromStore hint goes so Nextflow's console filter shows it (LoggerHelper.groovy:408-441).
+     */
+    private ListAppender<ILoggingEvent> capture(String name = CasObserver.name) {
+        final Logger logger = (Logger) LoggerFactory.getLogger(name)
         final ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>()
+        appender.name = name
         appender.start()
         logger.addAppender(appender)
         appenders << appender
@@ -454,7 +458,7 @@ class CasObserverTest extends Specification {
         given:
         bind(config())
         session.getError() >> missingFromStore('Channel.fromStore', Object)
-        final appender = capture()
+        final appender = capture('nextflow.cas')
         observer.onFlowCreate(session)
 
         when: 'notified twice, as a later task error would'
@@ -469,7 +473,7 @@ class CasObserverTest extends Specification {
         given:
         bind(config())
         session.getError() >> missingFromStore('fromStore', ChannelNamespace)
-        final appender = capture()
+        final appender = capture('nextflow.cas')
         observer.onFlowCreate(session)
 
         when:
@@ -483,7 +487,7 @@ class CasObserverTest extends Specification {
         given:
         bind(config())
         session.getError() >> error
-        final appender = capture()
+        final appender = capture('nextflow.cas')
         observer.onFlowCreate(session)
 
         when:
@@ -520,6 +524,7 @@ class CasObserverTest extends Specification {
         session.isSuccess() >> false
         session.getError() >> missingFromStore('Channel.fromStore', Object)
         final appender = capture()
+        final console = capture('nextflow.cas')
         observer.onFlowCreate(session)
         observer.onFlowBegin()
         final List<Path> dirs = []
@@ -532,7 +537,7 @@ class CasObserverTest extends Specification {
         then:
         noExceptionThrown()
         warnings(appender, 'the run is already failing') == 1
-        warnings(appender, FromStoreHint.UNTYPED) == 1
+        warnings(console, FromStoreHint.UNTYPED) == 1
         cas.awaitCompletionWritten(0)
 
         cleanup:

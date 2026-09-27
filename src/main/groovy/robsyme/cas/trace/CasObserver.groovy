@@ -175,14 +175,16 @@ class CasObserver implements TraceObserverV2 {
     /**
      * Session.abort calls this after onFlowComplete with {@code session.error}
      * already set (Session.groovy:830-831), before the launcher prints the
-     * error, so the hint is read next to it. The event carries no handler
-     * there, so the error is read from the session.
+     * error. The hint goes to {@link ConsoleLog}, a logger Nextflow's console
+     * filter admits, so it is printed on the terminal just above that error
+     * (and in {@code .nextflow.log}). The event carries no handler there, so
+     * the error is read from the session.
      */
     @Override
     void onFlowError(TaskEvent event) {
         final String hint = FromStoreHint.of(session?.error)
         if( hint != null && hinted.compareAndSet(false, true) )
-            log.warn(hint)
+            ConsoleLog.LOG.warn(hint)
     }
 
     /** How long the losing notification waits for the winner's write. */

@@ -581,7 +581,7 @@ class TestConsumerLogHasOutputDirLine(TempTree):
 
     def test_the_line_present_is_true(self):
         self.write("logs/consumer/nextflow.log",
-                   b"INFO robsyme.cas.trace.CasObserverFactory - outputDir not "
+                   b"INFO nextflow.cas - outputDir not "
                    b"set; publishing to cas://out\n")
         gate = gate_assert.Gate(self.tmp)
         self.assertTrue(gate_assert._consumer_log_has_output_dir_line(gate))
@@ -595,6 +595,21 @@ class TestConsumerLogHasOutputDirLine(TempTree):
     def test_no_log_file_is_false(self):
         gate = gate_assert.Gate(self.tmp)
         self.assertFalse(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_the_line_on_the_console_is_true(self):
+        self.write("logs/consumer/stdout.log",
+                   b"Launching `main.nf` [x] - revision: 1\noutputDir not set; publishing to cas://out\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertTrue(gate_assert._consumer_console_has_output_dir_line(gate))
+
+    def test_the_line_only_in_nextflow_log_is_not_on_the_console(self):
+        # Before the fix: a robsyme.cas.* logger, which Nextflow's console filter drops.
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO robsyme.cas.trace.CasObserverFactory - outputDir not "
+                   b"set; publishing to cas://out\n")
+        self.write("logs/consumer/stdout.log", b"Launching `main.nf` [x] - revision: 1\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_console_has_output_dir_line(gate))
 
 
 if __name__ == "__main__":

@@ -108,7 +108,8 @@ cas {
   `Session.groovy:418` does) when lineage is enabled,
   `lineage.store.location` is a bare `cas://<alias>`, and the config has no
   `outputDir`, and logs at info `outputDir not set; publishing to
-  cas://<alias>`. It runs before `Session.groovy:472` copies
+  cas://<alias>` through `nextflow.cas`, so it is on the terminal too
+  (§16, the slf4j paragraph). It runs before `Session.groovy:472` copies
   `session.outputDir` into `WorkflowMetadata`, so `workflow.outputDir`, the
   lineage WorkflowRun record and Platform payloads agree. The RunManifest
   records the config as written because it records
@@ -693,7 +694,10 @@ and a one-shot latch for `onFlowComplete`.
   is a `MissingMethodException` whose method is `Channel.fromStore` (untyped),
   or `fromStore` on a receiver of type `nextflow.dataflow.ChannelNamespace` or
   `nextflow.script.types.Channel` (typed), log at warn the hint
-  `FromStoreHint.of(error)` builds (§13); anything else, nothing.
+  `FromStoreHint.of(error)` builds (§13); anything else, nothing. The hint
+  goes to the logger `nextflow.cas` (`robsyme.cas.trace.ConsoleLog`), whose
+  name Nextflow's console filter admits, so it is printed on the terminal
+  just above the launcher's error, and written to `.nextflow.log`.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 
@@ -1569,10 +1573,16 @@ reasoning.
 
 `slf4j-api` (bundled transitively through the AWS SDK) is excluded from the
 plugin zip (Task 1b, controller-added fix), so a plugin `log.*` call reaches
-`nextflow.log` instead of a NOP logger. Without this, §11's `onFlowError`
-hint above would never appear anywhere a person could read it, and Gate
-assertion 6, which checks the consumer's `outputDir` log line, would pass for
-the wrong reason.
+`nextflow.log` instead of a NOP logger. That is as far as a plugin logger
+named `robsyme.cas.*` gets: Nextflow's console appender admits only loggers
+whose names start with a configured package, `nextflow` among them
+(`LoggerHelper.ConsoleLoggerFilter`, `LoggerHelper.groovy:408-441` at
+v26.04.6). So the two lines written for the person at the terminal, §11's
+`onFlowError` hint and §2's `outputDir not set` line, go through the logger
+`nextflow.cas` and appear on the terminal as well; every other plugin log
+line, §0 rule 3's warnings included, is in `.nextflow.log` only. Gate
+assertion 6 requires the `outputDir` line in the consumer's `nextflow.log`
+and on its console (`logs/consumer/stdout.log`).
 
 Left out, per the map: plugin factories on the typed `channel` namespace
 (nextflow-io/nextflow#7694, upstream), self-registration of `fromStore` so

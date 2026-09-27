@@ -1096,7 +1096,10 @@ def _consumer_output_dir(gate):
 # the only Gate-visible proof that plugin log.* calls reach Nextflow's log at
 # all (Task 1b): the plugin's isolated classloader used to bind every @Slf4j
 # logger to the NOP implementation, silently dropping this and every other
-# plugin log call.
+# plugin log call. The line goes to the logger `nextflow.cas`, which
+# Nextflow's console filter admits, so it must be on the consumer's console
+# (stdout.log) as well: plugin loggers named robsyme.cas.* reach only
+# nextflow.log.
 CONSUMER_OUTPUT_DIR_LOG_LINE = "outputDir not set; publishing to %s" % CONSUMER_OUTPUT_DIR
 
 
@@ -1107,6 +1110,17 @@ def _consumer_log_has_output_dir_line(gate):
         return False
     with open(path, errors="replace") as fh:
         return any(CONSUMER_OUTPUT_DIR_LOG_LINE in line for line in fh)
+
+
+def _consumer_console_has_output_dir_line(gate):
+    """True if the consumer's console (stdout.log or stderr.log) shows the plugin's default line."""
+    for name in ("stdout.log", "stderr.log"):
+        path = os.path.join(gate.root, "logs", "consumer", name)
+        if os.path.isfile(path):
+            with open(path, errors="replace") as fh:
+                if any(CONSUMER_OUTPUT_DIR_LOG_LINE in line for line in fh):
+                    return True
+    return False
 
 
 @assertion(6, "lid:// and cas:// references stage into a second pipeline",
@@ -1141,6 +1155,10 @@ def assert_six(gate):
         problems.append("the consumer's nextflow.log has no 'outputDir not set' "
                         "line from nf-blocks: plugin logging is not reaching "
                         "Nextflow's log")
+    elif not _consumer_console_has_output_dir_line(gate):
+        problems.append("the consumer's console (logs/consumer/stdout.log) has "
+                        "no 'outputDir not set' line: nf-blocks logged it where "
+                        "Nextflow's console filter drops it")
     if problems:
         return FAIL, ("; ".join(problems) + ". Not covered in the skeleton: the "
                       "run-rooted cas://<runCid>/aligned/A/A.bam form and a glob "

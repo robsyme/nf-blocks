@@ -43,7 +43,10 @@ class CasObserverFactoryTest extends Specification {
     }
 
     def setup() {
-        logger = (Logger) LoggerFactory.getLogger(CasObserverFactory)
+        // The info line goes to a logger under `nextflow.`, the only names
+        // Nextflow's ConsoleLoggerFilter lets through to the terminal
+        // (LoggerHelper.groovy:408-441 at v26.04.6).
+        logger = (Logger) LoggerFactory.getLogger('nextflow.cas')
         savedLevel = logger.level
         logger.level = Level.INFO
         appender = new ListAppender<ILoggingEvent>()

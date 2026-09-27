@@ -160,7 +160,8 @@ or not.
 
 The explorer's Selection and run pages show these call lines for what you
 are looking at, with a toggle between the untyped and typed forms. A run that
-fails because the include is missing ends with a warning saying what to add.
+fails because the include is missing prints a warning saying what to add,
+just above Nextflow's "Missing process or function" error.
 
 ## Browsing a store
 
