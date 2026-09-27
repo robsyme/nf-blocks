@@ -8,6 +8,7 @@ import nextflow.Session
 import nextflow.extension.CH
 import nextflow.plugin.extension.Factory
 import nextflow.plugin.extension.PluginExtensionPoint
+import nextflow.util.RecordMap
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
@@ -27,7 +28,9 @@ import robsyme.cas.core.StoreRef
  * or {@code 'latest'} with {@code pipeline: '<id>'}. Each matching OutputItem is
  * emitted restored to its published structure: a file leaf becomes a
  * {@code cas://<cid>/<name>} path, a declined leaf becomes {@code null}, and an
- * {@code unaddressed} leaf is an error naming the item.
+ * {@code unaddressed} leaf is an error naming the item. With {@code records: true}
+ * every non-Leaf map is a {@code nextflow.util.RecordMap} instead, at any depth,
+ * for typed processes with record inputs (ticket 09).
  */
 @Slf4j
 @CompileStatic
@@ -71,12 +74,13 @@ class CasExtension extends PluginExtensionPoint {
     private List<Object> resolveItems(Map opts) {
         if( opts == null || !ENTRY_KEYS.any { String k -> opts.containsKey(k) } )
             throw new IllegalArgumentException(USAGE)
+        final boolean records = recordsOpt(opts)
         if( opts.containsKey('selection') )
-            return resolveSelection(opts)
+            return resolveSelection(opts, records)
         final String output = opts.get('output') as String
         if( !output )
             throw new IllegalArgumentException("channel.fromStore needs an 'output' name")
-        final Map<String, Object> where = (opts?.get('where') ?: [:]) as Map<String, Object>
+        final Map<String, Object> where = (opts.get('where') ?: [:]) as Map<String, Object>
 
         Index index = null
         try {
@@ -91,13 +95,28 @@ class CasExtension extends PluginExtensionPoint {
                 final OutputItem item = loadItem(itemCid)
                 if( item == null )
                     throw new IllegalStateException("output item ${itemCid} of output '${output}' is not in the store")
-                items.add(restore(item.value, itemCid))
+                items.add(restore(item.value, itemCid, records))
             }
             return items
         }
         finally {
             index?.close()
         }
+    }
+
+    /**
+     * {@code records:} (ticket 09): false when absent, the given Boolean
+     * otherwise. Anything else is refused, so a typo such as
+     * {@code records: 'true'} is not quietly read as false.
+     */
+    private static boolean recordsOpt(Map opts) {
+        if( !opts.containsKey('records') )
+            return false
+        final Object value = opts.get('records')
+        if( value instanceof Boolean )
+            return (Boolean) value
+        final String type = value == null ? 'null' : value.getClass().simpleName
+        throw new IllegalArgumentException("fromStore's `records` takes true or false, got '${value}' (${type})")
     }
 
     /** The RunCompletion address for the run reference in {@code opts.run}. */
@@ -138,7 +157,7 @@ class CasExtension extends PluginExtensionPoint {
      * restored as a run's output is. A deleted Selection still emits: its
      * address is an explicit, immutable request.
      */
-    private List<Object> resolveSelection(Map opts) {
+    private List<Object> resolveSelection(Map opts, boolean records) {
         final List<String> clashing = ['run', 'output', 'where', 'pipeline'].findAll { String k -> opts.containsKey(k) }
         if( clashing )
             throw new IllegalArgumentException("channel.fromStore(selection: ...) takes no ${clashing.join(', ')}: a Selection names its items itself")
@@ -163,7 +182,7 @@ class CasExtension extends PluginExtensionPoint {
                 final OutputItem item = loadItem(itemCid)
                 if( item == null )
                     throw new IllegalStateException("output item ${itemCid} of selection ${selection} is not in any member of this composition")
-                items.add(restore(item.value, itemCid))
+                items.add(restore(item.value, itemCid, records))
             }
             return items
         }
@@ -183,20 +202,25 @@ class CasExtension extends PluginExtensionPoint {
 
     // ------------------------------------------------------------- restore
 
-    /** Rebuilds an item's published structure, turning each leaf into a path or null. */
-    private Object restore(Object value, Cid itemCid) {
+    /**
+     * Rebuilds an item's published structure, turning each leaf into a path or
+     * null. With {@code records}, every map (a Leaf is decoded to {@link Leaf}
+     * before this, so it is never one) is returned as an immutable RecordMap;
+     * lists stay lists either way.
+     */
+    private Object restore(Object value, Cid itemCid, boolean records) {
         if( value instanceof Leaf )
             return pathFor((Leaf) value, itemCid)
         if( value instanceof Map ) {
-            final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
+            final LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) value).entrySet() )
-                out.put(e.key, restore(e.value, itemCid))
-            return out
+                out.put(String.valueOf(e.key), restore(e.value, itemCid, records))
+            return records ? new RecordMap(out) : out
         }
         if( value instanceof List ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (List) value )
-                out.add(restore(element, itemCid))
+                out.add(restore(element, itemCid, records))
             return out
         }
         return value

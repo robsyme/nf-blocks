@@ -6,6 +6,7 @@ import nextflow.Channel
 import nextflow.Global
 import nextflow.Session
 import nextflow.extension.CH
+import nextflow.util.RecordMap
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Anomalies
@@ -105,7 +106,8 @@ class CasExtensionTest extends Specification {
             final Leaf leaf = spec.reason
                 ? Leaf.without(spec.name as String, spec.reason as String)
                 : Leaf.of(spec.name as String, spec.content as Cid, spec.size as Long, 'head-node')
-            final OutputItem item = OutputItem.of([spec.meta, leaf])
+            // `shape`, when given, builds the item's whole value around its leaf.
+            final OutputItem item = OutputItem.of(spec.shape ? ((Closure) spec.shape).call(leaf) : [spec.meta, leaf])
             itemCids << cas.store.putDagCbor(item.toCbor())
             paths << [spec.path as String]
         }
@@ -380,5 +382,132 @@ class CasExtensionTest extends Specification {
         then:
         final IllegalArgumentException noRun = thrown()
         noRun.message.contains("'run'")
+    }
+
+    // ------------------------------------------------------------ records: true
+
+    /** One item whose value is a map holding a nested map, a list of maps and a Leaf inside a list. */
+    private Map peopleRun() {
+        return storeRun(
+            pipeline: 'p', nfHash: 'nfhashP', output: 'people', withCompletion: true,
+            items: [[name: 'A.bam', content: rawCid(4), size: 40L, path: 'people/A/A.bam',
+                     shape: { Leaf bam -> [id: 'A', person: [name: 'Ada', langs: [[lang: 'en'], [lang: 'fr']]], files: [bam]] }]])
+    }
+
+    private Cid peopleItemOf(Cid completion) {
+        final Index index = Index.open(indexFile)
+        try {
+            return index.items(completion, 'people', [:])[0]
+        }
+        finally {
+            index.close()
+        }
+    }
+
+    private static void assertRecordsThroughout(Map item) {
+        assert item instanceof RecordMap
+        assert item.person instanceof RecordMap
+        assert (item.person as Map).langs instanceof List
+        assert ((item.person as Map).langs as List).every { it instanceof RecordMap }
+        assert item.files instanceof List
+        assert (item.files as List)[0] instanceof CasPath
+        assert (item.files as List)[0].toString() == "cas://${rawCid(4)}/A.bam".toString()
+        assert item == [id: 'A', person: [name: 'Ada', langs: [[lang: 'en'], [lang: 'fr']]], files: [(item.files as List)[0]]]
+    }
+
+    def 'records: true restores every non-Leaf map as a RecordMap at any depth; leaves are still paths'() {
+        given:
+        peopleRun()
+
+        when:
+        final List items = drain(ext.fromStore(run: 'lid://nfhashP', output: 'people', records: true))
+
+        then:
+        items.size() == 1
+        assertRecordsThroughout(items[0] as Map)
+    }
+
+    def 'records: true on a tuple item: the list stays a list, the map in it is a RecordMap'() {
+        given:
+        alignedRun('p', 'nfhashT')
+
+        when:
+        final List items = drain(ext.fromStore(run: 'lid://nfhashT', output: 'aligned', where: [sample: 'B'], records: true))
+        final List tuple = items[0] as List
+
+        then:
+        items.size() == 1
+        tuple.getClass() == ArrayList
+        tuple[0] instanceof RecordMap
+        tuple[0] == [sample: 'B']
+        tuple[1] instanceof CasPath
+    }
+
+    def 'records: true through selection: gives the same records'() {
+        given:
+        final Map run = peopleRun()
+        final Cid s = storeSelection([Selection.item(peopleItemOf((Cid) run.completion), [])])
+
+        when:
+        final List items = drain(ext.fromStore(selection: s.toString(), records: true))
+
+        then:
+        items.size() == 1
+        assertRecordsThroughout(items[0] as Map)
+    }
+
+    def 'a restored record is immutable: put throws UnsupportedOperationException'() {
+        given:
+        peopleRun()
+        final Map item = drain(ext.fromStore(run: 'lid://nfhashP', output: 'people', records: true))[0] as Map
+
+        when:
+        item.put('x', 1)
+
+        then:
+        thrown(UnsupportedOperationException)
+    }
+
+    def 'without records, or with records: false, maps are plain LinkedHashMaps on both entry points (#how)'() {
+        given:
+        final Map run = peopleRun()
+        final Cid s = storeSelection([Selection.item(peopleItemOf((Cid) run.completion), [])])
+
+        when:
+        final Map viaRun = drain(ext.fromStore([run: 'lid://nfhashP', output: 'people'] + extra))[0] as Map
+        final Map viaSelection = drain(ext.fromStore([selection: s.toString()] + extra))[0] as Map
+
+        then:
+        [viaRun, viaSelection].every { Map item ->
+            item.getClass() == LinkedHashMap &&
+                (item.person as Map).getClass() == LinkedHashMap &&
+                ((item.person as Map).langs as List).every { it.getClass() == LinkedHashMap } &&
+                (item.files as List)[0] instanceof CasPath
+        }
+        viaRun.put('x', 1) == null
+
+        where:
+        how               | extra
+        'absent'          | [:]
+        'records: false'  | [records: false]
+    }
+
+    def 'records refuses anything but true or false, before reading the store: #opts'() {
+        when:
+        ext.fromStore(opts)
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('records')
+        e.message.contains('true or false')
+
+        where:
+        opts << [
+            [run: 'lid://no-such-run', output: 'aligned', records: 'true'],
+            [run: 'lid://no-such-run', output: 'aligned', records: 1],
+            [run: 'lid://no-such-run', output: 'aligned', records: null],
+            [selection: 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua', records: 'yes'],
+            [selection: 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua', records: [true]],
+        ]
     }
 }
