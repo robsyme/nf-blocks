@@ -5,12 +5,13 @@ plugins {
     id 'com.github.node-gradle.node' version '7.1.0'
 }
 
-version = '0.1.0'
+version = '0.1.0-beta.1'
 
 nextflowPlugin {
     nextflowVersion = '26.04.6'
 
     provider = 'robsyme'
+    description = 'Publishes pipeline outputs into a content-addressed store with their lineage, and reads them back in other pipelines with fromStore'
     className = 'robsyme.cas.CasPlugin'
     extensionPoints = [
         'robsyme.cas.lineage.CasLinStoreFactory',

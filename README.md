@@ -17,6 +17,24 @@ back with the `fromStore` channel factory (below), and `nf-blocks:explore`
 browses them and saves Selections. `DESIGN.md` is the contract the code is
 built against.
 
+### Status: beta
+
+This is a beta (`0.1.0-beta.1`). Pin the version in `plugins { }`, as the
+examples below do. What it supports today:
+
+- A store's writable member is a local directory. S3 works only as a
+  read-only member browsed with `nf-blocks:explore`; runs cannot publish to
+  S3, through Fusion, or from a cloud executor yet.
+- In a typed script (`nextflow.enable.types = true`) Nextflow does not reach
+  plugin channel factories as `channel.fromStore` until
+  [nextflow-io/nextflow#7694](https://github.com/nextflow-io/nextflow/issues/7694)
+  is fixed. Call `nextflow.Channel.fromStore(..., records: true)` instead.
+- The on-disk format (block kinds, the index, the Store Log) may still change
+  before 1.0. A change to the blocks will come with a migration, since a
+  block's address is its content and existing stores keep their blocks.
+- Warnings from the plugin go to `.nextflow.log`; only the missing-`fromStore`
+  hint and the default `outputDir` line also print on the terminal.
+
 ## Get Started
 
 Enable the plugin and point both the lineage store and the output directory at
@@ -24,7 +42,7 @@ the same store alias:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0'
+    id 'nf-blocks@0.1.0-beta.1'
 }
 
 lineage.enabled = true
@@ -79,7 +97,7 @@ member beside its own writable one:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0'
+    id 'nf-blocks@0.1.0-beta.1'
 }
 
 manifest.name = 'downstream'           // or cas.pipeline = 'downstream'
