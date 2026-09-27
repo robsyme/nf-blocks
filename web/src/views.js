@@ -4,6 +4,8 @@
 import { h, link, cid } from './html.js'
 import { saveChoice } from './save-choice.js'
 import { saveSequence, retryRestore } from './save-flow.js'
+import { Previews } from './previews.js'
+import { labelPaths, labelText, pairsNode, pairsOf } from './pairs.js'
 
 const enc = encodeURIComponent
 
@@ -39,9 +41,6 @@ export const undoNote = (available, here, reason, writable, href) => (!available
   ? { kind: 'unavailable', reason }
   : here ? null
     : { kind: 'elsewhere', writable, href })
-
-const shown = (value) => (value === null ? 'null' : typeof value === 'object' && typeof value.toString === 'function' && value['/']
-  ? value.toString() : typeof value === 'object' ? JSON.stringify(value, (k, v) => (v && v['/'] ? v.toString() : v)) : String(value))
 
 export function idle() {
   return h('p', { class: 'muted' }, 'Snapshot open.')
@@ -126,29 +125,34 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
     h('h1', {}, c.output), cid(collectionCid),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
     pager(`#/collection/${collectionCid}`, c, 'items'),
-    h('ul', {}, c.items.map(i => h('li', {}, link(`#/item/${collectionCid}/${i}`, h('code', { class: 'cid' }, `cas://${collectionCid}/${i}`)),
-      ' ', pickButton(ctx, { address: i, via: [collectionCid] })))))
+    c.total === 0 ? h('p', { class: 'muted' }, 'This collection has no items.')
+      : itemRows(ex, ctx, { items: c.items, total: c.total, collectionCid, completion: c.completion, output: c.output, where: [],
+        previews: new Previews(ex) }))
 }
 
 export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
-  const view = it.view ?? {}
   const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString(), ctx.progress)]))
   const holding = await ex.selectionsHolding(itemCid)
+  const from = collectionCid === '-' ? null : await ex.runLabel(collectionCid).catch(() => null)
+  // Ticket 10 Q2: on the item page a value's pair is the query's only condition.
+  const target = from?.completion ? { completion: from.completion, output: from.output, where: [] } : null
+  const pills = pairsNode(pairsOf(it.view), target, { size: 'page' })
   return h('section', {},
     h('h1', {}, 'Item'),
     // `-` is an item reached with no collection (a Selection member picked by a query).
     h('p', {}, collectionCid !== '-' ? cid(`cas://${collectionCid}/${itemCid}`) : cid(itemCid)),
+    from ? h('p', { title: collectionCid }, 'From ', from.completion ? link(`#/run/${from.completion}`, runLabelText(from, collectionCid)) : runLabelText(from, collectionCid)) : null,
     h('p', {}, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })),
     holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, link(`#/selection/${s}`, cid(s)))))] : null,
     h('h2', {}, 'Meta Map'),
-    Object.keys(view).length ? table(['key', 'value'], Object.entries(view).filter(([, v]) => !(v && v.kind === 'Leaf'))
-      .map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, shown(v))))) : h('p', { class: 'muted' }, 'none'),
+    pills ? [pills, target ? h('p', { class: 'muted' }, 'Click a value to list the items of ', h('code', {}, target.output), ' in this run that share it.') : null]
+      : h('p', { class: 'muted' }, 'none'),
     h('h2', {}, 'Files'),
     table(['name', 'size', 'content', 'produced by'], it.leaves.map(l => h('tr', {},
       h('td', {}, l.name ?? ''), h('td', {}, l.size ?? ''),
       h('td', {}, l.address ? link(`#/content/${l.address}`, cid(l.address.toString())) : h('span', { class: 'muted' }, l.reason)),
-      h('td', {}, (producers.find(([leaf]) => leaf === l)?.[1] ?? []).map(p => h('div', {}, link(`#/run/${p.completion_cid}`, p.filename ?? p.completion_cid))))))))
+      h('td', {}, (producers.find(([leaf]) => leaf === l)?.[1] ?? []).map(p => h('div', {}, runLabelNode(ex, p.collection_cid, p.completion_cid))))))))
 }
 
 export async function content(ex, contentCid, ctx) {
@@ -190,10 +194,9 @@ export async function items(ex, completionCid, output, whereText, ctx) {
     h('h1', {}, `Items of ${output}`), h('p', {}, 'In ', link(`#/run/${completionCid}`, 'this run'), ', where every condition below holds.'),
     whereForm(completionCid, output, where),
     h('p', {}, `${results.length} item${results.length === 1 ? '' : 's'}`),
-    h('ul', {}, results.map(i => h('li', { 'data-item-result': i },
-      collectionCid ? link(`#/item/${collectionCid}/${i}`, cid(i)) : cid(i),
-      // Spec section 5.6: an item chosen by a query is picked with no via.
-      ' ', pickButton(ctx, { address: i, via: [] })))))
+    // Decision 12: a per-run query's pick records the run's Output Collection as via.
+    results.length === 0 ? null : itemRows(ex, ctx, { items: results, collectionCid, completion: completionCid, output, where,
+      previews: new Previews(ex), results: true }))
 }
 
 const TYPES = ['string', 'int', 'float', 'bool', 'null']
@@ -225,6 +228,187 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
       event.currentTarget.textContent = 'In the tray'
       event.currentTarget.disabled = true
     } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
+}
+
+const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
+
+/** `<run_name> / <output>` (DESIGN.md §16 decision 11), or the collection CID when this member does not know its run. */
+export const runLabelText = (label, collectionCid) => (label ? `${label.run_name ?? 'unnamed run'} / ${label.output}` : collectionCid)
+
+/**
+ * A collection shown by its run: the short CID until Explorer.runLabel
+ * answers, then `<run_name> / <output>` linking to the run, the collection
+ * CID in `title`. With `completionCid` the placeholder already links there.
+ */
+function runLabelNode(ex, collectionCid, completionCid = null) {
+  const placeholder = h('code', { class: 'cid' }, shortCid(completionCid ?? collectionCid))
+  const node = h('span', { title: collectionCid }, completionCid ? link(`#/run/${completionCid}`, placeholder) : placeholder)
+  ex.runLabel(collectionCid).then((label) => {
+    if (!label) return
+    const text = runLabelText(label, collectionCid)
+    node.replaceChildren(label.completion ? link(`#/run/${label.completion}`, text) : text)
+  }, () => {})
+  return node
+}
+
+/**
+ * "Add all N to the tray" (DESIGN.md §16 decision 12): `items` when the
+ * caller holds every one (query results), else every item of the collection
+ * from the model; each picked with the collection as via, one storage
+ * write, no preview fetched.
+ */
+export async function pickAll(ex, tray, { items = null, collectionCid }) {
+  const all = items ?? await ex.allItems(collectionCid)
+  const via = collectionCid ? [collectionCid] : []
+  tray.addMany(all.map(address => ({ address, via, kind: 'item' })))
+  return all.length
+}
+
+function markInTray(list, addresses) {
+  const only = addresses ? new Set(addresses) : null
+  for (const button of list.querySelectorAll('[data-pick]')) {
+    if (only && !only.has(button.dataset.pick)) continue
+    button.textContent = 'In the tray'
+    button.disabled = true
+  }
+}
+
+/** Calls `fn` once on the next frame however often it is asked in between. */
+function nextFrame(fn) {
+  let queued = false
+  const later = globalThis.requestAnimationFrame ?? ((f) => setTimeout(f, 16))
+  return () => {
+    if (queued) return
+    queued = true
+    later(() => { queued = false; fn() })
+  }
+}
+
+// Each row's parts, kept beside its node so a list can redraw it.
+const rowOf = new WeakMap()
+
+/**
+ * One item row (DESIGN.md §16 decision 9): `lead` (a checkbox) and the label,
+ * file-name chips, `action` at the right; the Meta Map pills beneath in
+ * `[data-preview-for]`; a via line when `viaLabel` is set, each via named by
+ * its run with `perVia(via)` after it; the short CID last, linking to the
+ * item page. The preview is drawn by `watchRows`; a row at `index` past
+ * `previews.cap` waits for "show details".
+ */
+export function itemRow(ex, ctx, { address, via = [], previews, target = null, index = 0, attrs = {}, lead = null, action = null,
+  viaLabel = null, noVia = 'a query', perVia = () => null }) {
+  const collection = via[0] ?? null
+  const row = { address, collection, target, drawn: undefined,
+    label: h('strong', { class: 'row-label' }), files: h('span', { class: 'row-files' }),
+    pairs: h('div', { class: 'row-pairs', 'data-preview-for': address }) }
+  const loading = () => h('span', { class: 'muted' }, 'loading...')
+  row.label.append(index < previews.cap ? loading()
+    : h('button', { type: 'button', onclick: () => { row.label.replaceChildren(loading()); previews.ask(collection, address) } }, 'show details'))
+  const viaLine = viaLabel === null ? null : h('div', { class: 'row-via muted' }, `${viaLabel} `,
+    via.length ? via.map((v, i) => [i ? '; ' : null, runLabelNode(ex, v), ' ', perVia(v)]) : [noVia, ' ', perVia('-')])
+  const li = h('li', { class: 'row', ...attrs },
+    h('div', { class: 'row-head' }, lead, row.label, row.files, h('span', { class: 'row-action' }, action)),
+    row.pairs, viaLine,
+    h('div', { class: 'row-cid' }, link(`#/item/${collection ?? '-'}/${address}`, h('code', { class: 'cid', title: address }, shortCid(address)))))
+  rowOf.set(li, row)
+  return li
+}
+
+function fillRow(row, preview, paths) {
+  if (preview.error) {
+    row.label.replaceChildren(h('span', { class: 'muted', title: preview.message ?? '' },
+      preview.error === 'block_missing' ? 'not held in this member' : `no preview (${preview.error})`))
+    return
+  }
+  row.label.replaceChildren(labelText(preview, paths) || h('span', { class: 'muted' }, 'no Meta Map'))
+  row.files.replaceChildren(...preview.files.map(f => h('span', { class: 'chip' }, f)))
+  const pills = pairsNode(preview.pairs, row.target, { size: 'row' })
+  row.pairs.replaceChildren(...(pills ? [pills] : []))
+}
+
+/**
+ * Asks for the first rows' previews and redraws rows as they arrive, one
+ * frame at a time; the label paths are chosen across the list's loaded
+ * previews, so every row is relabelled when they change. Once the list has
+ * been shown and is gone (another route rendered), the queue is dropped.
+ */
+function watchRows(list, previews, lis) {
+  const rows = lis.map(li => rowOf.get(li))
+  previews.askFirst(rows.map(r => ({ collection: r.collection, item: r.address })))
+  let shown = false
+  let lastPaths = null
+  const redraw = nextFrame(() => {
+    if (list.isConnected) shown = true
+    else if (shown) { off(); previews.cancel(); return }
+    const paths = labelPaths(rows.map(r => previews.get(r.address)).filter(p => p?.pairs))
+    const key = JSON.stringify(paths)
+    const relabel = key !== lastPaths
+    lastPaths = key
+    for (const r of rows) {
+      const p = previews.get(r.address)
+      if (p === undefined || (p === r.drawn && !relabel)) continue
+      r.drawn = p
+      fillRow(r, p, paths)
+    }
+  })
+  const off = previews.onChange(redraw)
+  redraw()
+}
+
+/**
+ * The labelled list for query results and collection pages: a checkbox per
+ * row with "Add checked (k)", "Add all N to the tray" ([data-pick-all]) for
+ * the whole query or collection, and each row's own Add. Every pick records
+ * `collectionCid` as via (decision 12). Pills link to query 3 over
+ * `completion` and `output` with `where` plus the pair.
+ */
+export function itemRows(ex, ctx, { items, total = items.length, collectionCid = null, completion = null, output = null, where = [],
+  previews, results = false }) {
+  const via = collectionCid ? [collectionCid] : []
+  const target = { completion, output, where }
+  const checked = new Set()
+  const status = h('span', { class: 'muted' })
+  const addChecked = h('button', { type: 'button', disabled: true }, 'Add checked (0)')
+  const showChecked = () => {
+    addChecked.textContent = `Add checked (${checked.size})`
+    addChecked.disabled = checked.size === 0
+  }
+  const lis = items.map((address, index) => itemRow(ex, ctx, { address, via, previews, target, index,
+    attrs: results ? { 'data-item-result': address } : {},
+    lead: h('input', { type: 'checkbox', 'aria-label': 'check this item', onchange: (event) => {
+      if (event.currentTarget.checked) checked.add(address)
+      else checked.delete(address)
+      showChecked()
+    } }),
+    action: pickButton(ctx, { address, via }) }))
+  const list = h('ol', { class: 'rows' }, lis)
+  addChecked.addEventListener('click', () => {
+    const picked = [...checked]
+    ctx.tray.addMany(picked.map(address => ({ address, via, kind: 'item' })))
+    ctx.trayChanged()
+    markInTray(list, picked)
+    for (const box of list.querySelectorAll('input[type=checkbox]')) box.checked = false
+    checked.clear()
+    showChecked()
+    status.textContent = `Added ${picked.length} to the tray.`
+  })
+  const addAll = h('button', { type: 'button', 'data-pick-all': '', 'data-via': via.join(' '), 'data-count': total, onclick: async (event) => {
+    const button = event.currentTarget
+    button.disabled = true
+    status.textContent = total > items.length ? `Reading all ${total} items...` : ''
+    try {
+      const n = await pickAll(ex, ctx.tray, { items: total === items.length ? items : null, collectionCid })
+      ctx.trayChanged()
+      markInTray(list, null)
+      status.textContent = `Added ${n} to the tray.`
+    } catch (e) {
+      status.replaceChildren(errorNode(e))
+    } finally {
+      button.disabled = false
+    }
+  } }, `Add all ${total} to the tray`)
+  watchRows(list, previews, lis)
+  return h('div', { class: 'item-rows' }, h('p', { class: 'row-actions' }, addChecked, ' ', addAll, ' ', status), list)
 }
 
 /** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
@@ -275,37 +459,42 @@ export async function selection(ex, selectionCid, ctx) {
   const st = s.state
   const status = h('div', { id: 'write-status' })
   const byCid = new Map(st.current.map(c => [c.cid, c]))
-  // A Selection may have thousands of members: the table renders at once and
-  // each row's "held in" cell fills in when its own lookup answers, so one
-  // slow or failing member (a hash mismatch, say) never holds up the view or
-  // fails it outright (final review finding 2).
+  const previews = new Previews(ex)
+  const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
+    event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
+  } }, 'Copy')
+  // A Selection may have thousands of members: the list renders at once and
+  // each row's "held in" fills in when its own lookup answers, so one slow or
+  // failing member (a hash mismatch, say) never holds up the view or fails it
+  // outright (final review finding 2). Spec section 7.1a: each via's Copy
+  // copies the member as an Item Occurrence. A row's index counts item
+  // members only, so the preview cap and "show details" agree with watchRows.
+  let itemIndex = 0
   const members = s.members.map((m) => {
-    // Spec section 7.1a: members shown as Item Occurrences, copyable as links.
-    const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
-      event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
-    } }, 'Copy')
-    const where = m.kind === 'selection'
-      ? link(`#/selection/${m.address}`, cid(m.address))
-      : (m.via.length ? m.via : ['-']).map(v => h('div', {}, v === '-' ? [link(`#/item/-/${m.address}`, cid(m.address)), ' ', copy(copyText(m.address, v))]
-        : [link(`#/item/${v}/${m.address}`, h('code', { class: 'cid' }, `cas://${v}/${m.address}`)), ' ', copy(copyText(m.address, v))]))
-    const held = h('td', { 'data-held-for': m.address, class: 'muted' }, '...')
-    const tr = h('tr', { 'data-member': m.address, 'data-kind': m.kind }, h('td', {}, where), h('td', {}, m.kind), held)
-    return { m, held, tr }
+    const held = h('span', { 'data-held-for': m.address, class: 'muted' }, '...')
+    const node = m.kind === 'selection'
+      ? h('li', { class: 'row', 'data-member': m.address, 'data-kind': m.kind },
+        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), link(`#/selection/${m.address}`, cid(m.address)), h('span', { class: 'row-action' }, held)))
+      : itemRow(ex, ctx, { address: m.address, via: m.via, previews, index: itemIndex++, attrs: { 'data-member': m.address, 'data-kind': m.kind },
+        action: held, viaLabel: 'via', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
+    return { m, held, node }
   })
-  for (const { m, held, tr } of members) {
+  for (const { m, held, node } of members) {
     ex.held(m.kind, m.address).then(
       (state) => {
-        tr.dataset.held = state
-        held.textContent = state === 'here' ? 'this member' : 'another member'
+        node.dataset.held = state
+        held.textContent = state === 'here' ? 'held in this member' : 'held in another member'
         held.classList.remove('muted')
       },
       (e) => {
-        const node = errorNode(e)
-        node.textContent = `unavailable (${node.textContent})`
-        held.replaceChildren(node)
+        const error = errorNode(e)
+        error.textContent = `unavailable (${error.textContent})`
+        held.replaceChildren(error)
         held.classList.remove('muted')
       })
   }
+  const memberList = h('ol', { class: 'rows' }, members.map(({ node }) => node))
+  watchRows(memberList, previews, members.filter(({ m }) => m.kind === 'item').map(({ node }) => node))
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
     h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'), cid(selectionCid),
     st.nameConflicted ? h('p', { class: 'warn' }, 'More than one name is current. Renaming supersedes them all.') : null,
@@ -322,7 +511,7 @@ export async function selection(ex, selectionCid, ctx) {
     actions(selectionCid, st, ctx, status),
     status,
     h('h2', {}, `Members (${s.members.length})`),
-    table(['member', 'kind', 'held in'], members.map(({ tr }) => tr)),
+    memberList,
     ctx.write.served ? h('p', {}, 'Samplesheet: ',
       h('a', { href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'CSV'), ' ',
       h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null)
@@ -415,13 +604,23 @@ export function compose(ex, ctx) {
     }
     return saveAndName(choice)
   }, event.currentTarget) }, 'Save')
+  const previews = new Previews(ex)
+  // As in the Selection view, a row's index counts item entries only.
+  let itemIndex = 0
+  const entryNodes = entries.map((e) => {
+    const remove = h('button', { type: 'button', onclick: () => { ctx.tray.remove(e.address); ctx.trayChanged(); ctx.rerender() } }, 'Remove')
+    return e.kind === 'selection'
+      ? h('li', { class: 'row', 'data-tray-entry': e.address, 'data-kind': e.kind },
+        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), link(`#/selection/${e.address}`, cid(e.address)), h('span', { class: 'row-action' }, remove)))
+      : itemRow(ex, ctx, { address: e.address, via: e.via, previews, index: itemIndex++, attrs: { 'data-tray-entry': e.address, 'data-kind': e.kind },
+        action: remove, viaLabel: 'picked from', noVia: 'a query' })
+  })
+  const entryList = h('ol', { class: 'rows' }, entryNodes)
+  watchRows(entryList, previews, entryNodes.filter((node, i) => entries[i].kind === 'item'))
   return h('section', {},
     h('h1', {}, 'Compose a Selection'),
     ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
-    entries.length === 0 ? h('p', { class: 'muted' }, 'The tray is empty. Add items from a run, a collection, an item or a query.')
-      : table(['member', 'kind', 'picked from', ''], entries.map(e => h('tr', { 'data-tray-entry': e.address, 'data-kind': e.kind },
-        h('td', {}, cid(e.address)), h('td', {}, e.kind), h('td', {}, e.via.length ? e.via.map(v => h('div', {}, cid(v))) : h('span', { class: 'muted' }, 'a query')),
-        h('td', {}, h('button', { type: 'button', onclick: () => { ctx.tray.remove(e.address); ctx.trayChanged(); ctx.rerender() } }, 'Remove'))))),
+    entries.length === 0 ? h('p', { class: 'muted' }, 'The tray is empty. Add items from a run, a collection, an item or a query.') : entryList,
     ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only member is another Selection is legal, but the explorer does not make one: add an item too.') : null,
     h('p', {}, name, ' ', save),
     status)

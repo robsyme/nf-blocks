@@ -49,3 +49,13 @@ test('the tray survives a reload through its storage, and works without one', ()
   t.add({ address: I1, via: [], kind: 'item' })
   assert.equal(t.size, 1)
 })
+
+test('addMany merges vias as add does and writes storage once', () => {
+  const writes = []
+  const storage = { getItem: () => null, setItem: (k, v) => writes.push([k, v]) }
+  const t = new Tray(storage)
+  t.addMany([{ address: I1, via: [C1] }, { address: I2 }, { address: I1, via: [C2] }])
+  assert.equal(t.size, 2)
+  assert.deepEqual(t.entries().find(e => e.address === I1).via, [C1, C2].sort())
+  assert.equal(writes.length, 1)
+})

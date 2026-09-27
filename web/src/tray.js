@@ -20,10 +20,15 @@ export class Tray {
     }
   }
 
-  add({ address, via = [], kind = 'item' }) {
-    const seen = this.items.get(address) ?? { address, kind, via: new Set() }
-    for (const v of via) seen.via.add(v)
-    this.items.set(address, seen)
+  add(pick) { this.addMany([pick]) }
+
+  /** Many picks with one write to storage: "Add all" may add a whole collection (DESIGN.md §16 decision 12). */
+  addMany(picks) {
+    for (const { address, via = [], kind = 'item' } of picks) {
+      const seen = this.items.get(address) ?? { address, kind, via: new Set() }
+      for (const v of via) seen.via.add(v)
+      this.items.set(address, seen)
+    }
     this.persist()
   }
 

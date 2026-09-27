@@ -14,6 +14,7 @@ import { writer } from './write.js'
 import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
 import { h, link } from './html.js'
 import * as views from './views.js'
+import { PAIRS_CSS } from './pairs.js'
 
 const ROUTES = [
   ['home', /^#?\/?$/, (ex) => views.home(ex)],
@@ -220,6 +221,7 @@ function renderMembers(store) {
 }
 
 async function start() {
+  document.head.append(h('style', {}, PAIRS_CSS))
   window.__nfBlocks = { verified: [] }
   try {
     store = await resolveStore(location.href)
