@@ -22,7 +22,7 @@ export class Tray {
 
   add(pick) { this.addMany([pick]) }
 
-  /** Many picks with one write to storage: "Add all" may add a whole collection (DESIGN.md §16 decision 12). */
+  /** Many picks with one write to storage: "Add all" may add a whole collection (DESIGN.md §16 milestone 3 decision 12). */
   addMany(picks) {
     for (const { address, via = [], kind = 'item' } of picks) {
       const seen = this.items.get(address) ?? { address, kind, via: new Set() }

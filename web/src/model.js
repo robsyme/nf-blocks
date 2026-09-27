@@ -254,7 +254,7 @@ export class Explorer {
 
   /**
    * Every item CID of a collection, for "Add all N to the tray" (DESIGN.md
-   * §16 decision 12): the snapshot's rows, or a tail collection's block. No
+   * §16 milestone 3 decision 12): the snapshot's rows, or a tail collection's block. No
    * OutputItem is fetched.
    */
   async allItems(collectionCid) {
@@ -264,7 +264,7 @@ export class Explorer {
   }
 
   /**
-   * The run a collection came from, named (DESIGN.md §16 decision 11): one
+   * The run a collection came from, named (DESIGN.md §16 milestone 3 decision 11): one
    * lookup per collection however many rows ask. A collection neither the
    * snapshot nor the tail knows (held in another member) is null, and is
    * asked again next time, since a tail refresh may find it.

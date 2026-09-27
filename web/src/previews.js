@@ -1,4 +1,4 @@
-// Item previews for the page's item rows (DESIGN.md §16 decision 10, ticket
+// Item previews for the page's item rows (DESIGN.md §16 milestone 3 decision 10, ticket
 // 03 Q3): OutputItem blocks fetched lazily through Explorer.item, which reads
 // them through BlockFetcher (hash-checked, cached), a few at a time. No
 // snapshot query: a preview never costs a range read of the index.

@@ -1,5 +1,5 @@
 // A Meta Map drawn as `key | value` pills, and the label an item row leads
-// with (DESIGN.md §16 decision 9, tickets 03 and 10). Pairs are the index's
+// with (DESIGN.md §16 milestone 3 decision 9, tickets 03 and 10). Pairs are the index's
 // own item_attr rows (metadata.js attrRows), so a pill's filter link carries
 // the type query 3 matches.
 import { h } from './html.js'

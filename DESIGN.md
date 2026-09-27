@@ -32,7 +32,10 @@ artifacts only.
 5. No command-line or web surface. No participation in task hashing or
    `-resume` identity. *Amended 2026-09-24: the command-line and web surface
    rule is lifted for the block explorer alone, specified in
-   `../.scratch/block-explorer/spec.md`.*
+   `../.scratch/block-explorer/spec.md`.* *Widened 2026-09-27: the lifting
+   also covers `nf-blocks:items`, a read-only verb that lists a run's items
+   from the plugin's own index so a downstream workflow can use them (§15,
+   §16 Milestone 3). `put` stays the only command-line write path.*
 6. The Gate's assertions never trust the plugin: they hash bytes themselves.
 
 ## 1. Plugin identity and layout
@@ -68,7 +71,7 @@ plugins { id 'nf-blocks' }
 
 lineage.enabled = true
 lineage.store.location = 'cas://lab'   // alias of the writable member
-outputDir = 'cas://lab'                // publish through the store
+outputDir = 'cas://lab'                // optional: unset means the writable member's alias
 
 cas {
     stores {
@@ -97,8 +100,20 @@ cas {
 - `CasLinStoreFactory.canOpen(config)` is `config?.store?.location?.startsWith('cas://') ?: false`.
   It must be total over every config, including `lineage.store.location` unset (null).
 - `@Priority(-10)` on the factory.
-- The writable member is the alias in `lineage.store.location`; `outputDir`
-  must name the same alias (checked at run start, abort otherwise).
+- The writable member is the alias in `lineage.store.location`. *Amended
+  2026-09-27:* `outputDir` unset means the writable member's alias; set to
+  anything else, the run aborts (checked at run start, in
+  `CasObserver.onFlowCreate`). `CasObserverFactory.create(session)` sets
+  `session.outputDir = FileHelper.toCanonicalPath('cas://<alias>')` (as
+  `Session.groovy:418` does) when lineage is enabled,
+  `lineage.store.location` is a bare `cas://<alias>`, and the config has no
+  `outputDir`, and logs at info `outputDir not set; publishing to
+  cas://<alias>`. It runs before `Session.groovy:472` copies
+  `session.outputDir` into `WorkflowMetadata`, so `workflow.outputDir`, the
+  lineage WorkflowRun record and Platform payloads agree. `session.config` is
+  not changed, so the RunManifest records the config as written. An
+  `outputDir` from `-output-dir`, or `cas://<alias>/sub`, is explicit: the
+  factory leaves it to `onFlowCreate`'s check.
 - In the Walking Skeleton a member location is a local directory path. The
   store abstraction (§5) is written so an S3 member can be added later.
 - `cas.snapshot.maxBytes` (a number of bytes, a `MemoryUnit`, or a string such as
@@ -666,6 +681,16 @@ and a one-shot latch for `onFlowComplete`.
   `System.exit` mid-write. Any failure writing the provenance, a checked
   exception included, reaches the caller as `AbortRunException` (§0 rule 3);
   before this change a checked exception was swallowed at debug level.
+  *Amended 2026-09-27:* when `session.error` is already set, `onFlowComplete`
+  catches its own failures and logs them at warn instead of throwing, since
+  an `AbortRunException` there skips `notifyError` (`Session.groovy:1125-1128`)
+  for every observer, losing the user's `onError` and the hint below. A clean
+  run keeps the abort.
+- `onFlowError(event)` (2026-09-27): when `session.error`, or a cause of it,
+  is a `MissingMethodException` whose method is `Channel.fromStore` (untyped),
+  or `fromStore` on a receiver of type `nextflow.dataflow.ChannelNamespace` or
+  `nextflow.script.types.Channel` (typed), log at warn the hint
+  `FromStoreHint.of(error)` builds (§13); anything else, nothing.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 
@@ -788,6 +813,39 @@ hidden by a current `delete` Claim emits with a warning; a nested Selection
 the composition lacks fails the call, naming it. `run`, `output`, `where` and
 `pipeline` are refused beside `selection`.
 
+*Amended 2026-09-27 (milestone 3):*
+
+- `records: true` (default `false`, in every script mode, beside `selection:`
+  and beside `run:` with `output:`) restores every map that is not a Leaf, at
+  any depth and inside lists, as `nextflow.util.RecordMap`; Leaves become
+  paths as above and lists stay lists. Any value other than `true` or
+  `false` is refused, naming `records`. A restored record is immutable:
+  `item + [x: 1]` returns a new map, and `put` throws Nextflow's
+  `UnsupportedOperationException`. `RecordMap` exists from Nextflow
+  26.01.1-edge; the plugin requires 26.04.6.
+- In a typed script (`nextflow.enable.types = true`) a plugin factory cannot
+  be reached as `channel.fromStore` or `Channel.fromStore` in 26.04.6:
+  `channel` is `nextflow.dataflow.ChannelNamespace`, which has a fixed
+  factory list (nextflow-io/nextflow#7694). The spelling that works keeps the
+  include and calls `nextflow.Channel.fromStore(..., records: true)`, which
+  a record-typed process input accepts without TaskProcessor's `invalid
+  argument type` warning. Gate tier B18 runs it.
+- A run reference (`run:`) is resolved by `robsyme.cas.core.RunRef.resolve`,
+  which `nf-blocks:items --run` shares (§15); its errors say "run reference".
+- With none of `selection`, `run` or `output`, the call fails with
+  "`fromStore` takes `selection: <address>`, or `run: <ref>` with `output:
+  <name>`; optionally `where: [...]` and `records: true`".
+- A run that fails because `fromStore` cannot be found ends with a warning
+  from `CasObserver.onFlowError` (§11), chosen by the exception, not the
+  script mode. Untyped (method `Channel.fromStore`): "`fromStore` comes from
+  the nf-blocks plugin: add `include { fromStore } from 'plugin/nf-blocks'`
+  at the top of the script." Typed (method `fromStore`, type
+  `nextflow.dataflow.ChannelNamespace` or `nextflow.script.types.Channel`):
+  "In a typed script, `channel.fromStore` can't be reached until
+  nextflow-io/nextflow#7694 is fixed. Add the include and call
+  `nextflow.Channel.fromStore(...)`, with `records: true` for record-typed
+  inputs."
+
 ## 14. The Gate (`gate/`)
 
 `gate/gate.sh` builds and installs the plugin into a throwaway
@@ -847,7 +905,9 @@ config comes from `ConfigBuilder` over the launch directory and `-c`, exactly as
 ```
 nextflow [-c <config>] plugin nf-blocks:snapshot
 nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
-nextflow [-c <config>] plugin nf-blocks:put <file> [--dry-run]
+nextflow [-c <config>] plugin nf-blocks:put <file> [--dry-run] [--name <name>]
+nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --run <ref>[,<ref>...]
+                                              [--pipeline <id>] [--format csv|json|occurrences|selection]
 ```
 
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
@@ -858,6 +918,36 @@ on a usage error.
 Nextflow 26.04.6's launcher refuses a bare `-` (`Unknown option: -`), so read
 stdin as `/dev/stdin`; `-` works for in-process callers. A bare `--dry-run`
 arrives as `--dry-run`, `true`.
+
+`put --name <name>` (milestone 3) takes Selection requests only. Once the
+Selection is written or found, a second request through the same `Put`
+builder writes a `set name` Claim, timestamped by the verb's clock,
+superseding the dry run's `name_claims`; nothing is written when the one
+current name already equals `<name>`. Both responses are printed. When the
+Claim fails the verb prints "saved, naming failed" and exits 1. With
+`--dry-run` it prints the dry run and the Claim it would send. Renaming is a
+re-put with a new `--name`; there is no `rename` verb.
+
+`items` (milestone 3) is read-only. It lists the items of one output of one
+or more runs from the plugin's own index, caught up first with
+`cas.openIndex()` as `put` and `snapshot` do; it never reads an Index
+Snapshot and never writes. `<ref>` is anything `fromStore(run:)` takes
+(`latest` needs `--pipeline`), resolved by `RunRef`; several runs are
+comma-joined, because `CmdPlugin` keeps one value per flag. A condition is a
+positional `<path>=<value>` split at the first `=` (`a=b=c` is the path `a`
+and the value `b=c`); it matches an `item_attr` row of that path whose value
+text equals `<value>`, whatever its type, so `lane=2` finds the integer 2 and
+the string "2" (`Index.itemHitsByText`). Every condition must hold. `=x` or
+an argument without `=` is a usage error naming it, exit 2. Rows are sorted
+by item CID, then collection CID. `--format csv` (the default) and `json` are
+`Samplesheet.of(store, items, occurrences)` (§16) with a leading `occurrence`
+column, `cas://<collection>/<item>`; a Meta Map key named `occurrence`
+becomes `meta.occurrence`, and a file position named `occurrence` becomes
+`file.occurrence` (the samplesheet's existing collision rule). `occurrences`
+prints one occurrence per line. `selection` prints a complete `put` request
+whose members are those occurrence strings, the union across the runs, so
+the command-line route to a named Selection is `items ... --format selection
+| nextflow plugin nf-blocks:put /dev/stdin --name <name>`.
 
 A **published** plugin needs none of what follows: once `nf-blocks` is on the
 plugin registry, an unpinned `nextflow plugin nf-blocks:<verb>` resolves and
@@ -1061,11 +1151,13 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
+| `[data-preview-for]` | the Meta Map pills container of one item row: `data-preview-for` the item cid. Empty (no pills) when the item has no Meta Map (milestone 3) |
+| `[data-pick-all]` | "Add all N to the tray" on query results and collection pages: `data-via` the collection, `data-count` N; adds every item of the query or collection, not only the page (milestone 3) |
 | `body[data-write]` | `available` or `unavailable` |
 | `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |
 | `body[data-written]` | the address the last successful write made |
 | `#tray[data-count]` | items in the tray |
-| `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`) |
+| `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`); on query 3 results `data-via` is the run's Output Collection (milestone 3) |
 | `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
 | `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON, `data-deletion` the composition's deletion state (decision 23) |
@@ -1084,6 +1176,8 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-undo]` | an Undo button on a row of `#/selections?deleted=1`: `data-undo` the Selection's cid |
 | `[data-refresh-failed]` | the write succeeded but the page could not refresh afterwards |
 | `[data-samplesheet]` | `csv` or `json` export link (served by `explore` only) |
+| `[data-snippet]` | the `<code>` holding one consumer call line on the Selection and run pages: `untyped`, `channel.fromStore(...)`, or `typed`, `nextflow.Channel.fromStore(..., records: true)`. The mode is the bare string in `localStorage` key `nf-blocks.snippets` (milestone 3) |
+| `[data-snippet-mode]` | one of the two toggle buttons, `untyped` or `typed`, that switch every snippet on the page; `aria-pressed` marks the current one (milestone 3) |
 | `[data-hidden-runs]` | on a pipeline page, how many runs a delete Claim hides |
 | `[data-error]` | an error: `data-error` code, `data-cid` when a block is to blame |
 | `window.__nfBlocks.verified` | every cid whose bytes the page hashed and accepted |
@@ -1126,7 +1220,7 @@ statement, so Gate assertion 2's counts are the query's cost.
 9. S3 members are read-only and explore-only.
 10. Nothing is filtered by `delete` Claims until Claims exist (milestone 2).
 
-## 16. Selections (milestone 2)
+## 16. Selections (milestones 2 and 3)
 
 *Status 2026-09-26: milestone 2 accepted; Gate browser tier B 6 of 6 (all
 local); cloud tier A6-A7 (`make gate-cloud`) passed on the merged tree
@@ -1178,7 +1272,7 @@ name typed.
 ### `nf-blocks:put`
 
 ```
-nextflow [-c <config>] plugin nf-blocks:put <file|-> [--dry-run]
+nextflow [-c <config>] plugin nf-blocks:put <file|-> [--dry-run] [--name <name>]
 ```
 
 Builds and writes one Selection or Claim from a DAG-JSON file, sharing
@@ -1191,11 +1285,14 @@ reaches the verb as `--dry-run`, `true` (`Launcher.normalizeArgs` appends
 `=true`). Staleness is member-scoped (decision 22): superseding a Claim
 that only a read-only member has already superseded succeeds and leaves a
 conflict; the dry run reports `here` and `name_claims`, and `deletion`, `deletion_claims`.
+A member may be written as an Item Occurrence string, `cas://<collection>/<item>`,
+meaning that item via that collection (`Put.groovy:162-168`); `items --format
+selection` writes its members that way. `--name` is in §15.
 
 ### Samplesheet export
 
 `GET` or `HEAD /api/samplesheet/<selection cid>.csv` or `.json`, served by `explore`
-only (decision 1; no new verb, spec section 2's table stays at three), linked
+only (decision 1; no new verb for it; milestone 3's `items`, §15, prints the same columns from the command line), linked
 from the page's Selection view. One row per distinct item, sorted ascending
 by item CID (decision 18).
 
@@ -1372,7 +1469,7 @@ by item CID (decision 18).
 
 ### Gate browser tier B
 
-Nine assertions (spec section 1.3, tier B), all local: a Selection made in
+Eleven assertions (spec section 1.3, tier B), all local: a Selection made in
 the page has the Gate's own address (8); `fromStore(selection:)` receives each
 distinct item once, nested included (9); rename, delete and undo are Claims at
 the Gate's addresses, and a replay writes nothing (10); two sessions renaming
@@ -1381,7 +1478,10 @@ token, from another Origin, or as `text/plain` is refused, and writes nothing
 (12); the samplesheet lists exactly the Selection's items, and its cells stage
 (13); a read-only member's Selection is copied and named (14); a Claim in
 another member does not lock a rename (15); a copy deleted in another member is
-restored (16). B12 probes with a Selection no
+restored (16); a per-run query pick keeps its collection, and Add all adds
+every item with it (17); the typed consumer receives records (18). B9's and
+B18's consumers run the call line the Selection view shows (`[data-snippet]`)
+verbatim, so a broken snippet fails the Gate. B12 probes with a Selection no
 step has written, so the assertion can actually fail if a refusal ever let a
 block or a Store Log entry through; the earlier draft replayed an already-
 written Selection, which could not distinguish "refused" from "written".
@@ -1395,3 +1495,79 @@ written Selection, which could not distinguish "refused" from "written".
   and a unit test pins it. What remains is narrow and accepted: within one
   request, a failed read that SQLite retries past, followed by a failure of
   another kind, reports the read's code rather than `query_failed`.
+
+### Milestone 3: picking items for a downstream workflow
+
+*Status 2026-09-27: milestone 3 accepted; Gate lineage 11/0/6, browser tier A
+5/5, tier B 11/11 (all local).*
+
+Plan `docs/plans/2026-09-27-explorer-milestone-3.md`, from the UX map
+`../.scratch/block-explorer/ux/map.md`; each ticket's `## Answer` holds the
+reasoning.
+
+1. An unset `outputDir` means the writable member's alias, set by
+   `CasObserverFactory` before `WorkflowMetadata` copies it (§2).
+   [02](../.scratch/block-explorer/ux/issues/02-unset-outputdir.md), research
+   [01](../.scratch/block-explorer/ux/issues/01-outputdir-read-before-flowcreate.md).
+2. A run that fails because `fromStore` cannot be found ends with a warning
+   naming the fix, untyped and typed apart, chosen by the exception (§11,
+   §13). [06](../.scratch/block-explorer/ux/issues/06-missing-fromstore-exception-chain.md),
+   [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q1.
+3. On a run that is already failing, `onFlowComplete` logs its own failures
+   instead of throwing, so `notifyError` still reaches every observer (§11).
+   [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q2.
+4. `fromStore(..., records: true)` restores every non-Leaf map as
+   `RecordMap`; default `false` in every script mode (§13).
+   [09](../.scratch/block-explorer/ux/issues/09-opt-in-record-restore.md).
+5. `fromStore` with no `selection`, `run` or `output` says what it takes
+   (§13). [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q3.
+6. One run-reference resolver, `RunRef`, for `fromStore(run:)` and
+   `items --run` (§13, §15).
+   [05](../.scratch/block-explorer/ux/issues/05-items-verb-and-put-name.md) Q2.
+7. `nf-blocks:items`, a fourth verb, read-only, over the caught-up local
+   index; conditions match as text; formats `csv`, `json`, `occurrences`,
+   `selection` (§0 rule 5, §15).
+   [05](../.scratch/block-explorer/ux/issues/05-items-verb-and-put-name.md) Q1-Q4, Q6.
+8. `put --name <name>` names a Selection with one `set name` Claim (§15).
+   [05](../.scratch/block-explorer/ux/issues/05-items-verb-and-put-name.md) Q5.
+9. Query results, collection pages, the tray and Selection members share one
+   item row: a label of up to three paths (list-valued paths skipped, strings
+   first, then most distinct values among loaded previews, ties by path),
+   file-name chips, the pick control, the Meta Map as `key | value` pills
+   coloured by type (numbers blue, `true` green, `false` red, null grey
+   italic; a number-like string quoted), and the shortened item CID. A pill's
+   value runs query 3 with that pair added.
+   [03](../.scratch/block-explorer/ux/issues/03-item-previews.md),
+   [10](../.scratch/block-explorer/ux/issues/10-meta-map-pairs.md).
+10. Previews are OutputItem blocks fetched through `blocks.ofKind`
+    (hash-checked, cached), at most 6 at once, the first 100 rows of a view
+    without a click; no §12 change and no snapshot query.
+    [03](../.scratch/block-explorer/ux/issues/03-item-previews.md) Q3.
+11. Runs are shown as `<run_name> / <output>`, the CID in `title`: a tray
+    entry's "picked from", a Selection member's via, the item page's
+    "produced by". [03](../.scratch/block-explorer/ux/issues/03-item-previews.md) Q4.
+12. A per-run query pick records its Output Collection as `via`; "Add all N
+    to the tray" (`[data-pick-all]`) adds every item of the query or
+    collection; row checkboxes add the checked ones; no client-side size
+    check, since the dry run's `too_large` covers it (spec section 5.6).
+    [04](../.scratch/block-explorer/ux/issues/04-query-results-keep-run.md).
+13. The Selection page shows the `include` line and the
+    `fromStore(selection:)` call; the run page shows its `lid://` and, per
+    output, the `fromStore(run:, output:)` call; one untyped | typed toggle
+    for every snippet, remembered per viewer (§15 `[data-snippet]`).
+    [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q4.
+14. The Gate runs the snippets: tier B9's consumer and B18's typed consumer
+    take their call line verbatim from the page (§14, Gate browser tier B).
+    [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q6.
+
+`slf4j-api` (bundled transitively through the AWS SDK) is excluded from the
+plugin zip (Task 1b, controller-added fix), so a plugin `log.*` call reaches
+`nextflow.log` instead of a NOP logger. Without this, §11's `onFlowError`
+hint above would never appear anywhere a person could read it, and Gate
+assertion 6, which checks the consumer's `outputDir` log line, would pass for
+the wrong reason.
+
+Left out, per the map: plugin factories on the typed `channel` namespace
+(nextflow-io/nextflow#7694, upstream), self-registration of `fromStore` so
+the include is optional, and a "one of" condition in the page and in
+`fromStore(where:)`.

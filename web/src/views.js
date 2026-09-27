@@ -232,7 +232,7 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
 
 const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
 
-/** `<run_name> / <output>` (DESIGN.md §16 decision 11), or the collection CID when this member does not know its run. */
+/** `<run_name> / <output>` (DESIGN.md §16 milestone 3 decision 11), or the collection CID when this member does not know its run. */
 export const runLabelText = (label, collectionCid) => (label ? `${label.run_name ?? 'unnamed run'} / ${label.output}` : collectionCid)
 
 /**
@@ -252,7 +252,7 @@ function runLabelNode(ex, collectionCid, completionCid = null) {
 }
 
 /**
- * "Add all N to the tray" (DESIGN.md §16 decision 12): `items` when the
+ * "Add all N to the tray" (DESIGN.md §16 milestone 3 decision 12): `items` when the
  * caller holds every one (query results), else every item of the collection
  * from the model; each picked with the collection as via, one storage
  * write, no preview fetched.
@@ -288,7 +288,7 @@ function nextFrame(fn) {
 const rowOf = new WeakMap()
 
 /**
- * One item row (DESIGN.md §16 decision 9): `lead` (a checkbox) and the label,
+ * One item row (DESIGN.md §16 milestone 3 decision 9): `lead` (a checkbox) and the label,
  * file-name chips, `action` at the right; the Meta Map pills beneath in
  * `[data-preview-for]`; a via line when `viaLabel` is set, each via named by
  * its run with `perVia(via)` after it; the short CID last, linking to the
