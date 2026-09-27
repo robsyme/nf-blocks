@@ -37,6 +37,12 @@ class CasExtension extends PluginExtensionPoint {
     private static final String CAS_PREFIX = 'cas://'
     private static final String LATEST = 'latest'
 
+    /** What fromStore takes, for a call that names none of it (ticket 07 Q3). */
+    static final String USAGE =
+        "`fromStore` takes `selection: <address>`, or `run: <ref>` with `output: <name>`; optionally `where: [...]` and `records: true`."
+
+    private static final List<String> ENTRY_KEYS = ['selection', 'run', 'output']
+
     private Session session
     private CasSession cas
 
@@ -63,9 +69,11 @@ class CasExtension extends PluginExtensionPoint {
     }
 
     private List<Object> resolveItems(Map opts) {
-        if( opts?.containsKey('selection') )
+        if( opts == null || !ENTRY_KEYS.any { String k -> opts.containsKey(k) } )
+            throw new IllegalArgumentException(USAGE)
+        if( opts.containsKey('selection') )
             return resolveSelection(opts)
-        final String output = opts?.get('output') as String
+        final String output = opts.get('output') as String
         if( !output )
             throw new IllegalArgumentException("channel.fromStore needs an 'output' name")
         final Map<String, Object> where = (opts?.get('where') ?: [:]) as Map<String, Object>

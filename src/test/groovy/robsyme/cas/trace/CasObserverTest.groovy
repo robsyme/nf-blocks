@@ -3,10 +3,19 @@ package robsyme.cas.trace
 import java.nio.file.Files
 import java.nio.file.Path
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
 import nextflow.Global
 import nextflow.Session
+import nextflow.dataflow.ChannelNamespace
 import nextflow.exception.AbortRunException
+import nextflow.exception.MissingProcessException
+import nextflow.script.ScriptMeta
 import nextflow.script.WorkflowMetadata
+import nextflow.trace.event.TaskEvent
+import org.slf4j.LoggerFactory
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
@@ -73,10 +82,42 @@ class CasObserverTest extends Specification {
         observer = new CasObserver()
     }
 
+    private final List<ListAppender<ILoggingEvent>> appenders = []
+
     def cleanup() {
+        final Logger logger = (Logger) LoggerFactory.getLogger(CasObserver)
+        appenders.each { logger.detachAppender(it) }
         if( session != null )
             CasSession.unbind(session)
         Global.session = null
+    }
+
+    private ListAppender<ILoggingEvent> capture() {
+        final Logger logger = (Logger) LoggerFactory.getLogger(CasObserver)
+        final ListAppender<ILoggingEvent> appender = new ListAppender<ILoggingEvent>()
+        appender.start()
+        logger.addAppender(appender)
+        appenders << appender
+        return appender
+    }
+
+    private static int warnings(ListAppender<ILoggingEvent> appender, String containing) {
+        return appender.list.count { ILoggingEvent e -> e.level == Level.WARN && e.formattedMessage.contains(containing) } as int
+    }
+
+    /** The measured chain: MissingProcessException around the call's MissingMethodException. */
+    private Throwable missingFromStore(String method, Class receiver) {
+        final ScriptMeta meta = Stub(ScriptMeta) {
+            getAllNames() >> new HashSet<String>()
+        }
+        final Object[] args = [[selection: 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua']] as Object[]
+        return new MissingProcessException(meta, new MissingMethodException(method, receiver, args, receiver != Object))
+    }
+
+    private void makeBlocksUnwritable(List<Path> into) {
+        final Path blocks = tempDir.resolve('store').resolve('blocks')
+        into.addAll(Files.walk(blocks).filter { Path p -> Files.isDirectory(p) }.toList())
+        into.each { Path d -> d.toFile().setWritable(false, false) }
     }
 
     private Map readBlock(Cid cid) {
@@ -407,5 +448,94 @@ class CasObserverTest extends Specification {
         then:
         noExceptionThrown()
         blocksOfKind('RunCompletion').size() == 1
+    }
+
+    def 'onFlowError warns once with the include line for an untyped script missing it'() {
+        given:
+        bind(config())
+        session.getError() >> missingFromStore('Channel.fromStore', Object)
+        final appender = capture()
+        observer.onFlowCreate(session)
+
+        when: 'notified twice, as a later task error would'
+        observer.onFlowError(new TaskEvent(null, null))
+        observer.onFlowError(new TaskEvent(null, null))
+
+        then:
+        warnings(appender, FromStoreHint.UNTYPED) == 1
+    }
+
+    def 'onFlowError gives a typed script the nextflow.Channel workaround'() {
+        given:
+        bind(config())
+        session.getError() >> missingFromStore('fromStore', ChannelNamespace)
+        final appender = capture()
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onFlowError(new TaskEvent(null, null))
+
+        then:
+        warnings(appender, FromStoreHint.TYPED) == 1
+    }
+
+    def 'onFlowError says nothing about fromStore for any other error, or none'() {
+        given:
+        bind(config())
+        session.getError() >> error
+        final appender = capture()
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onFlowError(new TaskEvent(null, null))
+
+        then:
+        warnings(appender, 'fromStore') == 0
+
+        where:
+        error << [null, new IllegalStateException('Process `HASH` terminated with an error exit status (1)')]
+    }
+
+    def 'a failing run still gets its failed RunCompletion when the store is fine'() {
+        given:
+        bind(config(), meta(1))
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.getError() >> missingFromStore('Channel.fromStore', Object)
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        blocksOfKind('RunCompletion')[0].get('status') == 'failed'
+    }
+
+    def 'on a run that is already failing, a provenance write failure is logged, not thrown, so onFlowError still runs'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.getError() >> missingFromStore('Channel.fromStore', Object)
+        final appender = capture()
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final List<Path> dirs = []
+        makeBlocksUnwritable(dirs)
+
+        when: 'the order Session.abort uses (Session.groovy:830-831)'
+        observer.onFlowComplete()
+        observer.onFlowError(new TaskEvent(null, null))
+
+        then:
+        noExceptionThrown()
+        warnings(appender, 'the run is already failing') == 1
+        warnings(appender, FromStoreHint.UNTYPED) == 1
+        cas.awaitCompletionWritten(0)
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
     }
 }

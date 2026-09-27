@@ -352,4 +352,33 @@ class CasExtensionTest extends Specification {
         final IllegalArgumentException e = thrown()
         e.message.contains('not a Selection')
     }
+
+    def 'fromStore with none of selection, run or output says what it takes (ticket 07 Q3): #opts'() {
+        when:
+        ext.fromStore(opts)
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message == "`fromStore` takes `selection: <address>`, or `run: <ref>` with `output: <name>`; optionally `where: [...]` and `records: true`."
+        e.message == CasExtension.USAGE
+
+        where:
+        opts << [null, [:], [where: [sample: 'A']], [pipeline: 'p'], [records: true]]
+    }
+
+    def 'a run with no output, and an output with no run, keep their own messages'() {
+        when:
+        ext.fromStore(run: 'latest', pipeline: 'p')
+
+        then:
+        final IllegalArgumentException noOutput = thrown()
+        noOutput.message.contains("'output'")
+
+        when:
+        ext.fromStore(output: 'aligned')
+
+        then:
+        final IllegalArgumentException noRun = thrown()
+        noRun.message.contains("'run'")
+    }
 }

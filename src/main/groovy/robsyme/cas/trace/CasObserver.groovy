@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.time.OffsetDateTime
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -54,6 +55,9 @@ class CasObserver implements TraceObserverV2 {
 
     /** join key -> the labels seen on its publish event, kept for the index layer. */
     private final ConcurrentHashMap<String, List<String>> labels = new ConcurrentHashMap<>()
+
+    /** The missing-fromStore hint is logged once per run, however often onFlowError fires. */
+    private final AtomicBoolean hinted = new AtomicBoolean(false)
 
     // --------------------------------------------------------------- lifecycle
 
@@ -126,8 +130,30 @@ class CasObserver implements TraceObserverV2 {
         log.debug("cached task ${event?.handler?.task?.hash}")
     }
 
+    /**
+     * On a run that is already failing ({@code session.error} set by
+     * Session.abort, Session.groovy:819, before it notifies completion at 830),
+     * a failure here is logged rather than thrown: an AbortRunException would
+     * stop Session.notifyEvent (Session.groovy:1125-1128) before notifyError
+     * (831) reaches any observer, losing the fromStore hint and the user's own
+     * onError (ticket 07 Q2). A run with no error keeps rule 3's abort.
+     */
     @Override
     void onFlowComplete() {
+        final Throwable failing = session?.error
+        if( failing == null ) {
+            completeRun()
+            return
+        }
+        try {
+            completeRun()
+        }
+        catch( Exception e ) {
+            log.warn("the run is already failing (${failing.message ?: failing.class.name}), and nf-blocks could not record it either: ${e.message}", e)
+        }
+    }
+
+    private void completeRun() {
         // Fires twice on a failed run (no barrier on that path); the latch keeps
         // exactly one RunCompletion.
         if( !cas.claimCompletion() ) {
@@ -144,6 +170,19 @@ class CasObserver implements TraceObserverV2 {
         finally {
             cas.completionWritten()
         }
+    }
+
+    /**
+     * Session.abort calls this after onFlowComplete with {@code session.error}
+     * already set (Session.groovy:830-831), before the launcher prints the
+     * error, so the hint is read next to it. The event carries no handler
+     * there, so the error is read from the session.
+     */
+    @Override
+    void onFlowError(TaskEvent event) {
+        final String hint = FromStoreHint.of(session?.error)
+        if( hint != null && hinted.compareAndSet(false, true) )
+            log.warn(hint)
     }
 
     /** How long the losing notification waits for the winner's write. */
