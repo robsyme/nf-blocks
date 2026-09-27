@@ -576,5 +576,26 @@ class TestConsumerOutputDir(TempTree):
         self.assertIn("found 2", str(ctx.exception))
 
 
+class TestConsumerLogHasOutputDirLine(TempTree):
+    """Assertion 6 also checks plugin log.* calls reach the consumer's nextflow.log."""
+
+    def test_the_line_present_is_true(self):
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO robsyme.cas.trace.CasObserverFactory - outputDir not "
+                   b"set; publishing to cas://out\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertTrue(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_the_line_absent_is_false(self):
+        self.write("logs/consumer/nextflow.log",
+                   b"INFO nextflow.Session - Session start\n")
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_log_has_output_dir_line(gate))
+
+    def test_no_log_file_is_false(self):
+        gate = gate_assert.Gate(self.tmp)
+        self.assertFalse(gate_assert._consumer_log_has_output_dir_line(gate))
+
+
 if __name__ == "__main__":
     unittest.main()

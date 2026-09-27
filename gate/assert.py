@@ -1091,6 +1091,24 @@ def _consumer_output_dir(gate):
     return (runs[0].get("metadata") or {}).get("outputDir")
 
 
+# The plugin's own info line (CasObserverFactory.defaultOutputDir) when the
+# consumer's config sets no outputDir. Its presence in nextflow.log is also
+# the only Gate-visible proof that plugin log.* calls reach Nextflow's log at
+# all (Task 1b): the plugin's isolated classloader used to bind every @Slf4j
+# logger to the NOP implementation, silently dropping this and every other
+# plugin log call.
+CONSUMER_OUTPUT_DIR_LOG_LINE = "outputDir not set; publishing to %s" % CONSUMER_OUTPUT_DIR
+
+
+def _consumer_log_has_output_dir_line(gate):
+    """True if the consumer's nextflow.log carries the plugin's default line."""
+    path = os.path.join(gate.root, "logs", "consumer", "nextflow.log")
+    if not os.path.isfile(path):
+        return False
+    with open(path, errors="replace") as fh:
+        return any(CONSUMER_OUTPUT_DIR_LOG_LINE in line for line in fh)
+
+
 @assertion(6, "lid:// and cas:// references stage into a second pipeline",
            online_only=True)
 def assert_six(gate):
@@ -1119,6 +1137,10 @@ def assert_six(gate):
                         "outputDir, so it must default to the lineage alias "
                         "before WorkflowMetadata copies it (ticket 02)"
                         % (output_dir, CONSUMER_OUTPUT_DIR))
+    if not _consumer_log_has_output_dir_line(gate):
+        problems.append("the consumer's nextflow.log has no 'outputDir not set' "
+                        "line from nf-blocks: plugin logging is not reaching "
+                        "Nextflow's log")
     if problems:
         return FAIL, ("; ".join(problems) + ". Not covered in the skeleton: the "
                       "run-rooted cas://<runCid>/aligned/A/A.bam form and a glob "
