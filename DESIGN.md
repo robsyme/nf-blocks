@@ -483,13 +483,38 @@ both kinds nf-core uses: closures as dynamic process directives
 unit literals (`memory = 8.GB`). Every such run aborted writing its
 RunManifest. The text is `session.resolvedConfig`, which `CmdRun` builds
 whenever `lineage.enabled` is set (`CmdRun.groovy:419-422`): canonical config
-with closures as their source and secrets stripped, the text Platform
-receives as `configText` (`ConfigBuilder.resolveConfig`,
-`ConfigBuilder.groovy:897-915`). The fallback, when it is null, is
-`ConfigHelper.toCanonicalString(session.config)`. `scrubText` redacts token
-by token, looking inside quotes and brackets, so `workDir = '/x'` keeps its
-line with the path redacted; the dropped scopes stay in the text, with their
-paths redacted. Nothing reads `config` by machine: it is provenance for people.
+with closures as their source, the text Platform receives as `configText`
+(`ConfigBuilder.resolveConfig`, `ConfigBuilder.groovy:897-915`). Nextflow
+masks the values of keys matching `SecretHelper.SECRET_KEYS`
+(`^AWS.+|.*TOKEN.*|.*PASSWORD.*|.*SECRET.*|.*accessKey.*`) in it. The
+fallback, when it is null, is `ConfigHelper.toCanonicalString(session.config)`,
+which masks nothing. *Amended 2026-09-27 (final review):* either text then
+goes through `Records.scrubConfigText`, which redacts exactly this:
+
+- the value of any assignment or map entry (`key = value`, `key: value`)
+  whose key contains, case-insensitively, `key`, `secret`, `token`,
+  `password`, `passwd` or `credential`, or has a segment (split at `.`, `_`,
+  `-` and camelCase) that is exactly `pat`, becomes `'[secret]'`. This
+  covers `env { FOO_API_KEY = '...' }`, `GITHUB_PAT`, `azure.storage.accountKey`
+  and `azure.batch.accountKey`, which Nextflow's pattern misses; `path` and
+  `pattern` are not secrets. The value is the quoted string or the bare word
+  after the separator, so a secret written across several lines keeps its
+  later lines.
+- then `scrubText`, token by token (a token is a run of non-whitespace, with
+  leading quotes and brackets and trailing punctuation set aside): a token
+  that is an absolute path or a URI in a scheme other than `lid://` or
+  `cas://` becomes `[redacted-location]`, and one equal to the OS user name
+  becomes `[redacted-user]`. Otherwise the token is split at its first `=`
+  or `:` and each side judged the same way, so `--volume=/home/x:/data`,
+  `TMPDIR=/scratch/x` and `--account=<user>` keep their shape with the path
+  or name redacted. A path followed by `:` (a mount, a path list) has each
+  path redacted.
+
+So `workDir = '/x'` keeps its line with the path redacted, and the dropped
+scopes stay in the text, with their paths redacted. Not redacted: a host
+name, a user name other than the OS user's, a relative path, and a secret
+under a key that names none of the words above. Both passes are idempotent.
+Nothing reads `config` by machine: it is provenance for people.
 
 ### RunCompletion
 ```

@@ -170,6 +170,29 @@ class CasObserverTest extends Specification {
         cas.getRunManifest() != null
     }
 
+    def 'with no resolvedConfig, the fallback config text is scrubbed of secrets, host paths and the user name'() {
+        given: 'a session whose resolvedConfig is null (CmdRun sets it only when lineage.enabled is set)'
+        final String user = System.getProperty('user.name')
+        bind(config() + [
+            env    : [FOO_API_KEY: 'sk-live-123'],
+            aws    : [accessKey: 'AKIA1', secretKey: 'AWSSECRET1'],
+            azure  : [storage: [accountKey: 'acct==']],
+            process: [containerOptions: '--volume=/home/x/data:/data', clusterOptions: "--account=${user}".toString()],
+        ])
+        cas.setNextflowRunKey('nfhash123')
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final String text = blocksOfKind('RunManifest')[0].get('config') as String
+
+        then:
+        text.contains('FOO_API_KEY')
+        ['sk-live-123', 'AKIA1', 'AWSSECRET1', 'acct==', '/home/x', "--account=${user}".toString()].every { String leak -> !text.contains(leak) }
+        text.contains('[secret]')
+        text.contains('--volume=[redacted-location]:[redacted-location]')
+    }
+
     def 'onFlowComplete twice writes exactly one RunCompletion and one Store Log entry'() {
         given:
         bind(config())

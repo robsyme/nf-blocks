@@ -33,6 +33,7 @@ class Records {
 
     static final String REDACTED_LOCATION = '[redacted-location]'
     static final String REDACTED_USER = '[redacted-user]'
+    static final String REDACTED_SECRET = '[secret]'
 
     /** The kind tag of a decoded block, or null when there is none. */
     static String kindOf(Map block) {
@@ -165,14 +166,84 @@ class Records {
         final String tail = token.substring(end)
         if( core.isEmpty() )
             return token
-        if( core.startsWith('/') )
-            return head + REDACTED_LOCATION + tail
-        final java.util.regex.Matcher m = SCHEME.matcher(core)
-        if( m.find() && !PORTABLE_SCHEMES.contains(m.group(1).toLowerCase()) )
-            return head + REDACTED_LOCATION + tail
-        if( user != null && !user.isEmpty() && core == user )
-            return head + REDACTED_USER + tail
-        return token
+        return head + scrubPiece(core, user) + tail
+    }
+
+    /**
+     * One token's core: redacted whole when it is a path, a non-portable URI or
+     * the user name; kept whole when it is a lid/cas reference; otherwise split
+     * at its first `=` or `:` and each side judged again, so `--volume=/a:/b`,
+     * `TMPDIR=/scratch/x` and `--account=<user>` lose the machine-local part.
+     */
+    private static String scrubPiece(String piece, String user) {
+        if( piece.isEmpty() )
+            return piece
+        if( piece.startsWith('/') ) {
+            // A path list or a mount, `/a:/b`: each path goes, the colons stay.
+            final int colon = piece.indexOf(':')
+            return colon < 0 ? REDACTED_LOCATION : REDACTED_LOCATION + ':' + scrubPiece(piece.substring(colon + 1), user)
+        }
+        final java.util.regex.Matcher m = SCHEME.matcher(piece)
+        if( m.find() )
+            return PORTABLE_SCHEMES.contains(m.group(1).toLowerCase()) ? piece : REDACTED_LOCATION
+        if( user != null && !user.isEmpty() && piece == user )
+            return REDACTED_USER
+        int cut = -1
+        for( int i = 0; i < piece.length() && cut < 0; i++ ) {
+            final char c = piece.charAt(i)
+            if( c == (char) '=' || c == (char) ':' )
+                cut = i
+        }
+        if( cut < 0 )
+            return piece
+        int rest = cut + 1
+        while( rest < piece.length() && LEADING_PUNCT.indexOf((int) piece.charAt(rest)) >= 0 )
+            rest++
+        final String left = piece.substring(0, cut)
+        final String scrubbedLeft = user != null && !user.isEmpty() && left == user ? REDACTED_USER : left
+        return scrubbedLeft + piece.substring(cut, rest) + scrubPiece(piece.substring(rest), user)
+    }
+
+    /**
+     * An assignment or map entry whose key names a secret, as config text
+     * writes one: `FOO_API_KEY = 'x'`, `azure.storage.accountKey = "x"`,
+     * `[MY_TOKEN: 'x']`. Group 1 is the key, group 2 the separator, group 3
+     * the value (a quoted string or a bare word; a `[` opens a list or map,
+     * whose entries are matched on their own).
+     */
+    private static final java.util.regex.Pattern ASSIGNMENT = ~/(?<![\w.])([A-Za-z_][\w.\-]*)(\s*[=:]\s*)('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|[^\s,\[\]\})]+)/
+
+    /** A key names a secret: any segment contains one of these words, or a segment is exactly `pat`. */
+    private static final java.util.regex.Pattern SECRET_WORD = ~/(?i)key|secret|token|password|passwd|credential/
+
+    static boolean isSecretKey(String key) {
+        if( SECRET_WORD.matcher(key).find() )
+            return true
+        // `pat` only as a whole segment (GITHUB_PAT, git.pat, githubPat), never inside `path` or `pattern`.
+        for( String segment : key.split(/[._\-]|(?<=[a-z0-9])(?=[A-Z])/) ) {
+            if( segment.equalsIgnoreCase('pat') )
+                return true
+        }
+        return false
+    }
+
+    /**
+     * The RunManifest's config text (DESIGN.md §6): every assignment or map
+     * entry whose key names a secret ({@link #isSecretKey}) has its value
+     * replaced by {@code '[secret]'}, then {@link #scrubText} redacts paths,
+     * non-portable URIs and the user name. Idempotent; null passes through.
+     */
+    static String scrubConfigText(String text) {
+        if( text == null )
+            return null
+        final java.util.regex.Matcher m = ASSIGNMENT.matcher(text)
+        final StringBuffer out = new StringBuffer(text.length())
+        while( m.find() ) {
+            final String replacement = isSecretKey(m.group(1)) ? m.group(1) + m.group(2) + "'" + REDACTED_SECRET + "'" : m.group(0)
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement))
+        }
+        m.appendTail(out)
+        return scrubText(out.toString())
     }
 
     // ---- helpers shared by the kinds ----
@@ -759,7 +830,7 @@ class RunManifest {
         if( config == null )
             return ''
         if( config instanceof CharSequence )
-            return Records.scrubText(config.toString())
+            return Records.scrubConfigText(config.toString())
         if( config instanceof Map )
             return Records.scrub((Map) config)
         throw new IllegalArgumentException("a run manifest's config is a String (or, in an old block, a Map), not ${config.getClass().name}")

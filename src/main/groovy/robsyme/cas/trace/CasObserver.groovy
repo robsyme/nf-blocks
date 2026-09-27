@@ -274,9 +274,12 @@ class CasObserver implements TraceObserverV2 {
     /**
      * The run's config as text for the RunManifest (DESIGN.md §6): Nextflow's
      * own resolved config, the text Platform receives as `configText`, with
-     * closures rendered as source and secrets stripped. `CmdRun` computes it
-     * whenever `lineage.enabled` is set; the fallback renders `session.config`
-     * the same canonical way, closures as their object text.
+     * closures rendered as source and Nextflow's SECRET_KEYS masked. `CmdRun`
+     * computes it whenever `lineage.enabled` is set; the fallback renders
+     * `session.config` the same canonical way, closures as their object text,
+     * masking nothing. Either way RunManifest runs it through
+     * Records.scrubConfigText, which redacts secret-named keys' values, paths,
+     * non-portable URIs and the user name.
      */
     private String configText() {
         if( session.resolvedConfig != null )
