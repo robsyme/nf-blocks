@@ -29,6 +29,17 @@ export async function copyOutcome(clipboard, text) {
   }
 }
 
+/**
+ * What the deleted Selections list's Undo-unavailable note says, or `null`
+ * when Undo is offered here and no note is shown (mirrors the Selection
+ * view's `actions()`). `href` is `ctx.write.hrefFor('#/selections?deleted=1')`,
+ * computed by the caller since it is `ctx`'s own method.
+ */
+export const undoNote = (available, here, reason, writable, href) => (!available
+  ? { kind: 'unavailable', reason }
+  : here ? null
+    : { kind: 'elsewhere', writable, href })
+
 const shown = (value) => (value === null ? 'null' : typeof value === 'object' && typeof value.toString === 'function' && value['/']
   ? value.toString() : typeof value === 'object' ? JSON.stringify(value, (k, v) => (v && v['/'] ? v.toString() : v)) : String(value))
 
@@ -216,11 +227,12 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
     } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
 }
 
-/** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`. */
+/** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
 function undoUnavailableNote(ctx) {
-  if (!ctx.write.available) return h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason)
-  return h('p', { 'data-unavailable': '', class: 'muted' }, `Undo writes to the writable member, ${ctx.write.writable}. `,
-    link(ctx.write.hrefFor('#/selections?deleted=1'), 'Open this list there'), '.')
+  const note = undoNote(ctx.write.available, ctx.write.here, ctx.write.reason, ctx.write.writable, ctx.write.hrefFor('#/selections?deleted=1'))
+  if (!note) return null
+  return h('p', { 'data-unavailable': '', class: 'muted' }, note.kind === 'unavailable' ? note.reason
+    : [`Undo writes to the writable member, ${note.writable}. `, link(note.href, 'Open this list there'), '.'])
 }
 
 export async function selections(ex, { offset = 0, deleted = false }, ctx) {
@@ -232,7 +244,7 @@ export async function selections(ex, { offset = 0, deleted = false }, ctx) {
     h('p', {}, deleted ? link('#/selections', 'Show current Selections')
       : [link('#/selections?deleted=1', 'Show deleted'), page.hiddenCount ? ` (${page.hiddenCount} on this page)` : '']),
     pager(route, page, 'Selections'),
-    deleted && (!ctx.write.available || !ctx.write.here) ? undoUnavailableNote(ctx) : null,
+    deleted ? undoUnavailableNote(ctx) : null,
     page.rows.length === 0 ? h('p', { class: 'muted' }, deleted ? 'No deleted Selections.' : 'No Selections in this member yet.')
       : table(['name', 'first seen', 'by', 'state', ''], page.rows.map(r => h('tr', {
         'data-selection': r.cid, 'data-deletion': r.state.deletion, 'data-source': r.source, 'data-names': JSON.stringify(r.state.names) },
