@@ -155,6 +155,8 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final Map root = blockOf(cid)
         if( root != null && Records.kindOf(root) == Records.OUTPUT_COLLECTION )
             return occurrence(cid, root, segs, p)
+        if( root != null && Records.kindOf(root) == Records.OUTPUT_ITEM )
+            return itemLeaf(cid, root, segs, p)
         if( segs.isEmpty() )
             return manifestNode(cid)
         return traverse(cid, segs, p)
@@ -195,12 +197,28 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final Map<String, Leaf> leaves = leavesByName(OutputItem.fromCbor(itemBlock).value, p)
         if( segs.size() == 1 )
             return new CasNode(present: true, directory: true, size: 0L, mtime: store().lastModifiedMillis(itemCid), occurrence: leaves)
-        final Leaf leaf = leaves.get(segs[1])
+        return leafNode(leaves, segs.subList(1, segs.size()), p)
+    }
+
+    /**
+     * cas://<item>/<leaf>[/<entry>...] (DESIGN.md §7, final review I1): one
+     * leaf of an Output Item by its name, so a directory leaf has a file name
+     * to be staged under. fromStore emits a directory leaf this way.
+     */
+    private CasNode itemLeaf(Cid itemCid, Map root, List<String> segs, CasPath p) {
+        if( segs.isEmpty() )
+            throw new IOException("cas: ${p} is an Output Item; name one of its leaves, cas://${itemCid}/<leaf name>")
+        return leafNode(leavesByName(OutputItem.fromCbor(root).value, p), segs, p)
+    }
+
+    /** segs[0] names a leaf; the rest, if any, are entries inside a directory leaf. */
+    private CasNode leafNode(Map<String, Leaf> leaves, List<String> segs, CasPath p) {
+        final Leaf leaf = leaves.get(segs[0])
         if( leaf == null || !leaf.addressed )
             return CasNode.absent()
         if( leaf.address.isRaw() )
-            return segs.size() == 2 ? fileNode(leaf.address) : CasNode.absent()
-        return segs.size() == 2 ? manifestNode(leaf.address) : traverse(leaf.address, segs.subList(2, segs.size()), p)
+            return segs.size() == 1 ? fileNode(leaf.address) : CasNode.absent()
+        return segs.size() == 1 ? manifestNode(leaf.address) : traverse(leaf.address, segs.subList(1, segs.size()), p)
     }
 
     /** The item's named leaves by name; a name two leaves share is refused, naming both positions. */

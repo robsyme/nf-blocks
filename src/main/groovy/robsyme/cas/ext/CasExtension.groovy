@@ -28,7 +28,8 @@ import robsyme.cas.core.RunRef
  * {@code run} is a RunManifest/RunCompletion Store URI, a {@code lid://<runHash>},
  * or {@code 'latest'} with {@code pipeline: '<id>'}. Each matching OutputItem is
  * emitted restored to its published structure: a file leaf becomes a
- * {@code cas://<cid>/<name>} path, a declined leaf becomes {@code null}, and an
+ * {@code cas://<cid>/<name>} path, a directory leaf {@code cas://<item>/<name>}
+ * (so it stages under its name), a declined leaf becomes {@code null}, and an
  * {@code unaddressed} leaf is an error naming the item. With {@code records: true}
  * every non-Leaf map is a {@code nextflow.util.RecordMap} instead, at any depth,
  * for typed processes with record inputs (ticket 09).
@@ -185,31 +186,53 @@ class CasExtension extends PluginExtensionPoint {
      * lists stay lists either way.
      */
     private Object restore(Object value, Cid itemCid, boolean records) {
+        return restore(value, itemCid, records, leafNamesUnique(value, new HashSet<String>()))
+    }
+
+    private Object restore(Object value, Cid itemCid, boolean records, boolean namesUnique) {
         if( value instanceof Leaf )
-            return pathFor((Leaf) value, itemCid)
+            return pathFor((Leaf) value, itemCid, namesUnique)
         if( value instanceof Map ) {
             final LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) value).entrySet() )
-                out.put(String.valueOf(e.key), restore(e.value, itemCid, records))
+                out.put(String.valueOf(e.key), restore(e.value, itemCid, records, namesUnique))
             return records ? new RecordMap(out) : out
         }
         if( value instanceof List ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (List) value )
-                out.add(restore(element, itemCid, records))
+                out.add(restore(element, itemCid, records, namesUnique))
             return out
         }
         return value
     }
 
-    private Object pathFor(Leaf leaf, Cid itemCid) {
+    /** Whether no two named leaves of an item share a name, which cas://<item>/<leaf> needs. */
+    private static boolean leafNamesUnique(Object value, Set<String> seen) {
+        if( value instanceof Leaf )
+            return ((Leaf) value).name == null || seen.add(((Leaf) value).name)
+        if( value instanceof Map )
+            return ((Map) value).values().every { Object v -> leafNamesUnique(v, seen) }
+        if( value instanceof List )
+            return ((List) value).every { Object v -> leafNamesUnique(v, seen) }
+        return true
+    }
+
+    private Object pathFor(Leaf leaf, Cid itemCid, boolean namesUnique) {
         if( leaf.isAddressed() ) {
             final Cid cid = leaf.address
-            // A raw block is presented under its published name; a directory's
-            // manifest is presented as a directory by the provider (DESIGN.md §13).
-            final String uri = cid.isDagCbor()
-                ? CAS_PREFIX + cid
-                : CAS_PREFIX + cid + '/' + leaf.name
+            // A raw block is presented under its published name. A directory is
+            // presented through its item, cas://<item>/<leaf name>, so it has a
+            // file name to be staged under (final review I1); when another leaf
+            // of the item shares that name, as its manifest, which is staged
+            // under the manifest's address (DESIGN.md §7, §13).
+            final String uri
+            if( !cid.isDagCbor() )
+                uri = CAS_PREFIX + cid + '/' + leaf.name
+            else if( leaf.name && namesUnique )
+                uri = CAS_PREFIX + itemCid + '/' + leaf.name
+            else
+                uri = CAS_PREFIX + cid
             return CasPlugin.provider().getPath(URI.create(uri))
         }
         if( leaf.reason == Leaf.DECLINED )

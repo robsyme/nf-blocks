@@ -675,6 +675,19 @@ as a CID (`Cid.parse` succeeds):
     it is that file. Canonical form: CIDs in their string form, no trailing
     slash. Built 2026-09-25 (milestone 2, Task 7): a leaf name two leaves of
     one item share is refused, naming both positions.
+  - *Amended 2026-09-28 (final review I1):* **Item Leaf**
+    `cas://<OutputItem cid>/<leaf name>[/<entry>...]`, one leaf of an item by
+    its name, with no collection: a raw leaf is that file, a directory leaf
+    that directory, and further segments traverse its manifest. A leaf name
+    two leaves of the item share is refused, as for an occurrence. With no
+    segment it is an error asking for a leaf name. `fromStore` emits a
+    directory leaf this way (§13), because a bare `cas://<manifest>` has no
+    segment to be staged under.
+  - A Store URI with no segments has its CID as its file name
+    (`CasPath.getFileName()`), so Nextflow stages a bare `cas://<cid>` under
+    `<cid>`. With no file name, FilePorter stages into its cache directory
+    itself and retries its integrity check without end (Task 14). A
+    coordinate root still has no file name.
 - **Publish Coordinate** `cas://<alias>/<relative path>`. The write-side name
   Nextflow's `PublishDir` hands us. Persisted in the writable member as a
   Pointer File tree under `coords/`: intermediate segments are real
@@ -1081,7 +1094,10 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
 matching OutputItem restored to its published structure: a file leaf →
 `CasPath` `cas://<cid>/<name>`; a **directory leaf → `CasPath` `cas://<cid>`**
 (a dag-cbor manifest address the provider presents as a directory, per ticket
-08); declined → `null`; an `unaddressed` leaf → error naming the item. A run
+08; *amended 2026-09-28, final review I1:* now the Item Leaf
+`cas://<item>/<leaf name>` of §7, so a task stages it under its published
+name, and `cas://<manifest>` only when another leaf of the item shares its
+name, staged then under the manifest's CID); declined → `null`; an `unaddressed` leaf → error naming the item. A run
 without a RunCompletion → error. Implemented with `@Factory`; resolve eagerly
 so a bad run reference or an unaddressed item fails fast, but bind onto the
 channel inside a `session.addIgniter` closure so a downstream subscriber is
@@ -2106,9 +2122,11 @@ holds the reasoning, and the execution ledger is
     `unresolvable` where a local run gives `symlink` (Task 3 review, open).
 24. Tier two's details are in `gate/tier2/README.md`. T4 passes the directory
     as an Item Occurrence `cas://<collection>/<item>/A_qc` rather than
-    `cas://<manifest>`, because staging a bare manifest URI has no file name
-    and Nextflow's FilePorter retries its integrity check forever (Task 14
-    finding).
+    `cas://<manifest>`, because staging a bare manifest URI had no file name
+    and Nextflow's FilePorter retried its integrity check forever (Task 14
+    finding). Fixed in the final wave (I1): a bare Store URI is named by its
+    CID, and `fromStore` emits a directory leaf as `cas://<item>/<leaf name>`
+    (§7, §13).
 
 Added during execution:
 

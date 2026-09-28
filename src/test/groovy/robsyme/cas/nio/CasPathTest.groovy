@@ -66,6 +66,16 @@ class CasPathTest extends Specification {
         path('cas://lab/aligned').parent.toString() == 'cas://lab'
     }
 
+    def 'a Store URI with no segments is named by its content address, so Nextflow can stage it (final review I1)'() {
+        given:
+        final String cid = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
+
+        expect:
+        path("cas://${cid}").fileName.toString() == cid
+        path("cas://${cid}").parent == null
+        path("cas://${cid}/A.bam").fileName.toString() == 'A.bam'
+    }
+
     def 'relativizes within the same store'() {
         expect:
         path('cas://lab').relativize(path('cas://lab/aligned/A/A.bam')).toString() == 'aligned/A/A.bam'

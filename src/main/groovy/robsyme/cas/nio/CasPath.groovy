@@ -114,9 +114,17 @@ class CasPath implements Path {
         return authority != null ? with(authority, Collections.<String>emptyList()) : null
     }
 
+    /**
+     * The last segment. A Store URI with no segments is named by its content
+     * address: Nextflow stages a foreign path under {@code getFileName()}, and
+     * with none it stages into its cache directory itself and retries the
+     * integrity check without end (final review I1). A coordinate root has none.
+     */
     @Override
     Path getFileName() {
-        return segments ? with(null, [segments.last()]) : null
+        if( segments )
+            return with(null, [segments.last()])
+        return isStoreUri() ? with(null, [authority]) : null
     }
 
     @Override
