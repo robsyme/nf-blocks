@@ -53,6 +53,31 @@ class StageToObjectStoreTest extends Specification {
         !Files.isSymbolicLink(target.resolve('alias.txt'))
     }
 
+    def 'a .. after a directory link climbs from where the link landed, as POSIX does (final review I7)'() {
+        given: 'dirlink -> nested/deep, nested/deep/x -> ../y, and links through dirlink; root y and f differ from nested y and f'
+        final Path src = tmp.resolve('E_qc')
+        Files.createDirectories(src.resolve('nested/deep'))
+        Files.writeString(src.resolve('y'), 'root y\n')
+        Files.writeString(src.resolve('f'), 'root f\n')
+        Files.writeString(src.resolve('nested/y'), 'nested y\n')
+        Files.writeString(src.resolve('nested/f'), 'nested f\n')
+        Files.createSymbolicLink(src.resolve('nested/deep/x'), Path.of('../y'))
+        Files.createSymbolicLink(src.resolve('dirlink'), Path.of('nested/deep'))
+        Files.createSymbolicLink(src.resolve('l'), Path.of('dirlink/x'))
+        Files.createSymbolicLink(src.resolve('m'), Path.of('dirlink/../f'))
+        final Cid manifest = new DirectoryManifestBuilder(store).build(src).cid
+        final Path onObjects = zip.getPath('/stage/E_qc')
+
+        when:
+        provider.download(provider.getPath(URI.create("cas://${manifest}")), onObjects)
+
+        then: 'each staged copy holds what the same link reads on local disk'
+        Files.readString(onObjects.resolve('dirlink/x')) == 'nested y\n'
+        Files.readString(onObjects.resolve('l')) == 'nested y\n'
+        Files.readString(onObjects.resolve('m')) == 'nested f\n'
+        ['dirlink/x', 'l', 'm'].every { Files.readString(onObjects.resolve(it)) == Files.readString(src.resolve(it)) }
+    }
+
     def 'staged locally, links stay links'() {
         given:
         final Path src = tmp.resolve('B_qc')

@@ -832,9 +832,11 @@ full-object SHA-256, deletes the target and aborts); a copy the SDK
 refuses falls back to streaming. A local member
 staging into S3 streams through nf-amazon's output stream as before. A
 `symlink` manifest entry staged onto any non-default filesystem becomes a
-copy of what it names inside the tree (ticket 15 decision 7); a link that
-names a directory already being materialised (`up -> ..`) aborts rather than
-recursing. Nothing is made executable: manifests carry no execute bit.
+copy of what it names inside the tree (ticket 15 decision 7), the target
+resolved segment by segment as POSIX does, so a `..` after a directory link
+climbs from where the link landed (`dirlink -> sub/deep`, `l -> dirlink/../f`
+gives `sub/f`; final review I7); a link that names a directory already being
+materialised (`up -> ..`) aborts rather than recursing. Nothing is made executable: manifests carry no execute bit.
 
 Measured behaviours to respect (see `.scratch/research/plugin-filesystem-schemes.md`
 and the probe logs in `.scratch/research/nf-casx-probe/*.log`): Nextflow calls

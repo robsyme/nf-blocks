@@ -585,7 +585,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                         if( resolved.directory ) {
                             if( ancestors.contains(resolved.address) )
                                 throw new AbortRunException("cas: manifest ${manifestCid}: '${entry.name}' -> '${entry.target}' names a directory already being materialised; cannot stage an ancestor link as a copy")
-                            materialiseDirectory(resolved.address, child, root, segmentsOf(at, entry.target), descend(ancestors, resolved.address))
+                            materialiseDirectory(resolved.address, child, root, resolved.at, descend(ancestors, resolved.address))
                         }
                         else materialiseFile(resolved.address, child, false)
                     }
@@ -603,89 +603,83 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         return deeper
     }
 
-    /** What a symlink's target text names inside the tree: a content or a manifest address, and which. */
+    /** What a symlink's target text names inside the tree: an address, whether it is a directory, and where it physically is. */
     @CompileStatic
     private static class Resolved {
         final Cid address
         final boolean directory
-        Resolved(Cid address, boolean directory) { this.address = address; this.directory = directory }
+        /** The path segments from the root to it, with no link among them, so a later `..` climbs from here. */
+        final List<String> at
+        Resolved(Cid address, boolean directory, List<String> at) {
+            this.address = address; this.directory = directory; this.at = Collections.unmodifiableList(new ArrayList<String>(at))
+        }
     }
 
     /**
      * What a symlink's target text names, walking the manifest tree from
-     * {@code root} entry by entry (ticket 15 decision 7: an object store has
-     * no links, so a link staged there is materialised as a copy of what it
-     * names). {@code at} is the path segments from {@code root} to the
-     * directory the symlink lives in; {@code target} is its (always
-     * relative, always in-tree -- DESIGN.md §6) target text. A symlink met on
-     * the way is itself followed, one more hop; null past
-     * {@link DirectoryManifestBuilder#MAX_DEPTH} hops, or when the path
-     * climbs above {@code root}, is missing, or cannot be descended into.
-     * Segments that fully cancel out (`nested/up -> ..` from one level down)
-     * resolve to {@code root} itself, so a link straight back to an ancestor
-     * is a real resolution -- the caller's ancestor check is what refuses it,
-     * not a false "does not resolve".
+     * {@code root} (ticket 15 decision 7: an object store has no links, so a
+     * link staged there is materialised as a copy of what it names). {@code at}
+     * is the path segments from {@code root} to the directory the symlink
+     * lives in; {@code target} is its (always relative, always in-tree --
+     * DESIGN.md §6) target text. The target is resolved segment by segment,
+     * as POSIX does: a symlink met on the way is followed first, one more hop,
+     * and a later {@code ..} climbs from where it landed, never from the link's
+     * own name (final review I7). Null past
+     * {@link DirectoryManifestBuilder#MAX_DEPTH} hops, or when the path climbs
+     * above {@code root}, is missing, or descends into a file. A target that
+     * cancels out (`nested/up -> ..` from one level down) resolves to
+     * {@code root} itself, so a link straight back to an ancestor is a real
+     * resolution -- the caller's ancestor check is what refuses it, not a
+     * false "does not resolve".
      */
     private Resolved resolveInTree(Cid root, List<String> at, String target, int hops) {
         if( hops > DirectoryManifestBuilder.MAX_DEPTH )
             return null
-        final List<String> segments = segmentsOf(at, target)
-        if( segments == null )
+        Resolved here = directoryAt(root, at)
+        if( here == null )
             return null
-        if( segments.isEmpty() )
-            return new Resolved(root, true)
-        Cid here = root
-        for( int i = 0; i < segments.size(); i++ ) {
-            final DirectoryManifest manifest = manifestOf(here)
-            final ManifestEntry entry = manifest.entry(segments.get(i))
-            if( entry == null )
-                return null
-            final boolean last = i == segments.size() - 1
-            if( entry.mode == ManifestEntry.SYMLINK ) {
-                final Resolved resolved = resolveInTree(root, segments.subList(0, i), entry.target, hops + 1)
-                if( resolved == null )
-                    return null
-                if( last )
-                    return resolved
-                if( !resolved.directory )
-                    return null   // cannot descend into a file
-                here = resolved.address
-                continue
-            }
-            if( entry.isDirectory() ) {
-                if( last )
-                    return new Resolved(entry.address, true)
-                here = entry.address
-                continue
-            }
-            if( !last )
-                return null   // cannot descend into a file, or past an unresolvable entry
-            return new Resolved(entry.address, false)
-        }
-        return null   // unreachable: the loop always returns on its last iteration
-    }
-
-    /**
-     * {@code at + target} normalised into path segments from {@code root}:
-     * {@code ..} pops the last segment, refusing to climb above the root
-     * (null). A non-link caller never sees this text; only a manifest
-     * SYMLINK's target text is normalised this way.
-     */
-    private static List<String> segmentsOf(List<String> at, String target) {
-        final List<String> segments = new ArrayList<String>(at)
         for( String part : target.split('/') ) {
             if( part.isEmpty() || part == '.' )
                 continue
+            if( !here.directory )
+                return null   // cannot descend into, or climb out of, a file
             if( part == '..' ) {
-                if( segments.isEmpty() )
+                if( here.at.isEmpty() )
+                    return null   // above the root
+                here = directoryAt(root, here.at.subList(0, here.at.size() - 1))
+                if( here == null )
                     return null
-                segments.remove(segments.size() - 1)
+                continue
             }
-            else {
-                segments.add(part)
-            }
+            final ManifestEntry entry = manifestOf(here.address).entry(part)
+            if( entry == null )
+                return null
+            final List<String> deeper = new ArrayList<String>(here.at)
+            deeper.add(part)
+            if( entry.mode == ManifestEntry.SYMLINK )
+                here = resolveInTree(root, here.at, entry.target, hops + 1)
+            else if( entry.isDirectory() )
+                here = new Resolved(entry.address, true, deeper)
+            else if( entry.mode == ManifestEntry.REGULAR )
+                here = new Resolved(entry.address, false, deeper)
+            else
+                return null   // an unresolvable entry
+            if( here == null )
+                return null
         }
-        return segments
+        return here
+    }
+
+    /** The directory at {@code at} under {@code root}, every segment a real directory entry; null otherwise. */
+    private Resolved directoryAt(Cid root, List<String> at) {
+        Cid here = root
+        for( String name : at ) {
+            final ManifestEntry entry = manifestOf(here).entry(name)
+            if( entry == null || !entry.isDirectory() )
+                return null
+            here = entry.address
+        }
+        return new Resolved(here, true, at)
     }
 
     /** Stages each addressed leaf of an occurrence under {@code dir} by its name. */
