@@ -745,6 +745,16 @@ and a one-shot latch for `onFlowComplete`.
   goes to the logger `nextflow.cas` (`robsyme.cas.trace.ConsoleLog`), whose
   name Nextflow's console filter admits, so it is printed on the terminal
   just above the launcher's error, and written to `.nextflow.log`.
+- `onProcessCreate(process)` (2026-09-28): `NodeHash.install` (§14) only ever
+  reaches a process through Nextflow's process-scope/selector config
+  defaults, which `ProcessConfigBuilder.applyConfigDefaults` skips for any
+  process whose own body sets `afterScript` directly; that process gets none
+  of ours chained ahead, so it is not hashed on the node though
+  `cas.nodeHash`/`fusion.enabled` says it should be. When node hashing is
+  enabled, this warns once per process name, on the `nextflow.cas` logger,
+  when the process's effective `afterScript` does not start with
+  `NodeHash.script()`; that process's outputs are still addressed on the
+  head node, same as any other run without node hashing.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 

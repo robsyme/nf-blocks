@@ -11,6 +11,7 @@ import groovy.util.logging.Slf4j
 import nextflow.Session
 import nextflow.config.Manifest
 import nextflow.exception.AbortRunException
+import nextflow.processor.TaskProcessor
 import nextflow.script.WorkflowMetadata
 import nextflow.trace.TraceObserverV2
 import nextflow.trace.event.FilePublishEvent
@@ -58,6 +59,9 @@ class CasObserver implements TraceObserverV2 {
 
     /** The missing-fromStore hint is logged once per run, however often onFlowError fires. */
     private final AtomicBoolean hinted = new AtomicBoolean(false)
+
+    /** Process names already warned about an unchained afterScript (Task 9 fix round 1), so onProcessCreate warns once each. */
+    private final Set<String> nodeHashWarned = ConcurrentHashMap.newKeySet()
 
     // --------------------------------------------------------------- lifecycle
 
@@ -128,6 +132,32 @@ class CasObserver implements TraceObserverV2 {
     void onTaskCached(TaskEvent event) {
         // Skeleton: record only. Address reuse by task hash is a later task.
         log.debug("cached task ${event?.handler?.task?.hash}")
+    }
+
+    /**
+     * NodeHash.install (Task 9) chains its script into config.process and each
+     * selector, but ProcessConfigBuilder.applyConfigDefaults only applies a
+     * process-scope default when the process definition sets no afterScript of
+     * its own ({@code !config.containsKey(key)},
+     * ProcessConfigBuilder.groovy:231 at v26.04.6): a process whose body sets
+     * `afterScript` directly gets none of ours chained ahead of it, so it is
+     * not hashed on the node though `cas.nodeHash`/`fusion.enabled` says it
+     * should be. Warned once per process name through {@link ConsoleLog}
+     * rather than turned into a run failure: the head node still addresses
+     * that process's outputs.
+     */
+    @Override
+    void onProcessCreate(TaskProcessor process) {
+        final Map config = session?.config
+        if( config == null || !CasConfig.nodeHashEnabled(config) )
+            return
+        final String name = process?.name
+        if( name == null || !nodeHashWarned.add(name) )
+            return
+        final Object afterScript = process.config?.get('afterScript')
+        if( afterScript instanceof CharSequence && afterScript.toString().startsWith(NodeHash.script()) )
+            return
+        ConsoleLog.LOG.warn("nf-blocks: process '${name}' sets its own afterScript, so node hashing is not chained ahead of it; its outputs are addressed on the head node")
     }
 
     /**

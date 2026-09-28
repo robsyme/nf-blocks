@@ -12,6 +12,8 @@ import nextflow.Session
 import nextflow.dataflow.ChannelNamespace
 import nextflow.exception.AbortRunException
 import nextflow.exception.MissingProcessException
+import nextflow.processor.TaskProcessor
+import nextflow.script.ProcessConfig
 import nextflow.script.ScriptMeta
 import nextflow.script.WorkflowMetadata
 import nextflow.trace.event.TaskEvent
@@ -406,6 +408,84 @@ class CasObserverTest extends Specification {
 
         then:
         thrown(AbortRunException)
+    }
+
+    /**
+     * A real ProcessConfig (its own afterScript, or none), since a mocked one
+     * cannot satisfy TaskProcessor.getConfig()'s declared return type. A null
+     * BaseScript defeats ProcessConfig's runtime constructor selection (a null
+     * argument carries no runtime type, so Groovy's
+     * ScriptBytecodeAdapter.selectConstructorAndTransformArguments picks the
+     * (Map) constructor instead of (BaseScript, String), leaving
+     * configProperties null) -- a Stub gives it a real type to match against.
+     */
+    private TaskProcessor process(String name, String afterScript = null) {
+        final ProcessConfig pc = new ProcessConfig(Stub(nextflow.script.BaseScript), name)
+        if( afterScript != null )
+            pc.put('afterScript', afterScript)
+        return Stub(TaskProcessor) {
+            getName() >> name
+            getConfig() >> pc
+        }
+    }
+
+    def 'onProcessCreate warns once, on the console logger, when a process sets its own afterScript and node hashing is enabled'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when: 'created twice, as a process invoked more than once might be'
+        observer.onProcessCreate(process('FOO', 'echo mine'))
+        observer.onProcessCreate(process('FOO', 'echo mine'))
+
+        then:
+        warnings(appender, "process 'FOO' sets its own afterScript") == 1
+    }
+
+    def 'onProcessCreate says nothing when the process\'s afterScript is chained ahead by node hashing'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('BAR', NodeHash.script() + '\necho mine'))
+
+        then:
+        warnings(appender, 'BAR') == 0
+    }
+
+    def 'onProcessCreate says nothing when the process has no afterScript at all (the top-level default applies)'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('QUX', NodeHash.script()))
+
+        then:
+        warnings(appender, 'QUX') == 0
+    }
+
+    def 'onProcessCreate says nothing when node hashing is not enabled'() {
+        given:
+        bind(config())
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('BAZ', 'echo mine'))
+
+        then:
+        warnings(appender, 'BAZ') == 0
     }
 
     private static List<List<Object>> snapshotRows(Path db, String sql) {
