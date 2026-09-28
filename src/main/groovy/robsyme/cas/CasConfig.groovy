@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.util.regex.Pattern
 
 import groovy.transform.CompileStatic
+import nextflow.file.FileHelper
 import nextflow.util.MemoryUnit
 import robsyme.cas.core.Cid
 import robsyme.cas.core.IndexSnapshot
@@ -23,6 +24,9 @@ import robsyme.cas.core.IndexSnapshot
  *
  * The scope is not part of {@code nextflow.lineage.config.LineageConfig}, so it
  * is read from the raw session config map.
+ *
+ * A store's location may be local or, since DESIGN.md §2, `s3://<bucket>[/<prefix>]`;
+ * an S3 member may be the writable one or named in `cas.resolve` like any other.
  */
 @CompileStatic
 class CasConfig {
@@ -39,12 +43,20 @@ class CasConfig {
     // and then parsed differently by S3MemberFiles.bucketAndPrefix.
     private static final Pattern S3_LOCATION = ~/^s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\/[^?#\s]*)?$/
 
+    // Any other <scheme>:// location is refused: only a local path or an s3:// one is a member.
+    private static final Pattern OTHER_SCHEME = ~/^[A-Za-z][A-Za-z0-9+.-]*:\/\//
+
     static final String DEFAULT_ASSERTED_BY = 'anonymous'
+
+    private static final Set<String> ARCHIVE = ['GLACIER', 'DEEP_ARCHIVE'] as Set
+    private static final Set<String> INFREQUENT = ['STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING'] as Set
+    // nf-amazon 3.9.2 AwsS3Config.parseStorageClass keeps only these (and REDUCED_REDUNDANCY, STANDARD).
+    private static final Set<String> NF_AMAZON_ACCEPTS = ['STANDARD', 'STANDARD_IA', 'ONEZONE_IA', 'INTELLIGENT_TIERING', 'REDUCED_REDUNDANCY'] as Set
 
     /** Alias of the writable member, i.e. the authority of `lineage.store.location`. */
     final String writableAlias
 
-    /** Every resolvable member alias, the writable one first. Local aliases only. */
+    /** Every resolvable member alias, the writable one first, local or S3. */
     final List<String> members
 
     /** Every configured store alias, writable first: what nf-blocks:explore serves. */
@@ -52,7 +64,7 @@ class CasConfig {
 
     private final Map<String,Path> locations
 
-    private final Map<String, URI> remotes
+    private final Map<String, S3Location> remotes
 
     /** Opaque label recorded in every asserted block. */
     final String assertedBy
@@ -63,9 +75,22 @@ class CasConfig {
     /** `cas.snapshot.maxBytes`: a run rewrites the Index Snapshot only while under this (DESIGN.md §15). */
     final long snapshotMaxBytes
 
+    /** The raw session config map, as given to {@link #from}. */
+    final Map rawConfig
+
+    /** `cas.tmpDir`: scratch directory for content of unknown length on its way to an S3 member. */
+    final Path tmpDir
+
+    /** `cas.nodeHash` as configured, or null when left to default to `fusion.enabled` (see {@link #nodeHashEnabled}). */
+    final Boolean nodeHashSetting
+
+    /** A warning about `aws.client.storageClass` on the writable member, or null (see {@link #judgeStorageClass}). */
+    final String storageClassWarning
+
     private CasConfig(String writableAlias, List<String> members, List<String> configuredAliases,
-                       Map<String,Path> locations, Map<String,URI> remotes, String assertedBy,
-                       String indexOverride, long snapshotMaxBytes) {
+                       Map<String,Path> locations, Map<String,S3Location> remotes, String assertedBy,
+                       String indexOverride, long snapshotMaxBytes, Map rawConfig, Path tmpDir,
+                       Boolean nodeHashSetting, String storageClassWarning) {
         this.writableAlias = writableAlias
         this.members = Collections.unmodifiableList(members)
         this.configuredAliases = Collections.unmodifiableList(configuredAliases)
@@ -74,8 +99,13 @@ class CasConfig {
         this.assertedBy = assertedBy
         this.indexOverride = indexOverride
         this.snapshotMaxBytes = snapshotMaxBytes
+        this.rawConfig = rawConfig
+        this.tmpDir = tmpDir
+        this.nodeHashSetting = nodeHashSetting
+        this.storageClassWarning = storageClassWarning
     }
 
+    /** The writable member's local path, or null when the writable member is remote. */
     Path getWritableLocation() {
         return locations.get(writableAlias)
     }
@@ -90,10 +120,24 @@ class CasConfig {
 
     boolean isRemote(String alias) { remotes.containsKey(alias) }
 
-    URI remoteLocationOf(String alias) { remotes.get(alias) }
+    S3Location remoteOf(String alias) { remotes.get(alias) }
 
-    /** The resolvable members' local paths, as IndexPaths names the cache file by them. */
-    List<String> localLocations() { members.collect { String a -> locations.get(a).toString() } }
+    URI remoteLocationOf(String alias) { URI.create(remotes.get(alias).toString()) }
+
+    String locationText(String alias) {
+        return remotes.containsKey(alias) ? remotes.get(alias).toString() : locations.get(alias)?.toString()
+    }
+
+    /** Every resolvable member's location text, writable first: what IndexPaths names the cache file by. */
+    List<String> locationTexts() { members.collect { String a -> locationText(a) } }
+
+    /** Deprecated: Task 11 moves its one caller to locationTexts(). */
+    List<String> localLocations() { locationTexts() }
+
+    /** The member's location as a Path through FileHelper.asPath; an S3 one needs nf-amazon started. */
+    Path pathOf(String alias) {
+        return remotes.containsKey(alias) ? FileHelper.asPath(remotes.get(alias).toString()) : locations.get(alias)
+    }
 
     /**
      * The alias named by a `cas://<alias>` location, or {@code null} when the
@@ -131,33 +175,76 @@ class CasConfig {
         final stores = (scope.get('stores') ?: Collections.emptyMap()) as Map
 
         final Map<String, Path> locations = new LinkedHashMap<String, Path>()
-        final Map<String, URI> remotes = new LinkedHashMap<String, URI>()
+        final Map<String, S3Location> remotes = new LinkedHashMap<String, S3Location>()
         for( Map.Entry entry : stores.entrySet() ) {
             final String name = entry.key as String
             checkAlias(name)
-            final String location = locationText(name, entry.value)
+            final String location = requiredLocationText(name, entry.value)
             if( location.startsWith('s3://') ) {
                 if( !S3_LOCATION.matcher(location).matches() )
                     throw new IllegalArgumentException("cas.stores.${name}.location is not an S3 URI of the form s3://<bucket>[/<prefix>] -- offending value: ${location}")
-                remotes.put(name, URI.create(location))
+                remotes.put(name, S3Location.parse(location))
             }
             else {
-                locations.put(name, Path.of(location).toAbsolutePath().normalize())
+                if( OTHER_SCHEME.matcher(location).find() )
+                    throw new IllegalArgumentException("cas.stores.${name}.location must be a local directory or s3://<bucket>[/<prefix>] -- offending value: ${location}")
+                locations.put(name, FileHelper.asPath(location).toAbsolutePath().normalize())
             }
         }
-        if( remotes.containsKey(alias) )
-            throw new IllegalArgumentException("the writable member '${alias}' must be a local directory, not ${remotes.get(alias)}; S3 members are read-only and only nf-blocks:explore reads them")
-        if( !locations.containsKey(alias) )
+        if( !locations.containsKey(alias) && !remotes.containsKey(alias) )
             throw new IllegalArgumentException("Missing store configuration 'cas.stores.${alias}' for the writable member '${alias}' named by lineage.store.location")
 
-        final List<String> members = memberList(alias, scope.get('resolve'), locations.keySet(), remotes)
+        final List<String> members = memberList(alias, scope.get('resolve'), locations.keySet() + remotes.keySet())
         final List<String> configured = [alias] + ((locations.keySet() + remotes.keySet()) - alias).toList()
         final assertedBy = (scope.get('asserted_by') ?: DEFAULT_ASSERTED_BY) as String
         final Object indexScope = scope.get('index')
         final String indexOverride = indexScope instanceof Map ? ((Map) indexScope).get('path') as String : null
         final Object snapshotScope = scope.get('snapshot')
         final long snapshotMaxBytes = bytesOf(snapshotScope instanceof Map ? ((Map) snapshotScope).get('maxBytes') : null)
-        return new CasConfig(alias, members, configured, locations, remotes, assertedBy, indexOverride, snapshotMaxBytes)
+
+        final Object tmpDirValue = scope.get('tmpDir')
+        final Path tmpDir = tmpDirValue ? FileHelper.asPath(tmpDirValue as String) : Path.of(System.getProperty('java.io.tmpdir'))
+
+        final Object nodeHashValue = scope.get('nodeHash')
+        if( nodeHashValue != null && !(nodeHashValue instanceof Boolean) )
+            throw new IllegalArgumentException("cas.nodeHash must be true or false -- offending value: ${nodeHashValue}")
+        final Boolean nodeHashSetting = (Boolean) nodeHashValue
+
+        final String storageClassWarning = judgeStorageClass(sessionConfig, remotes.containsKey(alias))
+
+        return new CasConfig(alias, members, configured, locations, remotes, assertedBy, indexOverride,
+            snapshotMaxBytes, sessionConfig, tmpDir, nodeHashSetting, storageClassWarning)
+    }
+
+    /** Node-side hashing (DESIGN.md §11): cas.nodeHash when set, else fusion.enabled. */
+    static boolean nodeHashEnabled(Map sessionConfig) {
+        final Object cas = sessionConfig?.get(SCHEME)
+        final Object explicit = cas instanceof Map ? ((Map) cas).get('nodeHash') : null
+        if( explicit instanceof Boolean )
+            return (Boolean) explicit
+        final Object fusion = sessionConfig?.get('fusion')
+        return fusion instanceof Map && ((Map) fusion).get('enabled') == Boolean.TRUE
+    }
+
+    /**
+     * Ticket 02 decision 9: blocks inherit aws.client.storageClass. One object
+     * per block pays each class's per-object minimum, which packing (spec §3)
+     * exists to avoid, so archive classes are refused and infrequent-access
+     * ones warn. Judged only when the writable member is on S3.
+     */
+    private static String judgeStorageClass(Map sessionConfig, boolean writableIsRemote) {
+        if( !writableIsRemote ) return null
+        final Object aws = sessionConfig?.get('aws')
+        final Object client = aws instanceof Map ? ((Map) aws).get('client') : null
+        final String cls = client instanceof Map ? (((Map) client).get('storageClass') ?: ((Map) client).get('uploadStorageClass')) as String : null
+        if( !cls ) return null
+        if( ARCHIVE.contains(cls) )
+            throw new IllegalArgumentException("aws.client.storageClass = '${cls}' would archive every block of the writable S3 member; blocks must stay readable, and archive tiers need packing (spec §3), which nf-blocks does not do yet")
+        if( INFREQUENT.contains(cls) )
+            return "aws.client.storageClass = '${cls}': every block is its own object, so each pays that class's per-object minimum; packing (spec §3), which would avoid it, is not built yet".toString()
+        if( !NF_AMAZON_ACCEPTS.contains(cls) )
+            return "aws.client.storageClass = '${cls}': nf-amazon ignores this class (AwsS3Config.parseStorageClass), so blocks are written as STANDARD".toString()
+        return null
     }
 
     private static long bytesOf(Object value) {
@@ -175,23 +262,19 @@ class CasConfig {
         return bytes
     }
 
-    private static String locationText(String alias, Object storeOpts) {
+    private static String requiredLocationText(String alias, Object storeOpts) {
         final location = (storeOpts instanceof Map ? ((Map)storeOpts).get('location') : null) as String
         if( !location )
             throw new IllegalArgumentException("Missing 'cas.stores.${alias}.location'")
         return location
     }
 
-    private static List<String> memberList(String writable, Object resolve, Set<String> known, Map<String, URI> remotes) {
+    private static List<String> memberList(String writable, Object resolve, Set<String> known) {
         if( resolve != null && !(resolve instanceof List) )
             throw new IllegalArgumentException("cas.resolve must be a list of store aliases, e.g. ['lab', 'shared'] -- offending value: ${resolve}")
         final List<String> requested = resolve != null
             ? ((List) resolve).collect { it as String }
             : new ArrayList<String>(known)
-        for( String name : requested ) {
-            if( remotes.containsKey(name) )
-                throw new IllegalArgumentException("store '${name}' is an S3 member (${remotes.get(name)}), which only nf-blocks:explore reads so far; leave it out of cas.resolve")
-        }
         for( String name : requested ) {
             if( !known.contains(name) )
                 throw new IllegalArgumentException("Unknown store alias '${name}' in cas.resolve -- configured stores: ${known.join(', ')}")
