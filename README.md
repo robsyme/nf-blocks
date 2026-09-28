@@ -19,7 +19,7 @@ built against.
 
 ### Status: beta
 
-This is a beta (`0.1.0-beta.1`). Pin the version in `plugins { }`, as the
+This is a beta (`0.1.0-beta.2`). Pin the version in `plugins { }`, as the
 examples below do. What it supports today:
 
 - A store's writable member is a local directory. S3 works only as a
@@ -42,7 +42,7 @@ the same store alias:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0-beta.1'
+    id 'nf-blocks@0.1.0-beta.2'
 }
 
 lineage.enabled = true
@@ -97,7 +97,7 @@ member beside its own writable one:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0-beta.1'
+    id 'nf-blocks@0.1.0-beta.2'
 }
 
 manifest.name = 'downstream'           // or cas.pipeline = 'downstream'
