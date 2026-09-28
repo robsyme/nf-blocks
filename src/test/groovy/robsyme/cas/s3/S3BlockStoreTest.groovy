@@ -69,6 +69,23 @@ class S3BlockStoreTest extends Specification {
         s3.calls.last() == "HEAD ${b.key(cid)}".toString()
     }
 
+    def 'put of a known block of 1 MiB or more HEADs and reads nothing from its stream (ticket 02 answer 2)'() {
+        given:
+        final S3BlockStore b = store()
+        final byte[] content = bytes(2 << 20)
+        final Cid cid = Hashing.hashRaw(new ByteArrayInputStream(content), new byte[1 << 20])
+        b.put(cid, new ByteArrayInputStream(content), content.length)
+        final ByteArrayInputStream second = new ByteArrayInputStream(content)
+
+        when:
+        b.put(cid, second, content.length)
+
+        then:
+        second.available() == content.length
+        s3.calls.last() == "HEAD ${b.key(cid)}".toString()
+        s3.calls.count { it.startsWith('PUT ') } == 1
+    }
+
     def 'a write that meets a 409 is tried up to three times in all'() {
         given:
         s3.conflicts['PUT'] = 2
@@ -123,6 +140,7 @@ class S3BlockStoreTest extends Specification {
         s3.objects[b.key(cid)].bytes == content
         s3.calls.count { it.startsWith('PART ') } == 1          // max(64 MiB, ceil(3 MiB / 10000)): one part
         s3.calls.count { it.startsWith('COMPLETE ') } == 1
+        !s3.calls.any { it.startsWith('DELETE ') }             // the composite SHA-256 is not compared
         S3BlockStore.partSize(1L << 40) == (long) Math.ceil((1L << 40) / 10000.0d)
         S3BlockStore.partSize(100L << 30) == S3BlockStore.MIN_PART
     }

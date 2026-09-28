@@ -132,9 +132,16 @@ class MemoryS3Ops implements S3Ops {
         final ByteArrayOutputStream all = new ByteArrayOutputStream()
         parts.each { S3Part p -> all.write(uploads[uploadId][p.partNumber]) }
         uploads.remove(uploadId)
-        // Multipart SHA-256 is composite on S3 (ticket 01): none is returned.
+        // Multipart SHA-256 is composite on S3 (ticket 01): for an upload created with
+        // SHA-256, Complete returns base64(SHA-256 of the part digests) + '-' + the part count.
         final Obj obj = store(key, all.toByteArray(), S3PutOptions.create().cacheControl(o?.cacheControl))
-        return new S3Written(S3Written.Status.WRITTEN, obj.etag, null)
+        String composite = null
+        if( o?.sha256 ) {
+            final MessageDigest md = MessageDigest.getInstance('SHA-256')
+            parts.each { S3Part p -> md.update(Base64.decoder.decode(p.sha256)) }
+            composite = Base64.encoder.encodeToString(md.digest()) + '-' + parts.size()
+        }
+        return new S3Written(S3Written.Status.WRITTEN, obj.etag, composite)
     }
 
     @Override void abortMultipart(String key, String uploadId) {

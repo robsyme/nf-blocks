@@ -101,6 +101,9 @@ class S3BlockStore implements BlockStore, LoggedStore {
     @Override
     void put(Cid cid, InputStream input, long expectedSize) {
         checkWritable()
+        // Already there: skip reading a large stream the HEAD-first rule would discard (ticket 02 answer 2).
+        if( expectedSize >= HEAD_FIRST_BYTES && ops.head(key(cid)) != null )
+            return
         withSpool(input) { Path spool, byte[] digest, long written ->
             if( !Arrays.equals(digest, cid.digest) )
                 throw new BlockMismatchException(cid, "the bytes hash to ${Cid.of(cid.codec, digest)}")
@@ -224,11 +227,14 @@ class S3BlockStore implements BlockStore, LoggedStore {
         if( body.length >= HEAD_FIRST_BYTES && ops.head(key) != null )
             return
         for( int attempt = 1; attempt <= ATTEMPTS; attempt++ ) {
-            final S3Written w = body.length <= singleRequestMax ? single(key, body) : multipart(key, file, body.length)
+            final boolean whole = body.length <= singleRequestMax
+            final S3Written w = whole ? single(key, body) : multipart(key, file, body.length)
             if( w.status == S3Written.Status.EXISTS )
                 return
             if( w.status == S3Written.Status.WRITTEN ) {
-                checkDigest(cid, key, w.sha256)
+                // A multipart upload's SHA-256 is composite (<base64>-<parts>): nothing to compare.
+                if( whole )
+                    checkDigest(cid, key, w.sha256)
                 return
             }
             log.debug("409 ConditionalRequestConflict writing ${key}; attempt ${attempt} of ${ATTEMPTS}")
@@ -271,7 +277,7 @@ class S3BlockStore implements BlockStore, LoggedStore {
     /** S3 validated and stored a SHA-256 of what it received; it must be the address (silent decision 13). */
     private void checkDigest(Cid cid, String key, String sha256) {
         if( sha256 == null )
-            return          // multipart: composite, nothing to compare
+            return
         if( !Arrays.equals(Base64.decoder.decode(sha256), cid.digest) ) {
             ops.delete(key)
             throw new BlockMismatchException(cid, "S3 stored bytes whose SHA-256 is ${sha256}; the source changed while it was read")
