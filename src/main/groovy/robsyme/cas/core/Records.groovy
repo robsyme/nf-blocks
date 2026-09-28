@@ -19,7 +19,7 @@ import groovy.transform.ToString
 @CompileStatic
 class Records {
 
-    /** Every block kind is at schema 1 in the Walking Skeleton. */
+    /** The schema a kind is written at unless it says otherwise (DESIGN.md §6). */
     static final int SCHEMA = 1
 
     static final String DIRECTORY_MANIFEST = 'DirectoryManifest'

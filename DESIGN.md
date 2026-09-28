@@ -222,7 +222,7 @@ skipped because a read-only member holds the block.
 ## 6. Block kinds
 
 Every metadata block is a DAG-CBOR map with `kind` (string) and `schema`
-(integer: `1`, except OutputItem and RunCompletion, `2` since 2026-09-28). Keys are `snake_case`. Links are `Cid` values (tag 42).
+(integer: `1`, except DirectoryManifest, OutputItem and RunCompletion, `2` since 2026-09-28). Keys are `snake_case`. Links are `Cid` values (tag 42).
 Timestamps are ISO-8601 UTC strings with millisecond precision, only ever as
 facts about a run, or as a Claim's advisory `timestamp`. Nothing store-local: no absolute paths, host names, user
 names, member aliases, or surrogate ids.
