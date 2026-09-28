@@ -49,8 +49,10 @@ class CasConfigScope implements ConfigScope {
     @Description('Overrides the Pipeline Identity recorded in the RunManifest.')
     String pipeline
 
+    @Description('The derived SQLite index of the composition.')
     CasIndexScope index
 
+    @Description('The Index Snapshot a member carries for nf-blocks:explore.')
     CasSnapshotScope snapshot
 
     /** {@code cas.snapshot}: the Index Snapshot a member carries for the explorer (DESIGN.md §15). */
@@ -69,7 +71,7 @@ class CasConfigScope implements ConfigScope {
         CasStoreScope() {}
 
         @ConfigOption
-        @Description('Filesystem path (a local directory in the skeleton) of this store member.')
+        @Description('Where this member lives: a local directory, or s3://<bucket>[/<prefix>] for a read-only member browsed with nf-blocks:explore.')
         String location
     }
 

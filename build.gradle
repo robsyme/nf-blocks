@@ -58,6 +58,33 @@ tasks.register('webTest', NpmTask) {
     outputs.upToDateWhen { false }
 }
 
+// nextflow-plugin-gradle 1.0.0-beta.15 (and master at 2026-09-28) decides spec
+// support with `major >= 25 && minor >= 9`, so 26.04.x counts as unsupported
+// and generateSpec writes an empty META-INF/spec.json; Nextflow then knows no
+// `cas` option and warns about every one. Run the same writer the task would
+// have run (nextflow.plugin.spec.PluginSpecWriter, same classpath and args),
+// then refuse an empty spec so the regression cannot ship silently.
+tasks.matching { it.name == 'generateSpec' }.configureEach { JavaExec task ->
+    doLast {
+        final File spec = task.specFile.get().asFile
+        if( spec.length() == 0 ) {
+            final run = providers.javaexec {
+                // + compileClasspath: the writer loads every extension point, and
+                // CasLinStoreFactory implements nf-lineage's LinStoreFactory,
+                // which is compileOnly and so not on the spec source set.
+                classpath = task.classpath + sourceSets.main.compileClasspath
+                mainClass = task.mainClass
+                args = task.args
+                ignoreExitValue = true
+            }
+            if( run.result.get().exitValue != 0 )
+                throw new GradleException("PluginSpecWriter failed:\n${run.standardOutput.asText.get()}${run.standardError.asText.get()}")
+        }
+        if( spec.length() == 0 )
+            throw new GradleException("generateSpec wrote an empty ${spec}; the cas config scope would be undeclared")
+    }
+}
+
 processResources {
     dependsOn 'webBuild'
     from('web/dist/index.html') { into 'robsyme/cas/explorer' }
