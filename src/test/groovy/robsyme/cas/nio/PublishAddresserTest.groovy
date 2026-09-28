@@ -180,4 +180,83 @@ class PublishAddresserTest extends Specification {
         a.headNodeBytes == 5L
         s3.objects[member.key(r.cid)].text() == 'bam-A'
     }
+
+    def 'a copy the SDK refuses with a RuntimeException falls back to the head-node read'() {
+        given:
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member') {
+            @Override robsyme.cas.s3.S3Written copy(String sb, String sk, String key, robsyme.cas.s3.S3PutOptions o) {
+                throw new IllegalStateException('Access Denied (403)')
+            }
+        }
+        final robsyme.cas.s3.S3BlockStore member = s3Member(s3, 'bam-A')
+        final Path f = taskFile('A.bam', 'bam-A')
+        final PublishAddresser a = new PublishAddresser(member, member, false, tmp.resolve('work')) {
+            @Override protected List<String> copySource(Path file) { ['work', 'w/ab/cdef/A.bam'] }
+        }
+
+        when:
+        final Addressed r = a.address(f, 5L)
+
+        then:
+        r.provider == Providers.HEAD_NODE
+        a.headNodeBytes == 5L
+        s3.objects[member.key(r.cid)].text() == 'bam-A'
+    }
+
+    def 'a copy with no full-object SHA-256 (#sha) falls back to the head node, which is held to the node digest'() {
+        given:
+        final String returned = sha     // a data variable is not visible inside an anonymous class
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member') {
+            @Override robsyme.cas.s3.S3Written copy(String sb, String sk, String key, robsyme.cas.s3.S3PutOptions o) {
+                final robsyme.cas.s3.S3Written w = super.copy(sb, sk, key, o)
+                return new robsyme.cas.s3.S3Written(w.status, w.etag, returned)
+            }
+        }
+        final robsyme.cas.s3.S3BlockStore member = s3Member(s3, 'bam-A')
+        final Path f = taskFile('A.bam', 'bam-A')
+        nodeDigest('A.bam', said)
+        final PublishAddresser a = new PublishAddresser(member, member, true, tmp.resolve('work')) {
+            @Override protected List<String> copySource(Path file) { ['work', 'w/ab/cdef/A.bam'] }
+        }
+
+        when:
+        Addressed r = null
+        String failure = null
+        try { r = a.address(f, 5L) } catch( AbortRunException e ) { failure = e.message }
+
+        then:
+        (failure == null) == agrees
+        agrees ? r.provider == Providers.HEAD_NODE && a.headNodeBytes == 5L : failure.contains('.command.cas') && failure.contains('the head node hashed')
+
+        where:
+        sha     | said    | agrees
+        null    | 'bam-A' | true
+        'abc-2' | 'bam-A' | true
+        null    | 'bam-B' | false
+    }
+
+    def 'a mismatch whose copy cannot be deleted aborts naming the key, and the key is never taken as the address'() {
+        given:
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member') {
+            @Override void delete(String key) { throw new IllegalStateException('Access Denied (403) by bucket policy') }
+        }
+        final robsyme.cas.s3.S3BlockStore member = s3Member(s3, 'bam-A')
+        final Path f = taskFile('A.bam', 'bam-A')
+        nodeDigest('A.bam', 'bam-B')
+        final Cid said = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest('bam-B'.bytes))
+        final PublishAddresser a = new PublishAddresser(member, member, true, tmp.resolve('work')) {
+            @Override protected List<String> copySource(Path file) { ['work', 'w/ab/cdef/A.bam'] }
+        }
+
+        when:
+        a.address(f, 5L)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('A.bam')
+        e.message.contains(member.key(said))
+        e.cause instanceof robsyme.cas.s3.S3UnremovedCopyException
+        s3.calls.count { it == "HEAD ${member.key(said)}".toString() } == 1
+        a.counts.isEmpty()
+    }
 }

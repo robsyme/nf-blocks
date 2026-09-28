@@ -156,13 +156,10 @@ class S3BlockStore implements BlockStore, LoggedStore {
                 }
                 catch( IOException e ) {
                     // Nothing confirmed the bytes at the address: remove them, and the caller reads the file.
-                    ops.delete(k)
-                    throw e
+                    throw removeOrRefuse(k, e)
                 }
-                if( !Arrays.equals(sha, expected.digest) ) {
-                    ops.delete(k)
-                    throw new BlockMismatchException(expected, ".command.cas says ${expected}, S3 hashed s3://${sourceBucket}/${sourceKey} as ${w.sha256}")
-                }
+                if( !Arrays.equals(sha, expected.digest) )
+                    throw removeOrRefuse(k, new BlockMismatchException(expected, ".command.cas says ${expected}, S3 hashed s3://${sourceBucket}/${sourceKey} as ${w.sha256}"))
             }
             return new S3Copied(expected, w.status == S3Written.Status.WRITTEN ? Providers.S3_COPY : Providers.FUSION_NODE)
         }
@@ -175,7 +172,31 @@ class S3BlockStore implements BlockStore, LoggedStore {
             return new S3Copied(cid, Providers.S3_COPY)
         }
         finally {
-            ops.delete(staging)
+            try {
+                ops.delete(staging)
+            }
+            catch( Exception e ) {
+                // The tmp/ lifecycle rule removes it; a placed block is still placed, and a failure keeps its own cause.
+                log.warn("could not delete the staging copy ${ops.describe()}/${staging} (${e.message}); the tmp/ lifecycle rule removes it")
+            }
+        }
+    }
+
+    /**
+     * Deletes an unconfirmed copy at a block key and hands back cause to throw.
+     * When the delete fails (the hardening bucket policy denies DeleteObject on
+     * blocks/), the object stays where a later HEAD would accept it, so the
+     * answer is an S3UnremovedCopyException naming the key, never a fallback.
+     */
+    private IOException removeOrRefuse(String k, IOException cause) {
+        try {
+            ops.delete(k)
+            return cause
+        }
+        catch( Exception e ) {
+            final S3UnremovedCopyException refused = new S3UnremovedCopyException("${ops.describe()}/${k}".toString(), cause)
+            refused.addSuppressed(e)
+            return refused
         }
     }
 
@@ -186,9 +207,24 @@ class S3BlockStore implements BlockStore, LoggedStore {
         return Base64.decoder.decode(w.sha256)
     }
 
+    /**
+     * An S3 refusal that is not a 412 or a 409 reaches here as the SDK's
+     * unchecked exception; as an IOException the caller falls back to reading the bytes.
+     */
+    private static <T> T checked(String what, Closure<T> request) {
+        try {
+            return request.call()
+        }
+        catch( RuntimeException e ) {
+            throw new IOException("${what}: ${e.message}", e)
+        }
+    }
+
     private S3Written copyRetrying(String bucket, String srcKey, String dstKey) {
         for( int attempt = 1; attempt <= ATTEMPTS; attempt++ ) {
-            final S3Written w = ops.copy(bucket, srcKey, dstKey, S3PutOptions.create().ifNoneMatch().sha256().cacheControl(IMMUTABLE))
+            final S3Written w = checked("copying s3://${bucket}/${srcKey} to ${ops.describe()}/${dstKey}".toString()) {
+                ops.copy(bucket, srcKey, dstKey, S3PutOptions.create().ifNoneMatch().sha256().cacheControl(IMMUTABLE))
+            }
             if( w.status != S3Written.Status.CONFLICT ) return w
         }
         throw new IOException("S3 answered 409 ConditionalRequestConflict ${ATTEMPTS} times copying to ${ops.describe()}/${dstKey}")
@@ -196,23 +232,38 @@ class S3BlockStore implements BlockStore, LoggedStore {
 
     private Cid partCopy(String bucket, String srcKey, long size, Cid expected) {
         final String k = key(expected)
-        final String id = ops.createMultipart(k, S3PutOptions.create().cacheControl(IMMUTABLE))
+        final String what = "copying s3://${bucket}/${srcKey} in parts to ${ops.describe()}/${k}".toString()
+        final String id = checked(what) { ops.createMultipart(k, S3PutOptions.create().cacheControl(IMMUTABLE)) }
         try {
             final long part = partSize(size)
             final List<S3Part> parts = []
             long first = 0
             for( int n = 1; first < size; n++ ) {
                 final long last = Math.min(first + part, size) - 1
-                parts.add(ops.uploadPartCopy(k, id, n, bucket, srcKey, first, last))
+                final int number = n
+                final long from = first
+                parts.add(checked(what) { ops.uploadPartCopy(k, id, number, bucket, srcKey, from, last) })
                 first = last + 1
             }
-            if( ops.completeMultipart(k, id, parts, true).status != S3Written.Status.WRITTEN )
-                ops.abortMultipart(k, id)
+            final S3Written done = checked(what) { ops.completeMultipart(k, id, parts, true) }
+            if( done.status != S3Written.Status.WRITTEN )
+                abortQuietly(k, id, null)
             return expected
         }
         catch( Exception e ) {
-            ops.abortMultipart(k, id)
+            abortQuietly(k, id, e)
             throw e
+        }
+    }
+
+    /** An abort that fails leaves parts for the lifecycle rule; it never hides the failure that led here. */
+    private void abortQuietly(String k, String id, Exception cause) {
+        try {
+            ops.abortMultipart(k, id)
+        }
+        catch( Exception e ) {
+            if( cause != null ) cause.addSuppressed(e)
+            log.warn("could not abort the multipart copy to ${ops.describe()}/${k} (${e.message})")
         }
     }
 

@@ -15,6 +15,7 @@ import nextflow.extension.FilesEx
 import robsyme.cas.core.*
 import robsyme.cas.s3.S3BlockStore
 import robsyme.cas.s3.S3Copied
+import robsyme.cas.s3.S3UnremovedCopyException
 
 /**
  * The Address Provider seam for a run's publishes (spec §3, ticket 16): the
@@ -61,6 +62,10 @@ class PublishAddresser implements FileAddresser {
             try {
                 final S3Copied c = ((S3BlockStore) writable).copyFrom(source[0], source[1], size, node)
                 if( c != null ) return counted(new Addressed(c.cid, size, c.provider))
+            }
+            catch( S3UnremovedCopyException e ) {
+                // Rule 3: unconfirmed bytes sit at a block key a later HEAD would accept; never fall back past them.
+                throw new AbortRunException("${file}: ${e.message}", e)
             }
             catch( BlockMismatchException e ) {
                 // Ticket 16 decision 3, rule 3: the node's digest and S3's disagree.

@@ -645,9 +645,19 @@ Write side (Coordinates only; any write to a Store URI is `AccessDeniedException
   1. `key = Coordinates.key(target)`. If the coordinate exists and
      `REPLACE_EXISTING` is absent, throw `FileAlreadyExistsException(key)`
      **before reading any byte** (this is what makes `-resume` cheap).
-  2. Regular file: `cid = store.putStreaming(Files.newInputStream(source))`
-     with the 1 MiB buffer, then write the Pointer File. Record
-     `(key → StoreRef, size, provider 'head-node')` in `CasSession.publishes`.
+  2. Regular file: the run's `PublishAddresser` addresses it, then the
+     Pointer File is written. Record `(key → StoreRef, size, provider)` in
+     `CasSession.publishes`. The addresser tries, in order, the task node's
+     digest from `.command.cas`, a server-side copy into an S3 member
+     (`S3BlockStore.copyFrom`, whose SHA-256 S3 computes), and the head
+     node's streamed read with the 1 MiB buffer. A copy that fails for any
+     reason other than a disagreement falls back to the head-node read. A
+     copy whose SHA-256 disagrees with the node digest is deleted and the run
+     aborts. Under the optional hardening bucket policy, which denies
+     `DeleteObject` on `blocks/`, that delete is refused, and the mismatch
+     becomes an abort whose message names the key to remove by hand. A
+     staging copy under `tmp/` that cannot be deleted is left to the `tmp/`
+     lifecycle rule.
   3. Directory: walk it yourself (Nextflow does not recurse), hash every
      file, build the `DirectoryManifest` recursively, put it, write the
      Pointer File pointing at the manifest cid. Never return normally with
