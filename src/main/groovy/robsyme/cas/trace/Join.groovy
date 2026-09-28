@@ -177,9 +177,12 @@ class Join {
         final String provider = publish.provider ?: Providers.HEAD_NODE
         byProvider.computeIfAbsent(provider, { String k -> new TreeMap<String, Cid>() }).put(address.toString(), address)
         // The files inside a published directory are addresses the run published too (ticket 16 decision 1).
+        // A null names no address: it is skipped rather than failing the run's provenance write.
         publish.contents?.each { String p, List<Cid> cids ->
-            final TreeMap<String, Cid> held = byProvider.computeIfAbsent(p, { String k -> new TreeMap<String, Cid>() })
-            cids.each { Cid c -> held.put(c.toString(), c) }
+            cids?.each { Cid c ->
+                if( c != null )
+                    byProvider.computeIfAbsent(p, { String k -> new TreeMap<String, Cid>() }).put(c.toString(), c)
+            }
         }
         return Leaf.of(name, address, size)
     }

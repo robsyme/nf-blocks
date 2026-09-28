@@ -18,6 +18,7 @@ import robsyme.cas.core.HashBufferPool
 import robsyme.cas.core.Hashing
 import robsyme.cas.core.LoggedStore
 import robsyme.cas.core.NoSuchBlockException
+import robsyme.cas.core.Providers
 import robsyme.cas.core.StoreLogStorage
 
 /**
@@ -130,6 +131,89 @@ class S3BlockStore implements BlockStore, LoggedStore {
         final Cid cid = Hashing.hashRaw(file)
         placeFile(cid, file, Files.size(file))
         return cid
+    }
+
+    /**
+     * An S3 source into this member without the bytes leaving S3 (ticket 16).
+     * Up to the single-request limit, CopyObject with SHA-256: straight to the
+     * final key when the node's digest names it (compared, deleted and refused
+     * on mismatch), else through tmp/<uuid>. Above it, UploadPartCopy when a
+     * node digest names the key; otherwise null, and the caller reads the bytes.
+     */
+    S3Copied copyFrom(String sourceBucket, String sourceKey, long size, Cid expected) {
+        checkWritable()
+        if( expected != null && ops.head(key(expected)) != null )
+            return new S3Copied(expected, Providers.FUSION_NODE)
+        if( size > singleRequestMax )
+            return expected == null ? null : new S3Copied(partCopy(sourceBucket, sourceKey, size, expected), Providers.FUSION_NODE)
+        if( expected != null ) {
+            final String k = key(expected)
+            final S3Written w = copyRetrying(sourceBucket, sourceKey, k)
+            if( w.status == S3Written.Status.WRITTEN ) {
+                final byte[] sha
+                try {
+                    sha = copiedSha256(w, sourceBucket, sourceKey)
+                }
+                catch( IOException e ) {
+                    // Nothing confirmed the bytes at the address: remove them, and the caller reads the file.
+                    ops.delete(k)
+                    throw e
+                }
+                if( !Arrays.equals(sha, expected.digest) ) {
+                    ops.delete(k)
+                    throw new BlockMismatchException(expected, ".command.cas says ${expected}, S3 hashed s3://${sourceBucket}/${sourceKey} as ${w.sha256}")
+                }
+            }
+            return new S3Copied(expected, w.status == S3Written.Status.WRITTEN ? Providers.S3_COPY : Providers.FUSION_NODE)
+        }
+        final String staging = "${prefix}tmp/${UUID.randomUUID()}".toString()
+        try {
+            final S3Written staged = copyRetrying(sourceBucket, sourceKey, staging)
+            final Cid cid = Cid.of(Cid.RAW, copiedSha256(staged, sourceBucket, sourceKey))
+            if( ops.head(key(cid)) == null )
+                copyRetrying(ops.bucket, staging, key(cid))
+            return new S3Copied(cid, Providers.S3_COPY)
+        }
+        finally {
+            ops.delete(staging)
+        }
+    }
+
+    /** A copy's full-object SHA-256; an IOException when S3 returned none, or a composite one (<base64>-<parts>). */
+    private static byte[] copiedSha256(S3Written w, String sourceBucket, String sourceKey) {
+        if( w.sha256 == null || w.sha256.contains('-') )
+            throw new IOException("S3 returned no full-object SHA-256 copying s3://${sourceBucket}/${sourceKey} (${w.sha256})")
+        return Base64.decoder.decode(w.sha256)
+    }
+
+    private S3Written copyRetrying(String bucket, String srcKey, String dstKey) {
+        for( int attempt = 1; attempt <= ATTEMPTS; attempt++ ) {
+            final S3Written w = ops.copy(bucket, srcKey, dstKey, S3PutOptions.create().ifNoneMatch().sha256().cacheControl(IMMUTABLE))
+            if( w.status != S3Written.Status.CONFLICT ) return w
+        }
+        throw new IOException("S3 answered 409 ConditionalRequestConflict ${ATTEMPTS} times copying to ${ops.describe()}/${dstKey}")
+    }
+
+    private Cid partCopy(String bucket, String srcKey, long size, Cid expected) {
+        final String k = key(expected)
+        final String id = ops.createMultipart(k, S3PutOptions.create().cacheControl(IMMUTABLE))
+        try {
+            final long part = partSize(size)
+            final List<S3Part> parts = []
+            long first = 0
+            for( int n = 1; first < size; n++ ) {
+                final long last = Math.min(first + part, size) - 1
+                parts.add(ops.uploadPartCopy(k, id, n, bucket, srcKey, first, last))
+                first = last + 1
+            }
+            if( ops.completeMultipart(k, id, parts, true).status != S3Written.Status.WRITTEN )
+                ops.abortMultipart(k, id)
+            return expected
+        }
+        catch( Exception e ) {
+            ops.abortMultipart(k, id)
+            throw e
+        }
     }
 
     @Override

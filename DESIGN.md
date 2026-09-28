@@ -674,7 +674,9 @@ One instance per Nextflow `Session`, obtained by `CasSession.of(session)`
 it through `Global.session`). Holds: the `CasConfig`, the `CompositeStore`,
 the `CoordinateTree`, `asserted_by`, a `ConcurrentHashMap<String, Publish>`
 keyed by join key (`Publish(StoreRef ref, long size, String provider,
-Anomalies anomalies)`), the Nextflow run key once `save(<hash>, WorkflowRun)`
+Map<String, List<Cid>> contents)`, `contents` being a published directory's
+per-file providers, empty for a file), a directory's anomalies keyed the same
+way, the run's `PublishAddresser`, the Nextflow run key once `save(<hash>, WorkflowRun)`
 is seen, the RunManifest cid once written, the captured `WorkflowOutputEvent`s,
 and a one-shot latch for `onFlowComplete`.
 

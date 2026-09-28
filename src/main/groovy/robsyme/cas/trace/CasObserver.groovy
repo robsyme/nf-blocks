@@ -292,6 +292,7 @@ class CasObserver implements TraceObserverV2 {
         ]).toCbor(), 'RunCompletion')
 
         appendStoreLog(completion)
+        log.info(cas.addresser.summary())
         indexRun(completion)
     }
 

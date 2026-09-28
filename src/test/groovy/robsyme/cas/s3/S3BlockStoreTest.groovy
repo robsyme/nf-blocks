@@ -110,6 +110,45 @@ class S3BlockStoreTest extends Specification {
         !s3.calls.any { it.startsWith('PUT ') }
     }
 
+    // PublishAddresser keys its cas.tmpDir abort on this message, so only a spool failure may carry it.
+    def "a failing caller stream surfaces its own message, not cas.tmpDir's"() {
+        given:
+        final InputStream failing = new InputStream() {
+            @Override int read() { throw new IOException('the source went away') }
+            @Override int read(byte[] b, int off, int len) { throw new IOException('the source went away') }
+        }
+
+        when:
+        store().putStreaming(failing)
+
+        then:
+        final IOException e = thrown()
+        e.message == 'the source went away'
+        !s3.calls.any { it.startsWith('PUT ') }
+        Files.list(tmp).count() == 0
+    }
+
+    // setWritable(false) does nothing for root, so the spool would succeed.
+    @spock.lang.Requires({ System.getProperty('user.name') != 'root' })
+    def 'an unwritable tmpDir surfaces "could not spool to cas.tmpDir"'() {
+        given:
+        final Path readOnly = Files.createDirectories(tmp.resolve('ro'))
+        readOnly.toFile().setWritable(false)
+        final S3BlockStore b = new S3BlockStore(s3, 'cas/', 'lab', true, readOnly)
+
+        when:
+        b.putStreaming(new ByteArrayInputStream('abc'.bytes))
+
+        then:
+        final IOException e = thrown()
+        e.message.startsWith('could not spool to cas.tmpDir')
+        e.message.contains(readOnly.toString())
+        s3.objects.isEmpty()
+
+        cleanup:
+        readOnly.toFile().setWritable(true)
+    }
+
     def 'a returned ChecksumSHA256 that differs from the address deletes the object and fails (silent decision 13)'() {
         given:
         final MemoryS3Ops lying = new MemoryS3Ops('member') {

@@ -7,6 +7,7 @@ import java.nio.file.StandardOpenOption
 
 import groovy.transform.Canonical
 import groovy.transform.CompileStatic
+import robsyme.cas.core.Cid
 
 /** What HeadObject says of an object. sha256 is base64, null when S3 holds none. */
 @Canonical
@@ -129,4 +130,12 @@ class S3WriteOptions {
 @CompileStatic
 class S3PreconditionFailed extends IOException {
     S3PreconditionFailed(String message) { super(message) }
+}
+
+/** What a server-side copy into the member addressed, and which provider supplied the address (Task 10). */
+@Canonical
+@CompileStatic
+class S3Copied {
+    Cid cid
+    String provider
 }

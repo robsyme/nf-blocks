@@ -24,6 +24,7 @@ import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.Put
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
+import robsyme.cas.nio.PublishAddresser
 
 /**
  * The one per-run shared object (DESIGN.md section 9). Everything the provider,
@@ -123,6 +124,19 @@ class CasSession {
         this.assertedBy = config.assertedBy
         this.store = store
         this.coordinates = coordinates
+    }
+
+    private volatile PublishAddresser addresser
+
+    /** The run's Address Provider seam (DESIGN.md §8), built on first publish. */
+    PublishAddresser getAddresser() {
+        if( addresser == null ) synchronized( this ) {
+            if( addresser == null ) {
+                final Session s = Global.session as Session
+                addresser = new PublishAddresser(store, members()[0], CasConfig.nodeHashEnabled(s?.config ?: config.rawConfig), s?.workDir)
+            }
+        }
+        return addresser
     }
 
     private static BlockStore buildStore(CasConfig config) {

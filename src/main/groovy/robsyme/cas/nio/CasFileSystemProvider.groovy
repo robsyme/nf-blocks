@@ -30,8 +30,10 @@ import java.security.MessageDigest
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.exception.AbortRunException
+import nextflow.file.FileHelper
 import nextflow.file.FileSystemTransferAware
 import robsyme.cas.CasSession
+import robsyme.cas.core.Addressed
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
@@ -47,6 +49,7 @@ import robsyme.cas.core.ManifestEntry
 import robsyme.cas.core.NoSuchBlockException
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
+import robsyme.cas.core.Providers
 import robsyme.cas.core.Records
 import robsyme.cas.core.StoreRef
 
@@ -366,20 +369,20 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
 
         final String name = dest.getFileName().toString()
         if( Files.isDirectory(source) ) {
-            final DirectoryManifestBuilder.Result result = new DirectoryManifestBuilder(store()).build(source)
+            final DirectoryManifestBuilder.Result result = new DirectoryManifestBuilder(store(), session().addresser,
+                { String uri -> FileHelper.asPath(uri) } as Closure<Path>).build(source)
             tree.write(rel, new StoreRef(result.cid, name))
-            session().recordPublish(key, new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), 'head-node'))
+            // A directory leaf's address is its manifest, which the head node always builds (silent decision 3);
+            // the files inside it carry their own providers into RunCompletion.providers.
+            session().recordPublish(key, new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), Providers.HEAD_NODE, result.providers))
             session().recordUploadAnomalies(key, result.anomalies)
             log.debug "cas: published directory ${source} as manifest ${result.cid} at ${key} (${result.anomalies})"
         }
         else {
-            Cid cid = null
-            final InputStream input = Files.newInputStream(source)
-            try { cid = store().putStreaming(input) }
-            finally { input.close() }
-            tree.write(rel, new StoreRef(cid, name))
-            session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(source), 'head-node'))
-            log.debug "cas: published file ${source} as block ${cid} at ${key}"
+            final Addressed a = session().addresser.address(source, Files.size(source))
+            tree.write(rel, new StoreRef(a.cid, name))
+            session().recordPublish(key, new CasSession.Publish(new StoreRef(a.cid, name), a.size, a.provider))
+            log.debug "cas: published file ${source} as block ${a.cid} at ${key} (${a.provider})"
         }
     }
 
@@ -573,7 +576,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                     try { cid = self.store().putStreaming(input) }
                     finally { input.close() }
                     tree.write(rel, new StoreRef(cid, name))
-                    self.session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(temp), 'head-node'))
+                    self.session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(temp), Providers.HEAD_NODE))
                 }
                 finally { Files.deleteIfExists(temp) }
             }

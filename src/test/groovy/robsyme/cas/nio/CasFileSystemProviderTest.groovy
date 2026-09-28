@@ -161,6 +161,30 @@ class CasFileSystemProviderTest extends Specification {
         manifestAt(sub.address).entry('b.txt').mode == ManifestEntry.REGULAR
     }
 
+    def 'a directory publish addresses every file inside through the run addresser; the leaf is head-node, the files are its contents (silent decision 3)'() {
+        given:
+        def dir = tmp.resolve('work/trio')
+        Files.createDirectories(dir.resolve('sub'))
+        Files.writeString(dir.resolve('a.txt'), 'alpha\n')
+        Files.writeString(dir.resolve('b.txt'), 'beta\n')
+        Files.writeString(dir.resolve('sub/c.txt'), 'gamma\n')
+        def key = 'cas://lab/trio/out'
+
+        when:
+        provider.upload(dir, p(key))
+
+        then: 'every file inside went through the addresser'
+        sess().addresser.counts == ['head-node': 3]
+
+        and: "the directory leaf's address is its manifest, always head-node"
+        sess().publishFor(key).provider == 'head-node'
+        sess().publishFor(key).ref.cid.isDagCbor()
+
+        and: 'the files inside are recorded as its contents, sorted by string'
+        def cids = ['alpha\n', 'beta\n', 'gamma\n'].collect { store.putStreaming(new ByteArrayInputStream(it.bytes)) }
+        sess().publishFor(key).contents == ['head-node': cids.sort { it.toString() }]
+    }
+
     private DirectoryManifest manifestAt(Cid cid) {
         return DirectoryManifest.fromCbor((Map) DagCbor.decode(store.open(cid).bytes))
     }
