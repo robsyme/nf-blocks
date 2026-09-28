@@ -71,6 +71,9 @@ class S3BlockStore implements BlockStore, LoggedStore {
         return "${prefix}blocks/${text.substring(text.length() - 2)}/${text}".toString()
     }
 
+    /** CopyObject's own limit (a source over 5 GiB is refused); a caller over this streams instead of calling copyOut. */
+    long getSingleRequestMax() { singleRequestMax }
+
     @Override String alias() { alias }
 
     @Override boolean isWritable() { writable }
@@ -267,10 +270,20 @@ class S3BlockStore implements BlockStore, LoggedStore {
         }
     }
 
-    /** A block into another bucket without the bytes leaving S3, checked by S3's SHA-256 (silent decision 9). */
+    /**
+     * A block into another bucket without the bytes leaving S3, checked by
+     * S3's SHA-256 (silent decision 9). An SDK refusal reaches the caller as
+     * an IOException (not a BlockMismatchException), the same as every other
+     * S3 write here, so it can fall back rather than abort. A composite
+     * SHA-256 (over the single-request limit, which the caller is expected to
+     * have already ruled out) is treated like a missing one: never decoded as
+     * base64, since it is not a plain digest.
+     */
     void copyOut(Cid cid, String targetBucket, String targetKey) {
-        final S3Written w = ops.copyOut(key(cid), targetBucket, targetKey)
-        if( w.sha256 == null || Base64.decoder.decode(w.sha256) != cid.digest )
+        final S3Written w = checked("copying ${ops.describe()}/${key(cid)} to s3://${targetBucket}/${targetKey}".toString()) {
+            ops.copyOut(key(cid), targetBucket, targetKey)
+        }
+        if( w.sha256 == null || w.sha256.contains('-') || Base64.decoder.decode(w.sha256) != cid.digest )
             throw new BlockMismatchException(cid, "S3 copied it to s3://${targetBucket}/${targetKey} as ${w.sha256}")
     }
 

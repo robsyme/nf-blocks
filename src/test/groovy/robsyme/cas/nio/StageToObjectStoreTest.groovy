@@ -7,6 +7,7 @@ import java.nio.file.Path
 
 import nextflow.Global
 import nextflow.Session
+import nextflow.exception.AbortRunException
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.*
@@ -65,5 +66,66 @@ class StageToObjectStoreTest extends Specification {
 
         then:
         Files.isSymbolicLink(tmp.resolve('staged/alias.txt'))
+    }
+
+    // The next two are built by hand rather than through a real on-disk symlink
+    // and DirectoryManifestBuilder: on this sandbox, Spock's own @TempDir cleanup
+    // cannot cope with a real filesystem symlink pointing back to one of its
+    // ancestors (it fails walking the tree afterwards, an artifact of the test
+    // harness, not of the code under test). A manifest is just bytes, and
+    // DirectoryManifestBuilder would encode exactly this shape for `nested/up ->
+    // ..` or `self -> .` (resolvesInside is true for a link back to an ancestor),
+    // so building it directly exercises the same resolveInTree/materialiseDirectory
+    // path without touching the real filesystem at all.
+
+    def 'a link back to an ancestor directory aborts rather than recursing forever'() {
+        given:
+        final Cid nested = store.putDagCbor(new DirectoryManifest([ManifestEntry.symlink('up', '..')]).toCbor())
+        final Cid manifest = store.putDagCbor(new DirectoryManifest([ManifestEntry.directory('nested', nested)]).toCbor())
+        final Path target = zip.getPath('/stage/C_qc')
+
+        when:
+        provider.download(provider.getPath(URI.create("cas://${manifest}")), target)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('up')
+        e.message.contains('already being materialised')
+    }
+
+    def 'a link to the directory it is itself in aborts rather than recursing forever'() {
+        given:
+        final Cid manifest = store.putDagCbor(new DirectoryManifest([ManifestEntry.symlink('self', '.')]).toCbor())
+        final Path target = zip.getPath('/stage/D_qc')
+
+        when:
+        provider.download(provider.getPath(URI.create("cas://${manifest}")), target)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('self')
+        e.message.contains('already being materialised')
+    }
+
+    def 'a link that climbs above the root aborts rather than being staged'() {
+        given:
+        // Built by hand: DirectoryManifestBuilder never emits a symlink entry that
+        // escapes the walked tree (it follows and inlines it instead), but a manifest
+        // is just bytes, so resolveInTree must still refuse one rather than reading
+        // outside the root it was asked to stage.
+        final Cid fileCid = store.putStreaming(new ByteArrayInputStream('x'.bytes))
+        final Cid nested = store.putDagCbor(new DirectoryManifest([ManifestEntry.regular('n.txt', fileCid, 1L)]).toCbor())
+        final Cid manifest = store.putDagCbor(new DirectoryManifest([
+            ManifestEntry.directory('nested', nested),
+            ManifestEntry.symlink('escapes', '../../outside'),
+        ]).toCbor())
+        final Path target = zip.getPath('/stage/escape')
+
+        when:
+        provider.download(provider.getPath(URI.create("cas://${manifest}")), target)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('does not resolve inside the tree')
     }
 }

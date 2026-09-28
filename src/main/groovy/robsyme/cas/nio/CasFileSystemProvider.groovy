@@ -404,7 +404,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         // Content staging follows a directory coordinate's pointer to its manifest;
         // only the delete/overwrite path treats it as a single pointer file.
         if( node.directory || node.dirPointer ) {
-            materialiseDirectory(node.content, target, node.content, Collections.<String>emptyList())
+            materialiseDirectory(node.content, target, node.content, Collections.<String>emptyList(), Collections.<Cid>singleton(node.content))
         }
         else if( node.symlink ) {
             throw new AbortRunException("cas: cannot download a bare symlink '${src}' -> '${node.linkTarget}'")
@@ -419,7 +419,11 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     /**
      * A single raw block to {@code target}: a symlink to the read-only block
      * on the same local fs; a server-side S3-to-S3 copy when a member already
-     * holds the block in S3 (silent decision 9); else stream-and-verify.
+     * holds the block in S3, under CopyObject's own single-request limit
+     * (silent decision 9); else stream-and-verify. A copy the SDK refuses
+     * (over the limit despite the check, throttled, denied) falls back to
+     * streaming, exactly as if no S3 member held the block; only a confirmed
+     * digest mismatch aborts.
      */
     private void materialiseFile(Cid cid, Path target, boolean allowSymlink) throws IOException {
         final Path block = localBlockPath(cid)
@@ -430,24 +434,45 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             Files.createSymbolicLink(target, block)
             return
         }
-        final String targetUri = FilesEx.toUriString(target)
-        if( targetUri.startsWith('s3://') ) {
+        final String targetUri = s3UriOf(target)
+        if( targetUri != null ) {
             final BlockStore holder = holderOf(cid)
             if( holder instanceof S3BlockStore ) {
-                final int slash = targetUri.indexOf('/', 5)
-                final String targetBucket = slash < 0 ? targetUri.substring(5) : targetUri.substring(5, slash)
-                final String targetKey = slash < 0 ? '' : targetUri.substring(slash + 1)
-                try {
-                    ((S3BlockStore) holder).copyOut(cid, targetBucket, targetKey)
-                    return
-                }
-                catch( BlockMismatchException e ) {
-                    Files.deleteIfExists(target)
-                    throw new AbortRunException("cas: ${e.message}", e)
+                final S3BlockStore s3holder = (S3BlockStore) holder
+                if( holder.size(cid) <= s3holder.singleRequestMax ) {
+                    final int slash = targetUri.indexOf('/', 5)
+                    final String targetBucket = slash < 0 ? targetUri.substring(5) : targetUri.substring(5, slash)
+                    final String targetKey = slash < 0 ? '' : targetUri.substring(slash + 1)
+                    try {
+                        s3holder.copyOut(cid, targetBucket, targetKey)
+                        return
+                    }
+                    catch( BlockMismatchException e ) {
+                        // The AbortRunException is built first so a failing delete never hides the mismatch (Task 10's removeOrRefuse).
+                        final AbortRunException abort = new AbortRunException("cas: ${e.message}", e)
+                        try {
+                            Files.deleteIfExists(target)
+                        }
+                        catch( IOException deleteFailure ) {
+                            abort.addSuppressed(deleteFailure)
+                        }
+                        throw abort
+                    }
+                    catch( IOException e ) {
+                        // S3BlockStore.copyOut wraps an SDK refusal in an IOException (never a BlockMismatchException):
+                        // the head node reads the bytes instead, the same as when no S3 member holds the block.
+                        log.warn("server-side copy of ${cid} to ${targetUri} failed (${e.message}); streaming it instead")
+                    }
                 }
             }
         }
         streamAndVerify(cid, target)
+    }
+
+    /** The s3:// URI text {@code target} names, or null; a seam over FilesEx.toUriString for materialiseFile's S3-to-S3 branch. */
+    protected String s3UriOf(Path target) {
+        final String uri = FilesEx.toUriString(target)
+        return uri.startsWith('s3://') ? uri : null
     }
 
     /** The first member holding cid, or null; a seam over storeMembers() for materialiseFile's S3-to-S3 branch. */
@@ -492,9 +517,15 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
      * whatever it names inside the tree (ticket 15 decision 7). {@code root}
      * and {@code at} are the manifest this walk started from and the path
      * segments from that root to {@code dir}, so an in-tree link can be
-     * resolved without ever leaving the manifest.
+     * resolved without ever leaving the manifest. {@code ancestors} is every
+     * directory cid on the way from {@code root} to {@code dir}, inclusive: a
+     * manifest DAG cannot cycle on its own (a directory's address is the hash
+     * of its own content), but a symlink's target text is resolved fresh from
+     * {@code root} on every hop, so `nested/up -> ..` or `a/self -> .` can
+     * name a directory already being materialised, which would otherwise
+     * recurse without end.
      */
-    private void materialiseDirectory(Cid manifestCid, Path dir, Cid root, List<String> at) throws IOException {
+    private void materialiseDirectory(Cid manifestCid, Path dir, Cid root, List<String> at, Set<Cid> ancestors) throws IOException {
         Files.createDirectories(dir)
         final DirectoryManifest manifest = manifestOf(manifestCid)
         for( ManifestEntry entry : manifest.entries ) {
@@ -503,7 +534,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                 case ManifestEntry.DIRECTORY:
                     final List<String> deeper = new ArrayList<String>(at)
                     deeper.add(entry.name)
-                    materialiseDirectory(entry.address, child, root, deeper)
+                    materialiseDirectory(entry.address, child, root, deeper, descend(ancestors, entry.address))
                     break
                 case ManifestEntry.REGULAR:
                     materialiseFile(entry.address, child, false)
@@ -516,10 +547,14 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                     }
                     else {
                         // No links on an object store: stage what the link names, from inside the tree (ticket 15 decision 7).
-                        final ManifestEntry resolved = resolveInTree(root, at, entry.target, 0)
+                        final Resolved resolved = resolveInTree(root, at, entry.target, 0)
                         if( resolved == null )
                             throw new AbortRunException("cas: manifest ${manifestCid}: '${entry.name}' -> '${entry.target}' does not resolve inside the tree; cannot stage it as a copy")
-                        if( resolved.isDirectory() ) materialiseDirectory(resolved.address, child, root, segmentsOf(at, entry.target))
+                        if( resolved.directory ) {
+                            if( ancestors.contains(resolved.address) )
+                                throw new AbortRunException("cas: manifest ${manifestCid}: '${entry.name}' -> '${entry.target}' names a directory already being materialised; cannot stage an ancestor link as a copy")
+                            materialiseDirectory(resolved.address, child, root, segmentsOf(at, entry.target), descend(ancestors, resolved.address))
+                        }
                         else materialiseFile(resolved.address, child, false)
                     }
                     break
@@ -529,53 +564,73 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         }
     }
 
+    /** ancestors plus one more directory cid, for the next level down's cycle check. */
+    private static Set<Cid> descend(Set<Cid> ancestors, Cid next) {
+        final Set<Cid> deeper = new LinkedHashSet<Cid>(ancestors)
+        deeper.add(next)
+        return deeper
+    }
+
+    /** What a symlink's target text names inside the tree: a content or a manifest address, and which. */
+    @CompileStatic
+    private static class Resolved {
+        final Cid address
+        final boolean directory
+        Resolved(Cid address, boolean directory) { this.address = address; this.directory = directory }
+    }
+
     /**
-     * The entry a symlink's target text resolves to, walking the manifest
-     * tree from {@code root} entry by entry (ticket 15 decision 7: an object
-     * store has no links, so a link staged there is materialised as a copy
-     * of what it names). {@code at} is the path segments from {@code root} to
-     * the directory the symlink lives in; {@code target} is its (always
+     * What a symlink's target text names, walking the manifest tree from
+     * {@code root} entry by entry (ticket 15 decision 7: an object store has
+     * no links, so a link staged there is materialised as a copy of what it
+     * names). {@code at} is the path segments from {@code root} to the
+     * directory the symlink lives in; {@code target} is its (always
      * relative, always in-tree -- DESIGN.md §6) target text. A symlink met on
      * the way is itself followed, one more hop; null past
      * {@link DirectoryManifestBuilder#MAX_DEPTH} hops, or when the path
      * climbs above {@code root}, is missing, or cannot be descended into.
+     * Segments that fully cancel out (`nested/up -> ..` from one level down)
+     * resolve to {@code root} itself, so a link straight back to an ancestor
+     * is a real resolution -- the caller's ancestor check is what refuses it,
+     * not a false "does not resolve".
      */
-    private ManifestEntry resolveInTree(Cid root, List<String> at, String target, int hops) {
+    private Resolved resolveInTree(Cid root, List<String> at, String target, int hops) {
         if( hops > DirectoryManifestBuilder.MAX_DEPTH )
             return null
         final List<String> segments = segmentsOf(at, target)
-        if( segments == null || segments.isEmpty() )
+        if( segments == null )
             return null
+        if( segments.isEmpty() )
+            return new Resolved(root, true)
         Cid here = root
-        ManifestEntry entry = null
         for( int i = 0; i < segments.size(); i++ ) {
             final DirectoryManifest manifest = manifestOf(here)
-            entry = manifest.entry(segments.get(i))
+            final ManifestEntry entry = manifest.entry(segments.get(i))
             if( entry == null )
                 return null
             final boolean last = i == segments.size() - 1
             if( entry.mode == ManifestEntry.SYMLINK ) {
-                final ManifestEntry resolved = resolveInTree(root, segments.subList(0, i), entry.target, hops + 1)
+                final Resolved resolved = resolveInTree(root, segments.subList(0, i), entry.target, hops + 1)
                 if( resolved == null )
                     return null
                 if( last )
                     return resolved
-                if( !resolved.isDirectory() )
+                if( !resolved.directory )
                     return null   // cannot descend into a file
                 here = resolved.address
                 continue
             }
             if( entry.isDirectory() ) {
                 if( last )
-                    return entry
+                    return new Resolved(entry.address, true)
                 here = entry.address
                 continue
             }
             if( !last )
                 return null   // cannot descend into a file, or past an unresolvable entry
-            return entry
+            return new Resolved(entry.address, false)
         }
-        return entry
+        return null   // unreachable: the loop always returns on its last iteration
     }
 
     /**
@@ -611,7 +666,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             if( leaf.address.isRaw() )
                 materialiseFile(leaf.address, dir.resolve(e.key), true)
             else
-                materialiseDirectory(leaf.address, dir.resolve(e.key), leaf.address, Collections.<String>emptyList())
+                materialiseDirectory(leaf.address, dir.resolve(e.key), leaf.address, Collections.<String>emptyList(), Collections.<Cid>singleton(leaf.address))
         }
     }
 
