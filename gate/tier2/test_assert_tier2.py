@@ -278,22 +278,36 @@ class World(object):
         self.snapshot("cas-t6", 2, "2026-09-28T12:30:00.000Z")
         self._consumer()
 
-    def _consumer(self):
+    @staticmethod
+    def consumer_texts():
+        """{source: (published file name, text)} a passing consumer run publishes under hashes/."""
         a, b = hashlib.sha256(A_BAM).hexdigest(), hashlib.sha256(B_BAM).hexdigest()
         listing = t.gate_listing({k[len("A_qc/"):]: v for k, v in FUSION_QC.items()}, "A_qc", fusion=True)
-        texts = {"lid": ("A.bam.sha256", "%s  A.bam\n" % a), "cas": ("A.bam.sha256", "%s  A.bam\n" % a),
-                 "fromstore": ("B.bam.sha256", "%s  B.bam\n" % b),
-                 "dir": ("A_qc.sha256", "".join("%s  %s\n" % (d, p) for p, d in listing))}
+        return {"lid": ("A.bam.sha256", "%s  A.bam\n" % a), "cas": ("A.bam.sha256", "%s  A.bam\n" % a),
+                "fromstore": ("B.bam.sha256", "%s  B.bam\n" % b),
+                "dir": ("A_qc.sha256", "".join("%s  %s\n" % (d, p) for p, d in listing))}
+
+    def consumer_run(self, name, h, texts):
+        items, paths = [], []
+        for source in sorted(texts):
+            file_name, text = texts[source]
+            leaf = self.block("cas-out", text.encode())
+            items.append(self.item("cas-out", source, file_name, leaf, len(text)))
+            paths.append(["hashes/%s/%s" % (source, file_name)])
+        order = sorted(range(len(items)), key=lambda i: items[i])
+        self.run("cas-out", name, {"hashes": ([items[i] for i in order], [paths[i] for i in order])}, {}, h,
+                 pipeline="cas-gate-consumer")
+
+    def drop_run(self, member, name):
+        """Removes a run's Store Log entry, so a test can write that run again differently."""
+        completion = self.cids[(member, name)]["completion"]
+        self.s3.objects = {k: v for k, v in self.s3.objects.items()
+                           if not (k[0] == BUCKET and k[1].startswith(member + "/log/") and k[1].endswith(completion))}
+
+    def _consumer(self):
+        texts = self.consumer_texts()
         for name, h in (("t4", "c4"), ("t5", "c5")):
-            items, paths = [], []
-            for source in sorted(texts):
-                file_name, text = texts[source]
-                leaf = self.block("cas-out", text.encode())
-                items.append(self.item("cas-out", source, file_name, leaf, len(text)))
-                paths.append(["hashes/%s/%s" % (source, file_name)])
-            order = sorted(range(len(items)), key=lambda i: items[i])
-            self.run("cas-out", name, {"hashes": ([items[i] for i in order], [paths[i] for i in order])}, {}, h,
-                     pipeline="cas-gate-consumer")
+            self.consumer_run(name, h, texts)
         self.snapshot("cas-out", 2, "2026-09-28T13:00:00.000Z")
         cache = os.path.join(self.root, "cache-consumer", "nf-blocks")
         os.makedirs(cache)
@@ -576,6 +590,81 @@ class AssertionTest(WorldTest):
     def test_t6_fails_when_s3_let_the_stale_if_match_through(self):
         self.w.write("evidence/if-match.json", json.dumps({"status": 200, "body": "third"}))
         self.assertEqual(self.status(t.t6)[0], t.FAIL)
+
+
+class FailPathTest(WorldTest):
+    """Each check the paid run relies on, seen to FAIL on a crafted input (Task 14, final review)."""
+
+    def replace_t2b(self, qc_item=None, provider="fusion-node"):
+        c = self.w.c
+        qc = qc_item or self.w.item("cas", META_A, "A_qc", self.w.fusion, None)
+        self.w.drop_run("cas", "t2b")
+        self.w.run("cas", "t2b", {"aligned": ([c[("cas", "aligned A")]], [["aligned/A/A.bam"]]),
+                                  "qc": ([qc], [["qc/A/A_qc"]])},
+                   {provider: [cas.cid_raw(A_BAM)]}, "h2b", pipeline="cas-tier2-small")
+
+    def test_t2b_fails_when_a_file_leaf_is_not_fusion_node(self):
+        self.replace_t2b(provider="s3-copy")
+        status, message = self.status(t.t2b)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("t2b: 1 of 1 file leaves not under fusion-node", message)
+        self.assertIn("is under s3-copy", message)
+
+    def test_t2b_fails_when_its_qc_items_are_not_t2s(self):
+        self.replace_t2b(qc_item=self.w.item("cas", META_A, "A_qc", self.w.flat, None))
+        status, message = self.status(t.t2b)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("t2b's qc items", message)
+        self.assertIn("are not among t2's", message)
+
+    def replace_t1_qc(self, manifest):
+        c = self.w.c
+        aligned = ([c[("cas", "aligned A")], c[("cas", "aligned B")]], [["aligned/A/A.bam"], ["aligned/B/B.bam"]])
+        self.w.drop_run("cas", "t1")
+        self.w.run("cas", "t1", {"aligned": aligned, "qc": ([self.w.item("cas", META_A, "A_qc", manifest, None)], [["qc/A/A_qc"]])},
+                   {"s3-copy": [cas.cid_raw(A_BAM), cas.cid_raw(B_BAM)]}, "h1")
+
+    def test_t3_fails_when_t1s_alias_is_a_link_rather_than_flattened(self):
+        self.replace_t1_qc(self.w.fusion)
+        status, message = self.status(t.t3)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("t1's A_qc manifest", message)
+        self.assertIn("nxf_s3_upload flattens it", message)
+
+    def test_t3_fails_when_t1s_manifest_is_not_the_gates_walk_of_the_work_bucket(self):
+        self.w.s3.put(WB, WORKDIR + "13/cccc/A_qc/nested/detail.txt", b"changed after the publish\n")
+        status, message = self.status(t.t3)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("the Gate's walk of the work bucket gives", message)
+        self.assertNotIn("nxf_s3_upload flattens it", message)
+
+    def replace_t4(self, **changed):
+        texts = dict(self.w.consumer_texts(), **changed)
+        self.w.drop_run("cas-out", "t4")
+        self.w.consumer_run("t4", "c4", texts)
+
+    def test_t4_fails_when_a_staged_digest_is_not_the_work_buckets(self):
+        self.replace_t4(lid=("A.bam.sha256", "%s  A.bam\n" % hashlib.sha256(B_BAM).hexdigest()))
+        status, message = self.status(t.t4)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("lid staged", message)
+        self.assertIn("expected only A.bam.sha256 of %s" % hashlib.sha256(A_BAM).hexdigest(), message)
+
+    def test_t4_fails_when_the_staged_directory_listing_differs(self):
+        listing = t.gate_listing({k[len("A_qc/"):]: v for k, v in FUSION_QC.items()}, "A_qc", fusion=True)
+        without_alias = "".join("%s  %s\n" % (d, p) for p, d in listing if not p.endswith("alias.txt"))
+        self.replace_t4(dir=("A_qc.sha256", without_alias))
+        status, message = self.status(t.t4)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("dir staged", message)
+        self.assertIn("alias.txt as summary.txt's bytes", message)
+
+    def test_t6_fails_when_a_block_does_not_hash_to_its_cid(self):
+        cid = cas.cid_raw(A_BAM)
+        self.w.s3.put(BUCKET, World.key("cas-t6", cid), b"not the bytes the address names\n")
+        status, message = self.status(t.t6)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("block %s" % cid, message)
 
 
 class VerdictTest(unittest.TestCase):
