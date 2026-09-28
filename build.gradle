@@ -143,19 +143,23 @@ tasks.withType(Test).configureEach {
 
 // Ordinary unit tests: everything except the memory-bound test.
 test {
-    filter { excludeTestsMatching 'robsyme.cas.core.MemoryBoundTest' }
+    filter {
+        excludeTestsMatching 'robsyme.cas.core.MemoryBoundTest'
+        excludeTestsMatching 'robsyme.cas.s3.S3MemoryBoundTest'
+    }
 }
 
 // The mechanised memory bound (DESIGN.md §0 rule 2): hash and store a 256 MiB
 // file in a JVM whose whole heap is smaller than the file.
 tasks.register('memoryBoundTest', Test) {
-    description = 'Runs MemoryBoundTest under a 48 MiB heap'
+    description = 'Runs MemoryBoundTest and S3MemoryBoundTest under a 48 MiB heap'
     group = 'verification'
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
     maxHeapSize = '48m'
     filter {
         includeTestsMatching 'robsyme.cas.core.MemoryBoundTest'
+        includeTestsMatching 'robsyme.cas.s3.S3MemoryBoundTest'
         failOnNoMatchingTests = false
     }
 }

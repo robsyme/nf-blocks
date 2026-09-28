@@ -31,7 +31,7 @@ import groovy.transform.CompileStatic
  * mtime is stable per address as {@link BlockStore#lastModifiedMillis} says.
  */
 @CompileStatic
-class LocalBlockStore implements BlockStore {
+class LocalBlockStore implements BlockStore, LoggedStore {
 
     private static final String BLOCKS = 'blocks'
     private static final String TEMP_PREFIX = '.tmp-'
@@ -49,6 +49,9 @@ class LocalBlockStore implements BlockStore {
     }
 
     Path getRoot() { root }
+
+    @Override
+    StoreLogStorage storeLogStorage() { new LocalStoreLogStorage(root) }
 
     @Override
     String alias() { alias }

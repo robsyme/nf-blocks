@@ -40,8 +40,8 @@ class StoreLog {
     }
 
     private static StoreLogStorage storageOf(BlockStore store) {
-        if( store instanceof LocalBlockStore )
-            return new LocalStoreLogStorage(((LocalBlockStore) store).getRoot())
+        if( store instanceof LoggedStore )
+            return ((LoggedStore) store).storeLogStorage()
         if( store instanceof CompositeStore )
             return storageOf(((CompositeStore) store).getMembers()[0])
         throw new IllegalArgumentException("no store log storage for ${store?.getClass()?.name}")
