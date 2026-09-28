@@ -78,9 +78,18 @@ class S3CoordinateTree implements CoordinateTree {
         ops.put(key(rel), S3Body.ofBytes((ref.toString() + '\n').getBytes('UTF-8')), S3PutOptions.create().contentType('text/plain; charset=utf-8'))
     }
 
-    @Override boolean exists(String rel) { ops.head(key(rel)) != null || hasChildren(rel) }
+    @Override
+    boolean exists(String rel) {
+        if( ancestorPointer(rel) != null ) return false     // shadowed
+        return ops.head(key(rel)) != null || hasChildren(rel)
+    }
 
-    @Override boolean isDirectory(String rel) { segments(rel).isEmpty() || (ops.head(key(rel)) == null && hasChildren(rel)) }
+    @Override
+    boolean isDirectory(String rel) {
+        if( segments(rel).isEmpty() ) return true
+        if( ancestorPointer(rel) != null ) return false     // shadowed
+        return ops.head(key(rel)) == null && hasChildren(rel)
+    }
 
     @Override
     boolean isDirectoryCoordinate(String rel) {
@@ -90,6 +99,7 @@ class S3CoordinateTree implements CoordinateTree {
 
     @Override
     List<String> children(String rel) {
+        if( ops.head(key(rel)) != null || ancestorPointer(rel) != null ) return []     // a pointer, or shadowed
         final String under = segments(rel).isEmpty() ? root : key(rel) + '/'
         final TreeSet<String> names = new TreeSet<String>()
         for( S3Listed o : ops.list(under, 0) ) {

@@ -29,6 +29,9 @@ class S3CoordinateTreeTest extends CoordinateTreeContract {
         expect:
         t.read('a/b') == Optional.empty()
         t.read('a') == Optional.of(FILE)
+        !t.exists('a/b')
+        !t.isDirectory('a/c')
+        t.children('a') == []
         t.shadowedPointers(20) == ['a/b', 'a/c/d']
         t.shadowedPointers(1) == ['a/b']
     }
