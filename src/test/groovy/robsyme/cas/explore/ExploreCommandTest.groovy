@@ -10,11 +10,8 @@ import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.cli.CasCommands
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.s3.S3Client
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -86,29 +83,21 @@ class ExploreCommandTest extends Specification {
 
     def 'membersOf builds S3MemberFiles for a remote alias and LocalMemberFiles for a local one, writable first'() {
         given:
-        // No real client is ever called: the factory hands membersOf a client
-        // built with an explicit region and static credentials, so building
-        // it (and this test) never reaches the network or IMDS.
-        S3Client noNetworkClient = S3Client.builder()
-            .region(Region.US_EAST_1)
-            .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('test', 'test')))
-            .httpClientBuilder(UrlConnectionHttpClient.builder())
-            .build()
         final CasConfig config = CasConfig.from([cas: [stores: [
             lab : [location: tempDir.resolve('lab').toString()],
             priv: [location: 's3://bucket/member'],
         ]]], 'cas://lab')
+        final List<String> asked = []
 
         when:
-        final LinkedHashMap<String, MemberFiles> members = ExploreCommand.membersOf(config, { -> noNetworkClient })
+        final LinkedHashMap<String, MemberFiles> members = ExploreCommand.membersOf(config,
+            { String bucket -> asked << bucket; new MemoryS3Ops(bucket) } as Closure<S3Ops>)
 
         then:
         members.keySet().toList() == ['lab', 'priv']
         members['lab'] instanceof LocalMemberFiles
         members['priv'] instanceof S3MemberFiles
-
-        cleanup:
-        noNetworkClient?.close()
+        asked == ['bucket']
     }
 
     def 'explore takes only --port'() {

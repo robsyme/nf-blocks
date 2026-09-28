@@ -12,7 +12,8 @@ import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
 import robsyme.cas.core.Samplesheet
-import software.amazon.awssdk.services.s3.S3Client
+import robsyme.cas.s3.S3Access
+import robsyme.cas.s3.S3Ops
 
 /**
  * `nextflow plugin nf-blocks:explore [--port <n>]` (DESIGN.md §15). Rewrites
@@ -77,7 +78,8 @@ class ExploreCommand {
                 return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
             }
         } as ExploreServer.Exporter
-        final ExploreServer server = new ExploreServer(membersOf(cas), cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter)
+        final LinkedHashMap<String, MemberFiles> members = membersOf(cas, { String bucket -> S3Access.open(config, bucket) } as Closure<S3Ops>)
+        final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter)
             .start(options.intFlag('port', 0))
         out.println("nf-blocks explorer: ${server.launchUrl}")
         out.flush()
@@ -102,19 +104,16 @@ class ExploreCommand {
     }
 
     /**
-     * Every configured member the explorer serves, writable first. The S3
-     * client for a remote alias comes from {@code s3ClientFactory}, called
-     * once per remote alias; production leaves it at
-     * {@link S3MemberFiles#defaultClient}, which resolves credentials and a
-     * region through the default chains (possibly reaching IMDS). A test can
-     * replace it with a factory that never touches the network.
+     * Every configured member the explorer serves, writable first. The S3Ops
+     * for a remote alias comes from {@code s3Ops}, called once per remote alias
+     * with its bucket; production passes {@code S3Access.open(config, bucket)}.
      */
-    static LinkedHashMap<String, MemberFiles> membersOf(CasConfig config, Closure<S3Client> s3ClientFactory = { -> S3MemberFiles.defaultClient() }) {
+    static LinkedHashMap<String, MemberFiles> membersOf(CasConfig config, Closure<S3Ops> s3Ops) {
         final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
         for( String alias : config.configuredAliases ) {
             if( config.isRemote(alias) ) {
                 final List<String> bucketAndPrefix = S3MemberFiles.bucketAndPrefix(config.remoteLocationOf(alias))
-                members.put(alias, new S3MemberFiles(s3ClientFactory.call(), bucketAndPrefix[0], bucketAndPrefix[1]))
+                members.put(alias, new S3MemberFiles(s3Ops.call(bucketAndPrefix[0]), bucketAndPrefix[1]))
             }
             else {
                 members.put(alias, new LocalMemberFiles(config.locationOf(alias)))

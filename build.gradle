@@ -20,6 +20,12 @@ nextflowPlugin {
         'robsyme.cas.ext.CasExtension',
         'robsyme.cas.CasConfigScope',
     ]
+    // S3 goes through the SDK nf-amazon loads (DESIGN.md §1, ticket 02): a
+    // bundled SDK would be a second copy of every class, and nf-amazon's
+    // client would not be assignable to it. Nextflow installs the bundled
+    // nf-amazon for a core plugin whatever the constraint says, then pf4j
+    // checks the constraint (PluginUpdater.groovy:407-434 at v26.04.6).
+    requirePlugins = ['nf-amazon@>=3.9.2']
 }
 
 // The explorer page (block explorer spec section 2): an npm project under web/,
@@ -104,40 +110,29 @@ dependencies {
     // Bundled at runtime (lands in the plugin zip lib/).
     implementation 'org.xerial:sqlite-jdbc:3.50.3.0'
 
-    // Private S3 members for nf-blocks:explore (DESIGN.md §15). URL-connection
-    // client only: the Apache and Netty clients would add megabytes for nothing.
-    implementation platform('software.amazon.awssdk:bom:2.46.7')
-    implementation 'software.amazon.awssdk:s3'
-    implementation 'software.amazon.awssdk:sso'
-    implementation 'software.amazon.awssdk:ssooidc'
-    implementation 'software.amazon.awssdk:url-connection-client'
+    // nf-amazon 3.9.2 is the one Nextflow 26.04.6 bundles; its POM brings the
+    // AWS SDK 2.46.8 it was built with. Compile-only: nothing of it lands in
+    // the zip, and at run time the classes come from nf-amazon's loader.
+    compileOnly 'io.nextflow:nf-amazon:3.9.2'
 
     testImplementation "io.nextflow:nextflow:${nextflowPlugin.nextflowVersion}"
     testImplementation "io.nextflow:nf-lineage:${nextflowPlugin.nextflowVersion}"
+    testImplementation 'io.nextflow:nf-amazon:3.9.2'
     testImplementation 'org.spockframework:spock-core:2.3-groovy-4.0'
     testImplementation 'org.pf4j:pf4j:3.4.1'
 }
 
-configurations.configureEach {
-    // 2.46.7 renamed the Apache client module to apache5-client; sso and
-    // ssooidc still pull it in as their default sync client, so both names
-    // are excluded to keep only url-connection-client on the classpath.
-    exclude group: 'software.amazon.awssdk', module: 'apache-client'
-    exclude group: 'software.amazon.awssdk', module: 'apache5-client'
-    exclude group: 'software.amazon.awssdk', module: 'netty-nio-client'
-}
-
 configurations.runtimeClasspath {
-    // The AWS SDK pulls in slf4j-api transitively, which would otherwise land
-    // in the plugin zip's lib/ alongside it. Nextflow's own pf4j classloader
-    // isolates each plugin, so a bundled slf4j-api with no logging provider
-    // wins the plugin's own org.slf4j.LoggerFactory static binding lookup and
-    // every @Slf4j log.* call silently falls back to the NOP logger. Excluding
-    // it here leaves slf4j-api out of the runtime/zip lib/ entirely, so the
-    // plugin's isolated classloader resolves org.slf4j from Nextflow's own
-    // classpath instead, which carries the Logback binding. slf4j-api stays
-    // available at compile time via Nextflow's compileOnly artifacts, so
-    // @Slf4j-generated code still compiles.
+    // Nothing bundled may carry slf4j-api: a copy in the zip's lib/ would win
+    // the plugin's own. Nextflow's own pf4j classloader isolates each plugin,
+    // so a bundled slf4j-api with no logging provider wins the plugin's own
+    // org.slf4j.LoggerFactory static binding lookup and every @Slf4j log.*
+    // call silently falls back to the NOP logger. Excluding it here leaves
+    // slf4j-api out of the runtime/zip lib/ entirely, so the plugin's
+    // isolated classloader resolves org.slf4j from Nextflow's own classpath
+    // instead, which carries the Logback binding. slf4j-api stays available
+    // at compile time via Nextflow's compileOnly artifacts, so @Slf4j-
+    // generated code still compiles.
     exclude group: 'org.slf4j'
 }
 
