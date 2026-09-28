@@ -452,7 +452,7 @@ type RunCompletion struct {
   finished_at String
   anomalies Anomalies
   error nullable String
-  providers optional {String:[&Any]}  # schema 2: provider name -> every address of the run it supplied, sorted; absent at schema 1
+  providers optional {String:[&Any]}  # schema 2: provider name -> every Leaf address of the run it supplied, sorted; absent at schema 1
 }
 type RunStatus enum {
   | succeeded
@@ -644,7 +644,7 @@ Nothing reads `config` by machine: it is provenance for people.
   started_at: string, finished_at: string,
   anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int },
   error: string|null,
-  providers: { <provider>: [Cid, ...] } }   // schema 2: every address the run published (leaves and the files inside published directories) under the provider that supplied it
+  providers: { <provider>: [Cid, ...] } }   // schema 2: every Leaf address the run published (each file leaf and each directory leaf's manifest) under the provider that supplied it; not the files inside a directory (final review I5)
 ```
 
 ### Claim, InputSet, Attestation
@@ -793,9 +793,12 @@ member holds.
      recursively, put it, write the Pointer File pointing at the manifest
      cid. Never return normally with any child untransferred. Record the
      manifest and the anomaly counts. The manifest itself is encoded on the
-     head node and recorded `head-node`, and the provider of each file inside
-     travels with it (`Publish.contents`), so `RunCompletion.providers` covers
-     every address the run published. `toRealPath` is used only where the
+     head node and recorded `head-node`. The provider of each file inside is
+     counted by the addresser for the run's summary line (silent decision 8)
+     and not recorded in a block: `RunCompletion.providers` lists Leaf
+     addresses only, so a directory of millions of files cannot push the
+     RunCompletion past what the index reads (final review I5, reverting
+     pre-flight F30). `toRealPath` is used only where the
      provider has it (an object store has no links to resolve, ticket 05).
      From an object store, a directory holding a `.fusion.symlinks` object
      has each listed name decoded as a link whose target is its object's body
@@ -846,10 +849,9 @@ One instance per Nextflow `Session`, obtained by `CasSession.of(session)`
 (a `ConcurrentHashMap<Session, CasSession>` in a static; the provider reaches
 it through `Global.session`). Holds: the `CasConfig`, the `CompositeStore`,
 the `CoordinateTree`, `asserted_by`, a `ConcurrentHashMap<String, Publish>`
-keyed by join key (`Publish(StoreRef ref, long size, String provider,
-Map<String, List<Cid>> contents)`, `contents` being a published directory's
-per-file providers, empty for a file), a directory's anomalies keyed the same
-way, the run's `PublishAddresser`, the Nextflow run key once `save(<hash>, WorkflowRun)`
+keyed by join key (`Publish(StoreRef ref, long size, String provider)`;
+*amended 2026-09-28, final review I5:* the `contents` field of pre-flight F30
+is gone), a directory's anomalies keyed the same way, the run's `PublishAddresser`, the Nextflow run key once `save(<hash>, WorkflowRun)`
 is seen, the RunManifest cid once written, the captured `WorkflowOutputEvent`s,
 and a one-shot latch for `onFlowComplete`. *Amended 2026-09-28:* also each
 member's `CoordinateTree` and `SnapshotStorage` (local or S3, built beside
@@ -2047,10 +2049,18 @@ holds the reasoning, and the execution ledger is
 2. The schema-1 Leaf survives as `LeafV1`; the page validates leaves by the
    item's `schema`, and Groovy refuses an OutputItem or RunCompletion whose
    `schema` is not 1 or 2.
-3. `providers` covers every address the run published, files inside
-   published directories included (`Publish.contents`, merged by `Join`); a
-   directory leaf is always `head-node`; one address may appear under two
-   providers.
+3. `providers` covers every Leaf address the run published: each file leaf,
+   and each directory leaf by its manifest, which is always `head-node`; one
+   address may appear under two providers. Pre-flight F30 had it list the
+   files inside published directories too (`Publish.contents`, merged by
+   `Join`). The final review (I5) reverted that: at about 41 bytes of
+   DAG-CBOR per CID, a run publishing about 1.6 million files inside
+   directories writes a RunCompletion over the index's 64 MiB block limit,
+   so that run would never be indexed. The files inside a directory are
+   counted per provider in the summary line (8) instead. The cost: `verify`
+   cannot target an asserted file inside a directory from a block; a
+   separate linked block could add that later without changing this one.
+   For Rob.
 4. `fusion-node` is recorded when the node digest named a block the writable
    member already held (a `HEAD` hit, or a 412 on the direct copy) or drove an
    `UploadPartCopy`; `s3-copy` when S3 returned a copy's SHA-256; `head-node`

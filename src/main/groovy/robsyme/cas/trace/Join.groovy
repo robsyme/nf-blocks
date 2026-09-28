@@ -47,7 +47,7 @@ class Join {
     static class Result {
         final List<JoinedOutput> outputs
         final Anomalies anomalies
-        /** Provider name to every address the run published under it (DESIGN.md §6, ticket 16). */
+        /** Provider name to every Leaf address the run published under it (DESIGN.md §6, ticket 16, final review I5). */
         final Map<String, List<Cid>> providers
 
         Result(List<JoinedOutput> outputs, Anomalies anomalies, Map<String, List<Cid>> providers) {
@@ -175,15 +175,9 @@ class Join {
         if( uploaded != null )
             fold(counters, uploaded)
         final String provider = publish.provider ?: Providers.HEAD_NODE
+        // A directory leaf is listed by its manifest alone: listing the files inside would grow
+        // the RunCompletion past what the index reads for a big directory (final review I5).
         byProvider.computeIfAbsent(provider, { String k -> new TreeMap<String, Cid>() }).put(address.toString(), address)
-        // The files inside a published directory are addresses the run published too (ticket 16 decision 1).
-        // A null names no address: it is skipped rather than failing the run's provenance write.
-        publish.contents?.each { String p, List<Cid> cids ->
-            cids?.each { Cid c ->
-                if( c != null )
-                    byProvider.computeIfAbsent(p, { String k -> new TreeMap<String, Cid>() }).put(c.toString(), c)
-            }
-        }
         return Leaf.of(name, address, size)
     }
 

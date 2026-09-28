@@ -58,14 +58,12 @@ class CasSession {
         StoreRef ref
         /** Byte size of the published content. */
         long size
-        /** The Address Provider that produced the address, e.g. {@code head-node}. */
-        String provider
         /**
-         * For a published directory, the providers of the files inside it
-         * (provider name to addresses), so RunCompletion.providers covers every
-         * address the run published (ticket 16 decision 1). Empty for a file.
+         * The Address Provider that produced the address, e.g. {@code head-node};
+         * a directory's manifest is always {@code head-node}. The files inside a
+         * directory are counted by the addresser, not recorded here (final review I5).
          */
-        Map<String, List<Cid>> contents = [:]
+        String provider
     }
 
     private static final ConcurrentHashMap<Session, CasSession> REGISTRY = new ConcurrentHashMap<>()

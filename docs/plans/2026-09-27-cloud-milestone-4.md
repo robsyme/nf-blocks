@@ -114,6 +114,7 @@ Findings of `.superpowers/sdd/2026-09-27-cloud-milestone-4/preflight.md`, applie
 - F28: `COPYOUT` added to the `calls` vocabulary: Task 1 Interfaces.
 - F29: ACL dropped from carried decision 1; README says `aws.client.s3Acl` is not applied: decision 1, Task 15 README and §5.
 - F30 (ruling): providers cover every published address, files inside directories included: silent decision 3, shared interfaces, Task 2 (`Publish.contents`, `Join`, JoinTest), Task 3 (`Result.providers`, both walks, new test), Task 10 (directory `Publish`), Task 15 §8.
+  Reverted 2026-09-28 by the final review's I5 ruling: `providers` lists Leaf addresses only, `Publish.contents` and `Result.providers` are gone, and the files inside a directory are counted in the addresser's summary line (DESIGN §17 silent decision 3).
 - F31 (ruling): the chain reading (dangling chains and cycles `unresolvable`) recorded in silent decision 23, which Task 15 copies into §17 (silent decision 17 is seeding, so the Fusion-link decision holds it).
 - F32: `NodeDigests.parse` reads line by line counting bytes, null over the cap, warned in `load`: Task 10, shared interfaces.
 - F33: JoinTest retitled; the directory-is-`head-node` rule pinned in Task 10's provider test: Tasks 2, 10.

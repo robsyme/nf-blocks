@@ -169,28 +169,26 @@ class ObjectStoreManifestTest extends Specification {
         asked == ['tool.sh', 'tool.sh']
     }
 
-    def 'the result lists every file address under the provider that supplied it, in both walks (ticket 16 decision 1)'() {
+    def 'every file in both walks goes through the addresser, whose provider counts the run logs (final review I5)'() {
         given:
         obj('w/d/a.txt', 'a\n')
         obj('w/d/sub/b.txt', 'b\n')
         final Path localDir = Files.createDirectories(work.resolve('local-prov/d/sub'))
         Files.writeString(localDir.parent.resolve('a.txt'), 'a\n')
         Files.writeString(localDir.resolve('b.txt'), 'b\n')
-        final FileAddresser split = { Path f, long size ->
-            final Addressed a = new HeadNodeAddresser(store).address(f, size)
-            f.fileName.toString() == 'a.txt' ? new Addressed(a.cid, a.size, Providers.S3_COPY) : a
+        final List<String> addressed = []
+        final FileAddresser counting = { Path f, long size ->
+            addressed << f.fileName.toString()
+            new HeadNodeAddresser(store).address(f, size)
         } as FileAddresser
-        final Cid cidA = store.putStreaming(new ByteArrayInputStream('a\n'.bytes))
-        final Cid cidB = store.putStreaming(new ByteArrayInputStream('b\n'.bytes))
 
         when:
-        final def r = new DirectoryManifestBuilder(store, split, null).build(zip.getPath('/w/d'))
-        final def l = new DirectoryManifestBuilder(store, split, null).build(localDir.parent)
+        final def r = new DirectoryManifestBuilder(store, counting, null).build(zip.getPath('/w/d'))
+        final def l = new DirectoryManifestBuilder(store, counting, null).build(localDir.parent)
 
         then:
-        r.providers == [(Providers.HEAD_NODE): [cidB], (Providers.S3_COPY): [cidA]]
-        l.providers == r.providers
-        !r.providers.values().flatten().contains(r.cid)
+        addressed.sort() == ['a.txt', 'a.txt', 'b.txt', 'b.txt']
+        r.cid == l.cid
     }
 
     def 'realOf falls back to the absolute path where toRealPath is unsupported (ticket 05)'() {

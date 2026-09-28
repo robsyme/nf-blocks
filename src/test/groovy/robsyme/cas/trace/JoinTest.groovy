@@ -223,38 +223,4 @@ class JoinTest extends Specification {
         result.outputs[0].collection.items == result.outputs[1].collection.items
         result.providers == ['head-node': [cid], 's3-copy': [cid]]
     }
-
-    def 'providers also covers the files inside a published directory (ticket 16 decision 1)'() {
-        given:
-        final dir = dagCid(3)
-        final inA = rawCid(4)
-        final inB = rawCid(5)
-        final session = sessionWith([
-            'cas://lab/qc/A/A_qc': new CasSession.Publish(new StoreRef(dir, 'A_qc'), 1L, 'head-node',
-                ['s3-copy': [inA], 'head-node': [inB]]),
-        ], dagCid(9))
-
-        when:
-        final result = Join.join([qc: [[[sample: 'A'], coord('cas://lab/qc/A/A_qc')]]] as Map<String, Object>, session)
-
-        then:
-        result.providers == ['head-node': [dir, inB].sort { it.toString() }, 's3-copy': [inA]]
-    }
-
-    // Task 2 review: a null in Publish.contents threw an NPE out of the provenance write.
-    def 'a null address in a directory publish contents is skipped'() {
-        given:
-        final dir = dagCid(3)
-        final inA = rawCid(4)
-        final session = sessionWith([
-            'cas://lab/qc/A/A_qc': new CasSession.Publish(new StoreRef(dir, 'A_qc'), 1L, 'head-node',
-                ['s3-copy': [inA, null], 'fusion-node': null]),
-        ], dagCid(9))
-
-        when:
-        final result = Join.join([qc: [[[sample: 'A'], coord('cas://lab/qc/A/A_qc')]]] as Map<String, Object>, session)
-
-        then:
-        result.providers == ['head-node': [dir], 's3-copy': [inA]]
-    }
 }

@@ -42,13 +42,10 @@ class DirectoryManifestBuilder {
     static class Result {
         final Cid cid
         final Anomalies anomalies
-        /** Each provider the addresser returned for a file in the tree, to those files' addresses. */
-        final Map<String, List<Cid>> providers
 
-        Result(Cid cid, Anomalies anomalies, Map<String, List<Cid>> providers) {
+        Result(Cid cid, Anomalies anomalies) {
             this.cid = cid
             this.anomalies = anomalies
-            this.providers = providers
         }
 
         @Override
@@ -58,8 +55,6 @@ class DirectoryManifestBuilder {
     private final BlockStore store
     private final FileAddresser addresser
     private final Closure<Path> objectPath
-    /** The providers of the build in progress; one builder runs one build at a time. */
-    private final Map<String, TreeMap<String, Cid>> tally = new TreeMap<String, TreeMap<String, Cid>>()
 
     DirectoryManifestBuilder(BlockStore store) {
         this(store, new HeadNodeAddresser(store), null)
@@ -78,7 +73,6 @@ class DirectoryManifestBuilder {
     Result build(Path directory) {
         if( !Files.isDirectory(directory) )
             throw new NotDirectoryException(directory.toString())
-        tally.clear()
         final int[] unresolvable = new int[1]
         final Cid cid
         if( directory.fileSystem == FileSystems.default ) {
@@ -89,20 +83,17 @@ class DirectoryManifestBuilder {
             final Path root = realOf(directory)
             cid = new ObjectWalk(root, unresolvable).walk(root, 1, new LinkedHashSet<String>([keyOf(root)]))
         }
-        final Map<String, List<Cid>> providers = new TreeMap<String, List<Cid>>()
-        tally.each { String p, TreeMap<String, Cid> cids -> providers.put(p, Collections.unmodifiableList(new ArrayList<Cid>(cids.values()))) }
-        return new Result(cid, Anomalies.unresolvable(unresolvable[0]), Collections.unmodifiableMap(providers))
+        return new Result(cid, Anomalies.unresolvable(unresolvable[0]))
     }
 
     /**
-     * Every file inside the tree is addressed here, in both walks, so the
-     * result can say which provider supplied each address (ticket 16 decision 1:
-     * RunCompletion.providers covers every address the run published).
+     * Every file inside the tree is addressed here, in both walks. The run's
+     * addresser counts each provider for its summary line; the addresses
+     * themselves are not collected (final review I5: RunCompletion.providers
+     * lists Leaf addresses only).
      */
     private Cid addressOf(Path file, long size) {
-        final Addressed a = addresser.address(file, size)
-        tally.computeIfAbsent(a.provider, { String k -> new TreeMap<String, Cid>() }).put(a.cid.toString(), a.cid)
-        return a.cid
+        return addresser.address(file, size).cid
     }
 
     /** toRealPath where the provider has it; an object store has no links to resolve (ticket 05). */

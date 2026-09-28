@@ -403,9 +403,10 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             final DirectoryManifestBuilder.Result result = new DirectoryManifestBuilder(store(), session().addresser,
                 { String uri -> FileHelper.asPath(uri) } as Closure<Path>).build(source)
             tree.write(rel, new StoreRef(result.cid, name))
-            // A directory leaf's address is its manifest, which the head node always builds (silent decision 3);
-            // the files inside it carry their own providers into RunCompletion.providers.
-            session().recordPublish(key, new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), Providers.HEAD_NODE, result.providers))
+            // A directory leaf's address is its manifest, which the head node always builds (silent decision 3).
+            // The addresser counted each file inside for its summary line; RunCompletion.providers lists
+            // Leaf addresses only, so a directory of millions of files keeps it small (final review I5).
+            session().recordPublish(key, new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), Providers.HEAD_NODE))
             session().recordUploadAnomalies(key, result.anomalies)
             log.debug "cas: published directory ${source} as manifest ${result.cid} at ${key} (${result.anomalies})"
         }

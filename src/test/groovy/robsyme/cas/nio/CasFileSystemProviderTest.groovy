@@ -161,7 +161,7 @@ class CasFileSystemProviderTest extends Specification {
         manifestAt(sub.address).entry('b.txt').mode == ManifestEntry.REGULAR
     }
 
-    def 'a directory publish addresses every file inside through the run addresser; the leaf is head-node, the files are its contents (silent decision 3)'() {
+    def 'a directory publish addresses every file inside through the run addresser, and providers lists only its leaf, head-node (final review I5)'() {
         given:
         def dir = tmp.resolve('work/trio')
         Files.createDirectories(dir.resolve('sub'))
@@ -169,20 +169,21 @@ class CasFileSystemProviderTest extends Specification {
         Files.writeString(dir.resolve('b.txt'), 'beta\n')
         Files.writeString(dir.resolve('sub/c.txt'), 'gamma\n')
         def key = 'cas://lab/trio/out'
+        sess().runManifest = store.putDagCbor([kind: 'RunManifest'])
 
         when:
         provider.upload(dir, p(key))
+        final robsyme.cas.trace.Join.Result joined = robsyme.cas.trace.Join.join([trio: [[[id: 1], p(key)]]] as Map<String, Object>, sess())
 
-        then: 'every file inside went through the addresser'
+        then: 'every file inside went through the addresser, which counts them for its summary line'
         sess().addresser.counts == ['head-node': 3]
 
         and: "the directory leaf's address is its manifest, always head-node"
         sess().publishFor(key).provider == 'head-node'
         sess().publishFor(key).ref.cid.isDagCbor()
 
-        and: 'the files inside are recorded as its contents, sorted by string'
-        def cids = ['alpha\n', 'beta\n', 'gamma\n'].collect { store.putStreaming(new ByteArrayInputStream(it.bytes)) }
-        sess().publishFor(key).contents == ['head-node': cids.sort { it.toString() }]
+        and: 'RunCompletion.providers names the leaf alone, never the files inside it'
+        joined.providers == ['head-node': [sess().publishFor(key).ref.cid]]
     }
 
     private DirectoryManifest manifestAt(Cid cid) {
