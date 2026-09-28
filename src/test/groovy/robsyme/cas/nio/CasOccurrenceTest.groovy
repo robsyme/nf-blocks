@@ -9,7 +9,7 @@ import nextflow.Session
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
-import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.LocalBlockStore
@@ -39,7 +39,7 @@ class CasOccurrenceTest extends Specification {
         store = new LocalBlockStore(storeDir, 'lab', true)
         session = Mock(Session)
         Global.session = session
-        CasSession.bind(session, new CasSession(config, store, new CoordinateTree(storeDir.resolve('coords'))))
+        CasSession.bind(session, new CasSession(config, store, new LocalCoordinateTree(storeDir.resolve('coords'))))
         provider = new CasFileSystemProvider()
 
         bam = store.putStreaming(new ByteArrayInputStream('BAM A\n'.bytes))

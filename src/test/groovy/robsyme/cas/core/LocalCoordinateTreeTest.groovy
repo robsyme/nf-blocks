@@ -8,15 +8,15 @@ import spock.lang.Specification
 import spock.lang.TempDir
 
 /** DESIGN.md §5, §7: the Pointer File tree under `coords/`. */
-class CoordinateTreeTest extends Specification {
+class LocalCoordinateTreeTest extends Specification {
 
     @TempDir
     Path root
 
-    CoordinateTree tree
+    LocalCoordinateTree tree
 
     def setup() {
-        tree = new CoordinateTree(root.resolve('coords'))
+        tree = new LocalCoordinateTree(root.resolve('coords'))
     }
 
     private static Cid raw(String text) {

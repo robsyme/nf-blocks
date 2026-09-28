@@ -1,149 +1,29 @@
 package robsyme.cas.core
 
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.NoSuchFileException
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.util.stream.Collectors
-import java.util.stream.Stream
-
 import groovy.transform.CompileStatic
 
 /**
- * The Pointer File tree under {@code coords/} (DESIGN.md §5, §7).
- *
- * Intermediate segments are real directories; a leaf is a text file holding
- * one line, the Store URI of what was published there. Pointer files are not
- * blocks and not roots: the next run to the same coordinate overwrites them,
- * and deleting one never touches content.
- *
- * A published *directory* is itself a leaf, a pointer at a DirectoryManifest,
- * so {@link #children} answers only for the real directories on the way there;
- * the manifest names the children of a published directory.
+ * The Publish Coordinate tree of one member (DESIGN.md §5, §7): Pointer Files
+ * at relative paths, overwritten by the next run to the same coordinate,
+ * never blocks and never roots. A published directory is one pointer at a
+ * DirectoryManifest. Local and S3 trees are held to one contract
+ * (CoordinateTreeContract), conflicts included.
  */
 @CompileStatic
-class CoordinateTree {
-
-    private final Path root
-
-    CoordinateTree(Path coordsRoot) {
-        this.root = coordsRoot
-    }
-
-    Path getRoot() { root }
-
-    /** The pointer file for a coordinate, whether or not it exists. */
-    Path pointerPath(String relPath) {
-        Path p = root
-        for( String segment : segments(relPath) )
-            p = p.resolve(segment)
-        return p
-    }
-
-    Optional<StoreRef> read(String relPath) {
-        final Path pointer = pointerPath(relPath)
-        String text
-        try {
-            text = Files.readString(pointer, StandardCharsets.UTF_8)
-        }
-        catch( NoSuchFileException e ) {
-            // Absent is the only thing that reads as empty. A permission error
-            // or any other IOException is a real failure and propagates, so it
-            // is never mistaken for "no coordinate here".
-            return Optional.empty()
-        }
-        try {
-            return Optional.of(StoreRef.parse(text.trim()))
-        }
-        catch( IllegalArgumentException e ) {
-            throw new IOException("pointer file for '${key(relPath)}' does not hold a store uri: ${e.message}", e)
-        }
-    }
-
-    void write(String relPath, StoreRef ref) {
-        if( ref == null )
-            throw new IllegalArgumentException("no store reference for coordinate '${key(relPath)}'")
-        final Path pointer = pointerPath(relPath)
-        if( pointer == root )
-            throw new IllegalArgumentException('the root of the coordinate tree is not a coordinate')
-        Files.createDirectories(pointer.parent)
-        final Path temp = Files.createTempFile(pointer.parent, '.tmp-', '')
-        try {
-            Files.writeString(temp, ref.toString() + '\n', StandardCharsets.UTF_8)
-            Files.move(temp, pointer, StandardCopyOption.REPLACE_EXISTING)
-        }
-        finally {
-            Files.deleteIfExists(temp)
-        }
-    }
-
-    boolean exists(String relPath) {
-        return Files.exists(pointerPath(relPath))
-    }
-
-    /**
-     * True when the coordinate is a directory: either a real directory on the
-     * way to a pointer, or a pointer at a DirectoryManifest.
-     */
-    boolean isDirectoryCoordinate(String relPath) {
-        final Path pointer = pointerPath(relPath)
-        if( Files.isDirectory(pointer) )
-            return true
-        if( !Files.isRegularFile(pointer) )
-            return false
-        return read(relPath).map { StoreRef ref -> ref.isDirectory() }.orElse(false)
-    }
-
-    /** The names directly under a real coordinate directory, sorted; empty for anything else. */
-    List<String> children(String relPath) {
-        final Path dir = pointerPath(relPath)
-        if( !Files.isDirectory(dir) )
-            return Collections.<String> emptyList()
-        Stream<Path> stream = null
-        try {
-            stream = Files.list(dir)
-            return stream
-                .map { Path p -> p.fileName.toString() }
-                .filter { String name -> !name.startsWith('.tmp-') }
-                .sorted()
-                .collect(Collectors.toList())
-        }
-        finally {
-            stream?.close()
-        }
-    }
-
-    /** Removes the pointer file only. Never a directory, never a block. */
-    boolean delete(String relPath) {
-        final Path pointer = pointerPath(relPath)
-        if( Files.isDirectory(pointer) )
-            throw new IOException("'${key(relPath)}' is a coordinate directory, not a pointer file")
-        return Files.deleteIfExists(pointer)
-    }
-
-    private String key(String relPath) {
-        return segments(relPath).join('/')
-    }
-
-    /**
-     * Splits and normalises a coordinate path the way {@link Coordinates#key}
-     * does, except that a {@code ..} escaping the tree is a caller error here
-     * rather than something to silently clamp.
-     */
-    private static List<String> segments(String relPath) {
-        final List<String> out = new ArrayList<String>()
-        for( String segment : (relPath ?: '').split('/') ) {
-            if( !segment || segment == '.' )
-                continue
-            if( segment == '..' ) {
-                if( out.isEmpty() )
-                    throw new IllegalArgumentException("coordinate path escapes the coordinate tree: '$relPath'")
-                out.remove(out.size() - 1)
-                continue
-            }
-            out.add(segment)
-        }
-        return out
-    }
+interface CoordinateTree {
+    Optional<StoreRef> read(String relPath)
+    void write(String relPath, StoreRef ref)
+    /** A pointer, or a directory on the way to one. */
+    boolean exists(String relPath)
+    /** A directory on the way to pointers (not a pointer at a manifest). */
+    boolean isDirectory(String relPath)
+    /** A directory on the way, or a pointer at a DirectoryManifest. */
+    boolean isDirectoryCoordinate(String relPath)
+    /** Names directly under a directory, sorted; empty for anything else. */
+    List<String> children(String relPath)
+    /** Removes a pointer only; an IOException for a directory. */
+    boolean delete(String relPath)
+    void createDirectories(String relPath)
+    /** 0 when unknown. */
+    long lastModifiedMillis(String relPath)
 }

@@ -17,6 +17,7 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.LocalBlockStore
@@ -48,7 +49,7 @@ class CasFileSystemProviderTest extends Specification {
                 [lineage: [store: [location: 'cas://lab']], cas: [stores: [lab: [location: storeDir.toString()]]]],
                 'cas://lab')
         store = new LocalBlockStore(storeDir, 'lab', true)
-        coords = new CoordinateTree(storeDir.resolve('coords'))
+        coords = new LocalCoordinateTree(storeDir.resolve('coords'))
         session = Mock(Session)
         Global.session = session
         CasSession.bind(session, new CasSession(config, store, coords))

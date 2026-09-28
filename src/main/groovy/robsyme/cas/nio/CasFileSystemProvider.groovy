@@ -88,14 +88,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
 
     /** The coordinate tree of the member a coordinate names. */
     private CoordinateTree coordsFor(CasPath p) {
-        final cfg = session().config
-        final alias = p.alias()
-        if( alias == cfg.writableAlias )
-            return session().coordinates
-        final location = cfg.locationOf(alias)
-        if( location == null )
-            throw new IllegalArgumentException("Unknown store alias '${alias}' -- configured stores: ${cfg.members.join(', ')}")
-        return new CoordinateTree(location.resolve('coords'))
+        return session().coordinatesOf(p.alias())
     }
 
     /** The coordinate path relative to its coords root, i.e. the join tail. */
@@ -277,13 +270,8 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     private CasNode resolveCoordinate(CasPath p) {
         final CoordinateTree tree = coordsFor(p)
         final String rel = relOf(p)
-        final Path pointer = tree.pointerPath(rel)
-        if( Files.isDirectory(pointer) ) {
-            long mtime
-            try { mtime = Files.getLastModifiedTime(pointer).toMillis() }
-            catch( IOException e ) { mtime = 0L }
-            return new CasNode(present: true, directory: true, size: 0L, mtime: mtime)
-        }
+        if( tree.isDirectory(rel) )
+            return new CasNode(present: true, directory: true, size: 0L, mtime: tree.lastModifiedMillis(rel))
         final Optional<StoreRef> refOpt = tree.read(rel)   // throws if the pointer is corrupt
         if( !refOpt.isPresent() )
             return CasNode.absent()
@@ -638,7 +626,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(dir)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI has no directories to create: '${p}'")
-        Files.createDirectories(coordsFor(p).pointerPath(relOf(p)))
+        coordsFor(p).createDirectories(relOf(p))
     }
 
     @Override

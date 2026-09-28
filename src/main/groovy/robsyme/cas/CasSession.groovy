@@ -16,6 +16,7 @@ import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
@@ -113,7 +114,7 @@ class CasSession {
         this.config = config
         this.assertedBy = config.assertedBy
         this.store = buildStore(config)
-        this.coordinates = new CoordinateTree(config.writableLocation.resolve('coords'))
+        this.coordinates = new LocalCoordinateTree(config.writableLocation.resolve('coords'))
     }
 
     /** Test seam: an instance over an already-built store and coordinate tree. */
@@ -155,6 +156,16 @@ class CasSession {
     /** The store's members, writable first; a single-store session has one. */
     List<BlockStore> members() {
         return store instanceof CompositeStore ? ((CompositeStore) store).members : [store]
+    }
+
+    /** The coordinate tree of a member by alias (DESIGN.md §7). Task 11 adds S3 members. */
+    CoordinateTree coordinatesOf(String alias) {
+        if( alias == config.writableAlias )
+            return coordinates
+        final Path location = config.locationOf(alias)
+        if( location == null )
+            throw new IllegalArgumentException("Unknown store alias '${alias}' -- configured stores: ${config.members.join(', ')}")
+        return new LocalCoordinateTree(location.resolve('coords'))
     }
 
     /** This composition's per-user cache index (DESIGN.md §12). The caller closes it. */
