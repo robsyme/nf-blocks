@@ -258,6 +258,7 @@ class CasObserver implements TraceObserverV2 {
             finishedAt        : iso(meta?.complete),
             anomalies         : joined.anomalies ?: Anomalies.NONE,
             error             : success ? null : (meta?.errorMessage ?: null),
+            providers         : joined.providers,
         ]).toCbor(), 'RunCompletion')
 
         appendStoreLog(completion)

@@ -6,8 +6,6 @@ import java.nio.file.NotDirectoryException
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
-import java.nio.file.attribute.PosixFileAttributeView
-import java.nio.file.attribute.PosixFilePermission
 
 import groovy.transform.CompileStatic
 
@@ -135,9 +133,7 @@ class DirectoryManifestBuilder {
             return ManifestEntry.unresolvable(name, portableTarget(path, root, linkTarget))
         }
         final Cid address = putFile(path)
-        return isExecutable(path)
-            ? ManifestEntry.executable(name, address, attrs.size())
-            : ManifestEntry.regular(name, address, attrs.size())
+        return ManifestEntry.regular(name, address, attrs.size())
     }
 
     private Cid putFile(Path file) {
@@ -180,14 +176,4 @@ class DirectoryManifestBuilder {
         }
     }
 
-    /**
-     * Git's rule: the owner execute bit, and nothing else about permissions.
-     * Read through a link, because by here we have decided to follow it.
-     */
-    private static boolean isExecutable(Path file) {
-        final PosixFileAttributeView view = Files.getFileAttributeView(file, PosixFileAttributeView)
-        if( view == null )
-            return Files.isExecutable(file)
-        return view.readAttributes().permissions().contains(PosixFilePermission.OWNER_EXECUTE)
-    }
 }

@@ -249,9 +249,13 @@ class Records {
     // ---- helpers shared by the kinds ----
 
     static Map<String, Object> head(String kind) {
+        return head(kind, SCHEMA)
+    }
+
+    static Map<String, Object> head(String kind, int schema) {
         final Map<String, Object> map = new LinkedHashMap<String, Object>()
         map.put('kind', kind)
-        map.put('schema', (long) SCHEMA)
+        map.put('schema', (long) schema)
         return map
     }
 
@@ -261,6 +265,14 @@ class Records {
         final String actual = kindOf(block)
         if( actual != kind )
             throw new IllegalArgumentException("expected a $kind block, got ${actual ?: 'a block with no kind'}")
+    }
+
+    /** The block's schema, refused unless the reader knows it. */
+    static int schemaOf(Map block, Collection<Integer> readable) {
+        final int schema = (int) number(require(block, 'schema'), 'schema')
+        if( !readable.contains(schema) )
+            throw new IllegalArgumentException("${kindOf(block)} schema ${schema} is not one this build reads (${readable.join(', ')})")
+        return schema
     }
 
     static Object require(Map block, String field) {
@@ -298,8 +310,8 @@ class Records {
 
 /**
  * One entry of a DirectoryManifest: name, mode, size and address, and nothing
- * else (DESIGN.md §6). No permission bits beyond the executable one, no mtime:
- * identity must not depend on the umask of whoever ran the pipeline.
+ * else (DESIGN.md §6). No permission bits at all: identity must not depend on
+ * the umask, or on whether the backend keeps an execute bit.
  */
 @CompileStatic
 @EqualsAndHashCode
@@ -307,12 +319,13 @@ class Records {
 class ManifestEntry {
 
     static final String REGULAR = 'regular'
+    /** Written only at schema 1, before 2026-09-28; {@link #fromCbor} reads it as {@link #REGULAR}. */
     static final String EXECUTABLE = 'executable'
     static final String SYMLINK = 'symlink'
     static final String DIRECTORY = 'directory'
     static final String UNRESOLVABLE = 'unresolvable'
 
-    private static final Set<String> MODES = [REGULAR, EXECUTABLE, SYMLINK, DIRECTORY, UNRESOLVABLE] as Set
+    private static final Set<String> MODES = [REGULAR, SYMLINK, DIRECTORY, UNRESOLVABLE] as Set
 
     final String name
     final String mode
@@ -327,7 +340,7 @@ class ManifestEntry {
             throw new IllegalArgumentException("unknown manifest entry mode '$mode' for '$name'")
         if( size < 0 )
             throw new IllegalArgumentException("manifest entry '$name' has a negative size")
-        if( mode == REGULAR || mode == EXECUTABLE ) {
+        if( mode == REGULAR ) {
             if( address == null || !address.isRaw() )
                 throw new IllegalArgumentException("manifest entry '$name' is $mode and needs a raw content address, got ${address ?: 'null'}")
         }
@@ -349,10 +362,6 @@ class ManifestEntry {
 
     static ManifestEntry regular(String name, Cid address, long size) {
         return new ManifestEntry(name, REGULAR, size, address, null)
-    }
-
-    static ManifestEntry executable(String name, Cid address, long size) {
-        return new ManifestEntry(name, EXECUTABLE, size, address, null)
     }
 
     /** A subdirectory: the address is its own manifest, the size is not the tree's. */
@@ -382,10 +391,12 @@ class ManifestEntry {
         return map
     }
 
-    static ManifestEntry fromCbor(Map entry) {
+    /** A schema-1 manifest may say `executable`; since 2026-09-28 that is `regular` (ticket 15 addendum). */
+    static ManifestEntry fromCbor(Map entry, int schema) {
+        final String mode = Records.string(Records.require(entry, 'mode'), 'mode')
         return new ManifestEntry(
             Records.string(Records.require(entry, 'name'), 'name'),
-            Records.string(Records.require(entry, 'mode'), 'mode'),
+            schema == 1 && mode == EXECUTABLE ? REGULAR : mode,
             Records.number(Records.require(entry, 'size'), 'size'),
             Records.cid(Records.require(entry, 'address'), 'address'),
             Records.string(Records.require(entry, 'target'), 'target'))
@@ -402,6 +413,10 @@ class ManifestEntry {
 @EqualsAndHashCode
 @ToString(includePackage = false, includeNames = true)
 class DirectoryManifest {
+
+    /** Written at schema 2 since 2026-09-28 (ticket 15 addendum): no executable mode. */
+    static final int SCHEMA = 2
+    static final List<Integer> READABLE = [1, 2].asImmutable()
 
     final List<ManifestEntry> entries
 
@@ -433,17 +448,18 @@ class DirectoryManifest {
     }
 
     Map<String, Object> toCbor() {
-        final Map<String, Object> map = Records.head(Records.DIRECTORY_MANIFEST)
+        final Map<String, Object> map = Records.head(Records.DIRECTORY_MANIFEST, SCHEMA)
         map.put('entries', entries.collect { ManifestEntry e -> e.toCbor() })
         return map
     }
 
     static DirectoryManifest fromCbor(Map block) {
         Records.expectKind(block, Records.DIRECTORY_MANIFEST)
+        final int schema = Records.schemaOf(block, READABLE)
         final Object entries = Records.require(block, 'entries')
         if( !(entries instanceof List) )
             throw new IllegalArgumentException('a directory manifest needs a list of entries')
-        return new DirectoryManifest(((List) entries).collect { Object e -> ManifestEntry.fromCbor((Map) e) })
+        return new DirectoryManifest(((List) entries).collect { Object e -> ManifestEntry.fromCbor((Map) e, schema) })
     }
 }
 
@@ -516,6 +532,12 @@ class Anomalies {
  * name of its own and a pipeline that is handed the item back stages the file
  * under that name. An address and a reason are exclusive: exactly one of them
  * is always set, and neither is ever an absent field.
+ *
+ * Written at schema 2 (2026-09-28, ticket 16): a leaf carries no provider, so
+ * the same content published by different Address Providers is one
+ * OutputItem. Who addressed it is the run's record ({@link RunCompletion#providers}),
+ * not the leaf's. A schema-1 leaf still carries `provider`; it is ignored on
+ * decoding.
  */
 @CompileStatic
 @EqualsAndHashCode
@@ -527,42 +549,34 @@ class Leaf {
     static final String UNRESOLVABLE = 'unresolvable'
     static final String UNADDRESSED = 'unaddressed'
 
-    static final String HEAD_NODE = 'head-node'
-    static final String FUSION_NODE = 'fusion-node'
-
     private static final Set<String> REASONS = [DECLINED, NEVER_PUBLISHED, UNRESOLVABLE, UNADDRESSED] as Set
-    private static final Set<String> PROVIDERS = [HEAD_NODE, FUSION_NODE] as Set
 
     final String name
     final Cid address
     final Long size
-    final String provider
     final String reason
 
-    Leaf(String name, Cid address, Long size, String provider, String reason) {
+    Leaf(String name, Cid address, Long size, String reason) {
         if( address == null && !reason )
             throw new IllegalArgumentException("a leaf without an address needs a reason (${name ?: 'unnamed'})")
         if( address != null && reason )
             throw new IllegalArgumentException("a leaf addressed as $address cannot also carry the reason '$reason'")
         if( reason && !REASONS.contains(reason) )
             throw new IllegalArgumentException("unknown leaf reason '$reason'")
-        if( provider && !PROVIDERS.contains(provider) )
-            throw new IllegalArgumentException("unknown leaf provider '$provider'")
         this.name = name
         this.address = address
         this.size = size
-        this.provider = provider
         this.reason = reason
     }
 
-    /** An addressed leaf: what publishing a file produced. */
-    static Leaf of(String name, Cid address, Long size, String provider) {
-        return new Leaf(name, address, size, provider, null)
+    /** An addressed leaf. Who addressed it is the run's record (RunCompletion.providers), not the leaf's. */
+    static Leaf of(String name, Cid address, Long size) {
+        return new Leaf(name, address, size, null)
     }
 
     /** A leaf with no address, and the reason there is none. */
     static Leaf without(String name, String reason) {
-        return new Leaf(name, null, null, null, reason)
+        return new Leaf(name, null, null, reason)
     }
 
     /** What Nextflow hands us as a null in place of a path. */
@@ -578,7 +592,6 @@ class Leaf {
         map.put('name', name)
         map.put('address', address)
         map.put('size', size)
-        map.put('provider', provider)
         map.put('reason', reason)
         return map
     }
@@ -596,6 +609,7 @@ class Leaf {
         return Records.kindOf(map) == Records.LEAF && map.containsKey('address') && map.containsKey('reason')
     }
 
+    /** A schema-1 leaf also carries `provider`; it is ignored (ticket 16). */
     static Leaf fromCbor(Map map) {
         Records.expectKind(map, Records.LEAF)
         final Object size = Records.require(map, 'size')
@@ -603,7 +617,6 @@ class Leaf {
             Records.string(Records.require(map, 'name'), 'name'),
             Records.cid(Records.require(map, 'address'), 'address'),
             size == null ? null : (Long) Records.number(size, 'size'),
-            Records.string(Records.require(map, 'provider'), 'provider'),
             Records.string(Records.require(map, 'reason'), 'reason'))
     }
 }
@@ -616,11 +629,18 @@ class Leaf {
  * carries no run reference and no publish path, so identical metadata over
  * identical content is one block however many runs produce it -- which is the
  * whole point of addressing items separately.
+ *
+ * Written at schema 2 (2026-09-28): its leaves carry no provider. A schema-1
+ * item decodes to the same value, and re-encodes at schema 2 under a
+ * different address; nothing re-encodes a block it read.
  */
 @CompileStatic
 @EqualsAndHashCode
 @ToString(includePackage = false, includeNames = true)
 class OutputItem {
+
+    static final int SCHEMA = 2
+    static final List<Integer> READABLE = [1, 2].asImmutable()
 
     final Object value
 
@@ -649,7 +669,7 @@ class OutputItem {
     }
 
     Map<String, Object> toCbor() {
-        final Map<String, Object> map = Records.head(Records.OUTPUT_ITEM)
+        final Map<String, Object> map = Records.head(Records.OUTPUT_ITEM, SCHEMA)
         map.put('value', encode(value))
         return map
     }
@@ -669,6 +689,7 @@ class OutputItem {
 
     static OutputItem fromCbor(Map block) {
         Records.expectKind(block, Records.OUTPUT_ITEM)
+        Records.schemaOf(block, READABLE)
         return new OutputItem(decode(Records.require(block, 'value')))
     }
 
@@ -890,6 +911,10 @@ class RunCompletion {
 
     private static final Set<String> STATUSES = [SUCCEEDED, FAILED] as Set
 
+    /** Written at schema 2 since 2026-09-28 (ticket 16): it carries {@link #providers}. */
+    static final int SCHEMA = 2
+    static final List<Integer> READABLE = [1, 2].asImmutable()
+
     final String assertedBy
     final Cid run
     final List<Cid> collections
@@ -901,6 +926,8 @@ class RunCompletion {
     final String finishedAt
     final Anomalies anomalies
     final String error
+    /** Provider name to every address of the run it supplied, sorted (DESIGN.md §6, ticket 16). */
+    final Map<String, List<Cid>> providers
 
     RunCompletion(Map args) {
         this.assertedBy = str(args, 'assertedBy')
@@ -924,6 +951,7 @@ class RunCompletion {
         // absolute path or user name mid-message; scrub it here so a RunCompletion
         // never leaks the launch location into a portable block (DESIGN.md §6).
         this.error = Records.scrubText((String) args.get('error'))
+        this.providers = normaliseProviders((Map) args.get('providers') ?: Collections.emptyMap())
     }
 
     private static String str(Map args, String field) {
@@ -933,10 +961,25 @@ class RunCompletion {
         return value.toString()
     }
 
+    /** Keys in name order, each list sorted by cid string and without repeats; every key a known provider. */
+    private static Map<String, List<Cid>> normaliseProviders(Map raw) {
+        final TreeMap<String, List<Cid>> out = new TreeMap<String, List<Cid>>()
+        for( Object e : raw.entrySet() ) {
+            final String name = String.valueOf(((Map.Entry) e).key)
+            if( !Providers.isKnown(name) )
+                throw new IllegalArgumentException("unknown Address Provider '${name}' (known: ${Providers.ALL.join(', ')})")
+            final TreeMap<String, Cid> byText = new TreeMap<String, Cid>()
+            for( Object c : (Collection) ((Map.Entry) e).value )
+                byText.put(c.toString(), (Cid) c)
+            out.put(name, Collections.unmodifiableList(new ArrayList<Cid>(byText.values())))
+        }
+        return Collections.unmodifiableMap(out)
+    }
+
     boolean isSuccessful() { status == SUCCEEDED && !possiblyIncomplete }
 
     Map<String, Object> toCbor() {
-        final Map<String, Object> map = Records.head(Records.RUN_COMPLETION)
+        final Map<String, Object> map = Records.head(Records.RUN_COMPLETION, SCHEMA)
         map.put('asserted_by', assertedBy)
         map.put('run', run)
         map.put('collections', new ArrayList<Object>(collections))
@@ -948,11 +991,16 @@ class RunCompletion {
         map.put('finished_at', finishedAt)
         map.put('anomalies', anomalies.toCbor())
         map.put('error', error)
+        final Map<String, Object> byProvider = new LinkedHashMap<String, Object>()
+        providers.each { String name, List<Cid> cids -> byProvider.put(name, new ArrayList<Object>(cids)) }
+        map.put('providers', byProvider)
         return map
     }
 
     static RunCompletion fromCbor(Map block) {
         Records.expectKind(block, Records.RUN_COMPLETION)
+        final int schema = Records.schemaOf(block, READABLE)
+        final Map providers = schema == 1 ? Collections.emptyMap() : (Map) Records.require(block, 'providers')
         final List collections = (List) Records.require(block, 'collections')
         return new RunCompletion([
             assertedBy        : Records.string(Records.require(block, 'asserted_by'), 'asserted_by'),
@@ -966,6 +1014,7 @@ class RunCompletion {
             finishedAt        : Records.string(Records.require(block, 'finished_at'), 'finished_at'),
             anomalies         : Anomalies.fromCbor((Map) Records.require(block, 'anomalies')),
             error             : Records.string(Records.require(block, 'error'), 'error'),
+            providers         : providers.collectEntries { k, v -> [(k): ((List) v).collect { Object c -> Records.cid(c, 'providers') }] },
         ])
     }
 }

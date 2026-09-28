@@ -11,6 +11,7 @@ import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
+import robsyme.cas.core.Providers
 import robsyme.cas.core.Records
 
 /**
@@ -46,10 +47,13 @@ class Join {
     static class Result {
         final List<JoinedOutput> outputs
         final Anomalies anomalies
+        /** Provider name to every address the run published under it (DESIGN.md §6, ticket 16). */
+        final Map<String, List<Cid>> providers
 
-        Result(List<JoinedOutput> outputs, Anomalies anomalies) {
+        Result(List<JoinedOutput> outputs, Anomalies anomalies, Map<String, List<Cid>> providers) {
             this.outputs = outputs
             this.anomalies = anomalies
+            this.providers = providers
         }
     }
 
@@ -79,6 +83,7 @@ class Join {
         final String assertedBy = session.assertedBy
         final Counters counters = new Counters()
         final List<JoinedOutput> outputs = new ArrayList<JoinedOutput>()
+        final Map<String, TreeMap<String, Cid>> byProvider = new TreeMap<String, TreeMap<String, Cid>>()
 
         for( Map.Entry<String, Object> entry : captured.entrySet() ) {
             final String name = entry.key
@@ -95,7 +100,7 @@ class Join {
             final List<List<String>> itemPaths = new ArrayList<List<String>>(rawItems.size())
             for( Object raw : rawItems ) {
                 final List<String> leafPaths = new ArrayList<String>()
-                final Object built = build(raw, leafPaths, counters, session)
+                final Object built = build(raw, leafPaths, counters, session, byProvider)
                 final OutputItem item = OutputItem.of(built)
                 items.add(item)
                 itemCids.add(DagCbor.cidOf(DagCbor.encode(item.toCbor())))
@@ -104,7 +109,10 @@ class Join {
             final OutputCollection collection = new OutputCollection(assertedBy, run, name, itemCids, itemPaths)
             outputs.add(new JoinedOutput(name, items, collection))
         }
-        return new Result(outputs, counters.toAnomalies())
+        final Map<String, List<Cid>> providers = byProvider.collectEntries {
+            String k, TreeMap<String, Cid> v -> [(k): new ArrayList<Cid>(v.values())]
+        } as Map<String, List<Cid>>
+        return new Result(outputs, counters.toAnomalies(), providers)
     }
 
     /** A channel output is a collection of items; a value output is one item. */
@@ -120,9 +128,10 @@ class Join {
      * path) with a {@link Leaf}, and appending each leaf's publish path to
      * {@code leafPaths} in the depth-first order {@link OutputItem#leaves} uses.
      */
-    private static Object build(Object raw, List<String> leafPaths, Counters counters, CasSession session) {
+    private static Object build(Object raw, List<String> leafPaths, Counters counters, CasSession session,
+                                Map<String, TreeMap<String, Cid>> byProvider) {
         if( raw instanceof Path )
-            return leafFor((Path) raw, leafPaths, counters, session)
+            return leafFor((Path) raw, leafPaths, counters, session, byProvider)
         if( raw == null ) {
             leafPaths.add(null)
             counters.declined += 1
@@ -131,19 +140,20 @@ class Join {
         if( raw instanceof Map ) {
             final Map<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) raw).entrySet() )
-                out.put(String.valueOf(e.key), build(e.value, leafPaths, counters, session))
+                out.put(String.valueOf(e.key), build(e.value, leafPaths, counters, session, byProvider))
             return out
         }
         if( raw instanceof Collection ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (Collection) raw )
-                out.add(build(element, leafPaths, counters, session))
+                out.add(build(element, leafPaths, counters, session, byProvider))
             return out
         }
         return raw
     }
 
-    private static Leaf leafFor(Path path, List<String> leafPaths, Counters counters, CasSession session) {
+    private static Leaf leafFor(Path path, List<String> leafPaths, Counters counters, CasSession session,
+                               Map<String, TreeMap<String, Cid>> byProvider) {
         final String key = Coordinates.key(path)
         final List<String> segments = segmentsOf(key)
         final String name = segments.isEmpty() ? null : segments.last()
@@ -164,7 +174,14 @@ class Join {
         final Anomalies uploaded = session.uploadAnomaliesFor(key)
         if( uploaded != null )
             fold(counters, uploaded)
-        return Leaf.of(name, address, size, publish.provider)
+        final String provider = publish.provider ?: Providers.HEAD_NODE
+        byProvider.computeIfAbsent(provider, { String k -> new TreeMap<String, Cid>() }).put(address.toString(), address)
+        // The files inside a published directory are addresses the run published too (ticket 16 decision 1).
+        publish.contents?.each { String p, List<Cid> cids ->
+            final TreeMap<String, Cid> held = byProvider.computeIfAbsent(p, { String k -> new TreeMap<String, Cid>() })
+            cids.each { Cid c -> held.put(c.toString(), c) }
+        }
+        return Leaf.of(name, address, size)
     }
 
     private static void fold(Counters counters, Anomalies a) {

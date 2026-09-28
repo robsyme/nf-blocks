@@ -105,7 +105,7 @@ class CasExtensionTest extends Specification {
         (args.items as List<Map>).each { Map spec ->
             final Leaf leaf = spec.reason
                 ? Leaf.without(spec.name as String, spec.reason as String)
-                : Leaf.of(spec.name as String, spec.content as Cid, spec.size as Long, 'head-node')
+                : Leaf.of(spec.name as String, spec.content as Cid, spec.size as Long)
             // `shape`, when given, builds the item's whole value around its leaf.
             final OutputItem item = OutputItem.of(spec.shape ? ((Closure) spec.shape).call(leaf) : [spec.meta, leaf])
             itemCids << cas.store.putDagCbor(item.toCbor())

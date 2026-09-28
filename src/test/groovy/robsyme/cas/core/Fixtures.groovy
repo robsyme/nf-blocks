@@ -24,6 +24,15 @@ class Fixtures {
                 provider: 'head-node', reason: null]
     }
 
+    /** A schema-2 Leaf (ticket 16): no provider. */
+    static Map leaf2(String name, Cid address, long size) {
+        return [kind: 'Leaf', name: name, address: address, size: size, reason: null]
+    }
+
+    static Map outputItem2(Object value) {
+        return [kind: 'OutputItem', schema: 2, value: value]
+    }
+
     static Map unaddressedLeaf(String name) {
         return [kind: 'Leaf', name: name, address: null, size: null,
                 provider: null, reason: 'unaddressed']

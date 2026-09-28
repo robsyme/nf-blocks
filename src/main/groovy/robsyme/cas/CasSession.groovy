@@ -47,6 +47,12 @@ class CasSession {
         long size
         /** The Address Provider that produced the address, e.g. {@code head-node}. */
         String provider
+        /**
+         * For a published directory, the providers of the files inside it
+         * (provider name to addresses), so RunCompletion.providers covers every
+         * address the run published (ticket 16 decision 1). Empty for a file.
+         */
+        Map<String, List<Cid>> contents = [:]
     }
 
     private static final ConcurrentHashMap<Session, CasSession> REGISTRY = new ConcurrentHashMap<>()

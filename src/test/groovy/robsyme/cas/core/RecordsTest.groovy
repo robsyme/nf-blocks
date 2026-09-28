@@ -31,7 +31,7 @@ class RecordsTest extends Specification {
 
     def 'every mode has its own shape'() {
         expect:
-        ManifestEntry.executable('run.sh', raw('x'), 1L).toCbor().mode == 'executable'
+        ManifestEntry.regular('run.sh', raw('x'), 1L).toCbor().mode == 'regular'
         ManifestEntry.directory('nested', dag([:])).toCbor().mode == 'directory'
         ManifestEntry.directory('nested', dag([:])).toCbor().size == 0L
         ManifestEntry.symlink('alias.txt', 'summary.txt').toCbor().mode == 'symlink'
@@ -115,7 +115,7 @@ class RecordsTest extends Specification {
 
         then:
         Records.kindOf(decoded) == 'DirectoryManifest'
-        decoded.schema == 1L
+        decoded.schema == 2L
         DirectoryManifest.fromCbor(decoded).entries == manifest.entries
 
         and: 're-encoding a decoded manifest reproduces its address'
@@ -131,6 +131,28 @@ class RecordsTest extends Specification {
     def 'a manifest carries no asserted_by, so identical content is one block'() {
         expect:
         !new DirectoryManifest([]).toCbor().containsKey('asserted_by')
+    }
+
+    def 'a manifest is written at schema 2 and has no executable mode; a schema-1 executable entry reads as regular (ticket 15 addendum)'() {
+        given:
+        final Cid a = raw('tool')
+        final Map v1 = [kind: 'DirectoryManifest', schema: 1L,
+                        entries: [[name: 'tool.sh', mode: 'executable', size: 4L, address: a, target: null]]]
+
+        expect:
+        new DirectoryManifest([ManifestEntry.regular('tool.sh', a, 4L)]).toCbor().schema == 2L
+        DirectoryManifest.fromCbor(v1).entries == [ManifestEntry.regular('tool.sh', a, 4L)]
+
+        when:
+        new ManifestEntry('tool.sh', 'executable', 4L, a, null)
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        DirectoryManifest.fromCbor([kind: 'DirectoryManifest', schema: 2L,
+            entries: [[name: 'tool.sh', mode: 'executable', size: 4L, address: a, target: null]]])
+        then:
+        thrown(IllegalArgumentException)
     }
 
     // ---- Anomalies ----
@@ -156,57 +178,125 @@ class RecordsTest extends Specification {
         e.message.contains('never_published')
     }
 
-    // ---- Leaf ----
+    // ---- Leaf, schema 2: no provider (ticket 16) ----
+
+    def 'a leaf carries no provider, and a schema-1 leaf that does still decodes'() {
+        given:
+        final Leaf leaf = Leaf.of('A.bam', raw('a'), 12L)
+
+        expect:
+        leaf.toCbor() == [kind: 'Leaf', name: 'A.bam', address: raw('a'), size: 12L, reason: null]
+        Leaf.fromCbor(roundTrip(leaf.toCbor())) == leaf
+        Leaf.fromCbor([kind: 'Leaf', name: 'A.bam', address: raw('a'), size: 12L, provider: 'head-node', reason: null]) == leaf
+        Leaf.declined().toCbor() == [kind: 'Leaf', name: null, address: null, size: null, reason: 'declined']
+    }
+
+    def 'a leaf reason comes from a closed set, and an address excludes a reason'() {
+        when:
+        Leaf.without('A.bam', 'lost')
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        new Leaf('A.bam', raw('a'), 1L, 'declined')
+        then:
+        thrown(IllegalArgumentException)
+    }
 
     def 'a leaf without an address must say why'() {
         when:
-        new Leaf('A.bam', null, null, null, null)
+        new Leaf('A.bam', null, null, null)
 
         then:
         thrown(IllegalArgumentException)
     }
 
-    def 'a leaf with an address has nothing to explain'() {
-        when:
-        new Leaf('A.bam', raw('a'), 1L, 'head-node', 'declined')
+    // ---- OutputItem, schema 2 ----
 
-        then:
-        thrown(IllegalArgumentException)
-    }
-
-    def 'a leaf reason and provider come from a closed set'() {
-        when:
-        Leaf.without('A.bam', 'lost')
-
-        then:
-        thrown(IllegalArgumentException)
-
-        when:
-        Leaf.of('A.bam', raw('a'), 1L, 'somewhere-else')
-
-        then:
-        thrown(IllegalArgumentException)
-    }
-
-    def 'a leaf round-trips, with an absent address never an absent field'() {
+    def 'an OutputItem is written at schema 2; schema 1 is read; any other schema is refused'() {
         given:
-        final Leaf leaf = Leaf.of('A.bam', raw('a'), 12L, 'head-node')
+        final OutputItem item = OutputItem.of([[sample: 'A'], Leaf.of('A.bam', raw('bam'), 3L)])
 
         expect:
-        leaf.toCbor() == [kind: 'Leaf', name: 'A.bam', address: raw('a'), size: 12L, provider: 'head-node', reason: null]
-        Leaf.fromCbor(roundTrip(leaf.toCbor())) == leaf
+        item.toCbor().schema == 2L
+        OutputItem.fromCbor(roundTrip(item.toCbor())) == item
+        OutputItem.fromCbor([kind: 'OutputItem', schema: 1L, value: [[sample: 'A'],
+            [kind: 'Leaf', name: 'A.bam', address: raw('bam'), size: 3L, provider: 'fusion-node', reason: null]]]) == item
 
-        and:
-        Leaf.declined().toCbor() == [kind: 'Leaf', name: null, address: null, size: null, provider: null, reason: 'declined']
-        Leaf.fromCbor(roundTrip(Leaf.declined().toCbor())) == Leaf.declined()
-        Leaf.fromCbor(roundTrip(Leaf.without('A.bam', 'never_published').toCbor())) == Leaf.without('A.bam', 'never_published')
+        when:
+        OutputItem.fromCbor([kind: 'OutputItem', schema: 3L, value: 1L])
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('schema 3')
+    }
+
+    def 'the same content and metadata is one OutputItem address whoever addressed it (ticket 16)'() {
+        given:
+        final Map v1Head = [kind: 'OutputItem', schema: 1L, value: [[sample: 'A'],
+            [kind: 'Leaf', name: 'A.bam', address: raw('bam'), size: 3L, provider: 'head-node', reason: null]]]
+        final Map v1Fusion = [kind: 'OutputItem', schema: 1L, value: [[sample: 'A'],
+            [kind: 'Leaf', name: 'A.bam', address: raw('bam'), size: 3L, provider: 'fusion-node', reason: null]]]
+
+        expect: 'schema 1 split one item into two addresses; schema 2 cannot'
+        DagCbor.cidOf(DagCbor.encode(v1Head)) != DagCbor.cidOf(DagCbor.encode(v1Fusion))
+        OutputItem.fromCbor(v1Head).toCbor() == OutputItem.fromCbor(v1Fusion).toCbor()
+    }
+
+    // ---- RunCompletion, schema 2: providers ----
+
+    /** completionArgs() below (the RunCompletion section) is the general-purpose fixture; this one is scoped to the providers tests, at schema 2 dates. */
+    private static Map providerArgs(Map overrides = [:]) {
+        final Map args = [assertedBy: 'gate', run: dag('m'), collections: [], inputSet: null,
+                          status: 'succeeded', exitStatus: 0, possiblyIncomplete: false,
+                          startedAt: '2026-09-28T10:00:00.000Z', finishedAt: '2026-09-28T10:05:00.000Z',
+                          anomalies: Anomalies.NONE, error: null]
+        args.putAll(overrides)
+        return args
+    }
+
+    def 'providers are sorted by name, each list by address, without duplicates, and written at schema 2'() {
+        given:
+        final RunCompletion rc = new RunCompletion(providerArgs(providers: [
+            's3-copy'  : [raw('b'), raw('a'), raw('b')],
+            'head-node': [dag('dir')],
+        ]))
+
+        expect:
+        rc.toCbor().schema == 2L
+        (rc.toCbor().providers as Map).keySet().toList() == ['head-node', 's3-copy']
+        rc.providers['s3-copy'] == [raw('a'), raw('b')].sort { it.toString() }
+        RunCompletion.fromCbor(roundTrip(rc.toCbor())) == rc
+    }
+
+    def 'an unknown provider is refused'() {
+        when:
+        new RunCompletion(providerArgs(providers: [laptop: [raw('a')]]))
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains("'laptop'")
+    }
+
+    def 'a schema-1 RunCompletion has no providers field and reads as none'() {
+        given:
+        final Map v1 = new RunCompletion(providerArgs()).toCbor()
+        v1.schema = 1L
+        v1.remove('providers')
+
+        expect:
+        RunCompletion.fromCbor(v1).providers == [:]
+
+        when: 'a schema-2 block without the field'
+        v1.schema = 2L
+        RunCompletion.fromCbor(v1)
+        then:
+        thrown(IllegalArgumentException)
     }
 
     // ---- OutputItem ----
 
     def 'an item keeps the shape of the channel item, with its files as leaves'() {
         given:
-        final Leaf leaf = Leaf.of('A.bam', raw('bam'), 3L, 'head-node')
+        final Leaf leaf = Leaf.of('A.bam', raw('bam'), 3L)
         final OutputItem item = OutputItem.of([[sample: 'A', lane: 1L], leaf])
 
         when:
@@ -244,8 +334,8 @@ class RecordsTest extends Specification {
 
     def 'leaves come out in the order a reader meets them'() {
         given:
-        final Leaf first = Leaf.of('A_1.fq', raw('1'), 1L, 'head-node')
-        final Leaf second = Leaf.of('A_2.fq', raw('2'), 1L, 'head-node')
+        final Leaf first = Leaf.of('A_1.fq', raw('1'), 1L)
+        final Leaf second = Leaf.of('A_2.fq', raw('2'), 1L)
         final Leaf third = Leaf.declined()
 
         expect:
@@ -254,14 +344,14 @@ class RecordsTest extends Specification {
 
     def 'two items with the same metadata over the same content are one block'() {
         given: 'two runs, each building its own item'
-        final OutputItem one = OutputItem.of([[sample: 'A', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L, 'head-node')])
-        final OutputItem two = OutputItem.of([[sample: 'A', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L, 'head-node')])
+        final OutputItem one = OutputItem.of([[sample: 'A', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L)])
+        final OutputItem two = OutputItem.of([[sample: 'A', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L)])
 
         expect:
         dag(one.toCbor()) == dag(two.toCbor())
 
         and: 'while different metadata over the same content is a different item'
-        dag(OutputItem.of([[sample: 'B', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L, 'head-node')]).toCbor()) != dag(one.toCbor())
+        dag(OutputItem.of([[sample: 'B', lane: 1L], Leaf.of('A.bam', raw('bam'), 3L)]).toCbor()) != dag(one.toCbor())
     }
 
     def 'an item carries no asserted_by, so it deduplicates across runs'() {

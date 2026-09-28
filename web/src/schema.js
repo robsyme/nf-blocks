@@ -5,6 +5,8 @@ import schema from './generated/schema.json' with { type: 'json' }
 
 const block = create(schema, 'Block')
 const leaf = create(schema, 'Leaf')
+const leafV1 = create(schema, 'LeafV1')
 
 export const validBlock = (value) => block.toTyped(value) !== undefined
 export const validLeaf = (value) => leaf.toTyped(value) !== undefined
+export const validLeafV1 = (value) => leafV1.toTyped(value) !== undefined

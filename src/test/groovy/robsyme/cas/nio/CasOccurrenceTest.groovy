@@ -47,9 +47,9 @@ class CasOccurrenceTest extends Specification {
         qcDir = store.putDagCbor(new DirectoryManifest([ManifestEntry.regular('summary.txt', summary, 8L)]).toCbor())
         final Cid manifest = store.putDagCbor(new RunManifest([assertedBy: 'test', pipeline: 'p', runName: 'r', nfRunHash: 'h',
             sessionId: 's', nextflowVersion: '26.04.6', params: [:], config: [:], startedAt: '2026-09-25T00:00:00.000Z']).toCbor())
-        item = store.putDagCbor(OutputItem.of([[sample: 'A'], Leaf.of('A.bam', bam, 6L, 'head-node'), Leaf.of('A_qc', qcDir, 0L, 'head-node')]).toCbor())
+        item = store.putDagCbor(OutputItem.of([[sample: 'A'], Leaf.of('A.bam', bam, 6L), Leaf.of('A_qc', qcDir, 0L)]).toCbor())
         collection = store.putDagCbor(new OutputCollection('test', manifest, 'aligned', [item], [['aligned/A/A.bam', 'qc/A']]).toCbor())
-        dupItem = store.putDagCbor(OutputItem.of([[sample: 'D'], Leaf.of('x.txt', bam, 6L, 'head-node'), Leaf.of('x.txt', bam, 6L, 'head-node')]).toCbor())
+        dupItem = store.putDagCbor(OutputItem.of([[sample: 'D'], Leaf.of('x.txt', bam, 6L), Leaf.of('x.txt', bam, 6L)]).toCbor())
         dupCollection = store.putDagCbor(new OutputCollection('test', manifest, 'dups', [dupItem], [['d/1/x.txt', 'd/2/x.txt']]).toCbor())
     }
 

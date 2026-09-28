@@ -222,7 +222,7 @@ skipped because a read-only member holds the block.
 ## 6. Block kinds
 
 Every metadata block is a DAG-CBOR map with `kind` (string) and `schema`
-(integer, `1`). Keys are `snake_case`. Links are `Cid` values (tag 42).
+(integer: `1`, except OutputItem and RunCompletion, `2` since 2026-09-28). Keys are `snake_case`. Links are `Cid` values (tag 42).
 Timestamps are ISO-8601 UTC strings with millisecond precision, only ever as
 facts about a run, or as a Claim's advisory `timestamp`. Nothing store-local: no absolute paths, host names, user
 names, member aliases, or surrogate ids.
@@ -264,9 +264,11 @@ type DirEntry struct {
   name String
   mode EntryMode
   size Int
-  address nullable &Any         # raw cid for regular/executable, &DirectoryManifest for directory
+  address nullable &Any         # raw cid for regular, &DirectoryManifest for directory
   target nullable String        # relative in-tree target, or "[redacted-location]"
 }
+# `executable` appears only in a DirectoryManifest at schema 1, written before
+# 2026-09-28, and reads as regular; schema 2 never holds it.
 type EntryMode enum {
   | regular
   | executable
@@ -282,6 +284,15 @@ type OutputItem struct {
 # Not a Block member: found inside OutputItem.value by its kind field.
 type Leaf struct {
   kind String                   # always "Leaf"
+  name nullable String
+  address nullable &Any
+  size nullable Int
+  reason nullable LeafReason
+}
+# The Leaf of an OutputItem at schema 1, written before 2026-09-28. Readers
+# ignore its provider; the run records providers in its RunCompletion.
+type LeafV1 struct {
+  kind String
   name nullable String
   address nullable &Any
   size nullable Int
@@ -346,6 +357,7 @@ type RunCompletion struct {
   finished_at String
   anomalies Anomalies
   error nullable String
+  providers optional {String:[&Any]}  # schema 2: provider name -> every address of the run it supplied, sorted; absent at schema 1
 }
 type RunStatus enum {
   | succeeded
@@ -396,18 +408,18 @@ type ClaimVerb enum {
 
 ### DirectoryManifest
 ```
-{ kind: "DirectoryManifest", schema: 1,
+{ kind: "DirectoryManifest", schema: 2,
   entries: [ { name: string,                       // raw file name, one path segment
-               mode: "regular"|"executable"|"symlink"|"directory"|"unresolvable",
+               mode: "regular"|"symlink"|"directory"|"unresolvable",
                size: int,                          // bytes; for symlink/unresolvable, the byte length of target; for directory, 0
-               address: Cid|null,                  // raw cid for regular/executable, dag-cbor cid for directory, null for symlink/unresolvable
+               address: Cid|null,                  // raw cid for regular, dag-cbor cid for directory, null for symlink/unresolvable
                target: string|null } ] }           // link target text for symlink/unresolvable, else null
 ```
 Entries sorted ascending by the UTF-8 bytes of `name`. Rules for a symlink
 found while walking: if its target is relative and resolves inside the tree
 being published, record `mode: "symlink"` with `target` (the relative target
 string, which is portable and meaningful to a receiver); otherwise follow it
-and store what it points at as regular/executable/directory; if it dangles or
+and store what it points at as regular/directory; if it dangles or
 cycles, `mode: "unresolvable"`. **A stored `target` is only ever a relative,
 in-tree path.** An absolute target, or one that escapes the tree, is never
 written into a block: the manifest carries no `asserted_by` and travels in a
@@ -417,9 +429,14 @@ an entry `target` is `"[redacted-location]"` (the same marker `scrub` uses), so
 the fact of the broken link survives without its machine-local path. Cycle
 detection and depth limit 64. Empty directory = `entries: []`.
 
+*Amended 2026-09-28 (ticket 15 addendum, Rob):* a manifest records no execute
+bit. An object store keeps none, so the bit let the storage backend change a
+manifest address. A reader accepts schema 1 and reads its `executable` entries
+as `regular`; materialising a manifest sets no execute permission.
+
 ### OutputItem
 ```
-{ kind: "OutputItem", schema: 1,
+{ kind: "OutputItem", schema: 2,
   value: <the channel item structure> }
 ```
 `value` mirrors the published channel item: a `Map` stays a map, a
@@ -427,7 +444,6 @@ tuple/list stays a list, scalars keep their types. Every file or directory
 leaf is replaced by a **Leaf** map:
 ```
 { kind: "Leaf", name: string|null, address: Cid|null, size: int|null,
-  provider: "head-node"|"fusion-node"|null,
   reason: null|"declined"|"never_published"|"unresolvable"|"unaddressed" }
 ```
 `name` is the file name it was published under (last segment of the publish
@@ -437,6 +453,11 @@ as `null` in place of a path. A `never_published` leaf is a path in the item
 that never received a publish event (a path outside the work dir).
 Decoding rule: a map with `kind == "Leaf"` is a leaf. The item carries no run
 reference and no publish path.
+
+*Amended 2026-09-28 (ticket 16):* the Leaf carries no provider, so the same
+content published by different Address Providers is one OutputItem. An
+OutputItem is written at `schema: 2`; a reader accepts `schema: 1`, whose
+Leaves carry `provider`, and ignores it. The RunCompletion records providers.
 
 ### OutputCollection
 ```
@@ -518,7 +539,7 @@ Nothing reads `config` by machine: it is provenance for people.
 
 ### RunCompletion
 ```
-{ kind: "RunCompletion", schema: 1, asserted_by: string,
+{ kind: "RunCompletion", schema: 2, asserted_by: string,
   run: Cid,                             // RunManifest
   collections: [Cid, ...],              // OutputCollection links, sorted by output name
   input_set: Cid|null,                  // null in the skeleton
@@ -527,7 +548,8 @@ Nothing reads `config` by machine: it is provenance for people.
   possibly_incomplete: bool,            // true for every failed run (no barrier exists on that path)
   started_at: string, finished_at: string,
   anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int },
-  error: string|null }
+  error: string|null,
+  providers: { <provider>: [Cid, ...] } }   // schema 2: every address the run published (leaves and the files inside published directories) under the provider that supplied it
 ```
 
 ### Claim, InputSet, Attestation
