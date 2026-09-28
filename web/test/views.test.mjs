@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { compose, copyOutcome, copyText, itemRows, pickAll, runLabelText, undoNote } from '../src/views.js'
+import { compose, copyOutcome, copyText, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
@@ -199,4 +199,17 @@ test('the compose tray counts only item entries toward the preview cap, so a Sel
   assert.equal(ex.asked.length, 100)
   const via = node.querySelector('[data-tray-entry=i000]').querySelector('.row-via')
   assert.match(via.textContent, /^picked from cold \/ aligned/)
+})
+
+test('a run that published nothing says so under Outputs, with no snippet toggle and no empty list', async () => {
+  installDom()
+  const completion = { status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-27T02:26:05.935Z', error: null,
+    anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 } }
+  const ex = { run: async () => ({ row: { run_name: 'extravagant_boltzmann', pipeline: 'custom.nf', nf_run_hash: 'abc' }, completion, collections: [] }) }
+  const node = await run(ex, 'bafyrun')
+  const empty = node.querySelector('[data-no-outputs]')
+  assert.ok(empty, 'an empty-state line')
+  assert.equal(empty.textContent, 'This run published no outputs.')
+  assert.equal(node.querySelectorAll('[data-snippet-mode]').length, 0)
+  assert.equal(node.querySelectorAll('ul').length, 0)
 })

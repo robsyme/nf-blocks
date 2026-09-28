@@ -114,10 +114,12 @@ export async function run(ex, completionCid) {
       h('dt', {}, 'anomalies'), h('dd', {}, `unresolvable ${a.unresolvable}, unaddressed ${a.unaddressed}, declined ${a.declined}, never published ${a.never_published}`),
       completion.error ? [h('dt', {}, 'error'), h('dd', {}, completion.error)] : null),
     h('h2', {}, 'Outputs'),
-    lid && collections.length ? h('p', {}, 'Read an output in a downstream workflow. Script kind: ', snippetToggle()) : null,
-    h('ul', {}, collections.map(c => h('li', { 'data-collection': c.cid, 'data-output': c.output },
-      link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)'),
-      lid ? snippetBlock({ kind: 'run', lid, output: c.output }) : null))))
+    // A run with no workflow outputs (a consumer that only reads, say) records no Output Collections.
+    collections.length === 0 ? h('p', { class: 'muted', 'data-no-outputs': '' }, 'This run published no outputs.') : [
+      lid ? h('p', {}, 'Read an output in a downstream workflow. Script kind: ', snippetToggle()) : null,
+      h('ul', {}, collections.map(c => h('li', { 'data-collection': c.cid, 'data-output': c.output },
+        link(`#/collection/${c.cid}`, c.output), ' ', link(`#/items/${completionCid}/${enc(c.output)}`, '(filter by metadata)'),
+        lid ? snippetBlock({ kind: 'run', lid, output: c.output }) : null)))])
 }
 
 export async function collection(ex, collectionCid, offset = 0, ctx) {
