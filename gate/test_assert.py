@@ -652,5 +652,89 @@ class SeedingTest(unittest.TestCase):
         self.assertEqual(gate_assert._permission_failures(log, locked), [log])
 
 
+class NodeHashEvidenceTest(TempTree):
+    """Review I1: again's leaves must be tied to verified .command.cas digests."""
+
+    def task(self, rel, data):
+        full = self.write(rel + "/out.txt", data)
+        with open(os.path.join(os.path.dirname(full), ".command.cas"), "w") as f:
+            f.write("%s  out.txt\n" % cas.sha256_of_file(full))
+        return os.path.dirname(full)
+
+    def test_no_command_cas_anywhere_fails(self):
+        os.makedirs(self.path("work", "ab", "cdef"))
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x")}, [self.path("work", "ab", "cdef")])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no task directory holds a .command.cas line", problems[0])
+
+    def test_a_leaf_no_command_cas_covers_fails(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x\n"), cas.cid_raw(b"other")}, [d])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(cas.cid_raw(b"other"), problems[0])
+
+    def test_a_digest_the_file_does_not_hash_to_covers_nothing(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        self.write("work/ab/cdef/out.txt", b"changed\n")
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x\n")}, [d])
+        self.assertTrue(any("it hashes to" in p for p in problems))
+        self.assertTrue(any("no task directory holds" in p for p in problems))
+
+    def test_every_leaf_covered_passes(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        self.assertEqual(gate_assert._node_hash_problems({cas.cid_raw(b"x\n")}, [d]), [])
+
+
+class HeadNodeTest(unittest.TestCase):
+    """Review I3: a leaf absent from cold's providers is not under head-node."""
+
+    def test_a_leaf_missing_from_cold_providers_fails(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(len(gate_assert._head_node_problems({a}, {})), 1)
+
+    def test_a_leaf_under_another_provider_fails(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(len(gate_assert._head_node_problems({a}, {a: {"fusion-node"}})), 1)
+
+    def test_head_node_passes(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(gate_assert._head_node_problems({a}, {a: {"head-node"}}), [])
+
+
+class SeedingRunsTest(TempTree):
+    """Review I2: the locked runs come from the Store Log through the watermark."""
+
+    def setUp(self):
+        super(SeedingRunsTest, self).setUp()
+        self.b = StoreBuilder(self.path("store"))
+        self.old = self.b.block({"kind": "RunCompletion", "n": 1})
+        self.mid = self.b.block({"kind": "RunCompletion", "n": 2})
+        self.new = self.b.block({"kind": "RunCompletion", "n": 3})
+        self.b.store_log(1000, "run", self.old)
+        self.b.store_log(2000, "run", self.mid)
+        self.b.store_log(3000, "run", self.new)
+        self.watermark = "%013d-run-%s" % (9999999999999 - 2000, self.mid)
+
+    def test_runs_after_the_watermark_are_left_out(self):
+        self.assertEqual(gate_assert._store_log_runs_through(self.b.store, self.watermark),
+                         sorted([self.old, self.mid]))
+
+    def test_matching_snapshot_passes(self):
+        self.assertEqual(gate_assert._seeding_problems(self.b.store, self.watermark, [self.mid, self.old]), [])
+
+    def test_a_snapshot_missing_a_logged_run_fails(self):
+        problems = gate_assert._seeding_problems(self.b.store, self.watermark, [self.mid])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.old, problems[0])
+
+    def test_a_snapshot_holding_a_later_run_fails(self):
+        problems = gate_assert._seeding_problems(self.b.store, self.watermark, [self.old, self.mid, self.new])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.new, problems[0])
+
+    def test_no_watermark_fails(self):
+        self.assertEqual(len(gate_assert._seeding_problems(self.b.store, None, [self.old])), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

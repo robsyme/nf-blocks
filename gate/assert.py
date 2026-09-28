@@ -585,17 +585,13 @@ def assert_two(gate):
     if not_node:
         problems.append("run again (cas.nodeHash = true) has %d file leaf address(es) "
                         "not under fusion-node: %s" % (len(not_node), not_node[:3]))
-    not_head = sorted(a for a in raw_leaves if a in cold_p and "head-node" not in cold_p[a])
-    if not_head:
-        problems.append("run cold has file leaves not under head-node: %s" % not_head[:3])
+    problems.extend(_head_node_problems(raw_leaves, cold_p))
     with_provider = [cid for cid, item in gate.run("again").items(gate)
                      for leaf in _leaves(item.get("value")) if "provider" in leaf]
     if with_provider:
         problems.append("%d OutputItem(s) of again still carry a Leaf provider: %s"
                         % (len(with_provider), with_provider[:3]))
-    for task_dir in gate.work_dirs("pipeline-a", None):
-        if os.path.isfile(os.path.join(task_dir, ".command.cas")):
-            problems.extend(_command_cas_problems(task_dir)[:3])
+    problems.extend(_node_hash_problems(raw_leaves, gate.work_dirs("pipeline-a", None)))
 
     if problems:
         return FAIL, "; ".join(problems)
@@ -618,8 +614,12 @@ def _provider_of(completion):
     return out
 
 
-def _command_cas_problems(task_dir):
-    """Every .command.cas line must name a file in the task dir that hashes to its digest."""
+def _command_cas_problems(task_dir, verified=None):
+    """Every .command.cas line must name a file in the task dir that hashes to its digest.
+
+    `verified`, when given, collects the raw CID of every digest the Gate's own
+    hash of the named file confirms.
+    """
     path = os.path.join(task_dir, ".command.cas")
     problems = []
     with open(path, encoding="utf-8") as f:
@@ -629,10 +629,46 @@ def _command_cas_problems(task_dir):
             if not os.path.isfile(full):
                 problems.append("%s: .command.cas names %s, which is not in the task "
                                 "directory" % (task_dir, name))
-            elif cas.sha256_of_file(full) != digest:
+                continue
+            actual = cas.sha256_of_file(full)
+            if actual != digest:
                 problems.append("%s: .command.cas says %s is %s; it hashes to %s"
-                                % (task_dir, name, digest, cas.sha256_of_file(full)))
+                                % (task_dir, name, digest, actual))
+            elif verified is not None:
+                verified.add(cas.cid_from_sha256(bytes.fromhex(actual), cas.RAW))
     return problems
+
+
+def _node_hash_problems(raw_leaves, task_dirs):
+    """Ties `again`'s file leaves to the task nodes' .command.cas files.
+
+    Every .command.cas line is checked against the Gate's own hash of the file
+    it names; the verified digests, as raw CIDs, must be non-empty and must
+    cover every raw file leaf. The plugin's `providers` alone is its own claim.
+    """
+    problems, verified = [], set()
+    for task_dir in task_dirs:
+        if os.path.isfile(os.path.join(task_dir, ".command.cas")):
+            problems.extend(_command_cas_problems(task_dir, verified)[:3])
+    if not verified:
+        problems.append("no task directory holds a .command.cas line the Gate could "
+                        "verify, so nothing shows again's leaves were node-hashed")
+        return problems
+    uncovered = sorted(a for a in raw_leaves if a not in verified)
+    if uncovered:
+        problems.append("%d file leaf address(es) of again match no verified "
+                        ".command.cas digest: %s" % (len(uncovered), uncovered[:3]))
+    return problems
+
+
+def _head_node_problems(raw_leaves, cold_providers):
+    """Every file leaf must be under head-node in cold's providers, absent ones included."""
+    not_head = sorted(a for a in raw_leaves
+                      if "head-node" not in cold_providers.get(a, set()))
+    if not_head:
+        return ["run cold has %d file leaf address(es) not under head-node: %s"
+                % (len(not_head), not_head[:3])]
+    return []
 
 
 # --------------------------------------------------------------------------
@@ -1384,7 +1420,8 @@ def assert_thirteen(gate):
     """Ticket 04 decision 11. gate.sh deletes the consumer's cache twice.
 
     consumer-seeded runs with every RunManifest, RunCompletion and
-    OutputCollection block of the runs in lab's snapshot at mode 000: a
+    OutputCollection block of the runs lab's Store Log lists through the
+    snapshot's watermark at mode 000 (and those must be the snapshot's runs): a
     catch-up that read one logs "could not be read (<path>)", and one that
     skipped them without seeding would lose the runs and change the answer.
     consumer-scan runs with lab's snapshot moved aside: it must scan, warn,
@@ -1402,8 +1439,18 @@ def assert_thirteen(gate):
         if got != baseline:
             problems.append("%s staged %s, the first consumer %s: the answer changed"
                             % (name, got, baseline))
+    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    seeding = _seeding_problems(gate.store, before["watermark"], _snapshot_completions(lab))
+    problems.extend(seeding)
     seeded_log = _read(os.path.join(gate.root, "logs", "consumer-seeded", "nextflow.log"))
     locked = _read(os.path.join(gate.root, "logs", "consumer-seeded", "locked")).split()
+    if not seeding:
+        want = gate.store.metadata_blocks_of_runs(
+            _store_log_runs_through(gate.store, before["watermark"]))
+        if sorted(locked) != want:
+            problems.append("logs/consumer-seeded/locked lists %d block(s), the Store "
+                            "Log's runs through the watermark have %d metadata blocks"
+                            % (len(locked), len(want)))
     denied = _permission_failures(seeded_log, locked)
     if denied:
         problems.append("the seeded run read a locked metadata block of a run the "
@@ -1554,12 +1601,44 @@ def delete_consumer_cache(gate):
     return path
 
 
+def _store_log_runs_through(store, watermark):
+    """Completion cids of the `run` entries of a Store Log at or before
+    `watermark` (a Store Log entry name, `<reverse_ts>-<kind>-<cid>`), read
+    from the log itself. A reverse timestamp grows into the past, so "at or
+    before" is a reverse_ts no smaller than the watermark's."""
+    parts = (watermark or "").split("-", 2)
+    if len(parts) != 3 or len(parts[0]) != 13 or not parts[0].isdigit():
+        raise cas.GateError("the snapshot's watermark %r is not a Store Log entry name"
+                            % (watermark,))
+    return sorted(cid for rts, kind, cid in store.store_log()
+                  if kind == "run" and rts >= parts[0])
+
+
+def _seeding_problems(store, watermark, snapshot_completions):
+    """The snapshot's runs must be exactly the Store Log's runs through its watermark."""
+    try:
+        expected = set(_store_log_runs_through(store, watermark))
+    except cas.GateError as exc:
+        return [str(exc)]
+    got = set(snapshot_completions)
+    problems = []
+    if not expected:
+        problems.append("lab's Store Log has no run entry at or before the snapshot's "
+                        "watermark %s" % watermark)
+    if got != expected:
+        problems.append("lab's snapshot holds runs %s the Store Log does not list "
+                        "through its watermark and lacks %s it does"
+                        % (sorted(got - expected)[:3], sorted(expected - got)[:3]))
+    return problems
+
+
 def seeding_lock(gate):
     """Block paths of every RunManifest, RunCompletion and OutputCollection of
-    the runs lab's snapshot holds, the snapshot's own list of runs at or
-    before its watermark."""
+    the runs lab's Store Log lists at or before its snapshot's watermark,
+    derived from the log, not from the snapshot's own run rows."""
     lab = os.path.join(gate.store.root, "index", "v3.sqlite")
-    return gate.store.metadata_blocks_of_runs(_snapshot_completions(lab))
+    watermark = _snapshot_meta(lab).get("store_log_watermark")
+    return gate.store.metadata_blocks_of_runs(_store_log_runs_through(gate.store, watermark))
 
 
 # --------------------------------------------------------------------------
