@@ -273,6 +273,32 @@ class IndexSeedTest extends Specification {
         'schema_version 99'        | { Path root -> snapshotAtVersion(root, 99) }
     }
 
+    def 'a snapshot storage that throws #failure.class.simpleName is unreadable: the full scan still runs, with the warning (final review I4)'() {
+        given:
+        final Cid rc = run('r1', 'A', System.currentTimeMillis())
+        RuntimeException raised = failure
+        final SnapshotStorage throwing = new LocalSnapshotStorage(lab.root) {
+            @Override Path fetch(Path tempDir) { throw raised }
+        }
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.catchUp(lab, StoreLog.of(lab), 'lab', throwing, tmp.resolve('t'))
+
+        then:
+        cold.isRunIndexed(rc)
+        cold.metaValue('seeded_from:lab') == null
+        console.list.size() == 1
+        console.list[0].formattedMessage.contains("'lab'")
+        console.list[0].formattedMessage.contains('unreadable')
+
+        cleanup:
+        cold?.close()
+
+        where:
+        failure << [new IllegalStateException('Access Denied (Service: S3, Status Code: 403)'), new UncheckedIOException(new IOException('reset'))]
+    }
+
     /** A snapshot of the member at root whose schema_version row then says `version`. */
     private static void snapshotAtVersion(Path root, int version) {
         final LocalBlockStore store = new LocalBlockStore(root, 'lab', true)

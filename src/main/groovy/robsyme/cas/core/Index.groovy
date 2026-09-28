@@ -441,7 +441,9 @@ class Index implements Closeable {
             catch( SnapshotUnusable e ) {
                 warnUnusable(storeLog, member, e.reason)
             }
-            catch( IOException e ) {
+            catch( Exception e ) {
+                // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
+                // leaves the snapshot unreadable, and the full scan below still runs (ticket 04 decision 2).
                 warnUnusable(storeLog, member, 'unreadable')
                 log.debug("fetching the Index Snapshot of '${member}' failed", e)
             }
