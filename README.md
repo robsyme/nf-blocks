@@ -22,9 +22,15 @@ built against.
 This is a beta (`0.1.0-beta.2`). Pin the version in `plugins { }`, as the
 examples below do. What it supports today:
 
-- A store's writable member is a local directory. S3 works only as a
-  read-only member browsed with `nf-blocks:explore`; runs cannot publish to
-  S3, through Fusion, or from a cloud executor yet.
+- Milestone 4 (cloud): any member, the writable one included, is a local
+  directory or an S3 location. A run on AWS Batch, with or without Fusion,
+  publishes into a writable S3 member (below). Under Fusion the task node
+  hashes its own outputs; between S3 buckets S3 computes the SHA-256 of a
+  server-side copy, so most files never pass through the head node.
+- nf-blocks requires the `nf-amazon` plugin (`>=3.9.2`). If you install
+  nf-blocks by unpacking a local build into `NXF_PLUGINS_DIR` rather than
+  from the registry, Nextflow 26.04.6 does not fetch that dependency, so
+  install it alongside: `nextflow plugin install nf-amazon@3.9.2`.
 - In a typed script (`nextflow.enable.types = true`) Nextflow does not reach
   plugin channel factories as `channel.fromStore` until
   [nextflow-io/nextflow#7694](https://github.com/nextflow-io/nextflow/issues/7694)
@@ -32,8 +38,10 @@ examples below do. What it supports today:
 - The on-disk format (block kinds, the index, the Store Log) may still change
   before 1.0. A change to the blocks will come with a migration, since a
   block's address is its content and existing stores keep their blocks.
-- Warnings from the plugin go to `.nextflow.log`; only the missing-`fromStore`
-  hint and the default `outputDir` line also print on the terminal.
+- Warnings from the plugin go to `.nextflow.log`. These also print on the
+  terminal: the missing-`fromStore` hint, the default `outputDir` line, a
+  clock skew against S3, a process that node hashing cannot reach, and a
+  member indexed without a usable Index Snapshot.
 
 ## Get Started
 
@@ -88,6 +96,138 @@ work directory path:
 ```json
 {"kind":"FileOutput","spec":{"path":"cas://lab/aligned/A/A.bam", ...}}
 ```
+
+## Publishing into S3
+
+A writable S3 member takes an `s3://<bucket>[/<prefix>]` location; the S3
+client is nf-amazon's, configured from the `aws` scope. With a cloud executor
+the work dir is on S3 too:
+
+```groovy
+plugins {
+    id 'nf-blocks@0.1.0-beta.2'
+}
+
+lineage.enabled = true
+lineage.store.location = 'cas://lab'
+
+workDir = 's3://my-work-bucket/work'
+process.executor = 'awsbatch'
+process.queue = 'my-queue'
+
+aws {
+    region = 'us-east-1'
+    profile = 'my-profile'             // or any credential source nf-amazon accepts, SSO included
+}
+
+cas {
+    stores {
+        lab { location = 's3://my-cas-bucket/cas' }
+    }
+    tmpDir = '/scratch/nf-blocks'      // optional; default java.io.tmpdir
+}
+```
+
+The head node needs scratch disk. An output whose bytes the head node must
+read from S3 (over 5 GiB, with no node digest) is spooled to `cas.tmpDir`
+while it is hashed, then uploaded, so `cas.tmpDir` needs room for the
+largest such output. A full `cas.tmpDir` stops the run with a message naming
+it and the bytes needed.
+
+Blocks are written with `aws.client.storageClass`, `storageEncryption`,
+`storageKmsKeyId` and `requesterPays`. `aws.client.s3Acl` is not applied to
+member writes. Every block is its own object, so `GLACIER` and
+`DEEP_ARCHIVE` are refused (blocks must stay readable), `STANDARD_IA`,
+`ONEZONE_IA` and `INTELLIGENT_TIERING` warn that each block pays the
+per-object minimum, and a class nf-amazon ignores (`GLACIER_IR`) warns that
+blocks go to `STANDARD`.
+
+Immutability comes from conditional writes (`If-None-Match: *`). A bucket
+policy can harden it, denying unconditional writes and deletes of blocks to
+everyone but a sweep role (bucket, prefix, account and role are
+placeholders):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BlocksOnlyIfAbsent",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::my-cas-bucket/cas/blocks/*",
+      "Condition": {
+        "Null": { "s3:if-none-match": "true" },
+        "Bool": { "s3:ObjectCreationOperation": "true" }
+      }
+    },
+    {
+      "Sid": "OnlySweepDeletesBlocks",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:DeleteObject",
+      "Resource": "arn:aws:s3:::my-cas-bucket/cas/blocks/*",
+      "Condition": {
+        "ArnNotEquals": { "aws:PrincipalArn": "arn:aws:iam::111122223333:role/nf-blocks-sweep" }
+      }
+    }
+  ]
+}
+```
+
+That policy has two costs. AWS documents that a bucket enforcing
+conditional writes refuses `CopyObject` into the enforced prefix, so every
+server-side copy into `blocks/` fails and the head node reads the bytes
+instead (untested). And when a copy's SHA-256 disagrees with the task
+node's digest, nf-blocks cannot delete the wrong object, so the run stops
+naming the key to remove with the sweep role.
+
+A lifecycle rule clears staging copies under `tmp/` and abandoned multipart
+uploads:
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "nf-blocks-tmp",
+      "Filter": { "Prefix": "cas/tmp/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 1 }
+    },
+    {
+      "ID": "nf-blocks-multipart",
+      "Filter": { "Prefix": "cas/" },
+      "Status": "Enabled",
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 }
+    }
+  ]
+}
+```
+
+Under Fusion (`fusion.enabled = true`), `cas.nodeHash` is on by default:
+an `afterScript`, chained ahead of any you set, hashes each task's declared
+outputs on the node into `.command.cas`, and the head node uses those
+digests. A process whose own body sets `afterScript` is not hashed on the
+node, and the run warns naming it. Without Fusion, an S3 work dir flattens
+symbolic links to copies, so a published directory's internal link arrives
+as a regular file. A run also compares this machine's clock with S3's: over
+a minute it warns, over five minutes it stops and asks for NTP.
+
+`nextflow lineage find` against an S3 member costs one GET per record.
+
+### A head node that starts cold
+
+A head node without the index cache (a Batch head job, a Seqera Platform
+launch) would have to read every block of a large member once. Instead the
+first catch-up seeds the cache from the member's Index Snapshot
+(`index/v3.sqlite`) and reads only the Store Log entries written after it.
+Runs keep the snapshot current while it is under `cas.snapshot.maxBytes`
+(64 MiB by default); for a large shared member, run
+`nextflow plugin nf-blocks:snapshot` against it on a schedule. With no usable
+snapshot the run warns and scans. Setting `cas.index.path` to persistent
+disk (EFS, FSx) skips seeding altogether; use one file per head node, since
+SQLite's WAL mode needs shared memory.
 
 ## Reading outputs in another pipeline
 
