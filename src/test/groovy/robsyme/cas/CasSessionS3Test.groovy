@@ -88,6 +88,30 @@ class CasSessionS3Test extends Specification {
         s.snapshotBase() == null
     }
 
+    def 'a page PUT that fails after the snapshot is written warns and the write still counts (rule 3)'() {
+        given:
+        buckets['member'] = new MemoryS3Ops('member') {
+            @Override S3Written put(String key, S3Body body, S3PutOptions o) {
+                if( key.endsWith(IndexSnapshot.PAGE_NAME) ) throw new IOException('403 Forbidden')
+                return super.put(key, body, o)
+            }
+        }
+        final CasSession s = session()
+        final Index index = s.openIndex()
+
+        when:
+        IndexSnapshot.Result r = s.snapshotWritable(index, 0L, s.snapshotBase(), [] as Set)
+
+        then:
+        noExceptionThrown()
+        r.written
+        buckets['member'].objects.containsKey('cas/' + IndexSnapshot.relativePath())
+        !buckets['member'].objects.containsKey('cas/' + IndexSnapshot.PAGE_NAME)
+
+        cleanup:
+        index?.close()
+    }
+
     def 'the clock check: a skew over 5 minutes throws'() {
         given:
         final CasSession s = session()

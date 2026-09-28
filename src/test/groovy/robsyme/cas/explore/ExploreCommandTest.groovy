@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 import robsyme.cas.CasConfig
+import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.Fixtures
 import robsyme.cas.core.LocalBlockStore
@@ -98,6 +99,32 @@ class ExploreCommandTest extends Specification {
         members['lab'] instanceof LocalMemberFiles
         members['priv'] instanceof S3MemberFiles
         asked == ['bucket']
+    }
+
+    def 'a failed listing for shadowed coordinates warns on stderr and explore still starts (rule 3)'() {
+        given:
+        MemoryS3Ops bucket = new MemoryS3Ops('member') {
+            @Override List<robsyme.cas.s3.S3Listed> list(String prefix, int maxKeys) {
+                if( prefix.startsWith('cas/coords') ) throw new IOException('403 Forbidden')
+                return super.list(prefix, maxKeys)
+            }
+        }
+        Closure<S3Ops> saved = CasSession.s3OpsFactory
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        Map cfg = [lineage: [store: [location: 'cas://lab']],
+                   cas: [stores: [lab: [location: 's3://member/cas']], index: [path: tempDir.resolve('s3-cache.sqlite').toString()],
+                         tmpDir: tempDir.resolve('t').toString()]]
+
+        when:
+        started = ExploreCommand.start([], cfg, new PrintStream(out, true), new PrintStream(err, true))
+
+        then:
+        started.server.port > 0
+        err.toString().contains("nf-blocks:explore: could not look for shadowed coordinates in 'lab' (403 Forbidden); continuing")
+
+        cleanup:
+        started?.index?.close()
+        CasSession.s3OpsFactory = saved
     }
 
     def 'explore takes only --port'() {

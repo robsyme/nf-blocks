@@ -45,6 +45,9 @@ class CasLinStore implements LinStore {
     /** Sub-directory of the writable member holding Nextflow's own lineage records. */
     static final String NEXTFLOW_RECORDS = 'nf'
 
+    /** DefaultLinStore's history folder under nf/ (DefaultLinStore.HISTORY_FILE_NAME at v26.04.6). */
+    private static final String HISTORY = '.history'
+
     private static final String SCHEME_PREFIX = Coordinates.SCHEME + '://'
 
     private CasConfig casConfig
@@ -103,12 +106,19 @@ class CasLinStore implements LinStore {
         return this
     }
 
-    /** Whether a read-only member holds an nf/ tree; an S3 one that cannot be looked at is skipped with a warning. */
+    /**
+     * Whether a read-only member holds an nf/ tree that DefaultLinStore can open
+     * without writing. Its open also builds a DefaultLinHistoryLog over
+     * nf/.history, which creates that directory when it is missing
+     * (DefaultLinHistoryLog.groovy:37-40 at v26.04.6), so both must exist.
+     * An S3 member that cannot be looked at is skipped with a warning.
+     */
     private boolean hasRecords(String alias) {
-        if( !casConfig.isRemote(alias) )
-            return Files.isDirectory(casConfig.locationOf(alias).resolve(NEXTFLOW_RECORDS))
         try {
-            return Files.isDirectory(casConfig.pathOf(alias).resolve(NEXTFLOW_RECORDS))
+            final Path records = casConfig.isRemote(alias)
+                ? casConfig.pathOf(alias).resolve(NEXTFLOW_RECORDS)
+                : casConfig.locationOf(alias).resolve(NEXTFLOW_RECORDS)
+            return Files.isDirectory(records) && Files.isDirectory(records.resolve(HISTORY))
         }
         catch( Exception e ) {
             log.warn("could not look for lineage records in store member '${alias}' (${e.message}); its lid:// records are not readable this run")

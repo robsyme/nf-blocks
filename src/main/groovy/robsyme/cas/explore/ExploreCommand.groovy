@@ -120,7 +120,15 @@ class ExploreCommand {
         final CoordinateTree coords = session.coordinatesOf(alias)
         if( !(coords instanceof S3CoordinateTree) )
             return
-        final List<String> shadowed = ((S3CoordinateTree) coords).shadowedPointers(21)
+        final List<String> shadowed
+        try {
+            shadowed = ((S3CoordinateTree) coords).shadowedPointers(21)
+        }
+        catch( Exception e ) {
+            // Advice only (rule 3): a listing that fails must not stop the explorer.
+            err.println("nf-blocks:explore: could not look for shadowed coordinates in '${alias}' (${e.message}); continuing")
+            return
+        }
         if( shadowed )
             err.println("nf-blocks:explore: ${shadowed.size() > 20 ? 'more than 20' : shadowed.size()} coordinate(s) in '${alias}' are shadowed by a pointer above them, and read as absent: ${shadowed.take(20).join(', ')}")
     }

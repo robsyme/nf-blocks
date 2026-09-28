@@ -225,6 +225,34 @@ class CasLinStoreTest extends Specification {
         Global.session = session
     }
 
+    def 'a read-only member with nf/ but no nf/.history is skipped, and nothing is created in it'() {
+        given: 'a shared member whose nf/ was never opened by DefaultLinStore'
+        Path sharedRoot = tempDir.resolve('bare-shared')
+        Files.createDirectories(sharedRoot.resolve('nf'))
+        Session s2 = Mock(Session) {
+            getConfig() >> [
+                lineage: [store: [location: 'cas://lab']],
+                cas: [
+                    stores: [lab: [location: tempDir.resolve('lab3').toString()], shared: [location: sharedRoot.toString()]],
+                    resolve: ['lab', 'shared'],
+                ],
+            ]
+        }
+        Global.session = s2
+        CasSession.of(s2)
+
+        when:
+        CasLinStore composed = new CasLinStore().open(new LineageConfig([store: [location: 'cas://lab']]))
+
+        then:
+        composed.@readers.size() == 1
+        !Files.exists(sharedRoot.resolve('nf/.history'))
+
+        cleanup:
+        CasSession.unbind(s2)
+        Global.session = session
+    }
+
     def 'the records location is s3://.../nf for an S3 member and <dir>/nf for a local one (ticket 02 decision 7)'() {
         given:
         final CasConfig s3 = CasConfig.from([cas: [stores: [lab: [location: 's3://member/cas']]]], 'cas://lab')

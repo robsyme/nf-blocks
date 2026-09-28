@@ -304,11 +304,21 @@ class CasSession {
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )
-                storage.writePage(page)
+                writePage(storage, page)
             else
                 warnOnce('this build of nf-blocks carries no explorer page; the snapshot was written without index.html')
         }
         return result
+    }
+
+    /** The explorer page beside a written snapshot. Derived (rule 3): a failure warns, and the snapshot stands. */
+    private void writePage(SnapshotStorage storage, byte[] page) {
+        try {
+            storage.writePage(page)
+        }
+        catch( Exception e ) {
+            log.warn("the explorer page of store '${config.writableAlias}' could not be written beside its Index Snapshot; it is derived: ${e.message}", e)
+        }
     }
 
     /**
