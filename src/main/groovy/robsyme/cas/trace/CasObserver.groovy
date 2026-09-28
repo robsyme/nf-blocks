@@ -33,6 +33,7 @@ import robsyme.cas.core.RunCompletion
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.core.RunManifest
+import robsyme.cas.core.SnapshotBase
 
 /**
  * Turns a run's publishes into a queryable run (DESIGN.md §11): it writes the
@@ -70,6 +71,8 @@ class CasObserver implements TraceObserverV2 {
         this.session = session
         this.cas = CasSession.of(session)
         validateOutputDir()
+        // Ticket 03 decision 2: one HEAD on the writable S3 member, before any entry is stamped.
+        cas.checkClock()
     }
 
     /**
@@ -360,12 +363,14 @@ class CasObserver implements TraceObserverV2 {
     private void indexRun(Cid completion) {
         Index index = null
         try {
+            // Before the catch-up, so the snapshot guard covers it (silent decision 16).
+            final SnapshotBase base = cas.snapshotBase()
             index = openIndex()
             index.ingestRun(cas.store, completion, cas.config.writableAlias)
             // Also fold in any read-only members' run logs, so this user's index
             // reflects the whole composition and not only what this run wrote.
-            cas.catchUpIndex(index)
-            writeSnapshot(index)
+            final Set<String> failed = cas.catchUpIndex(index)
+            writeSnapshot(index, base, failed)
         }
         catch( Exception e ) {
             log.warn("the index could not be updated for run ${completion}; it is derived and can be rebuilt: ${e.message}", e)
@@ -385,13 +390,15 @@ class CasObserver implements TraceObserverV2 {
         return cas.openIndex()
     }
 
-    /** The member's Index Snapshot, under the cap (DESIGN.md §15). Derived: a failure only warns. */
-    private void writeSnapshot(Index index) {
+    /** The member's Index Snapshot, under the cap and the guard (DESIGN.md §15). Derived: a failure only warns. */
+    private void writeSnapshot(Index index, SnapshotBase base, Set<String> failed) {
         try {
-            final IndexSnapshot.Result result = cas.snapshotWritable(index, cas.config.snapshotMaxBytes)
-            if( result.skipped )
+            final IndexSnapshot.Result r = cas.snapshotWritable(index, cas.config.snapshotMaxBytes, base, failed)
+            if( r.skipped == IndexSnapshot.OVER_CAP )
                 log.info("the Index Snapshot of store '${cas.config.writableAlias}' is over cas.snapshot.maxBytes " +
                     "(${cas.config.snapshotMaxBytes} bytes) and was not rewritten; `nextflow plugin nf-blocks:snapshot` rewrites it at any size")
+            else if( r.skipped )
+                log.info("the Index Snapshot of store '${cas.config.writableAlias}' was not rewritten (${r.skipped}); it is derived, and the next writer rewrites it")
         }
         catch( Exception e ) {
             log.warn("the Index Snapshot of store '${cas.config.writableAlias}' could not be written; it is derived: ${e.message}", e)

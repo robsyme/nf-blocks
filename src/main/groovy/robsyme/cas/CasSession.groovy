@@ -14,6 +14,7 @@ import nextflow.Session
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
+import robsyme.cas.core.ClockSkew
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.LocalCoordinateTree
@@ -21,10 +22,20 @@ import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.Put
+import robsyme.cas.core.SnapshotBase
+import robsyme.cas.core.SnapshotStorage
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
 import robsyme.cas.nio.PublishAddresser
+import robsyme.cas.s3.S3Access
+import robsyme.cas.s3.S3BlockStore
+import robsyme.cas.s3.S3CoordinateTree
+import robsyme.cas.s3.S3Ops
+import robsyme.cas.s3.S3PreconditionFailed
+import robsyme.cas.s3.S3SnapshotStorage
+import robsyme.cas.trace.ConsoleLog
 
 /**
  * The one per-run shared object (DESIGN.md section 9). Everything the provider,
@@ -111,19 +122,63 @@ class CasSession {
     private final AtomicBoolean completed = new AtomicBoolean(false)
     private final CountDownLatch completionDone = new CountDownLatch(1)
 
+    /** A test seam: the S3Ops for a bucket, from the loaded config map. */
+    static Closure<S3Ops> s3OpsFactory = { Map config, String bucket -> S3Access.open(config, bucket) } as Closure<S3Ops>
+
+    /** alias -> the member's coordinate tree and snapshot storage, built beside its block store. */
+    private final Map<String, CoordinateTree> trees = new LinkedHashMap<>()
+    private final Map<String, SnapshotStorage> snapshots = new LinkedHashMap<>()
+
     CasSession(CasConfig config) {
         this.config = config
         this.assertedBy = config.assertedBy
-        this.store = buildStore(config)
-        this.coordinates = new LocalCoordinateTree(config.writableLocation.resolve('coords'))
+        final List<BlockStore> members = new ArrayList<>()
+        for( String alias : config.members ) {
+            final boolean writable = alias == config.writableAlias
+            if( config.isRemote(alias) ) {
+                final S3Location at = config.remoteOf(alias)
+                final S3Ops ops = s3OpsFactory.call(config.rawConfig, at.bucket)
+                members.add(new S3BlockStore(ops, at.prefix, alias, writable, config.tmpDir))
+                trees.put(alias, new S3CoordinateTree(ops, at.prefix))
+                snapshots.put(alias, new S3SnapshotStorage(ops, at.prefix))
+            }
+            else {
+                final Path root = config.locationOf(alias)
+                members.add(new LocalBlockStore(root, alias, writable))
+                trees.put(alias, new LocalCoordinateTree(root.resolve('coords')))
+                snapshots.put(alias, new LocalSnapshotStorage(root))
+            }
+        }
+        this.store = new CompositeStore(members)
+        this.coordinates = trees.get(config.writableAlias)
+        if( config.storageClassWarning )
+            warnOnce(config.storageClassWarning)
     }
 
-    /** Test seam: an instance over an already-built store and coordinate tree. */
+    /**
+     * Test seam: an instance over an already-built store and coordinate tree.
+     * The writable alias gets {@code coordinates}, and a snapshot storage over
+     * the store's root when its writable member is local; every other local
+     * member gets its own tree and storage from the config.
+     */
     CasSession(CasConfig config, BlockStore store, CoordinateTree coordinates) {
         this.config = config
         this.assertedBy = config.assertedBy
         this.store = store
         this.coordinates = coordinates
+        for( String alias : config.members ) {
+            final Path root = config.locationOf(alias)
+            if( alias == config.writableAlias || root == null )
+                continue
+            trees.put(alias, new LocalCoordinateTree(root.resolve('coords')))
+            snapshots.put(alias, new LocalSnapshotStorage(root))
+        }
+        trees.put(config.writableAlias, coordinates)
+        final BlockStore writable = members()[0]
+        if( writable instanceof LocalBlockStore )
+            snapshots.put(config.writableAlias, new LocalSnapshotStorage(((LocalBlockStore) writable).root))
+        else if( config.writableLocation != null )
+            snapshots.put(config.writableAlias, new LocalSnapshotStorage(config.writableLocation))
     }
 
     private volatile PublishAddresser addresser
@@ -139,32 +194,29 @@ class CasSession {
         return addresser
     }
 
-    private static BlockStore buildStore(CasConfig config) {
-        final List<BlockStore> members = new ArrayList<>()
-        for( String alias : config.members ) {
-            final Path location = config.locationOf(alias)
-            members.add(new LocalBlockStore(location, alias, alias == config.writableAlias))
-        }
-        return new CompositeStore(members)
-    }
-
     /**
      * Brings the index up to date from every store member's Store Log, so a read
      * across a composition (a {@code fromStore} through {@code [out, lab]}) sees
      * the runs recorded in a read-only member and not only the writable one
-     * (DESIGN.md §12). Each member advances its own watermark, so this is cheap
-     * to call before a query and idempotent. Derived, so a member whose log
-     * cannot be read is logged and skipped rather than failing the caller.
+     * (DESIGN.md §12). A cold member is seeded from its Index Snapshot first
+     * (ticket 04). Each member advances its own watermark, so this is cheap to
+     * call before a query and idempotent. Derived, so a member whose log cannot
+     * be read is logged and skipped rather than failing the caller.
+     *
+     * @return the aliases whose catch-up threw
      */
-    void catchUpIndex(Index index) {
+    Set<String> catchUpIndex(Index index) {
+        final Set<String> failed = new LinkedHashSet<String>()
         for( BlockStore member : members() ) {
             try {
-                index.catchUp(member, StoreLog.of(member), member.alias())
+                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir)
             }
             catch( Exception e ) {
+                failed.add(member.alias())
                 log.warn("could not catch up the index from store member '${member.alias()}'; it is derived: ${e.message}", e)
             }
         }
+        return failed
     }
 
     /** The store's members, writable first; a single-store session has one. */
@@ -172,19 +224,59 @@ class CasSession {
         return store instanceof CompositeStore ? ((CompositeStore) store).members : [store]
     }
 
-    /** The coordinate tree of a member by alias (DESIGN.md §7). Task 11 adds S3 members. */
+    /**
+     * The coordinate tree of a member by alias (DESIGN.md §7), local or S3. A
+     * store configured but left out of cas.resolve still has coordinates a
+     * `cas://<alias>/...` path can name, so its tree is built on first use.
+     */
     CoordinateTree coordinatesOf(String alias) {
-        if( alias == config.writableAlias )
-            return coordinates
-        final Path location = config.locationOf(alias)
-        if( location == null )
-            throw new IllegalArgumentException("Unknown store alias '${alias}' -- configured stores: ${config.members.join(', ')}")
-        return new LocalCoordinateTree(location.resolve('coords'))
+        synchronized( trees ) {
+            CoordinateTree t = trees.get(alias)
+            if( t == null && config.isRemote(alias) ) {
+                final S3Location at = config.remoteOf(alias)
+                t = new S3CoordinateTree(s3OpsFactory.call(config.rawConfig, at.bucket), at.prefix)
+            }
+            else if( t == null && config.locationOf(alias) != null )
+                t = new LocalCoordinateTree(config.locationOf(alias).resolve('coords'))
+            if( t == null )
+                throw new IllegalArgumentException("Unknown store alias '${alias}' -- configured stores: ${config.members.join(', ')}")
+            trees.put(alias, t)
+            return t
+        }
     }
 
-    /** This composition's per-user cache index (DESIGN.md §12). The caller closes it. */
+    /** Where a member keeps its Index Snapshot and page (DESIGN.md §15); null for an unknown alias. */
+    SnapshotStorage snapshotsOf(String alias) {
+        return snapshots.get(alias)
+    }
+
+    /**
+     * The writable member's snapshot as it stands, taken before the catch-up so
+     * the guard covers it (silent decision 16). Null when there is none, or when
+     * it cannot be looked at: a snapshot replaced between the HEAD and the GET
+     * that counts an uncounted one (S3PreconditionFailed), or any other failure.
+     * Either way the write that follows is guarded as a first write.
+     */
+    SnapshotBase snapshotBase() {
+        final SnapshotStorage storage = snapshotsOf(config.writableAlias)
+        if( storage == null )
+            return null
+        try {
+            return storage.base(config.tmpDir)
+        }
+        catch( S3PreconditionFailed e ) {
+            log.warn("the Index Snapshot of '${config.writableAlias}' was replaced while it was being read (${e.message}); guarding the rewrite as if there were none")
+            return null
+        }
+        catch( Exception e ) {
+            log.warn("could not look at the Index Snapshot of '${config.writableAlias}'; it is derived: ${e.message}")
+            return null
+        }
+    }
+
+    /** This composition's per-user cache index (DESIGN.md §12), named by every member's location text. The caller closes it. */
     Index openIndex() {
-        return Index.open(IndexPaths.cachePath(config.localLocations(), config.indexOverride))
+        return Index.open(IndexPaths.cachePath(config.locationTexts(), config.indexOverride))
     }
 
     /**
@@ -198,19 +290,60 @@ class CasSession {
 
     /**
      * Rewrites the writable member's Index Snapshot from {@code index}, and the
-     * page beside it when this build carries one (DESIGN.md §15).
-     * {@code maxBytes <= 0} writes at any size.
+     * page beside it when this build carries one (DESIGN.md §15 and ticket 04
+     * decision 3). {@code base} is {@link #snapshotBase}, taken before the
+     * catch-up; {@code failed} is what {@link #catchUpIndex} returned, and a
+     * failed catch-up of the writable member keeps the old snapshot
+     * ({@code catch_up_failed}). {@code maxBytes <= 0} writes at any size.
      */
-    IndexSnapshot.Result snapshotWritable(Index index, long maxBytes) {
-        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, config.writableLocation, maxBytes)
+    IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed) {
+        if( failed?.contains(config.writableAlias) )
+            return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
+        final SnapshotStorage storage = snapshotsOf(config.writableAlias)
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir)
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )
-                IndexSnapshot.writePage(config.writableLocation, page)
+                storage.writePage(page)
             else
                 warnOnce('this build of nf-blocks carries no explorer page; the snapshot was written without index.html')
         }
         return result
+    }
+
+    /**
+     * The writable S3 member's clock check (ticket 03 decision 2): one HEAD, so
+     * the S3Ops has seen a response and its Date header, then the skew judged.
+     * Over 5 minutes throws {@link ClockSkewException}, over 1 minute warns. A
+     * local writable member makes no request.
+     */
+    void checkClock() {
+        final BlockStore writable = members()[0]
+        if( !(writable instanceof S3BlockStore) )
+            return
+        final S3BlockStore s3 = (S3BlockStore) writable
+        try {
+            s3.ops.head(s3.prefix + IndexSnapshot.relativePath())
+        }
+        catch( Exception e ) {
+            // A 403 on a missing key without s3:ListBucket, or the network: the check is advice, and
+            // a real outage is reported by the first write (silent decision 19).
+            ConsoleLog.LOG.warn("could not check this machine's clock against S3 (${e.message}); continuing")
+            return
+        }
+        final Long server = s3.ops.firstServerDateMillis()
+        if( server == null )
+            return
+        final long now = System.currentTimeMillis()
+        switch( ClockSkew.judge(now, server) ) {
+            case ClockSkew.Verdict.ABORT:
+                throw new ClockSkewException(ClockSkew.describe(now, server))
+            case ClockSkew.Verdict.WARN:
+                ConsoleLog.LOG.warn(ClockSkew.describe(now, server))
+                break
+            default:
+                break
+        }
     }
 
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet()

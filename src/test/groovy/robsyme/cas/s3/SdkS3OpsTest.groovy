@@ -110,6 +110,13 @@ class SdkS3OpsTest extends Specification {
         SdkS3Ops.statusOf(S3Exception.builder().statusCode(403).build()) == null
     }
 
+    def 'a conditional PUT onto a key deleted since its HEAD (404) is a failed precondition, not an error (Task 7 carry)'() {
+        expect:
+        SdkS3Ops.putStatusOf(S3Exception.builder().statusCode(404).build(), S3PutOptions.create().ifMatch('"e1"')) == S3Written.Status.EXISTS
+        SdkS3Ops.putStatusOf(S3Exception.builder().statusCode(404).build(), S3PutOptions.create()) == null
+        SdkS3Ops.putStatusOf(S3Exception.builder().statusCode(412).build(), S3PutOptions.create()) == S3Written.Status.EXISTS
+    }
+
     def 'the Date of the first response is kept and parsed'() {
         expect:
         SdkS3Ops.parseDate('Sun, 27 Sep 2026 10:00:00 GMT') == 1790503200000L

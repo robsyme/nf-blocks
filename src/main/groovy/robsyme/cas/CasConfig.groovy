@@ -131,9 +131,6 @@ class CasConfig {
     /** Every resolvable member's location text, writable first: what IndexPaths names the cache file by. */
     List<String> locationTexts() { members.collect { String a -> locationText(a) } }
 
-    /** Deprecated: Task 11 moves its one caller to locationTexts(). */
-    List<String> localLocations() { locationTexts() }
-
     /** The member's location as a Path through FileHelper.asPath; an S3 one needs nf-amazon started. */
     Path pathOf(String alias) {
         return remotes.containsKey(alias) ? FileHelper.asPath(remotes.get(alias).toString()) : locations.get(alias)

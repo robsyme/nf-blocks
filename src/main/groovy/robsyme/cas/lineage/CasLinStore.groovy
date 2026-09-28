@@ -10,6 +10,7 @@ import nextflow.Global
 import nextflow.Session
 import nextflow.exception.AbortOperationException
 import nextflow.exception.AbortRunException
+import nextflow.extension.FilesEx
 import nextflow.file.FileHelper
 import nextflow.lineage.DefaultLinStore
 import nextflow.lineage.LinHistoryLog
@@ -62,36 +63,61 @@ class CasLinStore implements LinStore {
 
     Path getRecordsLocation() { delegate?.location }
 
+    /** nf/ of a member as the location string DefaultLinStore resolves (ticket 02 decision 7): s3://... or a local path. */
+    static String recordsLocation(CasConfig config, String alias) {
+        return config.isRemote(alias)
+            ? "${config.remoteOf(alias)}/${NEXTFLOW_RECORDS}".toString()
+            : FilesEx.toUriString(config.locationOf(alias).resolve(NEXTFLOW_RECORDS))
+    }
+
     @Override
     CasLinStore open(LineageConfig config) {
         this.casConfig = CasConfig.from(sessionConfig(), config?.store?.location)
-        final records = casConfig.writableLocation.resolve(NEXTFLOW_RECORDS)
-        try {
-            Files.createDirectories(records)
+        final String writable = casConfig.writableAlias
+        // A local member needs nf/ made first; S3 has no directories to make.
+        if( !casConfig.isRemote(writable) ) {
+            final Path records = casConfig.writableLocation.resolve(NEXTFLOW_RECORDS)
+            try {
+                Files.createDirectories(records)
+            }
+            catch( IOException e ) {
+                throw new AbortOperationException("Unable to create lineage store directory: ${records} -- cause: ${e.message}", e)
+            }
         }
-        catch( IOException e ) {
-            throw new AbortOperationException("Unable to create lineage store directory: ${records} -- cause: ${e.message}", e)
-        }
-        this.delegate = openRecords(records)
+        this.delegate = openRecords(recordsLocation(casConfig, writable))
         // Build the reader chain: the writable member, then every other member
         // that already holds an nf/ tree. A member with none contributes no
-        // records and is skipped, so we never write into a read-only member.
+        // records and is skipped, so we never write into a read-only member:
+        // DefaultLinStore.open creates its location when it is missing, which
+        // on S3 is a PutObject of an empty "nf/" key.
         final List<DefaultLinStore> chain = new ArrayList<DefaultLinStore>()
         chain.add(delegate)
         for( String alias : casConfig.members ) {
-            if( alias == casConfig.writableAlias )
+            if( alias == writable )
                 continue
-            final Path memberRecords = casConfig.locationOf(alias).resolve(NEXTFLOW_RECORDS)
-            if( Files.isDirectory(memberRecords) )
-                chain.add(openRecords(memberRecords))
+            if( hasRecords(alias) )
+                chain.add(openRecords(recordsLocation(casConfig, alias)))
         }
         this.readers = Collections.unmodifiableList(chain)
-        log.debug "Lineage records for store '${casConfig.writableAlias}' at ${records}; ${readers.size()} member(s) readable"
+        log.debug "Lineage records for store '${writable}' at ${delegate.location}; ${readers.size()} member(s) readable"
         return this
     }
 
-    private static DefaultLinStore openRecords(Path location) {
-        return new DefaultLinStore().open(new LineageConfig([enabled: true, store: [location: location.toString()]]))
+    /** Whether a read-only member holds an nf/ tree; an S3 one that cannot be looked at is skipped with a warning. */
+    private boolean hasRecords(String alias) {
+        if( !casConfig.isRemote(alias) )
+            return Files.isDirectory(casConfig.locationOf(alias).resolve(NEXTFLOW_RECORDS))
+        try {
+            return Files.isDirectory(casConfig.pathOf(alias).resolve(NEXTFLOW_RECORDS))
+        }
+        catch( Exception e ) {
+            log.warn("could not look for lineage records in store member '${alias}' (${e.message}); its lid:// records are not readable this run")
+            return false
+        }
+    }
+
+    private static DefaultLinStore openRecords(String location) {
+        return new DefaultLinStore().open(new LineageConfig([enabled: true, store: [location: location]]))
     }
 
     private static Map sessionConfig() {

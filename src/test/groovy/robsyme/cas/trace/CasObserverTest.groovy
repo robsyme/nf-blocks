@@ -24,6 +24,8 @@ import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -555,6 +557,60 @@ class CasObserverTest extends Specification {
         then:
         noExceptionThrown()
         blocksOfKind('RunCompletion').size() == 1
+    }
+
+    def 'onFlowCreate aborts when the writable S3 member reports a clock 400 s away (ticket 03 decision 2)'() {
+        given:
+        MemoryS3Ops bucket = new MemoryS3Ops('member')
+        bucket.serverDateMillis = System.currentTimeMillis() - 400_000L
+        Closure<S3Ops> saved = CasSession.s3OpsFactory
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final Map cfg = config()
+        ((Map) ((Map) cfg.cas).stores).lab = [location: 's3://member/cas']
+        ((Map) cfg.cas).tmpDir = tempDir.resolve('t').toString()
+        bind(cfg)
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('400 s ahead of')
+
+        cleanup:
+        CasSession.s3OpsFactory = saved
+    }
+
+    def 'a failed catch-up of the writable member keeps the old snapshot and logs catch_up_failed at info'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
+        Files.createDirectories(snapshot.parent)
+        Files.write(snapshot, 'old'.bytes)
+        final ListAppender<ILoggingEvent> logged = capture()
+        ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = Level.INFO
+        Index failing = Spy(cas.openIndex()) {
+            catchUp(_, _, 'lab', _, _) >> { throw new IOException('the Store Log cannot be listed') }
+        }
+        observer = new CasObserver() {
+            @Override
+            protected Index openIndex() { failing }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        new String(Files.readAllBytes(snapshot)) == 'old'
+        logged.list.any { ILoggingEvent e -> e.level == Level.INFO && e.formattedMessage.contains('(catch_up_failed)') }
+        blocksOfKind('RunCompletion').size() == 1
+
+        cleanup:
+        ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = null
     }
 
     def 'onFlowError warns once with the include line for an untyped script missing it'() {

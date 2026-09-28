@@ -39,6 +39,17 @@ class SdkS3Ops implements S3Ops {
         return null
     }
 
+    /**
+     * A PutObject's outcome from its refusal. With If-Match on a key deleted
+     * since the HEAD that read its ETag, S3 may answer 404 NoSuchKey rather
+     * than 412; either way the object is no longer the one named, so it is
+     * EXISTS (the snapshot guard's replaced_meanwhile), never an error.
+     */
+    static S3Written.Status putStatusOf(S3Exception e, S3PutOptions o) {
+        if( o?.ifMatch != null && e.statusCode() == 404 ) return S3Written.Status.EXISTS
+        return statusOf(e)
+    }
+
     static Long parseDate(String text) {
         if( !text ) return null
         try {
@@ -125,7 +136,7 @@ class SdkS3Ops implements S3Ops {
         }
         catch( S3Exception e ) {
             note(e)
-            final S3Written.Status status = statusOf(e)
+            final S3Written.Status status = putStatusOf(e, o)
             if( status == null ) throw e
             return new S3Written(status, null, null)
         }

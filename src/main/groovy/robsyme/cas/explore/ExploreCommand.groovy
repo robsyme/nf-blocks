@@ -8,11 +8,13 @@ import robsyme.cas.CasSession
 import robsyme.cas.cli.Options
 import robsyme.cas.cli.UsageException
 import robsyme.cas.core.Cid
+import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
 import robsyme.cas.core.Samplesheet
-import robsyme.cas.s3.S3Access
+import robsyme.cas.core.SnapshotBase
+import robsyme.cas.s3.S3CoordinateTree
 import robsyme.cas.s3.S3Ops
 
 /**
@@ -63,6 +65,9 @@ class ExploreCommand {
             throw new UsageException("explore takes no arguments, got ${options.positionals}")
         final CasConfig cas = CasConfig.fromSession(config)
         final CasSession session = new CasSession(cas)
+        // Ticket 03 decision 2; a ClockSkewException reaches CasCommands.run, which prints it and exits 1.
+        session.checkClock()
+        warnShadowed(session, err)
         refresh(session, err)
         final Index index = session.openIndex()
         final String token = ExploreServer.newToken()
@@ -78,7 +83,7 @@ class ExploreCommand {
                 return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
             }
         } as ExploreServer.Exporter
-        final LinkedHashMap<String, MemberFiles> members = membersOf(cas, { String bucket -> S3Access.open(config, bucket) } as Closure<S3Ops>)
+        final LinkedHashMap<String, MemberFiles> members = membersOf(cas, { String bucket -> CasSession.s3OpsFactory.call(config, bucket) } as Closure<S3Ops>)
         final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter)
             .start(options.intFlag('port', 0))
         out.println("nf-blocks explorer: ${server.launchUrl}")
@@ -89,10 +94,13 @@ class ExploreCommand {
     /** Catches the index up and rewrites the writable member's snapshot at any size. Derived: a failure warns. */
     static void refresh(CasSession cas, PrintStream err) {
         try {
+            final SnapshotBase base = cas.snapshotBase()
             final Index index = cas.openIndex()
             try {
-                cas.catchUpIndex(index)
-                cas.snapshotWritable(index, 0L)
+                final Set<String> failed = cas.catchUpIndex(index)
+                final IndexSnapshot.Result r = cas.snapshotWritable(index, 0L, base, failed)
+                if( r.skipped )
+                    err.println("nf-blocks:explore: the Index Snapshot was not rewritten (${r.skipped})")
             }
             finally {
                 index.close()
@@ -101,6 +109,20 @@ class ExploreCommand {
         catch( Exception e ) {
             err.println("nf-blocks:explore: could not rewrite the Index Snapshot (${e.message}); serving the one on disk")
         }
+    }
+
+    /**
+     * Silent decision 20: a coordinate under a pointer object of the writable S3
+     * member reads as absent, so the explorer names them once at start.
+     */
+    private static void warnShadowed(CasSession session, PrintStream err) {
+        final String alias = session.config.writableAlias
+        final CoordinateTree coords = session.coordinatesOf(alias)
+        if( !(coords instanceof S3CoordinateTree) )
+            return
+        final List<String> shadowed = ((S3CoordinateTree) coords).shadowedPointers(21)
+        if( shadowed )
+            err.println("nf-blocks:explore: ${shadowed.size() > 20 ? 'more than 20' : shadowed.size()} coordinate(s) in '${alias}' are shadowed by a pointer above them, and read as absent: ${shadowed.take(20).join(', ')}")
     }
 
     /**

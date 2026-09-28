@@ -15,6 +15,7 @@ import nextflow.lineage.model.v1beta1.FileOutput
 import nextflow.lineage.model.v1beta1.TaskRun
 import nextflow.lineage.model.v1beta1.WorkflowRun
 import nextflow.lineage.serde.LinSerializable
+import robsyme.cas.CasConfig
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
@@ -222,6 +223,17 @@ class CasLinStoreTest extends Specification {
         cleanup:
         CasSession.unbind(s2)
         Global.session = session
+    }
+
+    def 'the records location is s3://.../nf for an S3 member and <dir>/nf for a local one (ticket 02 decision 7)'() {
+        given:
+        final CasConfig s3 = CasConfig.from([cas: [stores: [lab: [location: 's3://member/cas']]]], 'cas://lab')
+        final CasConfig local = CasConfig.from([cas: [stores: [lab: [location: tempDir.toString()]]]], 'cas://lab')
+
+        expect:
+        CasLinStore.recordsLocation(s3, 'lab') == 's3://member/cas/nf'
+        CasLinStore.recordsLocation(local, 'lab') == tempDir.toAbsolutePath().normalize().resolve('nf').toString()
+        store.recordsLocation == tempDir.toAbsolutePath().normalize().resolve('nf')
     }
 
     def 'an io error from the delegate surfaces as an abort'() {
