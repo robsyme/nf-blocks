@@ -20,6 +20,7 @@ class CasObserverFactory implements TraceObserverFactoryV2 {
     @Override
     Collection<TraceObserverV2> create(Session session) {
         defaultOutputDir(session)
+        installNodeHash(session)
         return Collections.<TraceObserverV2> singletonList(new CasObserver())
     }
 
@@ -66,6 +67,20 @@ class CasObserverFactory implements TraceObserverFactoryV2 {
             return
         }
         ConsoleLog.LOG.info("outputDir not set; publishing to ${target}")
+    }
+
+    /** cas.nodeHash, default fusion.enabled (silent decision 5): the afterScript half of the Fusion provider. */
+    static void installNodeHash(Session session) {
+        final Map config = session?.config
+        if( config == null || !CasConfig.nodeHashEnabled(config) )
+            return
+        try {
+            for( String selector : NodeHash.install(config) )
+                ConsoleLog.LOG.warn("nf-blocks: ${selector} sets a dynamic afterScript, so its tasks are not hashed on the node; the head node addresses their outputs")
+        }
+        catch( Exception e ) {
+            log.warn("could not install node-side hashing; outputs are addressed on the head node: ${e.message}", e)
+        }
     }
 
     private static boolean isTrue(Object value) {

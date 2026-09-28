@@ -184,4 +184,26 @@ class CasObserverFactoryTest extends Specification {
         final AbortRunException e = thrown()
         e.message == "outputDir must publish through the lineage store 'cas://lab', but is 'unset'"
     }
+
+    def 'cas.nodeHash = true installs the node-hash afterScript default'() {
+        given:
+        bind(config(cas: config().cas + [nodeHash: true]), tempDir.resolve('results'))
+
+        when:
+        new CasObserverFactory().create(session)
+
+        then:
+        session.config.process.afterScript == NodeHash.script()
+    }
+
+    def 'with neither cas.nodeHash nor fusion.enabled, config.process gains nothing'() {
+        given:
+        bind(config(), tempDir.resolve('results'))
+
+        when:
+        new CasObserverFactory().create(session)
+
+        then:
+        !session.config.containsKey('process')
+    }
 }
