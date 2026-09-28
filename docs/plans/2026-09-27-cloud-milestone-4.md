@@ -16,7 +16,7 @@
 
 The ticket in brackets holds the reasoning; Task 15 writes each into the `DESIGN.md` section it amends.
 
-1. **One S3 client, nf-amazon's** [02 Q1, 01 Q1]. The AWS SDK becomes `compileOnly` against `io.nextflow:nf-amazon:3.9.2`, `nextflowPlugin.requirePlugins = ['nf-amazon@>=3.9.2']`; the explorer's class-loader shim and URL-connection client go. `explore` builds its client through the same factory from its loaded config and keeps the us-east-1 fallback when no region is set. SSE-KMS, storage class, ACL and requester pays are per-request fields nf-blocks sets itself.
+1. **One S3 client, nf-amazon's** [02 Q1, 01 Q1]. The AWS SDK becomes `compileOnly` against `io.nextflow:nf-amazon:3.9.2`, `nextflowPlugin.requirePlugins = ['nf-amazon@>=3.9.2']`; the explorer's class-loader shim and URL-connection client go. `explore` builds its client through the same factory from its loaded config and keeps the us-east-1 fallback when no region is set. SSE-KMS, storage class and requester pays are per-request fields nf-blocks sets itself. `aws.client.s3Acl` is not applied to member writes (ticket 02 decision 9 does not list it); the README says so.
 2. **Existence** [02 Q2, 14 item 1]. A block of 1 MiB or more is checked with `HeadObject` first; below that a conditional PUT alone. Every write carries `If-None-Match: *`; a 412 is success (rule 4).
 3. **Upload** [02 Q3, 14 items 3 and 4]. Known length up to the single-request limit is one `PutObject` with `ChecksumAlgorithm SHA256`; above it a hand-driven multipart upload with per-part SHA-256, parts `max(64 MiB, ceil(size/10000))`, streamed from a file channel with `RequestBody.fromContentProvider`. `putStreaming` spools to `cas.tmpDir` (default `java.io.tmpdir`) while hashing, then uploads.
 4. **Layout** [02 Q4]. Byte-for-byte the local keys under the member prefix: `blocks/<xx>/<cid>`, `log/`, `coords/`, `nf/`, `index/v3.sqlite`, `index.html`, plus `tmp/` (staging keys of decision 13).
@@ -46,7 +46,7 @@ Rob reviews these. Each names the task that implements it.
 
 1. **RunCompletion goes to `schema: 2` too** (Task 2). It gains a field, so a reader must know whether to expect it; schema 1 reads as `providers: {}`. In the IPLD Schema `providers` is the one `optional` field, because a struct cannot vary its fields by the value of `schema`; the page checks that a schema-2 RunCompletion carries it.
 2. **The schema-1 Leaf survives as `LeafV1`** in the IPLD Schema (Task 2). The page validates an OutputItem's leaves as `Leaf` or `LeafV1` by the item's `schema`; any other `schema` is refused. Groovy refuses an OutputItem or RunCompletion whose `schema` is not 1 or 2.
-3. **`providers` covers the Leaf addresses** (Task 2), the addresses `provider` used to sit beside: each file leaf and each directory leaf. A directory leaf's address (its manifest) is always `head-node`, because the manifest is encoded on the head node whatever addressed the files inside it. One address may appear under two providers in one run (published twice, two ways). Keys are checked against `head-node`, `fusion-node`, `s3-copy` in Groovy and in the page; the schema types the map `{String:[&Any]}`.
+3. **`providers` covers every address the run published** (Tasks 2, 3, 10; ticket 16 decision 1): each file leaf, each directory leaf, and each file inside a published directory. A directory leaf's address (its manifest) is always `head-node`, because the manifest is encoded on the head node whatever addressed the files inside it. The files inside a directory carry the provider their addresser returned: `DirectoryManifestBuilder.Result.providers` collects `provider -> addresses` during the walk (Task 3), `CasFileSystemProvider` records it on the `Publish` (Task 10), and `Join` merges it into the RunCompletion (Task 2). One address may appear under two providers in one run (published twice, two ways). Keys are checked against `head-node`, `fusion-node`, `s3-copy` in Groovy and in the page; the schema types the map `{String:[&Any]}`.
 4. **When each provider is recorded** (Task 10). `fusion-node`: the node digest named a block the writable member already held (no bytes moved), or an `UploadPartCopy` above the single-request limit. `s3-copy`: S3 returned a SHA-256 from a copy. `head-node`: the head node streamed the bytes. With a local member and an S3 source, a node digest for a block the member lacks still needs the bytes, so the head node streams them, compares its hash with the node digest (disagreement aborts) and records `head-node`. Consequence for tier two (Rob, 2026-09-28): T2 publishes into a fresh member, so every file leaf is `s3-copy` and each copy's SHA-256 is checked against the file's `.command.cas` digest; T2b, a smaller Fusion run into the member T1 filled, finds every block present and records `fusion-node`.
 5. **`cas.nodeHash`** (Tasks 4, 9, 10), a Boolean, defaults to `fusion.enabled`. It turns on both halves of the Fusion provider: the `afterScript` default and the `.command.cas` read. Tier one sets it on the local executor for the `again` run, so assertion 2's addition runs on every commit. The recorded name stays `fusion-node`: it means "the task node's digest", Fusion or not.
 6. **The hashing script** (Task 9) lives in `src/main/resources/robsyme/cas/node-hash.sh`: task directory `${NXF_CHDIR:-$PWD}` (Fusion always sets `NXF_CHDIR`); nothing is written when `.command.run` is not there (a `scratch true` task on a grid executor falls back); `sha256sum`, else `shasum -a 256`, else nothing; `nullglob` always and `globstar` when the shell has it; no word splitting of a pattern; a matched symbolic link is skipped (staged inputs are links); a matched directory is hashed with `find <dir> -type f`; the output goes to `.command.cas.tmp` and is renamed. A config `afterScript` that is a closure is left alone, with one warning naming the process selector, and those tasks fall back.
@@ -57,7 +57,7 @@ Rob reviews these. Each names the task that implements it.
 11. **One seam, `S3Ops`** (Task 1): every S3 request nf-blocks makes goes through it, bucket-scoped. `SdkS3Ops` is the SDK; the test double `MemoryS3Ops` holds objects in memory and counts requests and body bytes. `S3MemberFiles` reads through it too, so an explorer test can read what an S3 writable member wrote.
 12. **The single-request limit is 5 GiB** (5,368,709,120 bytes), S3's limit for `PutObject` and `CopyObject`.
 13. **A `PutObject` response's `ChecksumSHA256` is compared with the CID** (Task 5); a mismatch (a source file changed between hash and upload) deletes the object and fails the write. `put(cid, in, size)` on S3 spools through `cas.tmpDir` (rule 2); `putDagCbor` uploads its encoded bytes directly (metadata, bounded); `putFile(Path)` for a default-filesystem source hashes the file, then uploads from it (two reads, no spool).
-14. **409 `ConditionalRequestConflict`** (Task 5) is retried up to 3 times; for a multipart upload the whole upload restarts.
+14. **409 `ConditionalRequestConflict`** (Task 5): a write is tried up to 3 times in all; for a multipart upload the whole upload restarts. The Store Log's `putEntry` uses the same count and then throws, and its caller warns and continues (rule 3).
 15. **Cache-Control on S3** (Tasks 5, 7): blocks `public, max-age=31536000, immutable`; `index/v3.sqlite` and `index.html` `no-cache`. `coords/`, `log/`, `nf/` and `tmp/` get none.
 16. **The snapshot guard's order** (Tasks 7, 11): the old snapshot is looked at (`HEAD`, or a local stat) before the catch-up, so the ETag guard covers the catch-up window; the run-count guard applies to every writer (a run, `nf-blocks:snapshot`, `explore`); an S3 snapshot without `x-amz-meta-runs` (uploaded by another tool) is downloaded once and counted. Skips log at info with one of `over_cap`, `fewer_runs`, `replaced_meanwhile`, `catch_up_failed`; `nf-blocks:snapshot` prints the skip and exits 0.
 17. **Seeding's row rules** (Task 8): rows are copied per run, Selection and Claim not already indexed, tagging `run.member` and `log_entry.member` with the member's alias, so seeding a second member into one cache duplicates nothing. The fallback warning goes to the `nextflow.cas` logger (terminal and `.nextflow.log`) and fires only when the member's Store Log is not empty.
@@ -65,9 +65,9 @@ Rob reviews these. Each names the task that implements it.
 19. **The clock check** (Task 11) is one `HEAD` on the writable S3 member's snapshot key at `onFlowCreate`; `put` and `explore` check at start and refuse to start above 5 minutes. The warning and the abort name the skew and the fix (NTP).
 20. **Shadowed pointers** (Tasks 6, 11): an S3 read through a coordinate with an ancestor pointer answers absent; `explore` lists the writable S3 member's `coords/` at start and prints up to 20 shadowed pointers and their count on stderr.
 21. **Coordinates on S3** (Task 6): no directory marker objects; the pointer body is the local one (`cas://<cid>/<name>\n`).
-22. **Config details** (Task 4): `cas.tmpDir` (string path); a trailing slash on an S3 location is dropped, so `s3://b/p` and `s3://b/p/` are one member and one cache file; the storage class is read from `aws.client.storageClass` (else `uploadStorageClass`) and judged only when an S3 member is writable.
-23. **Fusion listing limits** (Task 3): a `.fusion.symlinks` over 1 MiB, not UTF-8, holding NUL, or with an empty or `/`-bearing name is unparseable, counted as one `unresolvable`; a listed name with no object is `unresolvable` with a null target.
-24. **Tier two's details** (Task 14): the consumer's writable member is `s3://<bucket>/cas-out`, T2 uses a fresh `s3://<bucket>/cas-t2`, T2b runs `gate/tier2/small` (the Test Pipeline's ALIGN and QC_DIR, their scripts and sample A's Meta Map copied verbatim, so its items are T1's) into T1's `s3://<bucket>/cas`, and T6 uses a fresh `s3://<bucket>/cas-t6`; T4 passes a directory input `--dir cas://<A's qc manifest>`; job count and seconds come from `-with-trace`; the timeout is a watchdog that sends the harness SIGTERM; T5's evidence of seeding is the cache's `seeded_from:lab` equal to the S3 snapshot's `snapshot_written_at`; T6's stale-ETag step starts two `nf-blocks:snapshot` verbs together on cold caches and requires exactly one to write, retrying the pair up to 3 times when both wrote without overlapping.
+22. **Config details** (Task 4): `cas.tmpDir` (string path); a trailing slash on an S3 location is dropped, so `s3://bkt/p` and `s3://bkt/p/` are one member and one cache file; the storage class is read from `aws.client.storageClass` (else `uploadStorageClass`) and judged only when an S3 member is writable.
+23. **Fusion listing limits** (Task 3): a `.fusion.symlinks` over 1 MiB, not UTF-8, holding NUL, or with an empty or `/`-bearing name is unparseable, counted as one `unresolvable`; a listed name with no object is `unresolvable` with a null target. Ticket 15 decision 3 ("relative in-tree gives `symlink` if the target key exists (object, prefix or decoded link)") and decision 1 (a Fusion run and a local run give one Directory Manifest) disagree for a chain that ends nowhere (`a -> b -> missing`) and for a cycle: read literally, decision 3 makes `a` a `symlink` because `b`'s key exists. The plan reads it as decision 1 requires: a decoded link is chased to the end of its chain, and a relative in-tree link is `symlink` only when the chain reaches an object or prefix; a dangling chain or a cycle is `unresolvable`, as the local walk (which resolves through `toRealPath`) records it. Rob to confirm (pre-flight F31); if decision 3's literal reading wins, both walks change.
+24. **Tier two's details** (Task 14): the consumer's writable member is `s3://<bucket>/cas-out`, T2 uses a fresh `s3://<bucket>/cas-t2`, T2b runs `gate/tier2/small` (the Test Pipeline's ALIGN and QC_DIR, their scripts and sample A's Meta Map copied verbatim, so its `aligned` items are T1's and its `qc` items t2's) into T1's `s3://<bucket>/cas`, and T6 uses a fresh `s3://<bucket>/cas-t6`; T2 and T2b compare `aligned` items with t1's and `qc` items with each other and with tier one's local `cold` `qc` item, since t1 flattens `alias.txt` (ticket 15 decision 5); T4 passes a directory input `--dir cas://<the qc/A/A_qc manifest of cas after t2b>`, whose `alias.txt` is a `symlink` entry, and asserts that first; job count and seconds come from `-with-trace`; the timeout is a watchdog that sends TERM to every recorded nextflow PID and then the harness, each nextflow running in the background under `wait`; T5's evidence of seeding is the cache's `seeded_from:lab` equal to the S3 snapshot's `snapshot_written_at`; T6's stale-ETag evidence is a deterministic boto3 probe (PutObject with If-Match on a replaced ETag must get 412) plus a best-effort race that starts two `nf-blocks:snapshot` verbs together on cold caches and requires exactly one to write, retrying the pair up to 3 times when both wrote without overlapping, and SKIPs when they never overlap.
 
 ## Contradictions found
 
@@ -79,6 +79,52 @@ Recorded for the parent session; the plan's resolution is in the decision named.
 4. Spec §14 says the head node fetches `.command.cas` "at `onFilePublish`"; the address is needed inside `upload()`, which runs before `onFilePublish`, to write the Pointer File. Task 10 fetches it in `upload()`; Task 15 rewords spec §14.
 5. Spec §1.2 calls tier two "nightly"; the map decided on demand. Task 15 rewords spec §1.2.
 6. `DESIGN.md` §2 ("In the Walking Skeleton a member location is a local directory path", the 2026-09-25 amendment that S3 members are read-only), §15 decision 9 ("S3 members are read-only and explore-only"), §6 ("schema (integer, `1`)") and §8 (`upload()` records provider `head-node`) are superseded by the tickets; Task 15 amends each.
+
+## Pre-flight corrections
+
+Findings of `.superpowers/sdd/2026-09-27-cloud-milestone-4/preflight.md`, applied as ruled in `progress.md`'s "Pre-flight scan".
+
+- F1: S3 test buckets of 3+ characters (`s3://bkt`): Task 4 tests, Review Focus 5, silent decision 22, Task 15 §2 text.
+- F2: `withSpool` names `cas.tmpDir` only for spool failures; body exceptions propagate: Task 5 `S3BlockStore`.
+- F3: `writable.has(node)`, not the composite: Task 10 `PublishAddresser.address`.
+- F4: `S3Copied` is a top-level `@Canonical` class in `S3Types.groovy`: Task 10 (Files, code, `git add`), shared interfaces, File Structure.
+- F5: unescape is one left-to-right scan; test adds the `a\\nb` line: Task 10 `NodeDigests` and `NodeDigestsTest`.
+- F6: a copy failing with an `IOException` other than a mismatch warns and falls back; null staging SHA-256 throws: Task 10 `address`, `copyFrom`, new `PublishAddresserTest` feature, Task 15 §8.
+- F7: a copy's `BlockMismatchException` becomes `AbortRunException` naming the file and `.command.cas`: Task 10 `address`, new `PublishAddresserTest` feature.
+- F8: provider test asserts through `session.addresser.counts` and the recorded `Publish`, no spy seam: Task 10 `CasFileSystemProviderTest`.
+- F9: `_permission_failures` matches `could not be read` plus a locked path; fixture in the real format: Task 13.
+- F10: `relock` restores 444: Task 13 `gate.sh`.
+- F11: T2 and T2b compare `aligned` items with t1's, `qc` items with t2's and tier one's `cold`: Task 14 table, T2, T2b, small pipeline note, unit tests, silent decision 24.
+- F12: `produce`/`consume` record a failing status with gate.sh's `|| status=$?` pattern: Task 14 `tier2.sh`.
+- F13: every nextflow runs backgrounded under `wait` with its PID recorded; the watchdog TERMs them, then the harness: Task 14 `tier2.sh` (`run_nf`), silent decision 24.
+- F14: `refs` passes the `qc/A/A_qc` manifest of `cas` after t2b (its `alias.txt` is `symlink`) and T4 asserts that first; T3 reads t1's manifest through its RunCompletion: Task 14, silent decision 24.
+- F15 (ruling): race kept as best-effort SKIP; added a deterministic boto3 `IfMatch` probe that must get 412: Task 14 `s3gate.py if-match`, harness, T6, README prerequisite, unit tests, silent decision 24.
+- F16: Task 2 Files and `git add` gain `DirectoryManifestBuilder`(+Test), `CasExtensionTest`, `CasOccurrenceTest`; `RecordsTest:34` moves to `regular`: Task 2.
+- F17: Tasks 2 and 3 sequenced in wave 0; multi-task file list completed: Waves.
+- F18: `HeadNodeAddresser` uses `Providers.HEAD_NODE`: Task 3.
+- F19: Task 2 deletes the ternary, `isExecutable` and its imports; Task 3's sentence dropped: Tasks 2, 3.
+- F20: "tried up to 3 times in all"; test uses 2 and 3 conflicts: silent decision 14, Task 5 test, Task 15 §5.
+- F21: `putEntry` loops `ATTEMPTS`, then throws; the observer warns: Task 5 `S3StoreLogStorage` and its test.
+- F22: `S3BlockStore` takes no `S3WriteOptions`: shared interfaces, Task 5, Task 10 test, Task 11, Task 15 §5.
+- F23: `seedFrom` turns an `IllegalStateException` from the seed into `SnapshotUnusable('unreadable')`: Task 8.
+- F24 (ruling): an absent watermark alone triggers seeding: Task 8 intro and `catchUp`, Task 15 §12.
+- F25: the `IOException` branch uses the same condition and message, reason `unreadable`: Task 8 `warnUnusable`.
+- F26: `checkClock` catches a failing `HEAD`, warns and returns: Task 11 code and note.
+- F27 (ruling): `explore`/`gate-cloud` accepted broken between Tasks 4 and 11, `gate-cloud` run only at acceptance: Task 4 intro.
+- F28: `COPYOUT` added to the `calls` vocabulary: Task 1 Interfaces.
+- F29: ACL dropped from carried decision 1; README says `aws.client.s3Acl` is not applied: decision 1, Task 15 README and §5.
+- F30 (ruling): providers cover every published address, files inside directories included: silent decision 3, shared interfaces, Task 2 (`Publish.contents`, `Join`, JoinTest), Task 3 (`Result.providers`, both walks, new test), Task 10 (directory `Publish`), Task 15 §8.
+- F31 (ruling): the chain reading (dangling chains and cycles `unresolvable`) recorded in silent decision 23, which Task 15 copies into §17 (silent decision 17 is seeding, so the Fusion-link decision holds it).
+- F32: `NodeDigests.parse` reads line by line counting bytes, null over the cap, warned in `load`: Task 10, shared interfaces.
+- F33: JoinTest retitled; the directory-is-`head-node` rule pinned in Task 10's provider test: Tasks 2, 10.
+- F34: Task 5 feature retitled to a conditional PUT answered 412: Task 5.
+- F35: clock features split: over 5 minutes throws, 90 s does not, a failing HEAD continues, a local member makes no request: Task 11 `CasSessionS3Test`.
+- F36: the absent declared directory is exercised and asserted: Task 9 `NodeHashScriptTest`.
+- F37: Task 6 stages named paths: Task 6 Files and `git add`.
+- F38: `@Requires` non-root on the `setReadable`/`setWritable` features: Task 9, Task 10.
+- F39: assertion 11's SKIP text points at tier two T2/T2b: Task 13 Step 3.
+- F40: node digests compare real paths of the work dir and the file's parent: Task 10 `PublishAddresser`.
+- F41: IPLD `DirEntry.address` comment says "raw cid for regular": Task 2 Step 5b.
 
 ## Global Constraints
 
@@ -100,7 +146,7 @@ Recorded for the parent session; the plan's resolution is in the decision named.
 2. **The same bytes published twice in one run by two providers** (one leaf from a local path, one from S3). Both OutputItems keep one address; `providers` lists the address under both names. Pinned in Task 2 (`JoinTest`).
 3. **A `.command.cas` line with a space, a backslash or a newline in the path, a `*` binary marker, or garbage.** Parsed or skipped; the publish never aborts on a bad line and falls back for that file. Pinned in Task 10 (`NodeDigestsTest`).
 4. **A Fusion link chain and a cycle** (`a -> b`, `b -> target.txt`; `x -> y`, `y -> x`). The chain is followed to `symlink` (in tree) or to stored content (escaping); the cycle is `unresolvable` and counted, never a stack overflow. Pinned in Task 3 (`ObjectStoreManifestTest`).
-5. **An S3 member at the bucket root, and one written with a trailing slash** (`s3://b`, `s3://b/cas/`). Keys have no leading slash (`blocks/..`, not `/blocks/..`); `s3://b/cas/` and `s3://b/cas` name one member and one cache file. Pinned in Tasks 4 (`CasConfigTest`) and 5 (`S3BlockStoreTest`).
+5. **An S3 member at the bucket root, and one written with a trailing slash** (`s3://bkt`, `s3://bkt/cas/`). Keys have no leading slash (`blocks/..`, not `/blocks/..`); `s3://bkt/cas/` and `s3://bkt/cas` name one member and one cache file. Pinned in Tasks 4 (`CasConfigTest`) and 5 (`S3BlockStoreTest`).
 
 ---
 
@@ -116,7 +162,8 @@ nf-blocks/
   src/main/resources/robsyme/cas/node-hash.sh   the afterScript (Task 9)
   src/main/groovy/robsyme/cas/
     s3/S3Ops.groovy                             the one S3 seam, bucket-scoped (Task 1)
-    s3/S3Types.groovy                           S3Head, S3Body, S3PutOptions, S3Written, S3Part, S3Listed, S3WriteOptions (Task 1)
+    s3/S3Types.groovy                           S3Head, S3Body, S3PutOptions, S3Written, S3Part, S3Listed, S3WriteOptions (Task 1);
+                                                S3Copied (Task 10)
     s3/SdkS3Ops.groovy                          S3Ops over nf-amazon's SDK client (Task 1; copyOut in Task 12)
     s3/S3Access.groovy                          the client factory from a config map (Task 1)
     s3/S3BlockStore.groovy                      blocks on S3 (Task 5; copyFrom Task 10; copyOut Task 12)
@@ -128,7 +175,8 @@ nf-blocks/
                                                 schema 2; no executable mode (Task 2)
     core/FileAddresser.groovy                   FileAddresser, Addressed, HeadNodeAddresser (Task 3)
     core/FusionLinks.groovy                     parse a .fusion.symlinks body (Task 3)
-    core/DirectoryManifestBuilder.groovy        realOf, the addresser, the object-store walk (Task 3)
+    core/DirectoryManifestBuilder.groovy        no execute bit (Task 2); realOf, the addresser, the object-store walk,
+                                                Result.providers (Task 3)
     core/LoggedStore.groovy                     a block store that knows its Store Log storage (Task 5)
     core/LocalBlockStore.groovy                 implements LoggedStore (Task 5)
     core/StoreLog.groovy                        storageOf via LoggedStore (Task 5)
@@ -141,7 +189,7 @@ nf-blocks/
     core/NodeDigests.groovy                     parse .command.cas; task directory of a source (Task 10)
     core/ClockSkew.groovy                       judge a skew (Task 11)
     CasConfig.groovy, CasConfigScope.groovy     S3 anywhere, tmpDir, nodeHash, storage class (Task 4)
-    CasSession.groovy                           coordinatesOf (Task 6); addresser (Task 10); members, seeding,
+    CasSession.groovy                           Publish.contents (Task 2); coordinatesOf (Task 6); addresser (Task 10); members, seeding,
                                                 snapshot guard, clock (Task 11)
     nio/CasFileSystemProvider.groovy            coordinate calls through the interface (Task 6); upload through the
                                                 addresser (Task 10); download to an S3 target (Task 12)
@@ -189,7 +237,7 @@ S3 (package `robsyme.cas.s3`, Task 1):
 - `class S3PreconditionFailed extends IOException`.
 - `S3Access.open(Map config, String bucket) -> S3Ops`; `S3Access.writeOptions(Map config) -> S3WriteOptions`.
 - `S3Location.parse(String uri) -> S3Location` with `bucket`, `prefix` (`''` or ending in `/`), `toString()` (`s3://bucket` or `s3://bucket/p`, no trailing slash) (Task 4 creates it in `robsyme.cas`, since `CasConfig` needs it and it holds no SDK type).
-- `S3BlockStore(S3Ops ops, String prefix, String alias, boolean writable, S3WriteOptions options, Path tmpDir, long singleRequestMax = S3BlockStore.SINGLE_REQUEST_MAX)` implements `BlockStore`, `LoggedStore`; `String key(Cid)`; `Cid putFile(Path file)`; `S3Ops getOps()`; `String getPrefix()` (Task 5). `S3Copied copyFrom(String sourceBucket, String sourceKey, long size, Cid expected)` returns `S3Copied(Cid cid, String provider)`, or null when neither a copy nor a part copy can address it (Task 10). `void copyOut(Cid cid, String targetBucket, String targetKey)` (Task 12).
+- `S3BlockStore(S3Ops ops, String prefix, String alias, boolean writable, Path tmpDir, long singleRequestMax = S3BlockStore.SINGLE_REQUEST_MAX)` (the aws per-request fields are applied by `SdkS3Ops`, so the store takes no `S3WriteOptions`) implements `BlockStore`, `LoggedStore`; `String key(Cid)`; `Cid putFile(Path file)`; `S3Ops getOps()`; `String getPrefix()` (Task 5). `S3Copied copyFrom(String sourceBucket, String sourceKey, long size, Cid expected)` returns `S3Copied(Cid cid, String provider)` (a top-level `@Canonical` class in `S3Types.groovy`, Task 10), or null when neither a copy nor a part copy can address it (Task 10). `void copyOut(Cid cid, String targetBucket, String targetKey)` (Task 12).
 - `S3StoreLogStorage(S3Ops ops, String prefix)` implements `StoreLogStorage` (Task 5).
 - `S3CoordinateTree(S3Ops ops, String prefix)` implements `CoordinateTree`; `List<String> shadowedPointers(int limit)` (Task 6).
 - `S3SnapshotStorage(S3Ops ops, String prefix)` implements `SnapshotStorage` (Task 7).
@@ -199,20 +247,20 @@ Core (package `robsyme.cas.core`):
 - `Providers`: `HEAD_NODE = 'head-node'`, `FUSION_NODE = 'fusion-node'`, `S3_COPY = 's3-copy'`, `List<String> ALL`, `static boolean isKnown(String)` (Task 2).
 - `Leaf.of(String name, Cid address, Long size)` (no provider); `Leaf` has no `provider` field; `OutputItem.SCHEMA = 2`; `RunCompletion` gains `Map<String, List<Cid>> providers` (constructor key `providers`), `RunCompletion.SCHEMA = 2`; `DirectoryManifest.SCHEMA = 2`, `ManifestEntry.executable(...)` is gone and `ManifestEntry.fromCbor` reads `executable` as `regular` (Task 2).
 - `interface FileAddresser { Addressed address(Path file, long size) }`; `Addressed(Cid cid, long size, String provider)`; `HeadNodeAddresser(BlockStore store) implements FileAddresser` (Task 3).
-- `DirectoryManifestBuilder(BlockStore store)`, `DirectoryManifestBuilder(BlockStore store, FileAddresser addresser, Closure<Path> objectPath)`; `objectPath` maps `s3://<bucket>/<key>` to a `Path` (Task 3).
+- `DirectoryManifestBuilder(BlockStore store)`, `DirectoryManifestBuilder(BlockStore store, FileAddresser addresser, Closure<Path> objectPath)`; `objectPath` maps `s3://<bucket>/<key>` to a `Path`; `Result` gains `Map<String, List<Cid>> providers`, the provider of every file inside the tree to its addresses (Task 3).
 - `FusionLinks.parse(byte[] body) -> FusionLinks.Parsed` with `boolean ok`, `Set<String> names`, `String problem` (Task 3).
 - `interface LoggedStore { StoreLogStorage storeLogStorage() }` (Task 5).
 - `interface CoordinateTree`: `Optional<StoreRef> read(String rel)`, `void write(String rel, StoreRef ref)`, `boolean exists(String rel)`, `boolean isDirectory(String rel)`, `boolean isDirectoryCoordinate(String rel)`, `List<String> children(String rel)`, `boolean delete(String rel)`, `void createDirectories(String rel)`, `long lastModifiedMillis(String rel)`; `LocalCoordinateTree(Path coordsRoot)` keeps `pointerPath(String)` and `getRoot()` (Task 6).
 - `interface SnapshotStorage`: `SnapshotBase base(Path tempDir)` (null when there is no snapshot); `Path fetch(Path tempDir)` (null when absent; the caller deletes the file); `boolean replace(Path built, int runs, SnapshotBase base)` (false when another writer replaced it since `base`); `boolean writePage(byte[] page)`; `String describe()`. `SnapshotBase(String tag, long bytes, int runs)` (`runs` is -1 when the old file could not be counted). `LocalSnapshotStorage(Path memberRoot)` (Task 7).
 - `IndexSnapshot.build(Index index, String member, Path tempDir) -> IndexSnapshot.Built(Path file, long bytes, int runs, String watermark)`; `IndexSnapshot.write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) -> Result`; the old `IndexSnapshot.write(Index, String, Path, long)` stays as a wrapper; `Result.skipped` is null or one of `IndexSnapshot.OVER_CAP`, `FEWER_RUNS`, `REPLACED_MEANWHILE`, `CATCH_UP_FAILED` (Task 7).
 - `Index.catchUp(BlockStore store, StoreLog log, String member, SnapshotStorage snapshots, Path tempDir)` (the 3-argument form stays, without seeding); `boolean Index.seedFrom(Path snapshotFile, String member)` (throws `Index.SnapshotUnusable` with `reason`); `String Index.meta(String key)` becomes public as `metaValue(String key)` (Task 8).
-- `NodeDigests.parse(InputStream in, long maxBytes) -> Map<String, Cid>` (rel path to raw CID); `NodeDigests.taskDirOf(String sourceUri, String workDirUri) -> NodeDigests.TaskPath` with `taskDir` and `rel`, or null; `NodeDigests.MAX_BYTES = 16 MiB` (Task 10).
+- `NodeDigests.parse(InputStream in, long maxBytes) -> Map<String, Cid>` (rel path to raw CID; null when more than `maxBytes` arrive); `NodeDigests.taskDirOf(String sourceUri, String workDirUri) -> NodeDigests.TaskPath` with `taskDir` and `rel`, or null; `NodeDigests.MAX_BYTES = 16 MiB` (Task 10).
 - `ClockSkew.judge(long localMillis, long serverMillis) -> ClockSkew.Verdict` (`OK`, `WARN`, `ABORT`) and `ClockSkew.describe(long localMillis, long serverMillis) -> String` (Task 11).
 
 Plugin (packages `robsyme.cas`, `nio`, `trace`):
 
 - `CasConfig`: `boolean isRemote(String alias)`, `S3Location remoteOf(String alias)`, `Path locationOf(String alias)` (local only, else null), `String locationText(String alias)`, `List<String> locationTexts()` (replaces `localLocations()`), `Path pathOf(String alias)` (`FileHelper.asPath` of the text), `Path tmpDir`, `Boolean nodeHashSetting`, `Map rawConfig`, `static boolean nodeHashEnabled(Map sessionConfig)`, `String storageClassWarning` (null or the text to warn once) (Task 4).
-- `CasSession.coordinatesOf(String alias) -> CoordinateTree` (Task 6); `CasSession.addresser -> PublishAddresser` (Task 10); `static Closure<S3Ops> s3OpsFactory` (a test seam, `{ Map config, String bucket -> S3Access.open(config, bucket) }`), `SnapshotStorage snapshotsOf(String alias)`, `SnapshotBase snapshotBase()`, `Set<String> catchUpIndex(Index index)` (the aliases whose catch-up threw), `IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed)`, `void checkClock()` (throws `ClockSkewException`) (Task 11).
+- `CasSession.Publish` gains `Map<String, List<Cid>> contents` (default empty; for a directory, its files' providers), merged into `RunCompletion.providers` by `Join` (Task 2; filled by Task 10). `CasSession.coordinatesOf(String alias) -> CoordinateTree` (Task 6); `CasSession.addresser -> PublishAddresser` (Task 10); `static Closure<S3Ops> s3OpsFactory` (a test seam, `{ Map config, String bucket -> S3Access.open(config, bucket) }`), `SnapshotStorage snapshotsOf(String alias)`, `SnapshotBase snapshotBase()`, `Set<String> catchUpIndex(Index index)` (the aliases whose catch-up threw), `IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed)`, `void checkClock()` (throws `ClockSkewException`) (Task 11).
 - `PublishAddresser(BlockStore store, BlockStore writable, boolean nodeHash, Path workDir, long singleRequestMax = S3BlockStore.SINGLE_REQUEST_MAX)` implements `FileAddresser`; `long getHeadNodeBytes()`, `Map<String,Integer> getCounts()`, `String summary()` (Task 10).
 - `NodeHash.RESOURCE = '/robsyme/cas/node-hash.sh'`, `NodeHash.script() -> String`, `NodeHash.install(Map config) -> List<String>` (the selectors left alone because their `afterScript` is a closure) (Task 9).
 
@@ -231,7 +279,7 @@ Gate (Task 13): `assert.py` `assertion(13, ...)`; `gate.sh` writes `logs/consume
 | 4, Gate | 13 tier one; 14 tier two | waves 0-3 |
 | 5, Documents | 15 DESIGN, spec, README, acceptance | waves 0-4 |
 
-Tasks within a wave touch disjoint files, so subagents may run them in parallel, each committing only its own paths. Files edited by more than one task, always in different waves: `CasFileSystemProvider.groovy` (6, 10, 12), `CasSession.groovy` (6, 10, 11), `CasObserver.groovy` (2, 10, 11), `S3BlockStore.groovy` (5, 10, 12), `SdkS3Ops.groovy` and `S3Ops.groovy` (1, 12), `ExploreCommand.groovy` (1, 11), `build.gradle` (1, 5), `DESIGN.md` (2, 15).
+Tasks within a wave touch disjoint files, so subagents may run them in parallel, each committing only its own paths. The one exception is Tasks 2 and 3 in wave 0: both edit `DirectoryManifestBuilder.groovy` and `DirectoryManifestBuilderTest.groovy`, so Task 3 runs after Task 2 commits (Task 1 and Task 4 may run beside either). Files edited by more than one task, otherwise always in different waves: `CasFileSystemProvider.groovy` (6, 10, 12), `CasFileSystemProviderTest.groovy` (6, 10), `CasOccurrenceTest.groovy` (2, 6), `CasSession.groovy` (2, 6, 10, 11), `CasObserver.groovy` (2, 10, 11), `CasConfig.groovy` (4, 11), `S3BlockStore.groovy` (5, 10, 12), `SdkS3Ops.groovy` and `S3Ops.groovy` (1, 12), `SdkS3OpsTest.groovy` (1, 12), `MemoryS3Ops.groovy` (1, 12), `S3Types.groovy` (1, 10), `S3CopyTest.groovy` (10, 12), `ExploreCommand.groovy` (1, 11), `build.gradle` (1, 5), `DESIGN.md` (2, 15).
 
 Every Groovy task ends with `./gradlew test` green, and Tasks 1 and 5 with `./gradlew memoryBoundTest dependencyCheck` green too; Task 2 with `cd web && npm test` green; Tasks 2, 3, 10, 11, 12 and 13 with `make gate` (lineage 11/0/6 before Task 13, 12/0/6 after it; browser tier A 5/5; tier B 12/12). Run the Gate with `GATE_ROOT` in the session scratchpad, and rerun once before debugging an assertion 4 failure: it is intermittent by design (`gate/README.md`). Task 14 ends with `make gate-tier2` passing T1-T6, run by Rob, since it needs his SSO session and creates a bucket.
 
@@ -259,7 +307,7 @@ The factory is the one `S3FileSystemProvider.createFileSystem` uses (`plugins/nf
 
 **Interfaces:**
 - Consumes: `nextflow.cloud.aws.AwsClientFactory`, `nextflow.cloud.aws.config.AwsConfig`, `nextflow.cloud.aws.nio.util.S3SyncClientConfiguration` (nf-amazon 3.9.2).
-- Produces: everything under "S3" in "Interfaces shared across tasks" except `S3Location`, `S3BlockStore`, `S3StoreLogStorage`, `S3CoordinateTree`, `S3SnapshotStorage` and `copyOut`. `ExploreCommand.membersOf(CasConfig config, Closure<S3Ops> s3Ops)`, the closure taking the bucket name. The test double `MemoryS3Ops(String bucket)` with `objects` (key to `MemoryS3Ops.Obj`), `calls` (`"HEAD <key>"`, `"GET <key>"`, `"PUT <key>"`, `"COPY <src bucket>/<src key> <key>"`, `"MPU <key>"`, `"PART <key> <n>"`, `"PARTCOPY <key> <n>"`, `"COMPLETE <key>"`, `"ABORT <key>"`, `"LIST <prefix>"`, `"DELETE <key>"`), `pulledBytes`, `serverDateMillis` (Long, null for "no Date header"), `discard` (hash bodies, keep none), `conflicts` (`Map<String,Integer>`: op name to how many 409s to answer first), `peers` (other buckets by name, for copy sources and targets), `Obj.text()`, `putText(String key, String text)`.
+- Produces: everything under "S3" in "Interfaces shared across tasks" except `S3Location`, `S3BlockStore`, `S3StoreLogStorage`, `S3CoordinateTree`, `S3SnapshotStorage` and `copyOut`. `ExploreCommand.membersOf(CasConfig config, Closure<S3Ops> s3Ops)`, the closure taking the bucket name. The test double `MemoryS3Ops(String bucket)` with `objects` (key to `MemoryS3Ops.Obj`), `calls` (`"HEAD <key>"`, `"GET <key>"`, `"PUT <key>"`, `"COPY <src bucket>/<src key> <key>"`, `"MPU <key>"`, `"PART <key> <n>"`, `"PARTCOPY <key> <n>"`, `"COMPLETE <key>"`, `"ABORT <key>"`, `"LIST <prefix>"`, `"DELETE <key>"`, and from Task 12 `"COPYOUT <key> <target bucket>/<target key>"`), `pulledBytes`, `serverDateMillis` (Long, null for "no Date header"), `discard` (hash bodies, keep none), `conflicts` (`Map<String,Integer>`: op name to how many 409s to answer first), `peers` (other buckets by name, for copy sources and targets), `Obj.text()`, `putText(String key, String text)`.
 
 - [ ] **Step 1: Move the SDK to compile-only against nf-amazon**
 
@@ -1377,11 +1425,13 @@ Ticket 16 decisions 1-2, carried decision 23 (ticket 15 addendum, Rob 2026-09-28
 - Modify: `DESIGN.md` §6 (the ```` ```ipldsch ```` block, the OutputItem and RunCompletion prose blocks, the first paragraph's "`schema` (integer, `1`)")
 - Modify: `web/src/schema.js`, `web/src/blocks.js`, `web/src/generated/schema.json` (regenerated)
 - Modify: `web/test/schema.test.mjs`, `web/test/blocks.test.mjs`
-- Modify: `src/test/groovy/robsyme/cas/core/RecordsTest.groovy`, `src/test/groovy/robsyme/cas/trace/JoinTest.groovy`, `src/test/groovy/robsyme/cas/core/Fixtures.groovy` (adds `leaf2`, `outputItem2`)
+- Modify: `src/main/groovy/robsyme/cas/CasSession.groovy` (`Publish` only: the `contents` property)
+- Modify: `src/main/groovy/robsyme/cas/core/DirectoryManifestBuilder.groovy` (the `executable` call, `isExecutable` and its imports only; Task 3 rewrites the rest)
+- Modify: `src/test/groovy/robsyme/cas/core/RecordsTest.groovy`, `src/test/groovy/robsyme/cas/trace/JoinTest.groovy`, `src/test/groovy/robsyme/cas/core/Fixtures.groovy` (adds `leaf2`, `outputItem2`), `src/test/groovy/robsyme/cas/core/DirectoryManifestBuilderTest.groovy` (the executable feature), `src/test/groovy/robsyme/cas/ext/CasExtensionTest.groovy` (`Leaf.of` at line 108), `src/test/groovy/robsyme/cas/nio/CasOccurrenceTest.groovy` (`Leaf.of` at lines 50 and 52)
 
 **Interfaces:**
 - Consumes: `CasSession.Publish.provider` (a string, `'head-node'` from every writer today).
-- Produces: `DirectoryManifest.SCHEMA = 2`, `DirectoryManifest.READABLE = [1, 2]`; `ManifestEntry` modes `regular`, `symlink`, `directory`, `unresolvable` (the constant `ManifestEntry.EXECUTABLE` stays, only so `fromCbor` can recognise a schema-1 entry and `CasFileSystemProvider` compiles until Task 12); `Providers` (see shared interfaces); `Leaf(String name, Cid address, Long size, String reason)`, `Leaf.of(String, Cid, Long)`; `OutputItem.SCHEMA = 2`, `OutputItem.READABLE = [1, 2]`; `RunCompletion.SCHEMA = 2`, `RunCompletion.providers` (`Map<String, List<Cid>>`, keys sorted, each list sorted by CID string, no duplicates); `Join.Result.providers` (same type); `Records.head(String kind, int schema)`; `web/src/schema.js` `validLeafV1`.
+- Produces: `DirectoryManifest.SCHEMA = 2`, `DirectoryManifest.READABLE = [1, 2]`; `ManifestEntry` modes `regular`, `symlink`, `directory`, `unresolvable` (the constant `ManifestEntry.EXECUTABLE` stays, only so `fromCbor` can recognise a schema-1 entry and `CasFileSystemProvider` compiles until Task 12); `Providers` (see shared interfaces); `Leaf(String name, Cid address, Long size, String reason)`, `Leaf.of(String, Cid, Long)`; `OutputItem.SCHEMA = 2`, `OutputItem.READABLE = [1, 2]`; `RunCompletion.SCHEMA = 2`, `RunCompletion.providers` (`Map<String, List<Cid>>`, keys sorted, each list sorted by CID string, no duplicates); `Join.Result.providers` (same type), merging each leaf's provider and each directory Publish's `contents`; `CasSession.Publish.contents` (`Map<String, List<Cid>>`, provider name to the addresses of the files inside a published directory, empty by default and for a file; Task 10 fills it from `DirectoryManifestBuilder.Result.providers`); `Records.head(String kind, int schema)`; `web/src/schema.js` `validLeafV1`.
 
 - [ ] **Step 1: Write the failing Groovy tests**
 
@@ -1499,7 +1549,7 @@ Replace the Leaf features of `RecordsTest` (the ones at lines 159-202 that pass 
 In `JoinTest`, delete the line `leavesByName['A.bam'].provider == 'head-node'`, and add:
 
 ```groovy
-    def 'providers maps each provider to the leaf addresses it supplied; a directory leaf is head-node'() {
+    def 'providers maps each provider to its leaf addresses'() {
         given:
         final cidA = rawCid(1)
         final cidB = rawCid(2)
@@ -1537,6 +1587,23 @@ In `JoinTest`, delete the line `leavesByName['A.bam'].provider == 'head-node'`, 
         then:
         result.outputs[0].collection.items == result.outputs[1].collection.items
         result.providers == ['head-node': [cid], 's3-copy': [cid]]
+    }
+
+    def 'providers also covers the files inside a published directory (ticket 16 decision 1)'() {
+        given:
+        final dir = dagCid(3)
+        final inA = rawCid(4)
+        final inB = rawCid(5)
+        final session = sessionWith([
+            'cas://lab/qc/A/A_qc': new CasSession.Publish(new StoreRef(dir, 'A_qc'), 1L, 'head-node',
+                ['s3-copy': [inA], 'head-node': [inB]]),
+        ], dagCid(9))
+
+        when:
+        final result = Join.join([qc: [[[sample: 'A'], coord('cas://lab/qc/A/A_qc')]]] as Map<String, Object>, session)
+
+        then:
+        result.providers == ['head-node': [dir, inB].sort { it.toString() }, 's3-copy': [inA]]
     }
 ```
 
@@ -1736,15 +1803,33 @@ In `Join`, `Result` gains `final Map<String, List<Cid>> providers` (constructor 
 ```groovy
         final String provider = publish.provider ?: Providers.HEAD_NODE
         byProvider.computeIfAbsent(provider, { String k -> new TreeMap<String, Cid>() }).put(address.toString(), address)
+        // The files inside a published directory are addresses the run published too (ticket 16 decision 1).
+        publish.contents?.each { String p, List<Cid> cids ->
+            final TreeMap<String, Cid> held = byProvider.computeIfAbsent(p, { String k -> new TreeMap<String, Cid>() })
+            cids.each { Cid c -> held.put(c.toString(), c) }
+        }
         return Leaf.of(name, address, size)
 ```
+
+In `CasSession.Publish` add a fourth property after `provider`:
+
+```groovy
+        /**
+         * For a published directory, the providers of the files inside it
+         * (provider name to addresses), so RunCompletion.providers covers every
+         * address the run published (ticket 16 decision 1). Empty for a file.
+         */
+        Map<String, List<Cid>> contents = [:]
+```
+
+`@Canonical`'s tuple constructor keeps the three-argument form, with `contents` defaulting to the empty map, so no existing caller changes.
 
 and return `new Result(outputs, counters.toAnomalies(), byProvider.collectEntries { String k, TreeMap<String, Cid> v -> [(k): new ArrayList<Cid>(v.values())] } as Map<String, List<Cid>>)`. The `build` signature gains the `byProvider` parameter in every recursive call.
 
 In `CasObserver.writeCompletion`, add `providers: joined.providers,` to the `RunCompletion` map after `anomalies`.
 
 Run: `./gradlew test`
-Expected: PASS. Fix any other caller of the four-argument `Leaf.of` or the five-argument `Leaf` constructor that the compiler reports (`grep -rn 'Leaf.of(\|new Leaf(' src`): only tests remain; each drops the provider argument.
+Expected: PASS once the other callers of the four-argument `Leaf.of` drop the provider argument: `src/test/groovy/robsyme/cas/ext/CasExtensionTest.groovy:108` and `src/test/groovy/robsyme/cas/nio/CasOccurrenceTest.groovy:50,52` (confirm with `grep -rn 'Leaf.of(\|new Leaf(' src`; no main-code caller remains).
 
 - [ ] **Step 4: Write the failing page tests**
 
@@ -1851,7 +1936,7 @@ type Provider enum {
 and in `type RunCompletion struct`, after `error nullable String`, add
 
 ```
-  providers optional {String:[&Any]}  # schema 2: provider name -> the Leaf addresses it supplied, sorted; absent at schema 1
+  providers optional {String:[&Any]}  # schema 2: provider name -> every address of the run it supplied, sorted; absent at schema 1
 ```
 
 In the prose, replace the OutputItem block's `{ kind: "OutputItem", schema: 1,` with `{ kind: "OutputItem", schema: 2,` and the Leaf block
@@ -1869,7 +1954,7 @@ with
   reason: null|"declined"|"never_published"|"unresolvable"|"unaddressed" }
 ```
 
-adding after the Leaf paragraph: "*Amended 2026-09-28 (ticket 16):* the Leaf carries no provider, so the same content published by different Address Providers is one OutputItem. An OutputItem is written at `schema: 2`; a reader accepts `schema: 1`, whose Leaves carry `provider`, and ignores it. The RunCompletion records providers." In the RunCompletion prose block replace `{ kind: "RunCompletion", schema: 1, asserted_by: string,` with `{ kind: "RunCompletion", schema: 2, asserted_by: string,` and add a last field line `  providers: { <provider>: [Cid, ...] } }   // schema 2: every Leaf address of the run under the provider that supplied it` (moving the closing brace). In §6's first paragraph replace "`schema` (integer, `1`)" with "`schema` (integer: `1`, except OutputItem and RunCompletion, `2` since 2026-09-28)".
+adding after the Leaf paragraph: "*Amended 2026-09-28 (ticket 16):* the Leaf carries no provider, so the same content published by different Address Providers is one OutputItem. An OutputItem is written at `schema: 2`; a reader accepts `schema: 1`, whose Leaves carry `provider`, and ignores it. The RunCompletion records providers." In the RunCompletion prose block replace `{ kind: "RunCompletion", schema: 1, asserted_by: string,` with `{ kind: "RunCompletion", schema: 2, asserted_by: string,` and add a last field line `  providers: { <provider>: [Cid, ...] } }   // schema 2: every address the run published (leaves and the files inside published directories) under the provider that supplied it` (moving the closing brace). In §6's first paragraph replace "`schema` (integer, `1`)" with "`schema` (integer: `1`, except OutputItem and RunCompletion, `2` since 2026-09-28)".
 
 ```js
 // web/src/schema.js
@@ -1980,7 +2065,7 @@ In `DESIGN.md` §6: in the IPLD Schema, replace the `EntryMode` enum's comment l
 # 2026-09-28, and reads as regular; schema 2 never holds it.
 ```
 
-keeping the member (a schema-1 block must still validate). Replace the DirectoryManifest prose block's first line with `{ kind: "DirectoryManifest", schema: 2,` and its mode line with `mode: "regular"|"symlink"|"directory"|"unresolvable",`, the address comment with `// raw cid for regular, dag-cbor cid for directory, null for symlink/unresolvable`, and add after the symlink rules paragraph: "*Amended 2026-09-28 (ticket 15 addendum, Rob):* a manifest records no execute bit. An object store keeps none, so the bit let the storage backend change a manifest address. A reader accepts schema 1 and reads its `executable` entries as `regular`; materialising a manifest sets no execute permission."
+keeping the member (a schema-1 block must still validate). In `type DirEntry struct`, change the `address` comment `# raw cid for regular/executable, &DirectoryManifest for directory` to `# raw cid for regular, &DirectoryManifest for directory`. Replace the DirectoryManifest prose block's first line with `{ kind: "DirectoryManifest", schema: 2,` and its mode line with `mode: "regular"|"symlink"|"directory"|"unresolvable",`, the address comment with `// raw cid for regular, dag-cbor cid for directory, null for symlink/unresolvable`, and add after the symlink rules paragraph: "*Amended 2026-09-28 (ticket 15 addendum, Rob):* a manifest records no execute bit. An object store keeps none, so the bit let the storage backend change a manifest address. A reader accepts schema 1 and reads its `executable` entries as `regular`; materialising a manifest sets no execute permission."
 
 In `web/src/blocks.js`'s `validKind`, add before `return true`:
 
@@ -1991,8 +2076,12 @@ In `web/src/blocks.js`'s `validKind`, add before `return true`:
   }
 ```
 
-Run: `./gradlew compileGroovy` (the local walk in `DirectoryManifestBuilder` still calls `ManifestEntry.executable`: in this task replace that one call with `ManifestEntry.regular(name, address, attrs.size())` and leave the rest of the walk to Task 3), then `./gradlew test --tests 'robsyme.cas.core.RecordsTest'` and `cd web && npm test`.
-Expected: PASS. `DirectoryManifestBuilderTest`'s executable feature now fails: change its expectation to `regular` here (Task 3 deletes `isExecutable` itself).
+In `RecordsTest`'s 'every mode has its own shape' (line 34), replace `ManifestEntry.executable('run.sh', raw('x'), 1L).toCbor().mode == 'executable'` with `ManifestEntry.regular('run.sh', raw('x'), 1L).toCbor().mode == 'regular'`.
+
+In `DirectoryManifestBuilder`, the local walk still calls `ManifestEntry.executable`: replace the whole `return isExecutable(path) ? ManifestEntry.executable(...) : ManifestEntry.regular(...)` ternary with `return ManifestEntry.regular(name, address, attrs.size())`, delete the private `isExecutable(Path)` method and its comment, and delete the imports it alone used (`java.nio.file.attribute.PosixFileAttributeView`, `java.nio.file.attribute.PosixFilePermission`). Leave the rest of the walk to Task 3.
+
+Run: `./gradlew compileGroovy`, then `./gradlew test --tests 'robsyme.cas.core.RecordsTest'` and `cd web && npm test`.
+Expected: PASS. `DirectoryManifestBuilderTest`'s executable feature now fails: change its expectation to `regular` here.
 
 - [ ] **Step 6: Run the page tests and the Gate**
 
@@ -2010,7 +2099,8 @@ git add src/main/groovy/robsyme/cas/core/Providers.groovy src/main/groovy/robsym
   web/src/schema.js web/src/blocks.js web/src/generated/schema.json web/test/schema.test.mjs web/test/blocks.test.mjs \
   src/test/groovy/robsyme/cas/core/RecordsTest.groovy src/test/groovy/robsyme/cas/trace/JoinTest.groovy \
   src/test/groovy/robsyme/cas/core/Fixtures.groovy src/main/groovy/robsyme/cas/core/DirectoryManifestBuilder.groovy \
-  src/test/groovy/robsyme/cas/core/DirectoryManifestBuilderTest.groovy
+  src/test/groovy/robsyme/cas/core/DirectoryManifestBuilderTest.groovy src/main/groovy/robsyme/cas/CasSession.groovy \
+  src/test/groovy/robsyme/cas/ext/CasExtensionTest.groovy src/test/groovy/robsyme/cas/nio/CasOccurrenceTest.groovy
 git commit -m "feat(records): provider moves to RunCompletion.providers; manifests lose the execute bit (schema 2)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
@@ -2032,7 +2122,7 @@ The encoding, measured on Fusion 2.5.14 (`fusion-batch-remeasure.md` §6): a lin
 
 **Interfaces:**
 - Consumes: `BlockStore.putStreaming`, `BlockStore.putDagCbor`, `DirectoryManifest`, `ManifestEntry` factories, `Anomalies.unresolvable(int)`.
-- Produces: `FileAddresser`, `Addressed`, `HeadNodeAddresser` (shared interfaces); `DirectoryManifestBuilder(BlockStore)` (head-node addresser, `objectPath` resolving nothing), `DirectoryManifestBuilder(BlockStore, FileAddresser, Closure<Path> objectPath)`; `static Path DirectoryManifestBuilder.realOf(Path)`; `FusionLinks.SIDECAR`, `FusionLinks.parse(byte[])`, `FusionLinks.target(byte[]) -> String` (null when the body is not a storable target).
+- Produces: `FileAddresser`, `Addressed`, `HeadNodeAddresser` (shared interfaces); `DirectoryManifestBuilder(BlockStore)` (head-node addresser, `objectPath` resolving nothing), `DirectoryManifestBuilder(BlockStore, FileAddresser, Closure<Path> objectPath)`; `DirectoryManifestBuilder.Result.providers` (`Map<String, List<Cid>>`: each provider the addresser returned for a file inside the tree, to those files' addresses, sorted by CID string, no repeats; the manifests themselves are not in it); `static Path DirectoryManifestBuilder.realOf(Path)`; `FusionLinks.SIDECAR`, `FusionLinks.parse(byte[])`, `FusionLinks.target(byte[]) -> String` (null when the body is not a storable target).
 
 The tests use the JDK's zip filesystem as the object store: it is not the default filesystem (so the builder takes the object-store walk), it has directories and plain files but no links, which is exactly what Fusion leaves in a bucket.
 
@@ -2235,15 +2325,45 @@ class ObjectStoreManifestTest extends Specification {
     def 'every file is regular, from an object store or local disk, and each goes through the addresser'() {
         given:
         obj('w/d/tool.sh', '#!/bin/sh\n')
+        final Path localDir = Files.createDirectories(work.resolve('local-tool/d'))
+        final Path localTool = Files.writeString(localDir.resolve('tool.sh'), '#!/bin/sh\n')
+        localTool.toFile().setExecutable(true)
         final List<String> asked = []
         final FileAddresser counting = { Path f, long size -> asked << f.fileName.toString(); new HeadNodeAddresser(store).address(f, size) } as FileAddresser
 
         when:
         final def r = new DirectoryManifestBuilder(store, counting, null).build(zip.getPath('/w/d'))
+        final def l = new DirectoryManifestBuilder(store, counting, null).build(localDir)
 
         then:
         read(r.cid).entry('tool.sh').mode == 'regular'
-        asked == ['tool.sh']
+        read(l.cid).entry('tool.sh').mode == 'regular'
+        r.cid == l.cid
+        asked == ['tool.sh', 'tool.sh']
+    }
+
+    def 'the result lists every file address under the provider that supplied it, in both walks (ticket 16 decision 1)'() {
+        given:
+        obj('w/d/a.txt', 'a\n')
+        obj('w/d/sub/b.txt', 'b\n')
+        final Path localDir = Files.createDirectories(work.resolve('local-prov/d/sub'))
+        Files.writeString(localDir.parent.resolve('a.txt'), 'a\n')
+        Files.writeString(localDir.resolve('b.txt'), 'b\n')
+        final FileAddresser split = { Path f, long size ->
+            final Addressed a = new HeadNodeAddresser(store).address(f, size)
+            f.fileName.toString() == 'a.txt' ? new Addressed(a.cid, a.size, Providers.S3_COPY) : a
+        } as FileAddresser
+        final Cid cidA = store.putStreaming(new ByteArrayInputStream('a\n'.bytes))
+        final Cid cidB = store.putStreaming(new ByteArrayInputStream('b\n'.bytes))
+
+        when:
+        final def r = new DirectoryManifestBuilder(store, split, null).build(zip.getPath('/w/d'))
+        final def l = new DirectoryManifestBuilder(store, split, null).build(localDir.parent)
+
+        then:
+        r.providers == [(Providers.HEAD_NODE): [cidB], (Providers.S3_COPY): [cidA]]
+        l.providers == r.providers
+        !r.providers.values().flatten().contains(r.cid)
     }
 
     def 'realOf falls back to the absolute path where toRealPath is unsupported (ticket 05)'() {
@@ -2297,8 +2417,6 @@ class Addressed {
 /** The provider that always works: the head node streams the file through one hash buffer. */
 @CompileStatic
 class HeadNodeAddresser implements FileAddresser {
-    // Providers.HEAD_NODE (Task 2); spelled out so this file stands alone in its wave.
-    static final String HEAD_NODE = 'head-node'
     private final BlockStore store
     HeadNodeAddresser(BlockStore store) { this.store = store }
 
@@ -2306,7 +2424,7 @@ class HeadNodeAddresser implements FileAddresser {
     Addressed address(Path file, long size) {
         final InputStream input = Files.newInputStream(file)
         try {
-            return new Addressed(store.putStreaming(input), size, HEAD_NODE)
+            return new Addressed(store.putStreaming(input), size, Providers.HEAD_NODE)
         }
         finally {
             input.close()
@@ -2393,7 +2511,7 @@ class FusionLinks {
 
 - [ ] **Step 3: The builder**
 
-In `DirectoryManifestBuilder`: add `@Slf4j`; fields `private final FileAddresser addresser` and `private final Closure<Path> objectPath`; constructors
+In `DirectoryManifestBuilder`: add `@Slf4j`; fields `private final FileAddresser addresser`, `private final Closure<Path> objectPath` and `private final Map<String, TreeMap<String, Cid>> tally = new TreeMap<String, TreeMap<String, Cid>>()` (the providers of the build in progress; every caller constructs one builder per build, so one instance never runs two builds at once); `Result` gains `final Map<String, List<Cid>> providers` as a third constructor argument (`toString` unchanged); constructors
 
 ```groovy
     DirectoryManifestBuilder(BlockStore store) {
@@ -2413,6 +2531,7 @@ replace `build` with
     Result build(Path directory) {
         if( !Files.isDirectory(directory) )
             throw new NotDirectoryException(directory.toString())
+        tally.clear()
         final int[] unresolvable = new int[1]
         final Cid cid
         if( directory.fileSystem == FileSystems.default ) {
@@ -2423,7 +2542,20 @@ replace `build` with
             final Path root = realOf(directory)
             cid = new ObjectWalk(root, unresolvable).walk(root, 1, new LinkedHashSet<String>([keyOf(root)]))
         }
-        return new Result(cid, Anomalies.unresolvable(unresolvable[0]))
+        final Map<String, List<Cid>> providers = new TreeMap<String, List<Cid>>()
+        tally.each { String p, TreeMap<String, Cid> cids -> providers.put(p, Collections.unmodifiableList(new ArrayList<Cid>(cids.values()))) }
+        return new Result(cid, Anomalies.unresolvable(unresolvable[0]), Collections.unmodifiableMap(providers))
+    }
+
+    /**
+     * Every file inside the tree is addressed here, in both walks, so the
+     * result can say which provider supplied each address (ticket 16 decision 1:
+     * RunCompletion.providers covers every address the run published).
+     */
+    private Cid addressOf(Path file, long size) {
+        final Addressed a = addresser.address(file, size)
+        tally.computeIfAbsent(a.provider, { String k -> new TreeMap<String, Cid>() }).put(a.cid.toString(), a.cid)
+        return a.cid
     }
 
     /** toRealPath where the provider has it; an object store has no links to resolve (ticket 05). */
@@ -2439,7 +2571,7 @@ replace `build` with
     private static String keyOf(Path p) { realOf(p).toString() }
 ```
 
-replace `putFile(path)` in `contentEntry` with `addresser.address(path, attrs.size()).cid` (and delete `putFile`), delete `isExecutable` and its `PosixFileAttributeView` imports (a manifest records no execute bit, carried decision 23; Task 2 already made the entry `regular`), change `resolvesInside`'s `link.toRealPath()` to `realOf(link)` and `contentEntry`'s `path.toRealPath()` to `realOf(path)`, then add the object walk as an inner class:
+replace `putFile(path)` in `contentEntry` with `addressOf(path, attrs.size())` (and delete `putFile`), change `resolvesInside`'s `link.toRealPath()` to `realOf(link)` and `contentEntry`'s `path.toRealPath()` to `realOf(path)`, then add the object walk as an inner class:
 
 ```groovy
     /**
@@ -2568,7 +2700,7 @@ replace `putFile(path)` in `contentEntry` with `addresser.address(path, attrs.si
                 deeper.add(keyOf(p))
                 return ManifestEntry.directory(name, walk(p, depth + 1, deeper))
             }
-            return ManifestEntry.regular(name, addresser.address(p, attrs.size()).cid, attrs.size())
+            return ManifestEntry.regular(name, addressOf(p, attrs.size()), attrs.size())
         }
 
         private ManifestEntry unresolvable(String name, String target) {
@@ -2606,7 +2738,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 4: Config for S3 members anywhere
 
-Ticket 02 decisions 9 and 10, silent decisions 5 and 22, Contradictions 3. `CasConfig` stops refusing a writable S3 member (`CasConfig.groovy:148-149`) and an S3 member in `cas.resolve` (`:192-193`), keeps the S3 URI check, refuses any other `<scheme>://`, passes local locations through `FileHelper.asPath` (`:145` used `Path.of`), and gains `cas.tmpDir`, `cas.nodeHash` and the storage-class judgement. Since the refusal goes, the default `resolve` list is every configured alias again, writable first, S3 members included (DESIGN §2's original rule). This task changes no caller: `locationOf`, `writableLocation`, `remoteLocationOf` and `localLocations()` keep their meaning for local members, and Task 11 moves the callers to the new names.
+Ticket 02 decisions 9 and 10, silent decisions 5 and 22, Contradictions 3. `CasConfig` stops refusing a writable S3 member (`CasConfig.groovy:148-149`) and an S3 member in `cas.resolve` (`:192-193`), keeps the S3 URI check, refuses any other `<scheme>://`, passes local locations through `FileHelper.asPath` (`:145` used `Path.of`), and gains `cas.tmpDir`, `cas.nodeHash` and the storage-class judgement. Since the refusal goes, the default `resolve` list is every configured alias again, writable first, S3 members included (DESIGN §2's original rule). This task changes no caller: `locationOf`, `writableLocation`, `remoteLocationOf` and `localLocations()` keep their meaning for local members, and Task 11 moves the callers to the new names. That holds only for all-local configs: from this task until Task 11, the default member list includes S3 aliases that the old `CasSession.buildStore` (`CasSession.groovy:121-127`) builds as `LocalBlockStore(null)`, so `explore` with a private S3 member, and with it `make gate-cloud`, is broken between Tasks 4 and 11. Accepted (pre-flight F27): Task 1's Step 6 runs `gate-cloud` before this task, and it runs next only at acceptance (Task 15); nobody runs it in waves 1-3.
 
 **Files:**
 - Create: `src/main/groovy/robsyme/cas/S3Location.groovy`
@@ -2642,10 +2774,10 @@ Replace the three features "an S3 location is a read-only member that runs leave
         config.remoteLocationOf('lab') == URI.create('s3://bucket/cas')
     }
 
-    def 's3://b/p and s3://b/p/ are one member and one cache name (Review Focus 5)'() {
+    def 's3://bkt/p and s3://bkt/p/ are one member and one cache name (Review Focus 5)'() {
         expect:
-        CasConfig.from([cas: [stores: [lab: [location: 's3://b/p']]]], 'cas://lab').locationTexts() ==
-            CasConfig.from([cas: [stores: [lab: [location: 's3://b/p/']]]], 'cas://lab').locationTexts()
+        CasConfig.from([cas: [stores: [lab: [location: 's3://bkt/p']]]], 'cas://lab').locationTexts() ==
+            CasConfig.from([cas: [stores: [lab: [location: 's3://bkt/p/']]]], 'cas://lab').locationTexts()
     }
 
     def 'a location in another scheme is refused, naming the store'() {
@@ -2660,7 +2792,7 @@ Replace the three features "an S3 location is a read-only member that runs leave
 
     def 'archive storage classes are refused for a writable S3 member; infrequent access warns about packing'() {
         when:
-        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://b']]]], 'cas://lab')
+        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://bkt']]]], 'cas://lab')
 
         then:
         final IllegalArgumentException e = thrown()
@@ -2673,7 +2805,7 @@ Replace the three features "an S3 location is a read-only member that runs leave
 
     def 'the storage-class warning (#cls)'() {
         expect:
-        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://b']]]], 'cas://lab')
+        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://bkt']]]], 'cas://lab')
             .storageClassWarning?.contains(fragment) ?: fragment == null
 
         where:
@@ -2851,7 +2983,7 @@ Ticket 02 decisions 2-5, ticket 03 decision 5, ticket 14, silent decisions 12-15
 - Create: `src/test/groovy/robsyme/cas/s3/S3BlockStoreTest.groovy`, `src/test/groovy/robsyme/cas/s3/S3StoreLogStorageTest.groovy`, `src/test/groovy/robsyme/cas/s3/S3MemoryBoundTest.groovy`
 
 **Interfaces:**
-- Consumes: `S3Ops`, `S3Body`, `S3PutOptions`, `S3Written`, `S3WriteOptions`, `MemoryS3Ops` (Task 1); `HashBufferPool`, `Cid`, `DagCbor`, `BlockMismatchException`, `NoSuchBlockException`.
+- Consumes: `S3Ops`, `S3Body`, `S3PutOptions`, `S3Written`, `MemoryS3Ops` (Task 1) (`S3WriteOptions` is applied inside `SdkS3Ops`, so the store never sees it); `HashBufferPool`, `Cid`, `DagCbor`, `BlockMismatchException`, `NoSuchBlockException`.
 - Produces: `LoggedStore`; `S3BlockStore` and `S3StoreLogStorage` as in the shared interfaces, plus `S3BlockStore.SINGLE_REQUEST_MAX = 5L << 30`, `HEAD_FIRST_BYTES = 1L << 20`, `MIN_PART = 64L << 20`, `MAX_PARTS = 10_000`, `IMMUTABLE = 'public, max-age=31536000, immutable'`, `static long partSize(long size)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2879,7 +3011,7 @@ class S3BlockStoreTest extends Specification {
     MemoryS3Ops s3 = new MemoryS3Ops('member')
 
     private S3BlockStore store(String prefix = 'cas/', long limit = S3BlockStore.SINGLE_REQUEST_MAX) {
-        new S3BlockStore(s3, prefix, 'lab', true, S3WriteOptions.NONE, tmp, limit)
+        new S3BlockStore(s3, prefix, 'lab', true, tmp, limit)
     }
 
     private Path file(String name, byte[] bytes) { Files.write(tmp.resolve(name), bytes) }
@@ -2895,7 +3027,7 @@ class S3BlockStoreTest extends Specification {
         store('').key(cid) == "blocks/${cid.toString()[-2..-1]}/${cid}"
     }
 
-    def 'putStreaming spools, uploads once with SHA-256 and immutable caching, and a second put is a HEAD and a 412'() {
+    def 'putStreaming spools, uploads once with SHA-256 and immutable caching; under 1 MiB a second put is a conditional PUT answered 412'() {
         given:
         final S3BlockStore b = store()
 
@@ -2929,15 +3061,15 @@ class S3BlockStoreTest extends Specification {
         s3.calls.last() == "HEAD ${b.key(cid)}".toString()
     }
 
-    def 'a 409 is retried, up to three times'() {
+    def 'a write that meets a 409 is tried up to three times in all'() {
         given:
         s3.conflicts['PUT'] = 2
 
-        expect:
+        expect: 'two 409s, then the third try writes'
         store().putDagCbor([kind: 'x']) == DagCbor.cidOf(DagCbor.encode([kind: 'x']))
 
-        when:
-        s3.conflicts['PUT'] = 4
+        when: 'three 409s use up the three tries'
+        s3.conflicts['PUT'] = 3
         store().putDagCbor([kind: 'y'])
 
         then:
@@ -2961,7 +3093,7 @@ class S3BlockStoreTest extends Specification {
                 return new S3Written(w.status, w.etag, Base64.encoder.encodeToString(new byte[32]))
             }
         }
-        final S3BlockStore b = new S3BlockStore(lying, 'cas/', 'lab', true, S3WriteOptions.NONE, tmp)
+        final S3BlockStore b = new S3BlockStore(lying, 'cas/', 'lab', true, tmp)
 
         when:
         b.putFile(file('a', 'abc'.bytes))
@@ -2997,7 +3129,7 @@ class S3BlockStoreTest extends Specification {
                 return super.createMultipart(key, o)
             }
         }
-        final S3BlockStore b = new S3BlockStore(racing, 'cas/', 'lab', true, S3WriteOptions.NONE, tmp, 1L << 20)
+        final S3BlockStore b = new S3BlockStore(racing, 'cas/', 'lab', true, tmp, 1L << 20)
 
         when:
         b.putFile(file('large', content))
@@ -3011,7 +3143,7 @@ class S3BlockStoreTest extends Specification {
 
     def 'a read-only member refuses writes; an absent block is NoSuchBlockException'() {
         given:
-        final S3BlockStore ro = new S3BlockStore(s3, 'cas/', 'shared', false, S3WriteOptions.NONE, tmp)
+        final S3BlockStore ro = new S3BlockStore(s3, 'cas/', 'shared', false, tmp)
 
         when:
         ro.putDagCbor([kind: 'x'])
@@ -3042,7 +3174,7 @@ class S3BlockStoreTest extends Specification {
 }
 ```
 
-`S3StoreLogStorageTest` pins `putEntry` as a conditional empty PUT (412 is success) and `listEntries` as the names under `<prefix>log/` without the prefix, ignoring keys with a further `/`. `S3MemoryBoundTest` (run only by `memoryBoundTest`, heap 48 MiB):
+`S3StoreLogStorageTest` pins `putEntry` as a conditional empty PUT (412 is success), tried up to `S3BlockStore.ATTEMPTS` times on a 409 (`conflicts['PUT'] = 2` writes, `= 3` throws `IOException`), and `listEntries` as the names under `<prefix>log/` without the prefix, ignoring keys with a further `/`. `S3MemoryBoundTest` (run only by `memoryBoundTest`, heap 48 MiB):
 
 ```groovy
 // src/test/groovy/robsyme/cas/s3/S3MemoryBoundTest.groovy
@@ -3064,7 +3196,7 @@ class S3MemoryBoundTest extends Specification {
         final MemoryS3Ops s3 = new MemoryS3Ops('member')
         s3.discard = true
         // 64 MiB parts: the lowered limit forces the multipart path.
-        final S3BlockStore store = new S3BlockStore(s3, 'cas/', 'lab', true, S3WriteOptions.NONE, tmp, 64L << 20)
+        final S3BlockStore store = new S3BlockStore(s3, 'cas/', 'lab', true, tmp, 64L << 20)
         final InputStream zeros = new InputStream() {
             long left = 256L << 20
             @Override int read() { left-- > 0 ? 0 : -1 }
@@ -3154,14 +3286,14 @@ class S3BlockStore implements BlockStore, LoggedStore {
     final String prefix
     private final String alias
     private final boolean writable
-    private final S3WriteOptions options
     private final Path tmpDir
     private final long singleRequestMax
 
-    S3BlockStore(S3Ops ops, String prefix, String alias, boolean writable, S3WriteOptions options, Path tmpDir,
+    /** Storage class, SSE and requester pays are the S3Ops' own (SdkS3Ops applies them to every write). */
+    S3BlockStore(S3Ops ops, String prefix, String alias, boolean writable, Path tmpDir,
                  long singleRequestMax = SINGLE_REQUEST_MAX) {
         this.ops = ops; this.prefix = prefix ?: ''; this.alias = alias; this.writable = writable
-        this.options = options ?: S3WriteOptions.NONE; this.tmpDir = tmpDir; this.singleRequestMax = singleRequestMax
+        this.tmpDir = tmpDir; this.singleRequestMax = singleRequestMax
     }
 
     static long partSize(long size) { Math.max(MIN_PART, (long) Math.ceil(size / (double) MAX_PARTS)) }
@@ -3242,34 +3374,43 @@ class S3BlockStore implements BlockStore, LoggedStore {
             .map { String name -> Cid.parse(name) }
     }
 
-    /** Hashes input into a file in tmpDir through one pool buffer, hands it to body, deletes it. */
+    /**
+     * Hashes input into a file in tmpDir through one pool buffer, hands it to body, deletes it.
+     * Only a failure to create or write the spool names cas.tmpDir; what body throws
+     * (a BlockMismatchException, a 409 IOException) propagates unchanged.
+     */
     private <T> T withSpool(InputStream input, Closure<T> body) {
-        Files.createDirectories(tmpDir)
-        final Path spool = Files.createTempFile(tmpDir, 'nf-blocks-', '.spool')
+        Path spool = null
         try {
             final long[] written = new long[1]
-            final byte[] digest = HashBufferPool.shared().withBuffer { byte[] buffer ->
-                final MessageDigest md = MessageDigest.getInstance('SHA-256')
-                FileChannel.open(spool, StandardOpenOption.WRITE).withCloseable { FileChannel ch ->
-                    final java.nio.ByteBuffer view = java.nio.ByteBuffer.wrap(buffer)
-                    int n
-                    while( (n = input.read(buffer, 0, buffer.length)) != -1 ) {
-                        if( n == 0 ) continue
-                        md.update(buffer, 0, n)
-                        view.limit(n).position(0)
-                        while( view.hasRemaining() ) ch.write(view)
-                        written[0] += n
+            final byte[] digest
+            try {
+                Files.createDirectories(tmpDir)
+                spool = Files.createTempFile(tmpDir, 'nf-blocks-', '.spool')
+                final Path into = spool
+                digest = HashBufferPool.shared().withBuffer { byte[] buffer ->
+                    final MessageDigest md = MessageDigest.getInstance('SHA-256')
+                    FileChannel.open(into, StandardOpenOption.WRITE).withCloseable { FileChannel ch ->
+                        final java.nio.ByteBuffer view = java.nio.ByteBuffer.wrap(buffer)
+                        int n
+                        while( (n = input.read(buffer, 0, buffer.length)) != -1 ) {
+                            if( n == 0 ) continue
+                            md.update(buffer, 0, n)
+                            view.limit(n).position(0)
+                            while( view.hasRemaining() ) ch.write(view)
+                            written[0] += n
+                        }
                     }
-                }
-                return md.digest()
-            } as byte[]
+                    return md.digest()
+                } as byte[]
+            }
+            catch( IOException e ) {
+                throw new IOException("could not spool to cas.tmpDir (${tmpDir}): ${e.message}", e)
+            }
             return body.call(spool, Cid.of(Cid.RAW, digest), written[0])
         }
-        catch( IOException e ) {
-            throw new IOException("could not spool to cas.tmpDir (${tmpDir}): ${e.message}", e)
-        }
         finally {
-            Files.deleteIfExists(spool)
+            if( spool != null ) Files.deleteIfExists(spool)
         }
     }
 
@@ -3364,12 +3505,19 @@ class S3StoreLogStorage implements StoreLogStorage {
 
     S3StoreLogStorage(S3Ops ops, String prefix) { this.ops = ops; this.under = "${prefix ?: ''}log/".toString() }
 
-    /** Write-once: If-None-Match, and a 412 is the same entry already there. */
+    /**
+     * Write-once: If-None-Match, and a 412 is the same entry already there. A 409 is
+     * tried up to S3BlockStore.ATTEMPTS times, as blocks are, then thrown; the
+     * observer's appendStoreLog warns and continues (rule 3).
+     */
     @Override
     void putEntry(String name) {
-        final S3Written w = ops.put(under + name, S3Body.ofBytes(new byte[0]), S3PutOptions.create().ifNoneMatch())
-        if( w.status == S3Written.Status.CONFLICT )
-            ops.put(under + name, S3Body.ofBytes(new byte[0]), S3PutOptions.create().ifNoneMatch())
+        for( int attempt = 1; attempt <= S3BlockStore.ATTEMPTS; attempt++ ) {
+            final S3Written w = ops.put(under + name, S3Body.ofBytes(new byte[0]), S3PutOptions.create().ifNoneMatch())
+            if( w.status != S3Written.Status.CONFLICT )
+                return
+        }
+        throw new IOException("S3 answered 409 ConditionalRequestConflict ${S3BlockStore.ATTEMPTS} times writing ${ops.describe()}/${under}${name}")
     }
 
     @Override
@@ -3415,7 +3563,7 @@ Local outcomes the contract pins (measured on the JDK's default provider): writi
 - Modify: `src/main/groovy/robsyme/cas/CasSession.groovy` (the constructor's `new CoordinateTree(...)`; add `coordinatesOf`)
 - Rename: `src/test/groovy/robsyme/cas/core/CoordinateTreeTest.groovy` to `LocalCoordinateTreeTest.groovy`
 - Create: `src/test/groovy/robsyme/cas/core/CoordinateTreeContract.groovy`, `src/test/groovy/robsyme/cas/core/LocalCoordinateTreeContractTest.groovy`, `src/test/groovy/robsyme/cas/s3/S3CoordinateTreeTest.groovy`
-- Modify: every test that constructs `new CoordinateTree(` (`grep -rln 'new CoordinateTree(' src/test`): `new LocalCoordinateTree(`
+- Modify: every test that constructs `new CoordinateTree(`: `new LocalCoordinateTree(`. At `8dc1acb` these are `src/test/groovy/robsyme/cas/nio/CasOccurrenceTest.groovy` and `src/test/groovy/robsyme/cas/nio/CasFileSystemProviderTest.groovy` (confirm with `grep -rln 'new CoordinateTree(' src/test`; add any other it finds to the `git add` below)
 
 **Interfaces:**
 - Consumes: `S3Ops`, `MemoryS3Ops` (Task 1); `StoreRef`.
@@ -3787,13 +3935,17 @@ Expected: PASS: the contract passes on both trees (10 features), the renamed loc
 ```bash
 git add -A src/main/groovy/robsyme/cas/core/CoordinateTree.groovy src/main/groovy/robsyme/cas/core/LocalCoordinateTree.groovy \
   src/main/groovy/robsyme/cas/s3/S3CoordinateTree.groovy src/main/groovy/robsyme/cas/nio/CasFileSystemProvider.groovy \
-  src/main/groovy/robsyme/cas/CasSession.groovy src/test/groovy/robsyme/cas
+  src/main/groovy/robsyme/cas/CasSession.groovy \
+  src/test/groovy/robsyme/cas/core/CoordinateTreeTest.groovy src/test/groovy/robsyme/cas/core/LocalCoordinateTreeTest.groovy \
+  src/test/groovy/robsyme/cas/core/CoordinateTreeContract.groovy src/test/groovy/robsyme/cas/core/LocalCoordinateTreeContractTest.groovy \
+  src/test/groovy/robsyme/cas/s3/S3CoordinateTreeTest.groovy \
+  src/test/groovy/robsyme/cas/nio/CasOccurrenceTest.groovy src/test/groovy/robsyme/cas/nio/CasFileSystemProviderTest.groovy
 git commit -m "feat(coords): CoordinateTree interface; S3 coordinates held to the local conflict contract
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
-(`git add -A src/test/groovy/robsyme/cas` stages only this task's test edits and renames: check `git status` first, since no other task runs in this wave's test paths for coordinates. If a parallel task has unstaged test files, add the files listed above by name instead.)
+(The paths are named because Tasks 5 and 7 write tests under `src/test/groovy/robsyme/cas` in the same wave; `-A` on the old and new names of the renamed test stages the rename.)
 
 ### Task 7: Snapshot storage, the conditional upload and the run-count guard
 
@@ -4262,7 +4414,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 8: Seeding the index from a member's snapshot
 
-Ticket 04 decisions 1-10, silent decision 17. A cache that has never caught a member up (no `store_log_watermark:<member>` and no `block_scan:<member>` in `meta`) copies the member's snapshot rows instead of reading every run's closure, then reads only the Store Log tail. The snapshot is written from this very DDL (`Index.ddl()`, same `schema_version`, DESIGN §15), so the copy is `INSERT ... SELECT` over an attached database. Its `run.member` and `log_entry.member` are NULL (an alias is a local label), so seeding writes the member's alias into both. `claim_current` is recomputed with `ClaimCurrent.rewrite`, the ingest path's own code. Seeding copies each run, Selection and Claim only when the cache does not hold it yet, so two members' snapshots seeded into one cache duplicate no row.
+Ticket 04 decisions 1-10, silent decision 17. A cache that has never caught a member up (no `store_log_watermark:<member>` in `meta`; ticket 04 decision 6 makes an absent watermark the only trigger, whatever `block_scan:<member>` says) copies the member's snapshot rows instead of reading every run's closure, then reads only the Store Log tail. The snapshot is written from this very DDL (`Index.ddl()`, same `schema_version`, DESIGN §15), so the copy is `INSERT ... SELECT` over an attached database. Its `run.member` and `log_entry.member` are NULL (an alias is a local label), so seeding writes the member's alias into both. `claim_current` is recomputed with `ClaimCurrent.rewrite`, the ingest path's own code. Seeding copies each run, Selection and Claim only when the cache does not hold it yet, so two members' snapshots seeded into one cache duplicate no row.
 
 **Files:**
 - Modify: `src/main/groovy/robsyme/cas/core/Index.groovy` (`seedFrom`, `SnapshotUnusable`, the five-argument `catchUp`, `metaValue`)
@@ -4470,7 +4622,8 @@ In `Index`:
      * warning when the member's Store Log is not empty.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
-        if( snapshots != null && meta(watermarkKey(member)) == null && meta(META_SCANNED + ':' + member) == null ) {
+        // Ticket 04 decision 6: an absent watermark alone triggers seeding.
+        if( snapshots != null && meta(watermarkKey(member)) == null ) {
             Path file = null
             try {
                 file = snapshots.fetch(tempDir)
@@ -4478,17 +4631,23 @@ In `Index`:
                 seedFrom(file, member)
             }
             catch( SnapshotUnusable e ) {
-                if( !storeLog.read().isEmpty() )
-                    CONSOLE.warn("store member '${member}' has no usable Index Snapshot (${e.reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.")
+                warnUnusable(storeLog, member, e.reason)
             }
             catch( IOException e ) {
-                CONSOLE.warn("store member '${member}' has no usable Index Snapshot (unreadable: ${e.message}); indexing it from every block instead. `nextflow plugin nf-blocks:snapshot` against it writes one.")
+                warnUnusable(storeLog, member, 'unreadable')
+                log.debug("fetching the Index Snapshot of '${member}' failed", e)
             }
             finally {
                 if( file != null ) Files.deleteIfExists(file)
             }
         }
         catchUp(store, storeLog, member)
+    }
+
+    /** Silent decision 17: one warning, and only when the member's Store Log is not empty. */
+    private static void warnUnusable(StoreLog storeLog, String member, String reason) {
+        if( !storeLog.read().isEmpty() )
+            CONSOLE.warn("store member '${member}' has no usable Index Snapshot (${reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.")
     }
 
     /** The per-owner copies, each limited to what this index does not hold yet (silent decision 17). */
@@ -4540,20 +4699,26 @@ In `Index`:
             if( versions != [SCHEMA_VERSION] )
                 throw new SnapshotUnusable("schema_version ${versions ? versions[0] : 'missing'}")
             final Map<String, String> snapMeta = [:]
-            query('SELECT key, value FROM snap.meta', []) { ResultSet rs -> snapMeta.put(rs.getString(1), rs.getString(2)) }
-            withTransaction {
-                for( String sql : SEED )
-                    update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])
-                final List<String> subjects = []
-                query('SELECT DISTINCT subject_cid FROM main.claim WHERE claim_cid IN seed_claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
-                for( String subject : subjects )
-                    ClaimCurrent.rewrite(connection, subject)
-                if( snapMeta[IndexSnapshot.WATERMARK_KEY] )
-                    setMeta(watermarkKey(member), snapMeta[IndexSnapshot.WATERMARK_KEY])
-                setMeta(META_SCANNED + ':' + member, 'done')
-                setMeta(META_SEEDED + ':' + member, snapMeta[IndexSnapshot.WRITTEN_AT_KEY] ?: 'unknown')
-                for( String t : ['seed_run', 'seed_coll', 'seed_item', 'seed_claim'] )
-                    update("DROP TABLE temp.${t}".toString(), [])
+            try {
+                query('SELECT key, value FROM snap.meta', []) { ResultSet rs -> snapMeta.put(rs.getString(1), rs.getString(2)) }
+                withTransaction {
+                    for( String sql : SEED )
+                        update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])
+                    final List<String> subjects = []
+                    query('SELECT DISTINCT subject_cid FROM main.claim WHERE claim_cid IN seed_claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
+                    for( String subject : subjects )
+                        ClaimCurrent.rewrite(connection, subject)
+                    if( snapMeta[IndexSnapshot.WATERMARK_KEY] )
+                        setMeta(watermarkKey(member), snapMeta[IndexSnapshot.WATERMARK_KEY])
+                    setMeta(META_SCANNED + ':' + member, 'done')
+                    setMeta(META_SEEDED + ':' + member, snapMeta[IndexSnapshot.WRITTEN_AT_KEY] ?: 'unknown')
+                    for( String t : ['seed_run', 'seed_coll', 'seed_item', 'seed_claim'] )
+                        update("DROP TABLE temp.${t}".toString(), [])
+                }
+            }
+            catch( IllegalStateException e ) {
+                // Index.update and Index.query wrap every SQLException (Index.groovy:946-979).
+                throw new SnapshotUnusable('unreadable', e)
             }
             return true
         }
@@ -4563,7 +4728,7 @@ In `Index`:
     }
 ```
 
-(`ATTACH` cannot run inside a transaction, which is why it precedes `withTransaction`; `ClaimCurrent.rewrite` takes the same connection the ingest path passes it. If `withTransaction` fails half way it rolls back, the temp tables go with the connection, and the exception is an `SQLException`: catch it in `seedFrom` as `SnapshotUnusable('unreadable', e)`.)
+(`ATTACH` cannot run inside a transaction, which is why it precedes `withTransaction`; `ClaimCurrent.rewrite` takes the same connection the ingest path passes it. If `withTransaction` fails half way it rolls back, taking the temp tables with it. `Index.update` and `Index.query` wrap every `SQLException` in an `IllegalStateException` (`Index.groovy:946-979`), so that is what a half-failed seed throws; `seedFrom` turns it into `SnapshotUnusable('unreadable', e)`, and `catchUp` falls back to the full scan instead of letting it escape to `CasSession.catchUpIndex`, which would mark the member `catch_up_failed`.)
 
 - [ ] **Step 3: Run the tests**
 
@@ -4670,7 +4835,7 @@ class NodeHashScriptTest extends Specification {
         !Files.exists(task.resolve('.command.cas.tmp'))
     }
 
-    def 'it never fails the task: no .command.run, an unreadable output, a missing directory'() {
+    def 'it never fails the task: no .command.run, a declared directory that is absent'() {
         when:
         runScript()
 
@@ -4678,9 +4843,23 @@ class NodeHashScriptTest extends Specification {
         !Files.exists(task.resolve('.command.cas'))
 
         when:
+        put('.command.run', "### outputs:\n### - 'gone'\n### - 'here.txt'\n### ...\n")
+        put('here.txt', 'h\n')
+        runScript()
+
+        then: 'the absent directory gets no line; the rest is hashed'
+        cas() == ['here.txt': hex('h\n'.bytes)]
+    }
+
+    // setReadable(false) does nothing for root, so the file would be hashed and prove nothing.
+    @Requires({ System.getProperty('user.name') != 'root' })
+    def 'it never fails the task: an unreadable output'() {
+        given:
         put('.command.run', "### outputs:\n### - 'locked.txt'\n### ...\n")
         put('locked.txt', 'x')
         task.resolve('locked.txt').toFile().setReadable(false)
+
+        when:
         runScript()
 
         then:
@@ -4912,14 +5091,15 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 ### Task 10: The publish addresser: node digests, `s3-copy`, the head-node fallback
 
-Ticket 16 decisions 3-6, spec §14, silent decisions 4, 7, 8, 12. Every published file, lone or inside a directory, gets its address through one `FileAddresser`, `PublishAddresser`, in the order spec §3 gives: the task node's digest (`.command.cas`), S3's own SHA-256 from a server-side copy, the head node's streamed read. `CasFileSystemProvider.upload` and `DirectoryManifestBuilder` (Task 3's seam) both use it, so a directory from an S3 work dir costs no head-node bytes either. `S3BlockStore.copyFrom` holds the copy logic of carried decision 14. The provider recorded per publish feeds `RunCompletion.providers` (Task 2) through `CasSession.Publish.provider`.
+Ticket 16 decisions 3-6, spec §14, silent decisions 4, 7, 8, 12. Every published file, lone or inside a directory, gets its address through one `FileAddresser`, `PublishAddresser`, in the order spec §3 gives: the task node's digest (`.command.cas`), S3's own SHA-256 from a server-side copy, the head node's streamed read. `CasFileSystemProvider.upload` and `DirectoryManifestBuilder` (Task 3's seam) both use it, so a directory from an S3 work dir costs no head-node bytes either. `S3BlockStore.copyFrom` holds the copy logic of carried decision 14. The provider recorded per publish feeds `RunCompletion.providers` (Task 2) through `CasSession.Publish.provider`, and for a directory the providers of the files inside it through `CasSession.Publish.contents` (silent decision 3).
 
 How an upload reaches here: for an S3 source and a `cas://` target the providers differ, S3's `canDownload` needs a default-filesystem target, so `FileHelper.copyPath` calls our `upload(source, target)` (`FileHelper.groovy:992-1019` at v26.04.6, `fusion-nextflow-integration.md` §4).
 
 **Files:**
 - Create: `src/main/groovy/robsyme/cas/core/NodeDigests.groovy`
 - Create: `src/main/groovy/robsyme/cas/nio/PublishAddresser.groovy`
-- Modify: `src/main/groovy/robsyme/cas/s3/S3BlockStore.groovy` (`copyFrom`, `S3Copied`)
+- Modify: `src/main/groovy/robsyme/cas/s3/S3BlockStore.groovy` (`copyFrom`)
+- Modify: `src/main/groovy/robsyme/cas/s3/S3Types.groovy` (adds the top-level `S3Copied`)
 - Modify: `src/main/groovy/robsyme/cas/nio/CasFileSystemProvider.groovy` (`upload`, `newOutputStream`)
 - Modify: `src/main/groovy/robsyme/cas/CasSession.groovy` (`addresser`)
 - Modify: `src/main/groovy/robsyme/cas/trace/CasObserver.groovy` (the head-node line in `writeCompletion`)
@@ -4928,7 +5108,7 @@ How an upload reaches here: for an S3 source and a `cas://` target the providers
 
 **Interfaces:**
 - Consumes: `FileAddresser`, `Addressed`, `DirectoryManifestBuilder(BlockStore, FileAddresser, Closure<Path>)` (Task 3); `S3BlockStore`, `putFile`, `key` (Task 5); `Providers` (Task 2); `CasConfig.nodeHashEnabled` (Task 4); `nextflow.file.FilesEx.toUriString(Path)`, `nextflow.file.FileHelper.asPath(String)`, `Session.workDir`.
-- Produces: `NodeDigests`, `PublishAddresser`, `S3BlockStore.copyFrom`, `S3Copied(Cid cid, String provider)` (shared interfaces); `CasSession.getAddresser()` (built lazily from `Global.session.workDir` and `CasConfig.nodeHashEnabled(session config)`); the info line of silent decision 8.
+- Produces: `NodeDigests`, `PublishAddresser`, `S3BlockStore.copyFrom`, `S3Copied(Cid cid, String provider)` (shared interfaces; a top-level class in `S3Types.groovy`); `CasSession.Publish.contents` filled for a directory from `DirectoryManifestBuilder.Result.providers`; `CasSession.getAddresser()` (built lazily from `Global.session.workDir` and `CasConfig.nodeHashEnabled(session config)`); the info line of silent decision 8.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4949,17 +5129,17 @@ class NodeDigestsTest extends Specification {
 
     def 'sha256sum lines, text and binary mode, with coreutils escaping; garbage is skipped (Review Focus 3)'() {
         when:
-        final Map<String, Cid> d = parse("${A}  d/target.txt\n${B} *bin.dat\n\\${A}  back\\\\slash\\nline\nnot a line\n${A}  name with space.txt\n")
+        final Map<String, Cid> d = parse("${A}  d/target.txt\n${B} *bin.dat\n\\${A}  back\\\\slash\\nline\n\\${B}  a\\\\nb\nnot a line\n${A}  name with space.txt\n")
 
-        then:
-        d.keySet() == ['d/target.txt', 'bin.dat', 'back\\slash\nline', 'name with space.txt'] as Set
+        then: 'escapes are read left to right: an escaped backslash before n is a backslash, then n'
+        d.keySet() == ['d/target.txt', 'bin.dat', 'back\\slash\nline', 'a\\nb', 'name with space.txt'] as Set
         d['d/target.txt'] == Cid.of(Cid.RAW, A.decodeHex())
         d['bin.dat'].digest == B.decodeHex()
     }
 
     def 'a file over the cap is ignored whole'() {
         expect:
-        parse("${A}  x\n", 10L).isEmpty()
+        parse("${A}  x\n", 10L) == null
     }
 
     def 'the task directory is the first two segments under workDir'() {
@@ -4995,7 +5175,7 @@ class S3CopyTest extends Specification {
 
     def setup() {
         member.peers['work'] = work
-        store = new S3BlockStore(member, 'cas/', 'lab', true, S3WriteOptions.NONE, tmp, 1L << 20)
+        store = new S3BlockStore(member, 'cas/', 'lab', true, tmp, 1L << 20)
         work.putText('w/ab/cd/A.bam', 'bam-A')
     }
 
@@ -5059,6 +5239,7 @@ import java.nio.file.Path
 
 import nextflow.exception.AbortRunException
 import robsyme.cas.core.*
+import spock.lang.Requires
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -5092,6 +5273,8 @@ class PublishAddresserTest extends Specification {
         a.counts == ['head-node': 1]
     }
 
+    // setReadable(false) does nothing for root: a read would succeed and the feature prove nothing.
+    @Requires({ System.getProperty('user.name') != 'root' })
     def 'a node digest for a block the member holds: no byte read; fusion-node'() {
         given:
         lab.putStreaming(new ByteArrayInputStream('bam-A'.bytes))
@@ -5134,6 +5317,8 @@ class PublishAddresserTest extends Specification {
         reads[0] == 1
     }
 
+    // setWritable(false) does nothing for root, so the spool would succeed.
+    @Requires({ System.getProperty('user.name') != 'root' })
     def 'over the limit, no node digest, S3 member: the object is spooled through cas.tmpDir, and an unwritable tmpDir aborts naming it (Review Focus 1)'() {
         given:
         final Path readOnly = Files.createDirectories(tmp.resolve('ro'))
@@ -5142,7 +5327,7 @@ class PublishAddresserTest extends Specification {
         s3.peers['work'] = new robsyme.cas.s3.MemoryS3Ops('work')
         s3.peers['work'].putText('w/big', 'x' * (2 << 20))
         final robsyme.cas.s3.S3BlockStore member = new robsyme.cas.s3.S3BlockStore(s3, 'cas/', 'lab', true,
-            robsyme.cas.s3.S3WriteOptions.NONE, readOnly, 1L << 20)
+            readOnly, 1L << 20)
         final Path big = taskFile('big', 'x' * (2 << 20))
         // The local file stands in for s3://work/w/big: copyFrom answers null (over the limit, no digest).
         final PublishAddresser a = new PublishAddresser(member, member, false, tmp.resolve('work'), 1L << 20) {
@@ -5161,10 +5346,58 @@ class PublishAddresserTest extends Specification {
         cleanup:
         readOnly.toFile().setWritable(true)
     }
+
+    private robsyme.cas.s3.S3BlockStore s3Member(robsyme.cas.s3.MemoryS3Ops s3, String text) {
+        s3.peers['work'] = new robsyme.cas.s3.MemoryS3Ops('work')
+        s3.peers['work'].putText('w/ab/cdef/A.bam', text)
+        return new robsyme.cas.s3.S3BlockStore(s3, 'cas/', 'lab', true, tmp.resolve('spool'))
+    }
+
+    def 'a copy whose SHA-256 disagrees with .command.cas aborts the run, naming the file and .command.cas (ticket 16 decision 3)'() {
+        given:
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member')
+        final robsyme.cas.s3.S3BlockStore member = s3Member(s3, 'bam-A')
+        final Path f = taskFile('A.bam', 'bam-A')
+        nodeDigest('A.bam', 'bam-B')
+        final PublishAddresser a = new PublishAddresser(member, member, true, tmp.resolve('work')) {
+            @Override protected List<String> copySource(Path file) { ['work', 'w/ab/cdef/A.bam'] }
+        }
+
+        when:
+        a.address(f, 5L)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('A.bam')
+        e.message.contains('.command.cas')
+        e.cause instanceof BlockMismatchException
+    }
+
+    def 'a copy that fails for another reason warns and falls back to the head-node read'() {
+        given:
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member') {
+            @Override robsyme.cas.s3.S3Written copy(String sb, String sk, String key, robsyme.cas.s3.S3PutOptions o) {
+                throw new IOException('S3 is having a day')
+            }
+        }
+        final robsyme.cas.s3.S3BlockStore member = s3Member(s3, 'bam-A')
+        final Path f = taskFile('A.bam', 'bam-A')
+        final PublishAddresser a = new PublishAddresser(member, member, false, tmp.resolve('work')) {
+            @Override protected List<String> copySource(Path file) { ['work', 'w/ab/cdef/A.bam'] }
+        }
+
+        when:
+        final Addressed r = a.address(f, 5L)
+
+        then:
+        r.provider == Providers.HEAD_NODE
+        a.headNodeBytes == 5L
+        s3.objects[member.key(r.cid)].text() == 'bam-A'
+    }
 }
 ```
 
-In `CasFileSystemProviderTest`, add one feature: a directory published with `nodeHash` on records `head-node` for the directory and routes every file inside through the addresser (count calls with a spy addresser bound to the test `CasSession`).
+In `CasFileSystemProviderTest`, add one feature, with no new seam: publish a directory of three files through `upload` on the test `CasSession`, then assert that `session.addresser.counts == ['head-node': 3]` (every file inside went through the addresser), that the recorded `session.publishFor(key).provider == 'head-node'` (a directory leaf's address, its manifest, is always `head-node`: silent decision 3, the rule `JoinTest` no longer claims), and that `session.publishFor(key).contents == ['head-node': <the three file CIDs, sorted by string>]` (silent decision 3, ticket 16 decision 1).
 
 Run: `./gradlew test --tests 'robsyme.cas.core.NodeDigestsTest' --tests 'robsyme.cas.s3.S3CopyTest' --tests 'robsyme.cas.nio.*'`
 Expected: compilation FAILS on `NodeDigests`, `copyFrom`, `PublishAddresser`.
@@ -5174,6 +5407,8 @@ Expected: compilation FAILS on `NodeDigests`, `copyFrom`, `PublishAddresser`.
 ```groovy
 // src/main/groovy/robsyme/cas/core/NodeDigests.groovy
 package robsyme.cas.core
+
+import java.nio.charset.StandardCharsets
 
 import groovy.transform.Canonical
 import groovy.transform.CompileStatic
@@ -5188,21 +5423,45 @@ class NodeDigests {
     @Canonical
     static class TaskPath { String taskDir; String rel }
 
-    /** rel path to raw CID; unparseable lines skipped; a file over maxBytes is ignored whole. */
+    /**
+     * rel path to raw CID; unparseable lines skipped. Read line by line, counting
+     * bytes, so the file is never held whole (rule 2's spirit for metadata);
+     * null once more than maxBytes have arrived: the caller warns and ignores it.
+     */
     static Map<String, Cid> parse(InputStream input, long maxBytes) {
-        final byte[] bytes = input.readNBytes((int) Math.min(maxBytes + 1, Integer.MAX_VALUE - 8))
-        if( bytes.length > maxBytes ) return Collections.emptyMap()
+        final long[] seen = [0L] as long[]
+        final InputStream counted = new FilterInputStream(input) {
+            @Override int read() { final int b = super.read(); if( b >= 0 ) seen[0]++; return b }
+            @Override int read(byte[] b, int off, int len) { final int n = super.read(b, off, len); if( n > 0 ) seen[0] += n; return n }
+        }
+        final BufferedReader reader = new BufferedReader(new InputStreamReader(counted, StandardCharsets.UTF_8))
         final Map<String, Cid> out = new HashMap<String, Cid>()
-        for( String line : new String(bytes, 'UTF-8').split('\n') ) {
+        String line
+        while( (line = reader.readLine()) != null ) {
+            if( seen[0] > maxBytes ) return null
             final java.util.regex.Matcher m = LINE.matcher(line)
             if( !m.matches() ) continue
             final String name = m.group(1) ? unescape(m.group(3)) : m.group(3)
             if( name ) out.put(name, Cid.of(Cid.RAW, m.group(2).decodeHex()))
         }
-        return out
+        return seen[0] > maxBytes ? null : out
     }
 
-    private static String unescape(String s) { s.replace('\\n', '\n').replace('\\\\', '\\') }
+    /** coreutils' escaping in one left-to-right pass: a backslash then n is a newline, two backslashes one backslash. */
+    private static String unescape(String s) {
+        final StringBuilder out = new StringBuilder(s.length())
+        for( int i = 0; i < s.length(); i++ ) {
+            final char c = s.charAt(i)
+            if( c == (char) '\\' && i + 1 < s.length() ) {
+                final char next = s.charAt(++i)
+                out.append(next == (char) 'n' ? (char) '\n' : next)
+            }
+            else {
+                out.append(c)
+            }
+        }
+        return out.toString()
+    }
 
     /** The task directory and relative path of a source under workDir, or null. */
     static TaskPath taskDirOf(String sourceUri, String workDirUri) {
@@ -5215,9 +5474,21 @@ class NodeDigests {
 }
 ```
 
-(The unescape is order-sensitive for `\\n`; implement it as a single left-to-right scan over the characters rather than two `replace` calls, so `back\\slash` and `\n` both come out right. The test pins both.)
+(The unescape is a single left-to-right scan: two `replace` calls get an escaped backslash before `n` wrong, and the test's `a\\nb` line fails them.)
 
-In `S3BlockStore`, add `@Canonical static class S3Copied { Cid cid; String provider }` (in `S3Types.groovy` beside the others if preferred) and:
+In `S3Types.groovy`, beside the other value types, add the top-level class (so `import robsyme.cas.s3.S3Copied` and the bare name in `S3CopyTest` both resolve):
+
+```groovy
+/** What a server-side copy into the member addressed, and which provider supplied the address (Task 10). */
+@Canonical
+@CompileStatic
+class S3Copied {
+    Cid cid
+    String provider
+}
+```
+
+(`S3Types.groovy` imports `robsyme.cas.core.Cid` for it.) In `S3BlockStore` add:
 
 ```groovy
     /**
@@ -5244,6 +5515,8 @@ In `S3BlockStore`, add `@Canonical static class S3Copied { Cid cid; String provi
         final String staging = "${prefix}tmp/${UUID.randomUUID()}".toString()
         try {
             final S3Written staged = copyRetrying(sourceBucket, sourceKey, staging)
+            if( staged.sha256 == null )
+                throw new IOException("S3 returned no SHA-256 copying s3://${sourceBucket}/${sourceKey}")
             final Cid cid = Cid.of(Cid.RAW, Base64.decoder.decode(staged.sha256))
             if( ops.head(key(cid)) == null )
                 copyRetrying(ops.bucket, staging, key(cid))
@@ -5285,7 +5558,7 @@ In `S3BlockStore`, add `@Canonical static class S3Copied { Cid cid; String provi
     }
 ```
 
-(The staging copy to the final key can answer EXISTS when a racing writer placed it: that is success. The staging copy's own `If-None-Match` never matters, the uuid key being new. A `sha256` of null from the staging copy is an S3 that returned no SHA-256: throw `IOException` naming the source, and let the caller fall back to the head-node read.)
+(The staging copy to the final key can answer EXISTS when a racing writer placed it: that is success. The staging copy's own `If-None-Match` never matters, the uuid key being new. A `sha256` of null from the staging copy is an S3 that returned no SHA-256: `copyFrom` throws `IOException` naming the source, and `PublishAddresser.address` catches it, warns and falls back to the head-node read.)
 
 - [ ] **Step 3: `PublishAddresser`, and the provider through it**
 
@@ -5330,7 +5603,8 @@ class PublishAddresser implements FileAddresser {
     PublishAddresser(BlockStore store, BlockStore writable, boolean nodeHash, Path workDir,
                      long singleRequestMax = S3BlockStore.SINGLE_REQUEST_MAX) {
         this.store = store; this.writable = writable; this.nodeHash = nodeHash
-        this.workDirUri = workDir == null ? null : FilesEx.toUriString(workDir)
+        // Compared as real paths: a work dir under a symlink (macOS /var) must still match (pre-flight F40).
+        this.workDirUri = workDir == null ? null : FilesEx.toUriString(DirectoryManifestBuilder.realOf(workDir))
         this.singleRequestMax = singleRequestMax
     }
 
@@ -5350,10 +5624,20 @@ class PublishAddresser implements FileAddresser {
         final Cid node = nodeHash ? nodeDigest(file) : null
         final List<String> source = copySource(file)
         if( writable instanceof S3BlockStore && source != null ) {
-            final S3Copied c = ((S3BlockStore) writable).copyFrom(source[0], source[1], size, node)
-            if( c != null ) return counted(new Addressed(c.cid, size, c.provider))
+            try {
+                final S3Copied c = ((S3BlockStore) writable).copyFrom(source[0], source[1], size, node)
+                if( c != null ) return counted(new Addressed(c.cid, size, c.provider))
+            }
+            catch( BlockMismatchException e ) {
+                // Ticket 16 decision 3, rule 3: the node's digest and S3's disagree.
+                throw new AbortRunException("${file}: .command.cas says ${node}, but S3's SHA-256 of the copy disagrees (${e.message}); the output changed after the task hashed it", e)
+            }
+            catch( IOException e ) {
+                log.warn("server-side copy of ${file} failed (${e.message}); the head node reads it instead")
+            }
         }
-        if( node != null && store.has(node) )
+        // The writable member, not the composite: a block held only by a read-only member must still be written (DESIGN §5).
+        if( node != null && writable.has(node) )
             return counted(new Addressed(node, size, Providers.FUSION_NODE))
         final Cid cid = headNodeRead(file, source != null)
         if( node != null && node != cid )
@@ -5392,7 +5676,8 @@ class PublishAddresser implements FileAddresser {
 
     private Cid nodeDigest(Path file) {
         if( workDirUri == null ) return null
-        final NodeDigests.TaskPath tp = NodeDigests.taskDirOf(FilesEx.toUriString(file), workDirUri)
+        final Path real = file.parent == null ? file : DirectoryManifestBuilder.realOf(file.parent).resolve(file.fileName.toString())
+        final NodeDigests.TaskPath tp = NodeDigests.taskDirOf(FilesEx.toUriString(real), workDirUri)
         if( tp == null ) return null
         return digests.computeIfAbsent(tp.taskDir, { String dir -> load(dir) }).get(tp.rel)
     }
@@ -5402,6 +5687,10 @@ class PublishAddresser implements FileAddresser {
             final InputStream in = openDigests(FileHelper.asPath(taskDir + '/.command.cas'))
             try {
                 final Map<String, Cid> d = NodeDigests.parse(in, NodeDigests.MAX_BYTES)
+                if( d == null ) {
+                    log.warn("${taskDir}/.command.cas is over ${NodeDigests.MAX_BYTES} bytes and is ignored; the head node addresses that task's outputs")
+                    return Collections.<String, Cid> emptyMap()
+                }
                 if( d.isEmpty() ) log.debug("no usable node digests in ${taskDir}/.command.cas")
                 return d
             }
@@ -5421,7 +5710,7 @@ class PublishAddresser implements FileAddresser {
 }
 ```
 
-(A `.command.cas` over `MAX_BYTES` parses to an empty map; log that one at warn, per silent decision 7.)
+(A `.command.cas` over `MAX_BYTES` parses to null and is warned about once per task directory, per silent decision 7.)
 
 In `CasSession`, add
 
@@ -5440,7 +5729,7 @@ In `CasSession`, add
     }
 ```
 
-In `CasFileSystemProvider.upload`, the directory branch builds `new DirectoryManifestBuilder(store(), session().addresser, { String uri -> FileHelper.asPath(uri) } as Closure<Path>)` and records the directory with `Providers.HEAD_NODE`; the file branch becomes
+In `CasFileSystemProvider.upload`, the directory branch builds `new DirectoryManifestBuilder(store(), session().addresser, { String uri -> FileHelper.asPath(uri) } as Closure<Path>)` and records the directory with `Providers.HEAD_NODE` and the walk's providers: `new CasSession.Publish(new StoreRef(result.cid, name), store().size(result.cid), Providers.HEAD_NODE, result.providers)`, so `RunCompletion.providers` covers the files inside it (silent decision 3); the file branch becomes
 
 ```groovy
             final Addressed a = session().addresser.address(source, Files.size(source))
@@ -5463,7 +5752,8 @@ Expected: lineage 11/0/6, tier A 5/5, tier B 12/12. Every Gate publish is local-
 
 ```bash
 git add src/main/groovy/robsyme/cas/core/NodeDigests.groovy src/main/groovy/robsyme/cas/nio/PublishAddresser.groovy \
-  src/main/groovy/robsyme/cas/s3/S3BlockStore.groovy src/main/groovy/robsyme/cas/nio/CasFileSystemProvider.groovy \
+  src/main/groovy/robsyme/cas/s3/S3BlockStore.groovy src/main/groovy/robsyme/cas/s3/S3Types.groovy \
+  src/main/groovy/robsyme/cas/nio/CasFileSystemProvider.groovy \
   src/main/groovy/robsyme/cas/CasSession.groovy src/main/groovy/robsyme/cas/trace/CasObserver.groovy \
   src/test/groovy/robsyme/cas/core/NodeDigestsTest.groovy src/test/groovy/robsyme/cas/nio/PublishAddresserTest.groovy \
   src/test/groovy/robsyme/cas/s3/S3CopyTest.groovy src/test/groovy/robsyme/cas/nio/CasFileSystemProviderTest.groovy
@@ -5602,7 +5892,7 @@ class CasSessionS3Test extends Specification {
         index?.close()
     }
 
-    def 'the clock check: a skew over 5 minutes throws, over 1 minute warns, local members are not checked'() {
+    def 'the clock check: a skew over 5 minutes throws'() {
         given:
         final CasSession s = session()
         buckets['member'].serverDateMillis = System.currentTimeMillis() - 400_000L
@@ -5613,6 +5903,46 @@ class CasSessionS3Test extends Specification {
         then:
         final ClockSkewException e = thrown()
         e.message.contains('behind') || e.message.contains('ahead of')
+    }
+
+    def 'the clock check: a skew over 1 minute and under 5 does not throw'() {
+        given:
+        final CasSession s = session()
+        buckets['member'].serverDateMillis = System.currentTimeMillis() - 90_000L
+
+        when:
+        s.checkClock()
+
+        then:
+        noExceptionThrown()
+        buckets['member'].calls.contains('HEAD cas/' + IndexSnapshot.relativePath())
+    }
+
+    def 'the clock check: a HEAD that fails (403, network) warns and continues'() {
+        given:
+        buckets['member'] = new MemoryS3Ops('member') {
+            @Override S3Head head(String key) { throw new IOException('403 Forbidden') }
+        }
+        final CasSession s = session()
+
+        when:
+        s.checkClock()
+
+        then:
+        noExceptionThrown()
+    }
+
+    def 'the clock check: a local writable member makes no request'() {
+        given:
+        final CasSession s = new CasSession(CasConfig.from([cas: [stores: [lab: [location: tmp.resolve('local').toString()]],
+            index: [path: tmp.resolve('local.sqlite').toString()]]], 'cas://lab'))
+
+        when:
+        s.checkClock()
+
+        then:
+        noExceptionThrown()
+        buckets.isEmpty()
     }
 
     def 'the cache file is named by the location texts, S3 ones included'() {
@@ -5682,7 +6012,7 @@ In `CasSession`:
             if( config.isRemote(alias) ) {
                 final S3Location at = config.remoteOf(alias)
                 final S3Ops ops = s3OpsFactory.call(config.rawConfig, at.bucket)
-                members.add(new S3BlockStore(ops, at.prefix, alias, writable, S3Access.writeOptions(config.rawConfig), config.tmpDir))
+                members.add(new S3BlockStore(ops, at.prefix, alias, writable, config.tmpDir))
                 trees.put(alias, new S3CoordinateTree(ops, at.prefix))
                 snapshots.put(alias, new S3SnapshotStorage(ops, at.prefix))
             }
@@ -5760,7 +6090,15 @@ In `CasSession`:
         final BlockStore writable = members()[0]
         if( !(writable instanceof S3BlockStore) ) return
         final S3BlockStore s3 = (S3BlockStore) writable
-        s3.ops.head(s3.prefix + IndexSnapshot.relativePath())
+        try {
+            s3.ops.head(s3.prefix + IndexSnapshot.relativePath())
+        }
+        catch( Exception e ) {
+            // A 403 on a missing key without s3:ListBucket, or the network: the check is advice, and
+            // a real outage is reported by the first write (silent decision 19).
+            ConsoleLog.LOG.warn("could not check this machine's clock against S3 (${e.message}); continuing")
+            return
+        }
         final Long server = s3.ops.firstServerDateMillis()
         if( server == null ) return
         final long now = System.currentTimeMillis()
@@ -5783,7 +6121,7 @@ Delete `buildStore` and the two-argument `snapshotWritable`. `ClockSkewException
         cas.checkClock()
 ```
 
-(`ClockSkewException` is an `AbortRunException`, so the run aborts with its message; a `checkClock` that fails for any other reason logs at warn and continues, since the check is advice about a derived structure.) `indexRun` becomes:
+(`ClockSkewException` is an `AbortRunException`, so the run aborts with its message; any other failure of the `HEAD` is caught inside `checkClock`, which warns and returns, so the observer, `put` and `explore` all continue without a catch of their own.) `indexRun` becomes:
 
 ```groovy
     private void indexRun(Cid completion) {
@@ -6064,10 +6402,14 @@ class WalkTest(unittest.TestCase):
 
 
 class SeedingTest(unittest.TestCase):
-    def test_permission_failures_name_the_store(self):
-        log = "WARN run bafyx could not be read (/g/store/blocks/xx/bafyx: Permission denied); it will be retried"
-        self.assertEqual(gate_assert._permission_failures(log, "/g/store"), [log])
-        self.assertEqual(gate_assert._permission_failures("fine", "/g/store"), [])
+    def test_permission_failures_name_a_locked_block(self):
+        # Index.groovy:507 logs "<kind> <cid> could not be read (<e.message>)", and an
+        # AccessDeniedException's message is the path alone.
+        locked = ["/g/store/blocks/yx/bafyx"]
+        log = "WARN nextflow.cas - run bafyx could not be read (/g/store/blocks/yx/bafyx); it will be retried"
+        self.assertEqual(gate_assert._permission_failures(log, locked), [log])
+        self.assertEqual(gate_assert._permission_failures("run bafyz could not be read (/g/store/blocks/yz/bafyz); it will be retried", locked), [])
+        self.assertEqual(gate_assert._permission_failures("fine", locked), [])
 ```
 
 Run: `python3 -m unittest discover -s gate`
@@ -6112,7 +6454,7 @@ python3 "$REPO/gate/assert.py" "$GATE_ROOT" --seeding-lock > "$GATE_ROOT/logs/se
 mkdir -p "$GATE_ROOT/logs/consumer-seeded"
 cp "$GATE_ROOT/logs/seeding-lock.txt" "$GATE_ROOT/logs/consumer-seeded/locked"
 relock() {
-    while IFS= read -r f; do [[ -n "$f" ]] && chmod 644 "$f" 2> /dev/null || true; done < "$GATE_ROOT/logs/consumer-seeded/locked"
+    while IFS= read -r f; do [[ -n "$f" ]] && chmod 444 "$f" 2> /dev/null || true; done < "$GATE_ROOT/logs/consumer-seeded/locked"
 }
 trap relock EXIT
 while IFS= read -r f; do [[ -n "$f" ]] && chmod 000 "$f"; done < "$GATE_ROOT/logs/consumer-seeded/locked"
@@ -6127,7 +6469,7 @@ consumer_again consumer-scan
 mv "$GATE_ROOT/snapshot-aside.sqlite" "$snap"
 ```
 
-(The browser tiers run afterwards and read `store/`, so both the unlock and the restore happen before them, and `relock` also runs on any early exit.)
+(The browser tiers run afterwards and read `store/`, so both the unlock and the restore happen before them, and `relock` also runs on any early exit. `relock` restores mode 444, the `r--r--r--` that `LocalBlockStore` writes blocks with (`LocalBlockStore.groovy:38, 226`), so the browser tiers see blocks exactly as the plugin left them.)
 
 - [ ] **Step 3: `assert.py`**
 
@@ -6164,9 +6506,10 @@ def _command_cas_problems(task_dir):
     return problems
 
 
-def _permission_failures(log_text, store_root):
+def _permission_failures(log_text, locked_paths):
+    """Lines where the plugin could not read one of the locked blocks (Index.groovy:507's format)."""
     return [line for line in log_text.splitlines()
-            if store_root in line and ("Permission denied" in line or "AccessDenied" in line)]
+            if "could not be read" in line and any(p in line for p in locked_paths)]
 ```
 
 In `assert_two`, before the final `if problems:` add:
@@ -6212,7 +6555,8 @@ def assert_thirteen(gate):
         if got != baseline:
             problems.append("%s staged %s, the first consumer %s: the answer changed" % (name, got, baseline))
     seeded_log = _read(os.path.join(gate.root, "logs", "consumer-seeded", "nextflow.log"))
-    denied = _permission_failures(seeded_log, gate.store.root)
+    locked = _read(os.path.join(gate.root, "logs", "consumer-seeded", "locked")).split()
+    denied = _permission_failures(seeded_log, locked)
     if denied:
         problems.append("the seeded run read a locked metadata block of a run the snapshot holds: %s" % denied[:2])
     if "no usable Index Snapshot" in seeded_log:
@@ -6230,7 +6574,7 @@ def assert_thirteen(gate):
                   "staged them again; store-out's snapshot has %d runs" % (len(open(os.path.join(gate.root, "logs", "consumer-seeded", "locked")).read().split()), before["runs"], out_runs))
 ```
 
-with `_consumer_hashes_of_run(gate, name)` reading, from `store-out`, the `hashes` OutputCollection of the RunCompletion whose RunManifest's `run_name` is `name`, and the sha256 text of each item's leaf (the same parse `_consumer_hashes` does from coordinates, but per run, since all three consumers publish to the same coordinates); `_snapshot_runs(path)` a read-only `count(*)` of `run` (0 when the file is absent); `_read(path)` the file's text or `""`. In `_walk`, replace the `mode = "executable" if ... else "regular"` line with `mode = "regular"`, and in `_count_manifest` drop the `"executable"` counter.
+with `_consumer_hashes_of_run(gate, name)` reading, from `store-out`, the `hashes` OutputCollection of the RunCompletion whose RunManifest's `run_name` is `name`, and the sha256 text of each item's leaf (the same parse `_consumer_hashes` does from coordinates, but per run, since all three consumers publish to the same coordinates); `_snapshot_runs(path)` a read-only `count(*)` of `run` (0 when the file is absent); `_read(path)` the file's text or `""`. In `_walk`, replace the `mode = "executable" if ... else "regular"` line with `mode = "regular"`, and in `_count_manifest` drop the `"executable"` counter. In the SKIP table's assertion 11 entry (`assert.py:1320-1323`), replace "Under Fusion, published files carry provider `fusion-node`, `.command.cas` verifies with `sha256sum -c`, and recorded addresses equal hashes the test computes." with "Under Fusion, each published file's address comes from the task node's `.command.cas` or from S3's SHA-256 of a server-side copy (`s3-copy`), both checked against hashes the test computes; tier two runs it (`make gate-tier2`, T2 and T2b)." (ticket 16 made `s3-copy` the provider for a fresh S3 member.)
 
 - [ ] **Step 4: README, run the Gate**
 
@@ -6258,7 +6602,7 @@ Runs, in order (queue and CE `TowerForge-3skcexigeJwK0Jb71pThbJ`, us-east-1; con
 |---|---|---|---|---|
 | t1 | Test Pipeline | off | `s3://<b>/cas` (`lab`) | T1, T3 (flattened links) |
 | t2 | Test Pipeline | on | `s3://<b>/cas-t2` (`lab`, fresh) | T2 (`s3-copy`, digests agree), T3 (decoded links) |
-| t2b | `gate/tier2/small` | on | `s3://<b>/cas` (T1's) | T2b (`fusion-node`, items equal T1's) |
+| t2b | `gate/tier2/small` | on | `s3://<b>/cas` (T1's) | T2b (`fusion-node`; `aligned` items equal T1's, `qc` items equal t2's) |
 | t4 | consumer, on Batch | off | `s3://<b>/cas-out` (`out`), reading `lab` = `s3://<b>/cas` | T4 |
 | t5 | consumer again, cache deleted | off | as t4 | T5 |
 | t6a, t6b | Test Pipeline from two launch dirs, started together | off | `s3://<b>/cas-t6` (fresh) | T6 |
@@ -6271,7 +6615,7 @@ Runs, in order (queue and CE `TowerForge-3skcexigeJwK0Jb71pThbJ`, us-east-1; con
 
 **Interfaces:**
 - Consumes: `gate/cas.py` (CID, DAG-CBOR decode); tier one's `gate/assert.py --refs`; the plugin's info line `nf-blocks: the head node read ...` (Task 10), reported only; `nextflow plugin nf-blocks:items` and `nf-blocks:snapshot` (existing verbs) through `gate/browser/plugin-repo.sh`.
-- Produces: `$T2_ROOT` (`$GATE_ROOT/tier2/<run id>/`) holding `logs/<run>/`, `trace/<run>.txt`, `ids.env` (`BUCKET`, `WORK`, `RUN_ID`), `evidence/` (downloaded snapshots, coords, `.command.cas` files); `assert_tier2.py` output in `assert.py`'s table format, exit 1 on a FAIL.
+- Produces: `$T2_ROOT` (`$GATE_ROOT/tier2/<run id>/`) holding `logs/<run>/`, `trace/<run>.txt`, `ids.env` (`BUCKET`, `WORK`, `RUN_ID`), `pids` (every nextflow the harness started), `evidence/` (downloaded snapshots, coords, `.command.cas` files, `if-match.json`); `assert_tier2.py` output in `assert.py`'s table format, exit 1 on a FAIL.
 
 - [ ] **Step 1: The S3 helper and its unit tests**
 
@@ -6281,6 +6625,7 @@ Runs, in order (queue and CE `TowerForge-3skcexigeJwK0Jb71pThbJ`, us-east-1; con
 
     s3gate.py setup <run-id>            prints the bucket it created (us-east-1)
     s3gate.py teardown <bucket> <work-prefix>
+    s3gate.py if-match <bucket>          prints {"status": ..., "body": ...} of the stale If-Match probe
 Everything else is imported by tier2.sh's assertions.
 """
 import hashlib, os, sys, time
@@ -6380,6 +6725,21 @@ def work_objects(s3, prefix):
     return out
 
 
+def stale_if_match(s3, bucket, key="probe/if-match"):
+    """Upload an object, replace it, then PutObject with If-Match on the first ETag: S3 must answer 412
+    and keep the second body (ticket 03 decision 6; S3's If-Match was not measured in ticket 14)."""
+    stale = s3.put_object(Bucket=bucket, Key=key, Body=b"first")["ETag"]
+    s3.put_object(Bucket=bucket, Key=key, Body=b"second")
+    status = 200
+    try:
+        s3.put_object(Bucket=bucket, Key=key, Body=b"third", IfMatch=stale)
+    except s3.exceptions.ClientError as exc:
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    body = s3.get_object(Bucket=bucket, Key=key)["Body"].read().decode()
+    s3.delete_object(Bucket=bucket, Key=key)
+    return {"status": status, "body": body}
+
+
 def sha256_of_object(s3, bucket, key):
     h = hashlib.sha256()
     for chunk in s3.get_object(Bucket=bucket, Key=key)["Body"].iter_chunks(1 << 20):
@@ -6392,12 +6752,15 @@ if __name__ == "__main__":
         print(setup(sys.argv[2]))
     elif sys.argv[1:2] == ["teardown"]:
         sys.exit(teardown(sys.argv[2], sys.argv[3]))
+    elif sys.argv[1:2] == ["if-match"]:
+        import json
+        print(json.dumps(stale_if_match(client(), sys.argv[2])))
     else:
         sys.stderr.write(__doc__)
         sys.exit(2)
 ```
 
-`gate/tier2/test_assert_tier2.py` (stdlib `unittest`, no AWS: a `FakeS3` class answering `get_paginator`, `get_object`, `head_object` from a dict) pins `Member.completions()` parsing, `work_objects` leaving `.command.*` out, and each assertion function of Step 3 on a hand-built member: a T1 member whose coordinates name the work bytes' CIDs passes and one with a wrong CID fails; a T2 RunCompletion with a `fusion-node` file leaf fails T2 and passes T2b; T3's expected manifest for a flattened `alias.txt` (a regular file with `summary.txt`'s bytes) and for a Fusion one (decoded to `symlink` `summary.txt`); T6's stale-ETag verdict with one and two writes.
+`gate/tier2/test_assert_tier2.py` (stdlib `unittest`, no AWS: a `FakeS3` class answering `get_paginator`, `get_object`, `head_object` from a dict) pins `Member.completions()` parsing, `work_objects` leaving `.command.*` out, and each assertion function of Step 3 on a hand-built member: a T1 member whose coordinates name the work bytes' CIDs passes and one with a wrong CID fails; a T2 RunCompletion with a `fusion-node` file leaf fails T2 and passes T2b; T2's item comparison passes when the `aligned` items equal t1's and the `qc` items equal tier one's local `cold` `qc` item although t1's `qc` item differs, and fails when an `aligned` item differs; the `refs` choice of `T2_DIR` names a manifest whose `alias.txt` is `symlink`; T3's expected manifest for a flattened `alias.txt` (a regular file with `summary.txt`'s bytes) and for a Fusion one (decoded to `symlink` `summary.txt`); T6's stale-ETag verdict with one and two writes, and its If-Match verdict on `{"status": 412, "body": "second"}` (PASS) and `{"status": 200, "body": "third"}` (FAIL).
 
 Run: `$GATE_PYTHON -m unittest discover -s gate/tier2`
 Expected: FAIL until Step 3 exists (`assert_tier2` has no `t1`..`t6`), then PASS.
@@ -6444,7 +6807,7 @@ cas.stores.out.location = "s3://${System.getenv('T2_BUCKET')}/cas-out"
 cas.stores.lab.location = "s3://${System.getenv('T2_BUCKET')}/cas"
 ```
 
-`gate/tier2/small/main.nf` copies `ALIGN` and `QC_DIR` from the Test Pipeline verbatim (scripts, outputs), feeds them `channel.of([[sample: 'A', single_end: false, lane: 1, nested: [kit: 'truseq', ids: [1, 2]]], 10])`, and publishes `aligned` and `qc` with the Test Pipeline's `output {}` entries for those two; its header comment says it must stay byte-for-byte in step with the Test Pipeline, and T2b fails loudly (item addresses differ from T1's) if it drifts. `gate/tier2/small/nextflow.config` holds one line, `cas.pipeline = 'cas-tier2-small'`: a different Pipeline Identity (DESIGN §6: `cas.pipeline` wins over `manifest.name`), so T4's `fromStore(run: 'latest', pipeline: 'cas-test-pipeline')` still finds t1 and its sample B, while the OutputItems, which carry no pipeline, stay T1's.
+`gate/tier2/small/main.nf` copies `ALIGN` and `QC_DIR` from the Test Pipeline verbatim (scripts, outputs), feeds them `channel.of([[sample: 'A', single_end: false, lane: 1, nested: [kit: 'truseq', ids: [1, 2]]], 10])`, and publishes `aligned` and `qc` with the Test Pipeline's `output {}` entries for those two; its header comment says it must stay byte-for-byte in step with the Test Pipeline, and T2b fails loudly (its `aligned` item addresses differ from T1's, or its `qc` items from t2's) if it drifts. `gate/tier2/small/nextflow.config` holds one line, `cas.pipeline = 'cas-tier2-small'`: a different Pipeline Identity (DESIGN §6: `cas.pipeline` wins over `manifest.name`), so T4's `fromStore(run: 'latest', pipeline: 'cas-test-pipeline')` still finds t1 and its sample B, while the `aligned` OutputItems, which carry no pipeline, stay T1's (the `qc` items are t2's: under Fusion `alias.txt` stays a link, where t1 flattened it).
 
 In `gate/consumer/main.nf`, add `params.dir = null` to the consumer's params (in `nextflow.config`) and, in the workflow:
 
@@ -6492,37 +6855,55 @@ export T2_BUCKET=''
 
 # The trap first: no exit path leaves a bucket, a work prefix, an open upload or the watchdog behind.
 WATCHDOG=''
+PIDS="$T2/pids"; : > "$PIDS"
 cleanup() {
     [[ -n "$WATCHDOG" ]] && kill "$WATCHDOG" 2> /dev/null || true
     "$PY" "$REPO/gate/tier2/s3gate.py" teardown "$T2_BUCKET" "$WORK_PREFIX" \
         || { echo "tier two: teardown FAILED; delete s3://$T2_BUCKET and s3://scidev-playground-us-east-1/$WORK_PREFIX by hand" >&2; exit 1; }
 }
 trap cleanup EXIT
-( sleep 2700; echo "tier two: 45-minute timeout" >&2; kill -TERM $$ ) & WATCHDOG=$!
+trap 'exit 124' TERM                                 # a TERM from the watchdog is an ordinary exit, so cleanup runs
+# Ticket 11 decision 6: 45 minutes. Signalling only the shell would wait for the foreground nextflow and let it
+# keep submitting Batch jobs after the bucket is gone, so every nextflow runs in the background with its PID
+# in $PIDS (run_nf), and the watchdog stops those first.
+( sleep 2700; echo "tier two: 45-minute timeout" >&2
+  while read -r pid; do kill -TERM "$pid" 2> /dev/null || true; done < "$PIDS"
+  sleep 30; kill -TERM $$ ) & WATCHDOG=$!
+
+run_nf() {   # <log> <dir> <env args and command...>: runs it in <dir>, backgrounded and recorded; returns its status
+    local log="$1" dir="$2"; shift 2
+    local status=0 pid
+    ( cd "$dir" && exec env "$@" ) > "$log" 2>&1 &
+    pid=$!
+    echo "$pid" >> "$PIDS"
+    wait "$pid" || status=$?
+    return "$status"
+}
 
 T2_BUCKET="$("$PY" "$REPO/gate/tier2/s3gate.py" setup "$T2_RUN_ID")"
 printf 'BUCKET=%s\nWORK=%s\nRUN_ID=%s\n' "$T2_BUCKET" "$WORK_PREFIX" "$T2_RUN_ID" > "$T2/ids.env"
 echo "tier two: bucket $T2_BUCKET, work s3://scidev-playground-us-east-1/$WORK_PREFIX"
 
+# gate.sh's pattern: a failing run is recorded in its exit file, never the end of the harness (set -e).
 produce() {   # <run> <member prefix> <pipeline dir> [extra -c ...]
     local run="$1" member="$2" src="$3"; shift 3
-    local launch="$T2/$run"; rm -rf "$launch"; mkdir -p "$launch" "$T2/logs/$run"
+    local launch="$T2/$run" status=0; rm -rf "$launch"; mkdir -p "$launch" "$T2/logs/$run"
     cp "$src"/main.nf "$launch/"; [[ -f "$src/nextflow.config" ]] && cp "$src/nextflow.config" "$launch/"
-    ( cd "$launch" && T2_MEMBER="$member" T2_TRACE="$T2/trace/$run.txt" XDG_CACHE_HOME="$T2/cache-$run" \
+    run_nf "$T2/logs/$run/stdout.log" "$launch" T2_MEMBER="$member" T2_TRACE="$T2/trace/$run.txt" XDG_CACHE_HOME="$T2/cache-$run" \
       "$NEXTFLOW" -log "$T2/logs/$run/nextflow.log" run . -name "$run" -c "$REPO/gate/gate.config" \
-        -c "$REPO/gate/tier2/member.config" -c "$REPO/gate/tier2/batch.config" "$@" ) \
-        > "$T2/logs/$run/stdout.log" 2>&1; echo $? > "$T2/logs/$run/exit"
-    echo "--- $run exit $(cat "$T2/logs/$run/exit")"
+        -c "$REPO/gate/tier2/member.config" -c "$REPO/gate/tier2/batch.config" "$@" || status=$?
+    echo "$status" > "$T2/logs/$run/exit"
+    echo "--- $run exit $status"
 }
 consume() {   # <run> <cache dir>
-    local run="$1" cache="$2" launch="$T2/$1"; rm -rf "$launch"; mkdir -p "$launch" "$T2/logs/$run"
+    local run="$1" cache="$2" launch="$T2/$1" status=0; rm -rf "$launch"; mkdir -p "$launch" "$T2/logs/$run"
     cp "$REPO/gate/consumer/main.nf" "$launch/"
     eval "$("$PY" "$REPO/gate/tier2/assert_tier2.py" refs "$T2" "$GATE_ROOT")"   # T2_LID, T2_CAS, T2_DIR
-    ( cd "$launch" && T2_TRACE="$T2/trace/$run.txt" XDG_CACHE_HOME="$cache" \
+    run_nf "$T2/logs/$run/stdout.log" "$launch" T2_TRACE="$T2/trace/$run.txt" XDG_CACHE_HOME="$cache" \
       "$NEXTFLOW" -log "$T2/logs/$run/nextflow.log" run . -name "$run" -c "$REPO/gate/tier2/consumer.config" \
-        -c "$REPO/gate/tier2/batch.config" --lid "$T2_LID" --cas "$T2_CAS" --dir "$T2_DIR" ) \
-        > "$T2/logs/$run/stdout.log" 2>&1; echo $? > "$T2/logs/$run/exit"
-    echo "--- $run exit $(cat "$T2/logs/$run/exit")"
+        -c "$REPO/gate/tier2/batch.config" --lid "$T2_LID" --cas "$T2_CAS" --dir "$T2_DIR" || status=$?
+    echo "$status" > "$T2/logs/$run/exit"
+    echo "--- $run exit $status"
 }
 
 TP="$REPO/../.scratch/content-addressed-lineage/test-pipeline"
@@ -6540,9 +6921,9 @@ wait "$A" "$B"
 plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$T2")"
 verb() {   # <log> <cache> <nf-blocks verb and args...>
     local log="$1" cache="$2"; shift 2
-    ( cd "$T2/t6a" && unset NXF_OFFLINE && T2_MEMBER=cas-t6 XDG_CACHE_HOME="$cache" \
+    run_nf "$log" "$T2/t6a" -u NXF_OFFLINE T2_MEMBER=cas-t6 XDG_CACHE_HOME="$cache" \
       NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" \
-      "$NEXTFLOW" -q -c "$REPO/gate/gate.config" -c "$REPO/gate/tier2/member.config" plugin "nf-blocks:$@" ) > "$log" 2>&1 || true
+      "$NEXTFLOW" -q -c "$REPO/gate/gate.config" -c "$REPO/gate/tier2/member.config" plugin "nf-blocks:$@" || true
 }
 eval "$("$PY" "$REPO/gate/tier2/assert_tier2.py" t6-refs "$T2")"      # T6_RUNS=lid://a,lid://b
 verb "$T2/logs/t6-items.txt" "$T2/cache-t6-items" items aligned --run "$T6_RUNS" --format occurrences
@@ -6554,13 +6935,17 @@ for attempt in 1 2 3; do                                             # the stale
     wait "$X" "$Y"
     grep -l 'not rewritten: replaced_meanwhile' "$T2"/logs/t6-race-$attempt-*.txt > /dev/null && break
 done
+# The deterministic half of ticket 03 decision 6 on AWS itself: a PutObject whose If-Match names a replaced
+# ETag is refused with 412 (the plugin's skip on that 412 is pinned by S3SnapshotStorageTest, Task 7).
+"$PY" "$REPO/gate/tier2/s3gate.py" if-match "$T2_BUCKET" > "$T2/evidence/if-match.json" || true
 
 "$PY" "$REPO/gate/tier2/assert_tier2.py" check "$T2" "$GATE_ROOT"
 ```
 
 ```python
 # gate/tier2/assert_tier2.py -- the tier-two assertions (ticket 11), independent of the plugin.
-#   assert_tier2.py refs <T2_ROOT> <GATE_ROOT>    shell lines T2_LID, T2_CAS, T2_DIR for the consumer
+#   assert_tier2.py refs <T2_ROOT> <GATE_ROOT>    shell lines T2_LID, T2_CAS, T2_DIR for the consumer; T2_DIR is
+#                                                 cas://<the qc/A/A_qc manifest of cas>, t2b's, whose alias.txt is symlink
 #   assert_tier2.py t6-refs <T2_ROOT>             T6_RUNS
 #   assert_tier2.py check <T2_ROOT> <GATE_ROOT>   the table; exit 1 on any FAIL
 ```
@@ -6568,21 +6953,21 @@ done
 Each check is a function `tN(ctx) -> (status, message)` over a `ctx` holding the boto3 client, `Member` objects for `cas`, `cas-t2`, `cas-out`, `cas-t6`, the work prefix, `$T2` and the tier-one `cas.Store`:
 
 - **T1 (assertion 12).** `t1` exited 0. For every `coords/` pointer in `cas` whose leaf is a raw CID, the CID equals `cas.cid_from_sha256(sha256_of_object(work key), RAW)` for the object under the task directory the pointer's file name came from (`work_objects`, as `prototype/05/check.py` matched them), and the block exists in the member and hashes to its CID. Every `FileOutput` record under `cas/nf/` names a `cas://` path. t1's RunCompletion (`Member.completions()`, the one whose manifest's `run_name` is `t1`) lists every raw file leaf under `s3-copy`. No `.command.run` of t1 (the work prefix's `t1` tasks, found through `trace/t1.txt`'s `workdir`) contains `cas:` (spec's "getBashLib and getUploadCmd are exercised": nothing on a node ever needs the scheme).
-- **T2 (assertion 11).** `t2` exited 0. Every raw file leaf of t2's RunCompletion is under `s3-copy` in `cas-t2`. Every task directory of t2 has a `.command.cas` (downloaded into `evidence/`) whose every line's digest equals the Gate's hash of the work object it names (the `sha256sum -c` of the spec, done by the Gate), and every published file's recorded CID equals its `.command.cas` digest. t2's OutputItem addresses equal t1's (the assertion 2 addition, in the cloud).
-- **T2b.** `t2b` exited 0; every raw file leaf of its RunCompletion is under `fusion-node`; its `aligned` and `qc` item addresses are members of t1's.
-- **T3 (assertion 5, cloud).** For sample A's `qc` coordinate in `cas` (t1) and in `cas-t2` (t2), decode the manifest and compare it with an independent walk of the work bucket's objects under that task's `A_qc/`: t1 expects `alias.txt` `regular` with `summary.txt`'s CID (nxf_s3_upload flattened it, ticket 15 decision 5); t2 expects the Gate's own decoding of `.fusion.symlinks` (a name listed there is a `symlink` with its object's body as target; the sidecar is not an entry). t2's manifest CID equals tier one's local `cold` manifest CID for `qc/A/A_qc` (`GATE_ROOT/store/coords/qc/A/A_qc`): the backend is not provenance.
-- **T4 (assertion 6, cloud).** `t4` exited 0; its `hashes/` coordinates in `cas-out` give `lid` and `cas` digests equal to A.bam's work-bucket SHA-256, `fromstore` equal to B.bam's, and `dir`'s listing equal to the Gate's own listing of A_qc with `alias.txt` holding `summary.txt`'s bytes (a link staged as a copy, ticket 15 decision 7).
+- **T2 (assertion 11).** `t2` exited 0. Every raw file leaf of t2's RunCompletion is under `s3-copy` in `cas-t2`. Every task directory of t2 has a `.command.cas` (downloaded into `evidence/`) whose every line's digest equals the Gate's hash of the work object it names (the `sha256sum -c` of the spec, done by the Gate), and every published file's recorded CID equals its `.command.cas` digest. t2's `aligned` OutputItem addresses equal t1's (the assertion 2 addition, in the cloud); its `qc` item addresses equal tier one's local `cold` `qc` items and not t1's, because t1 flattened `alias.txt` and t2 keeps it a link (ticket 15 decision 5, T3).
+- **T2b.** `t2b` exited 0; every raw file leaf of its RunCompletion is under `fusion-node`; its `aligned` item addresses are members of t1's, and its `qc` item addresses are members of t2's (and of tier one's local `cold` `qc` items).
+- **T3 (assertion 5, cloud).** For sample A's `qc` manifest of t1 (read through t1's RunCompletion's `qc` item, since t2b later rewrites the `qc/A/A_qc` coordinate in `cas`) and of t2 (the `qc/A/A_qc` coordinate in `cas-t2`), decode the manifest and compare it with an independent walk of the work bucket's objects under that task's `A_qc/`: t1 expects `alias.txt` `regular` with `summary.txt`'s CID (nxf_s3_upload flattened it, ticket 15 decision 5); t2 expects the Gate's own decoding of `.fusion.symlinks` (a name listed there is a `symlink` with its object's body as target; the sidecar is not an entry). t2's manifest CID equals tier one's local `cold` manifest CID for `qc/A/A_qc` (`GATE_ROOT/store/coords/qc/A/A_qc`): the backend is not provenance.
+- **T4 (assertion 6, cloud).** First, the manifest `refs` passed as `T2_DIR` (the `qc/A/A_qc` coordinate of `cas` after t2b, t2b's Fusion manifest, equal to tier one's local `cold` one) has `alias.txt` as a `symlink` entry, so the staging below exercises a link (ticket 15 decision 7; FAIL otherwise). Then `t4` exited 0; its `hashes/` coordinates in `cas-out` give `lid` and `cas` digests equal to A.bam's work-bucket SHA-256, `fromstore` equal to B.bam's, and `dir`'s listing equal to the Gate's own listing of A_qc with `alias.txt` holding `summary.txt`'s bytes (a link staged as a copy, ticket 15 decision 7).
 - **T5 (ticket 04 on S3).** `t5` exited 0 with `hashes` equal to t4's; its cache (`$T2/cache-consumer/nf-blocks/*.sqlite`, the one whose `run` table has `cas-gate-consumer`) has `meta` `seeded_from:lab` equal to `cas/index/v3.sqlite`'s `snapshot_written_at` (downloaded), and no fallback warning in `logs/t5/nextflow.log`; `cas-out`'s snapshot run count (`x-amz-meta-runs`, and a `count(*)` of the downloaded file) is not lower after t5 than after t4 (the harness records the HEAD after t4 in `evidence/`).
-- **T6 (ticket 03 decision 6).** Both t6 runs exited 0 and both RunCompletions are in `cas-t6`'s Store Log; every block of the member hashes to its CID (download and hash each; the Test Pipeline's blocks are a few hundred KB); `t6-items.txt` lists occurrences from both runs' `aligned` collections; after `t6-snapshot.txt`, the member's snapshot has as many `run` rows as `run` entries in its Store Log; every `coords/` pointer names a block the member holds; and in the race step exactly one of the two verbs of the last attempt printed `not rewritten: replaced_meanwhile` (SKIP, not FAIL, with "the two verbs did not overlap in 3 attempts" when none did, since that proves nothing either way).
+- **T6 (ticket 03 decision 6).** Both t6 runs exited 0 and both RunCompletions are in `cas-t6`'s Store Log; every block of the member hashes to its CID (download and hash each; the Test Pipeline's blocks are a few hundred KB); `t6-items.txt` lists occurrences from both runs' `aligned` collections; after `t6-snapshot.txt`, the member's snapshot has as many `run` rows as `run` entries in its Store Log; every `coords/` pointer names a block the member holds; `evidence/if-match.json` says `{"status": 412, "body": "second"}`: S3 refused the PutObject whose If-Match named the replaced ETag and kept the newer object (FAIL otherwise; this is the deterministic evidence for ticket 03 decision 6 on AWS, and `S3SnapshotStorageTest` pins the plugin's skip on that 412); and in the race step exactly one of the two verbs of the last attempt printed `not rewritten: replaced_meanwhile` (best-effort evidence of the plugin path: SKIP, not FAIL, with "the two verbs did not overlap in 3 attempts; ticket 03 decision 6 was not observed through the plugin on AWS" when none did).
 
 At the end the harness prints, from `trace/*.txt`, the Batch job count (rows with a `native_id`) and the total job seconds (sum of `realtime`), and each producer's `nf-blocks: the head node read ...` line from its `nextflow.log`, noting that the head node is a laptop nearest ca-central-1, so every byte it reads crosses regions.
 
-`gate/tier2/README.md` lists the prerequisites (a tier-one GATE_ROOT, `GATE_PYTHON`, an SSO login, the Platform token for Wave), what is created and destroyed, the six checks as above, and "rerun rather than debug" for T6's race SKIP.
+`gate/tier2/README.md` lists the prerequisites (a tier-one GATE_ROOT, `GATE_PYTHON` with a boto3 recent enough to pass `IfMatch` to `put_object`, an SSO login, the Platform token for Wave), what is created and destroyed, the six checks as above, and "rerun rather than debug" for T6's race SKIP.
 
 - [ ] **Step 4: Run it (Rob)**
 
 Run: `make gate GATE_ROOT=<root>` then `GATE_PYTHON=<venv>/bin/python AWS_PROFILE=scidev make gate-tier2 GATE_ROOT=<root>`
-Expected: T1-T6 and T2b PASS (T6's race step may SKIP; rerun once); the bucket and the work prefix are gone afterwards (`aws s3 ls` through boto3 shows neither). This step needs Rob's SSO session and creates a bucket: the implementing agent stops here and asks Rob to run it.
+Expected: T1-T6 and T2b PASS (T6's If-Match probe must PASS; only its race step may SKIP; rerun once); the bucket and the work prefix are gone afterwards (`aws s3 ls` through boto3 shows neither). This step needs Rob's SSO session and creates a bucket: the implementing agent stops here and asks Rob to run it.
 
 - [ ] **Step 5: Commit**
 
@@ -6621,7 +7006,7 @@ Every decision of this plan's header lands in the document it amends. `DESIGN.md
 ```
 - *Amended 2026-09-28 (milestone 4, ticket 02):* any member, the writable
   one included, is a local directory or `s3://<bucket>[/<prefix>]` (a bucket
-  root allowed; a trailing slash dropped, so `s3://b/p/` is `s3://b/p`).
+  root allowed; a trailing slash dropped, so `s3://bkt/p/` is `s3://bkt/p`).
   Another `<scheme>://`, or a malformed S3 URI, is refused naming the store.
   Local locations go through `FileHelper.asPath`. `cas.resolve` may name S3
   members; its default is every configured alias, writable first. The S3
@@ -6648,13 +7033,16 @@ Every decision of this plan's header lands in the document it amends. `DESIGN.md
 
 ```
 *Amended 2026-09-28 (milestone 4):* `S3BlockStore(ops, prefix, alias,
-writable, options, tmpDir)` keeps the local layout byte for byte under the
+writable, tmpDir)` keeps the local layout byte for byte under the
 member prefix: `blocks/<xx>/<cid>`, `log/`, `coords/`, `nf/`,
 `index/v3.sqlite`, `index.html`, plus `tmp/` (staging keys of the `s3-copy`
 provider, §8). A block of 1 MiB or more is looked for with `HeadObject` first
 (S3 reads a whole body before answering a conditional PUT's 412, ticket 14);
-every write carries `If-None-Match: *` and a 412 is success; a 409
-`ConditionalRequestConflict` is retried up to 3 times. Up to 5 GiB a block
+every write carries `If-None-Match: *` and a 412 is success; a write that
+meets a 409 `ConditionalRequestConflict` is tried up to 3 times in all (a
+Store Log entry too, after which the run warns and continues). The storage
+class, SSE and requester-pays fields are set by `SdkS3Ops` on every write;
+`aws.client.s3Acl` is not applied. Up to 5 GiB a block
 is one `PutObject` with `ChecksumAlgorithm SHA256`, and the `ChecksumSHA256`
 S3 returns must equal the CID digest (a mismatch deletes the object and fails
 the write); above, a multipart upload of `max(64 MiB, ceil(size/10000))`
@@ -6695,14 +7083,18 @@ Snapshot and page storage is `SnapshotStorage` (`LocalSnapshotStorage`,
      member, `S3BlockStore.copyFrom` (below); else the head node streams the
      file (a default-filesystem file into an S3 member is hashed in place and
      uploaded from it; any other source spools through `cas.tmpDir`). A node
-     digest and a computed address that differ abort the run. Record
+     digest and a computed address that differ abort the run, whether the
+     computed one is the head node's or S3's SHA-256 of a copy; a copy that
+     fails for any other reason warns and falls back to the head-node read. Record
      `(key -> StoreRef, size, provider)`: `fusion-node` when the node digest
      named a block already held or drove an `UploadPartCopy`, `s3-copy` when
      S3 returned the SHA-256 of a copy, `head-node` when the head node read
      the bytes.
   3. Directory: `DirectoryManifestBuilder` with the same addresser for every
      file inside; the manifest itself is encoded on the head node and
-     recorded `head-node`. `toRealPath` is used only where the provider has
+     recorded `head-node`, and the provider of each file inside travels with
+     it (`Publish.contents`), so `RunCompletion.providers` covers every
+     address the run published. `toRealPath` is used only where the provider has
      it (an object store has no links to resolve, ticket 05). From an object
      store, a directory holding a `.fusion.symlinks` object has each listed
      name decoded as a link whose target is its object's body (ticket 15;
@@ -6737,8 +7129,8 @@ manifests carry no execute bit.
 
 ```
 - *Amended 2026-09-28 (ticket 04):* `catchUp(store, log, member, snapshots,
-  tempDir)` seeds first when the cache has neither `store_log_watermark:<m>`
-  nor `block_scan:<m>`: it fetches the member's snapshot, and when its
+  tempDir)` seeds first when the cache has no `store_log_watermark:<m>`
+  (the only trigger, ticket 04 decision 6): it fetches the member's snapshot, and when its
   `schema_version` matches copies each run, Selection and Claim it does not
   hold with their rows (`run.member` and `log_entry.member` set to the
   alias), recomputes `claim_current` for every seeded subject, adopts the
@@ -6807,7 +7199,7 @@ changes an address (ticket 16).
 
 - [ ] **Step 5: README**
 
-Update the status paragraph (milestone 4: S3 members, Batch, Fusion). Add a section "## Publishing into S3" with: the config (a writable `s3://` member, an S3 `workDir`, `aws { region; profile }`), the scratch note for `cas.tmpDir`, the storage-class rule, the hardening policy and lifecycle rule (as JSON), that under Fusion `cas.nodeHash` is on by default and outputs are hashed on the node, that without Fusion an S3 work dir flattens links to copies, and that `nextflow lineage find` on an S3 member costs a GET per record. Add "### A head node that starts cold" (a Batch head job, Platform launches): the first catch-up seeds from the member's Index Snapshot; `nextflow plugin nf-blocks:snapshot` on a schedule keeps a large shared member's snapshot fresh; `cas.index.path` on EFS or FSx skips seeding (one file per head node).
+Update the status paragraph (milestone 4: S3 members, Batch, Fusion). Add a section "## Publishing into S3" with: the config (a writable `s3://` member, an S3 `workDir`, `aws { region; profile }`), the scratch note for `cas.tmpDir`, the storage-class rule, the hardening policy and lifecycle rule (as JSON), that `aws.client.s3Acl` is not applied to member writes (storage class, SSE, KMS key and requester pays are), that under Fusion `cas.nodeHash` is on by default and outputs are hashed on the node, that without Fusion an S3 work dir flattens links to copies, and that `nextflow lineage find` on an S3 member costs a GET per record. Add "### A head node that starts cold" (a Batch head job, Platform launches): the first catch-up seeds from the member's Index Snapshot; `nextflow plugin nf-blocks:snapshot` on a schedule keeps a large shared member's snapshot fresh; `cas.index.path` on EFS or FSx skips seeding (one file per head node).
 
 - [ ] **Step 6: Acceptance**
 
