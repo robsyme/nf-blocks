@@ -87,6 +87,8 @@ class Index implements Closeable {
     private static final String META_WATERMARK = 'store_log_watermark'
     private static final String META_SCANNED = 'block_scan'
     private static final String META_STALE = 'stale'
+    private static final String META_SEEDED = 'seeded_from'
+    private static final org.slf4j.Logger CONSOLE = org.slf4j.LoggerFactory.getLogger('nextflow.cas')
 
     /** A metadata block far larger than this is not one of ours; refuse to hold it. */
     private static final long MAX_BLOCK_BYTES = 64L * 1024 * 1024
@@ -410,6 +412,129 @@ class Index implements Closeable {
             ingestLogged(store, entry.kind, entry.cid, member)
         }
         setMeta(key, entries[0].name)
+    }
+
+    /** Why a snapshot could not seed the cache: absent, schema_version <n>, unreadable (ticket 04 decision 2). */
+    static class SnapshotUnusable extends Exception {
+        final String reason
+        SnapshotUnusable(String reason, Throwable cause = null) { super(reason, cause); this.reason = reason }
+    }
+
+    String metaValue(String key) { meta(key) }
+
+    /**
+     * catchUp, seeding first when this index has never caught `member` up
+     * (ticket 04 decisions 1, 6): its snapshot's rows, its watermark, and the
+     * block scan marked done, so only the Store Log tail (with the 10-minute
+     * overlap) is read. Without a usable snapshot, the full scan, with a
+     * warning when the member's Store Log is not empty.
+     */
+    void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
+        // Ticket 04 decision 6: an absent watermark alone triggers seeding.
+        if( snapshots != null && meta(watermarkKey(member)) == null ) {
+            Path file = null
+            try {
+                file = snapshots.fetch(tempDir)
+                if( file == null ) throw new SnapshotUnusable('absent')
+                seedFrom(file, member)
+            }
+            catch( SnapshotUnusable e ) {
+                warnUnusable(storeLog, member, e.reason)
+            }
+            catch( IOException e ) {
+                warnUnusable(storeLog, member, 'unreadable')
+                log.debug("fetching the Index Snapshot of '${member}' failed", e)
+            }
+            finally {
+                if( file != null ) Files.deleteIfExists(file)
+            }
+        }
+        catchUp(store, storeLog, member)
+    }
+
+    /** Silent decision 17: one warning, and only when the member's Store Log is not empty. */
+    private static void warnUnusable(StoreLog storeLog, String member, String reason) {
+        if( !storeLog.read().isEmpty() )
+            CONSOLE.warn("store member '${member}' has no usable Index Snapshot (${reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.")
+    }
+
+    /** The per-owner copies, each limited to what this index does not hold yet (silent decision 17). */
+    private static final List<String> SEED = [
+        'CREATE TEMP TABLE seed_run(cid TEXT PRIMARY KEY)',
+        'CREATE TEMP TABLE seed_coll(cid TEXT PRIMARY KEY)',
+        'CREATE TEMP TABLE seed_item(cid TEXT PRIMARY KEY)',
+        'CREATE TEMP TABLE seed_claim(cid TEXT PRIMARY KEY)',
+        'INSERT INTO seed_run SELECT completion_cid FROM snap.run WHERE completion_cid NOT IN (SELECT completion_cid FROM main.run)',
+        '''INSERT INTO main.run SELECT completion_cid, manifest_cid, pipeline, revision, commit_id, nf_run_hash, session_id,
+             run_name, asserted_by, status, possibly_incomplete, finished_at, :member FROM snap.run WHERE completion_cid IN seed_run''',
+        'INSERT INTO seed_coll SELECT collection_cid FROM snap.collection WHERE collection_cid NOT IN (SELECT collection_cid FROM main.collection)',
+        'INSERT INTO main.collection SELECT * FROM snap.collection WHERE collection_cid IN seed_coll',
+        'INSERT INTO main.collection_item SELECT * FROM snap.collection_item WHERE collection_cid IN seed_coll',
+        'INSERT INTO seed_item SELECT item_cid FROM snap.item WHERE item_cid NOT IN (SELECT item_cid FROM main.item)',
+        'INSERT INTO main.item SELECT cid FROM seed_item',
+        'INSERT INTO main.item_attr SELECT * FROM snap.item_attr WHERE item_cid IN seed_item',
+        'INSERT INTO main.producer SELECT * FROM snap.producer WHERE completion_cid IN seed_run',
+        'INSERT INTO main.consumer SELECT * FROM snap.consumer WHERE completion_cid IN seed_run',
+        'INSERT INTO main.missing SELECT * FROM snap.missing WHERE have_cid IN seed_run OR have_cid IN seed_coll',
+        'INSERT INTO main.selection_child SELECT * FROM snap.selection_child WHERE parent_cid IN seed_coll',
+        'INSERT INTO main.selection_derived SELECT * FROM snap.selection_derived WHERE selection_cid IN seed_coll',
+        'INSERT INTO seed_claim SELECT claim_cid FROM snap.claim WHERE claim_cid NOT IN (SELECT claim_cid FROM main.claim)',
+        'INSERT INTO main.claim SELECT * FROM snap.claim WHERE claim_cid IN seed_claim',
+        'INSERT INTO main.claim_supersedes SELECT * FROM snap.claim_supersedes WHERE claim_cid IN seed_claim',
+        'INSERT OR IGNORE INTO main.log_entry SELECT cid, kind, :member, written_at FROM snap.log_entry',
+    ]
+
+    /**
+     * Copies a member's Index Snapshot into this index (ticket 04 decision 1).
+     * Trusted when its schema_version matches (decision 10); claim_current is
+     * recomputed for every seeded subject (decision 9). True when it seeded.
+     */
+    boolean seedFrom(Path snapshotFile, String member) throws SnapshotUnusable {
+        try {
+            update('ATTACH DATABASE ? AS snap', [(Object) "file:${snapshotFile.toAbsolutePath()}?mode=ro".toString()])
+        }
+        catch( Exception e ) {
+            throw new SnapshotUnusable('unreadable', e)
+        }
+        try {
+            final List<Integer> versions = []
+            try {
+                query('SELECT version FROM snap.schema_version', []) { ResultSet rs -> versions.add(rs.getInt(1)) }
+            }
+            catch( Exception e ) {
+                throw new SnapshotUnusable('unreadable', e)
+            }
+            if( versions != [SCHEMA_VERSION] )
+                throw new SnapshotUnusable("schema_version ${versions ? versions[0] : 'missing'}")
+            final Map<String, String> snapMeta = [:]
+            try {
+                query('SELECT key, value FROM snap.meta', []) { ResultSet rs -> snapMeta.put(rs.getString(1), rs.getString(2)) }
+                withTransaction {
+                    for( String sql : SEED )
+                        update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])
+                    final List<String> subjects = []
+                    query('SELECT DISTINCT subject_cid FROM main.claim WHERE claim_cid IN seed_claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
+                    for( String subject : subjects )
+                        ClaimCurrent.rewrite(connection, subject)
+                    if( snapMeta[IndexSnapshot.WATERMARK_KEY] )
+                        setMeta(watermarkKey(member), snapMeta[IndexSnapshot.WATERMARK_KEY])
+                    setMeta(META_SCANNED + ':' + member, 'done')
+                    setMeta(META_SEEDED + ':' + member, snapMeta[IndexSnapshot.WRITTEN_AT_KEY] ?: 'unknown')
+                    for( String t : ['seed_run', 'seed_coll', 'seed_item', 'seed_claim'] )
+                        update("DROP TABLE temp.${t}".toString(), [])
+                }
+            }
+            catch( IllegalStateException | SQLException e ) {
+                // Index.update and Index.query wrap a failed statement in an
+                // IllegalStateException; one that fails to prepare throws the
+                // SQLException itself.
+                throw new SnapshotUnusable('unreadable', e)
+            }
+            return true
+        }
+        finally {
+            update('DETACH DATABASE snap', [])
+        }
     }
 
     /**
@@ -924,6 +1049,16 @@ class Index implements Closeable {
     void markStale() { setMeta(META_STALE, '1') }
 
     boolean isStale() { meta(META_STALE) == '1' }
+
+    /** Rows in one of the tables of ddl(); for tests. */
+    @groovy.transform.PackageScope
+    int countRows(String table) {
+        if( !ddl().any { String sql -> sql.startsWith("CREATE TABLE ${table}(".toString()) } )
+            throw new IllegalArgumentException("not an index table: ${table}")
+        final List<Integer> n = []
+        query("SELECT count(*) FROM ${table}".toString(), []) { ResultSet rs -> n.add(rs.getInt(1)) }
+        return n[0]
+    }
 
     // --------------------------------------------------------------- plumbing
 
