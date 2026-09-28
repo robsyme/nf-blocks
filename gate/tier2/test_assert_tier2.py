@@ -21,8 +21,9 @@ import cas  # noqa: E402
 import s3gate  # noqa: E402
 import assert_tier2 as t  # noqa: E402
 
-BUCKET = "nf-blocks-t2-t2-x"
-WORK = "robsyme/nf-blocks-gate/t2-x/"
+RUN = "t2-20260928-120000-4242"
+BUCKET = s3gate.bucket_of(RUN)
+WORK = s3gate.work_prefix_of(RUN)
 WORKDIR = WORK + "work/"
 WB = s3gate.WORK_BUCKET
 
@@ -63,8 +64,10 @@ class Paginator(object):
         self.s3, self.name = s3, name
 
     def paginate(self, Bucket, Prefix=""):
+        if Bucket in self.s3.missing:
+            raise ClientError(404, "NoSuchBucket")
         if self.name == "list_multipart_uploads":
-            yield {"Uploads": []}
+            yield {"Uploads": [u for u in self.s3.uploads if u["Bucket"] == Bucket and u["Key"].startswith(Prefix)]}
             return
         keys = sorted(k for (b, k) in self.s3.objects if b == Bucket and k.startswith(Prefix))
         yield {"Contents": [{"Key": k, "Size": len(self.s3.objects[(Bucket, k)])} for k in keys]}
@@ -76,6 +79,7 @@ class FakeS3(object):
 
     def __init__(self):
         self.objects, self.metadata, self.deleted_buckets = {}, {}, []
+        self.missing, self.uploads, self.undeletable, self.late = set(), [], set(), {}
 
     def put(self, bucket, key, data, metadata=None):
         self.objects[(bucket, key)] = data
@@ -108,10 +112,24 @@ class FakeS3(object):
         self.objects.pop((Bucket, Key), None)
 
     def delete_objects(self, Bucket, Delete):
+        errors = []
         for o in Delete["Objects"]:
-            self.objects.pop((Bucket, o["Key"]), None)
+            if (Bucket, o["Key"]) in self.undeletable:
+                errors.append({"Key": o["Key"], "Code": "AccessDenied", "Message": "Access Denied"})
+            else:
+                self.objects.pop((Bucket, o["Key"]), None)
+        for (bucket, key), data in list(self.late.items()):   # a writer that was still running
+            if bucket == Bucket:
+                self.objects[(bucket, key)] = data
+                del self.late[(bucket, key)]
+        return {"Errors": errors} if errors else {}
+
+    def abort_multipart_upload(self, Bucket, Key, UploadId):
+        self.uploads = [u for u in self.uploads if u["UploadId"] != UploadId]
 
     def delete_bucket(self, Bucket):
+        if Bucket in self.missing:
+            raise ClientError(404, "NoSuchBucket")
         self.deleted_buckets.append(Bucket)
 
 
@@ -361,24 +379,71 @@ class S3GateTest(unittest.TestCase):
         self.assertEqual(s3gate.stale_if_match(s3, BUCKET), {"status": 412, "body": "second"})
         self.assertNotIn((BUCKET, "probe/if-match"), s3.objects)
 
-    def test_teardown_refuses_a_foreign_work_prefix_and_still_deletes_the_bucket(self):
-        s3 = FakeS3()
-        s3.put(WB, "someone-else/data", b"x")
-        s3.put(BUCKET, "cas/blocks/aa/x", b"x")
+    def teardown(self, s3, run=RUN, bucket=BUCKET, prefix=WORK):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.assertEqual(s3gate.teardown(BUCKET, "", s3=s3), 1)
-        self.assertIn("refusing to empty", err.getvalue())
-        self.assertIn((WB, "someone-else/data"), s3.objects)
-        self.assertEqual(s3.deleted_buckets, [BUCKET])
-        self.assertNotIn((BUCKET, "cas/blocks/aa/x"), s3.objects)
+            status = s3gate.teardown(run, bucket, prefix, s3=s3)
+        return status, err.getvalue()
 
-    def test_teardown_empties_the_run_prefix(self):
+    def test_teardown_refuses_a_foreign_bucket_and_touches_nothing(self):
         s3 = FakeS3()
-        s3.put(WB, WORKDIR + "ab/cdef/A.bam", b"x")
+        s3.put("robs-real-data", "important", b"x")
+        s3.put(WB, WORK + "work/ab/cdef/A.bam", b"x")
+        status, err = self.teardown(s3, bucket="robs-real-data")
+        self.assertEqual(status, 1)
+        self.assertIn("refusing to delete bucket 'robs-real-data'", err)
+        self.assertEqual(len(s3.objects), 2)
+        self.assertEqual(s3.deleted_buckets, [])
+
+    def test_teardown_refuses_a_foreign_prefix_and_touches_nothing(self):
+        s3 = FakeS3()
+        s3.put(BUCKET, "cas/blocks/aa/x", b"x")
+        for prefix in ("", "robsyme/", s3gate.work_prefix_of("t2-20260928-120000-1")):
+            s3.put(WB, prefix + "someone-else/data", b"x")
+            status, err = self.teardown(s3, prefix=prefix)
+            self.assertEqual(status, 1)
+            self.assertIn("refusing to empty", err)
+        self.assertEqual(len(s3.objects), 4)
+        self.assertEqual(s3.deleted_buckets, [])
+
+    def test_teardown_refuses_a_run_id_it_did_not_make(self):
+        status, err = self.teardown(FakeS3(), run="", bucket="nf-blocks-t2-", prefix="robsyme/nf-blocks-gate//")
+        self.assertEqual(status, 1)
+        self.assertIn("not a tier-two run id", err)
+
+    def test_teardown_empties_the_run_prefix_and_deletes_the_bucket(self):
+        s3 = FakeS3()
+        s3.put(WB, WORK + "work/ab/cdef/A.bam", b"x")
         s3.put(WB, "robsyme/nf-blocks-gate/t2-other/work/ab/cdef/A.bam", b"x")
-        self.assertEqual(s3gate.teardown("", WORK, s3=s3), 0)
+        s3.put(BUCKET, "cas/blocks/aa/x", b"x")
+        s3.uploads = [{"Bucket": BUCKET, "Key": "cas/blocks/bb/y", "UploadId": "u1"}]
+        self.assertEqual(self.teardown(s3), (0, ""))
         self.assertEqual(list(s3.objects), [(WB, "robsyme/nf-blocks-gate/t2-other/work/ab/cdef/A.bam")])
+        self.assertEqual((s3.uploads, s3.deleted_buckets), ([], [BUCKET]))
+
+    def test_teardown_treats_a_missing_bucket_as_gone(self):
+        s3 = FakeS3()
+        s3.missing.add(BUCKET)
+        s3.put(WB, WORK + "work/ab/cdef/A.bam", b"x")
+        self.assertEqual(self.teardown(s3), (0, ""))
+        self.assertEqual(s3.objects, {})
+
+    def test_teardown_fails_on_a_key_delete_objects_did_not_delete(self):
+        s3 = FakeS3()
+        s3.put(WB, WORK + "work/ab/cdef/A.bam", b"x")
+        s3.undeletable.add((WB, WORK + "work/ab/cdef/A.bam"))
+        status, err = self.teardown(s3)
+        self.assertEqual(status, 1)
+        self.assertIn("1 key(s) not deleted", err)
+        self.assertEqual(s3.deleted_buckets, [BUCKET])     # the other half still ran
+
+    def test_teardown_fails_when_a_late_writer_left_an_object(self):
+        s3 = FakeS3()
+        s3.put(WB, WORK + "work/ab/cdef/A.bam", b"x")
+        s3.late[(WB, WORK + "work/ab/cdef/.command.log")] = b"late"
+        status, err = self.teardown(s3)
+        self.assertEqual(status, 1)
+        self.assertIn("still holds 1 object(s)", err)
 
 
 # --------------------------------------------------------------------------

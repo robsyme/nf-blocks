@@ -39,14 +39,24 @@ One run id, `t2-<UTC date>-<time>-<random>`, names everything:
                                                     the Batch work dir (the instance role allows only that bucket)
     $GATE_ROOT/tier2/<run id>/                      logs, traces, evidence; kept
 
-The exit trap stops any nextflow still running (TERM, which cancels its Batch
-jobs, then up to a minute's wait), empties and deletes the bucket, empties the
-work prefix and aborts open multipart uploads, on every exit: success, a
-failed check, an error, Ctrl-C, or the 45-minute watchdog (ticket 11 decision
-6), which stops the recorded nextflow processes before it stops the harness. A
-teardown that fails says so and exits 1; delete the two names it prints by
-hand. After a run, confirm with `GATE_PYTHON`'s boto3 that neither the bucket
-nor the work prefix remains.
+The exit trap runs on every exit: success, a failed check, an error, Ctrl-C,
+HUP, or the 45-minute watchdog (ticket 11 decision 6), which sends TERM to the
+harness itself so no new run starts after the timeout. Once it starts it
+ignores INT, TERM and HUP, and so does the teardown it launches, so a second
+Ctrl-C cannot cut the teardown short. It sends TERM to every recorded
+nextflow still running (Nextflow's shutdown hook cancels its Batch jobs),
+waits up to a minute, then KILLs any that remain with a warning naming the
+queue, whose jobs then need cancelling by hand. It signals only PIDs it
+recorded and has not yet reaped, and only while `ps` shows a launcher or JVM,
+so a reused PID is never signalled. Then `s3gate.py teardown <run id>
+<bucket> <work prefix>` aborts open multipart uploads, deletes every object,
+lists again, and deletes the bucket. It refuses any bucket but
+`nf-blocks-t2-<run id>` and any prefix but this run's, fails loudly when a key
+was not deleted or anything is still there (a late writer), and counts a
+missing bucket as gone, so a Ctrl-C during setup is covered too. A teardown
+that fails exits 1 and prints the two names to delete by hand. After a run,
+confirm with `GATE_PYTHON`'s boto3 that neither the bucket nor the work prefix
+remains. `T2_TIMEOUT` (seconds) shortens the watchdog for testing the harness.
 
 ## The runs
 
@@ -137,7 +147,7 @@ ca-central-1, so every byte it reads crosses regions.
 
 ```
 ids.env                  BUCKET, WORK, RUN_ID
-pids                     every nextflow the harness started
+pids, pids.done          every nextflow the harness started, and those it has reaped
 logs/<run>/              stdout.log nextflow.log exit (refs.log for t4, t5)
 logs/t6-*.txt            the plugin verbs' output
 trace/<run>.txt          Nextflow's trace: task_id hash native_id name status exit realtime workdir

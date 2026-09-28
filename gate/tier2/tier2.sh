@@ -21,8 +21,11 @@ export T2_PLUGIN_VERSION
 T2_RUN_ID="t2-$(date -u +%Y%m%d-%H%M%S)-$RANDOM"
 export T2_RUN_ID
 T2="$GATE_ROOT/tier2/$T2_RUN_ID"; mkdir -p "$T2/logs" "$T2/trace" "$T2/evidence"
-WORK_PREFIX="robsyme/nf-blocks-gate/$T2_RUN_ID/"
-export T2_BUCKET=''
+WORK_PREFIX="robsyme/nf-blocks-gate/$T2_RUN_ID/"   # s3gate.work_prefix_of; teardown refuses any other
+# Known before setup runs, so a Ctrl-C during setup still tears the bucket down (a missing bucket is success).
+export T2_BUCKET="nf-blocks-t2-$T2_RUN_ID"          # s3gate.bucket_of; teardown refuses any other
+QUEUE='TowerForge-3skcexigeJwK0Jb71pThbJ'           # batch.config's; named in the warning below
+T2_TIMEOUT="${T2_TIMEOUT:-2700}"                    # ticket 11 decision 6: 45 minutes (a test may shorten it)
 echo "tier two: run $T2_RUN_ID, evidence under $T2"
 # T6's plugin verbs find the built plugin through this (gate/browser/plugin-repo.sh); made before anything costs money.
 plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$T2")"
@@ -30,46 +33,61 @@ plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$T2")"
 # The trap first: no exit path leaves a bucket, a work prefix, an open upload, a
 # running nextflow or the watchdog behind. A nextflow still running at exit
 # would keep submitting Batch jobs into a bucket about to be deleted, so each
-# recorded one is sent TERM (Nextflow's shutdown hook cancels its jobs) and
-# given a minute to finish before the teardown. A teardown that fails is loud
-# and fails the harness (cloud.sh's rule).
+# recorded one is sent TERM (Nextflow's shutdown hook cancels its jobs), given
+# a minute, then KILLed; teardown's final listing catches anything it wrote
+# late. Once cleanup starts, INT, TERM and HUP are ignored, by it and by the
+# teardown it starts, so a second Ctrl-C cannot cut the teardown short. A
+# teardown that fails is loud and fails the harness (cloud.sh's rule).
 WATCHDOG=''
-PIDS="$T2/pids"; : > "$PIDS"
+PIDS="$T2/pids"; : > "$PIDS"          # every nextflow the harness started
+DONE="$T2/pids.done"; : > "$DONE"     # those already reaped by run_nf's wait, whose PIDs the OS may reuse
+
+ours() {   # <pid>: a recorded nextflow of this harness, not yet reaped, and still a launcher or JVM
+    local comm
+    grep -qx "$1" "$DONE" && return 1
+    comm="$(ps -o comm= -p "$1" 2> /dev/null)" || return 1
+    case "${comm##*/}" in java|env|bash|nextflow) return 0 ;; *) return 1 ;; esac
+}
+
 cleanup() {
-    local status=$? live=() pid alive
-    trap - TERM INT
+    local status=$? live=() left=() pid
+    trap '' INT TERM HUP
     if [[ -n "$WATCHDOG" ]]; then
         pkill -P "$WATCHDOG" 2> /dev/null || true
         kill "$WATCHDOG" 2> /dev/null || true
     fi
     while read -r pid; do
-        [[ -n "$pid" ]] && kill -0 "$pid" 2> /dev/null && live+=("$pid")
+        if [[ -n "$pid" ]] && ours "$pid"; then live+=("$pid"); fi
     done < "$PIDS"
     if [[ ${#live[@]} -gt 0 ]]; then
         echo "tier two: stopping ${#live[@]} nextflow process(es) before the teardown" >&2
         kill -TERM "${live[@]}" 2> /dev/null || true
         for _ in $(seq 60); do
-            alive=0
-            for pid in "${live[@]}"; do kill -0 "$pid" 2> /dev/null && alive=1; done
-            [[ "$alive" -eq 0 ]] && break
+            left=()
+            for pid in "${live[@]}"; do if ours "$pid"; then left+=("$pid"); fi; done
+            [[ ${#left[@]} -eq 0 ]] && break
             sleep 1
         done
+        if [[ ${#left[@]} -gt 0 ]]; then
+            echo "tier two: WARNING: ${#left[@]} nextflow process(es) ignored TERM for 60 s and were KILLed; Batch jobs they" \
+                 "submitted may still be running on queue $QUEUE (us-east-1): check and cancel them" >&2
+            kill -KILL "${left[@]}" 2> /dev/null || true
+        fi
     fi
-    "$PY" "$REPO/gate/tier2/s3gate.py" teardown "$T2_BUCKET" "$WORK_PREFIX" \
+    "$PY" "$REPO/gate/tier2/s3gate.py" teardown "$T2_RUN_ID" "$T2_BUCKET" "$WORK_PREFIX" \
         || { echo "tier two: teardown FAILED; delete s3://$T2_BUCKET and s3://scidev-playground-us-east-1/$WORK_PREFIX by hand" >&2; exit 1; }
     exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 124' TERM                                 # a TERM from the watchdog is an ordinary exit, so cleanup runs
 trap 'exit 130' INT
-# Ticket 11 decision 6: 45 minutes. Signalling only the shell would wait for the foreground nextflow and let it
-# keep submitting Batch jobs after the bucket is gone, so every nextflow runs in the background with its PID
-# in $PIDS (run_nf), and the watchdog stops those first.
+trap 'exit 129' HUP
+# The watchdog TERMs the harness itself, whose cleanup stops the recorded nextflow processes first: no new run
+# can start after the timeout. Every nextflow runs in the background with its PID in $PIDS (run_nf), because a
+# shell waiting on a foreground nextflow would act on the TERM only after that run ended.
 # Its own stderr is closed so the cleanup's kill of its sleep prints no job notice; fd 3 carries its message.
 exec 3>&2
-( sleep 2700; echo "tier two: 45-minute timeout" >&3
-  while read -r pid; do kill -TERM "$pid" 2> /dev/null || true; done < "$PIDS"
-  sleep 30; kill -TERM $$ ) 2> /dev/null & WATCHDOG=$!
+( sleep "$T2_TIMEOUT"; echo "tier two: timeout after ${T2_TIMEOUT} s (ticket 11 decision 6)" >&3; kill -TERM $$ ) 2> /dev/null & WATCHDOG=$!
 
 run_nf() {   # <log> <dir> <env args and command...>: runs it in <dir>, backgrounded and recorded; returns its status
     local log="$1" dir="$2"; shift 2
@@ -78,10 +96,12 @@ run_nf() {   # <log> <dir> <env args and command...>: runs it in <dir>, backgrou
     pid=$!
     echo "$pid" >> "$PIDS"
     wait "$pid" || status=$?
+    echo "$pid" >> "$DONE"
     return "$status"
 }
 
-T2_BUCKET="$("$PY" "$REPO/gate/tier2/s3gate.py" setup "$T2_RUN_ID")"
+made="$("$PY" "$REPO/gate/tier2/s3gate.py" setup "$T2_RUN_ID")"
+[[ "$made" == "$T2_BUCKET" ]] || { echo "tier two: setup made '$made', expected $T2_BUCKET" >&2; exit 1; }
 printf 'BUCKET=%s\nWORK=%s\nRUN_ID=%s\n' "$T2_BUCKET" "$WORK_PREFIX" "$T2_RUN_ID" > "$T2/ids.env"
 echo "tier two: bucket $T2_BUCKET, work s3://scidev-playground-us-east-1/$WORK_PREFIX"
 

@@ -1,21 +1,22 @@
 """Tier two's view of S3, independent of the plugin (rule 6): boto3 only.
 
     s3gate.py setup <run-id>            prints the bucket it created (us-east-1)
-    s3gate.py teardown <bucket> <work-prefix>
+    s3gate.py teardown <run-id> <bucket> <work-prefix>
+                                         refuses any bucket or prefix but the run id's own; a missing bucket is gone
     s3gate.py if-match <bucket>          prints {"status": ..., "body": ...} of the stale If-Match probe
     s3gate.py snapshot <bucket> <member> <file>
                                          downloads <member>/index/v3.sqlite to <file>, prints
                                          {"meta_runs": x-amz-meta-runs, "count": count(*) of its run table}
 Everything else is imported by tier2.sh's assertions.
 """
-import hashlib, json, os, sqlite3, sys
+import hashlib, json, os, re, sqlite3, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import cas  # noqa: E402
 
 REGION = "us-east-1"
 WORK_BUCKET = "scidev-playground-us-east-1"
-# The only work prefixes teardown will empty: an empty or foreign prefix would delete other people's data.
-WORK_PREFIX_ROOT = "robsyme/nf-blocks-gate/t2-"
+# A run id as tier2.sh makes it: t2-<UTC date>-<UTC time>-<$RANDOM>. Only such a run's bucket and prefix are ever emptied.
+RUN_ID = re.compile(r"^t2-[0-9]{8}-[0-9]{6}-[0-9]{1,5}$")
 
 
 def client():
@@ -23,9 +24,19 @@ def client():
     return boto3.Session(profile_name=os.environ.get("AWS_PROFILE", "scidev")).client("s3", region_name=REGION)
 
 
+def bucket_of(run_id):
+    """The run's writable-member bucket, derived from its id."""
+    return "nf-blocks-t2-%s" % run_id
+
+
+def work_prefix_of(run_id):
+    """The run's key prefix in the shared work bucket; batch.config's workDir is this plus work/."""
+    return "robsyme/nf-blocks-gate/%s/" % run_id
+
+
 def setup(run_id):
     s3 = client()
-    bucket = "nf-blocks-t2-%s" % run_id
+    bucket = bucket_of(run_id)
     s3.create_bucket(Bucket=bucket)   # us-east-1 takes no LocationConstraint
     try:
         s3.put_bucket_lifecycle_configuration(Bucket=bucket, LifecycleConfiguration={"Rules": [
@@ -33,40 +44,75 @@ def setup(run_id):
              "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}},
             {"ID": "tmp", "Filter": {"Prefix": "cas/tmp/"}, "Status": "Enabled", "Expiration": {"Days": 1}}]})
     except Exception:
-        # The harness learns the bucket's name only from a successful setup, so a half-made one is removed here.
-        s3.delete_bucket(Bucket=bucket)
+        s3.delete_bucket(Bucket=bucket)   # tier2.sh's teardown would also remove it; this keeps setup's failure self-contained
         raise
     return bucket
 
 
-def _empty(s3, bucket, prefix=""):
+def _keys(s3, bucket, prefix):
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
-        keys = [{"Key": o["Key"]} for o in page.get("Contents", [])]
-        if keys:
-            s3.delete_objects(Bucket=bucket, Delete={"Objects": keys})
+        for o in page.get("Contents", []):
+            yield o["Key"]
+
+
+def _uploads(s3, bucket, prefix):
     for page in s3.get_paginator("list_multipart_uploads").paginate(Bucket=bucket, Prefix=prefix):
         for u in page.get("Uploads", []):
-            s3.abort_multipart_upload(Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"])
+            yield u
 
 
-def _check_work_prefix(work_prefix):
-    if not work_prefix.startswith(WORK_PREFIX_ROOT) or not work_prefix.endswith("/"):
-        raise ValueError("refusing to empty s3://%s/%s: not a tier-two run prefix (%s...)"
-                         % (WORK_BUCKET, work_prefix, WORK_PREFIX_ROOT))
+def _empty(s3, bucket, prefix=""):
+    """Abort open uploads, delete every object, then list again: anything left (a failed key, a late
+    writer) raises, so a teardown never reports success over a non-empty prefix."""
+    for u in list(_uploads(s3, bucket, prefix)):
+        s3.abort_multipart_upload(Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"])
+    keys = list(_keys(s3, bucket, prefix))
+    for i in range(0, len(keys), 1000):
+        resp = s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]]})
+        errors = resp.get("Errors") or []
+        if errors:
+            raise IOError("s3://%s: %d key(s) not deleted, first %s: %s" % (
+                bucket, len(errors), errors[0].get("Key"), errors[0].get("Message") or errors[0].get("Code")))
+    left, uploads = list(_keys(s3, bucket, prefix)), list(_uploads(s3, bucket, prefix))
+    if left or uploads:
+        raise IOError("s3://%s/%s still holds %d object(s) (first %s) and %d open upload(s) after emptying"
+                      % (bucket, prefix, len(left), left[0] if left else "-", len(uploads)))
 
 
-def teardown(bucket, work_prefix, s3=None):
-    """Both halves always run; a failure in either is loud (cloud.sh's rule)."""
-    s3, failed = s3 or client(), False
+def _code(exc):
+    return (getattr(exc, "response", None) or {}).get("Error", {}).get("Code")
+
+
+def teardown(run_id, bucket, work_prefix, s3=None):
+    """Empty this run's work prefix and delete this run's bucket; refuse anything else.
+
+    Both halves always run; a failure in either is loud (cloud.sh's rule). A bucket that does not
+    exist (setup never ran, or failed) is already gone, which is success."""
+    if not RUN_ID.match(run_id or ""):
+        sys.stderr.write("tier two teardown: refusing: %r is not a tier-two run id\n" % (run_id,))
+        return 1
+    failed = False
+    if bucket != bucket_of(run_id):
+        sys.stderr.write("tier two teardown: refusing to delete bucket %r: run %s's is %s\n" % (bucket, run_id, bucket_of(run_id)))
+        failed = True
+    if work_prefix != work_prefix_of(run_id):
+        sys.stderr.write("tier two teardown: refusing to empty s3://%s/%s: run %s's prefix is %s\n"
+                         % (WORK_BUCKET, work_prefix, run_id, work_prefix_of(run_id)))
+        failed = True
+    if failed:
+        return 1
+    s3 = s3 or client()
 
     def work():
-        _check_work_prefix(work_prefix)
         _empty(s3, WORK_BUCKET, work_prefix)
 
     def member():
-        if bucket:
+        try:
             _empty(s3, bucket)
             s3.delete_bucket(Bucket=bucket)
+        except s3.exceptions.ClientError as exc:
+            if _code(exc) != "NoSuchBucket":
+                raise
 
     for step in (work, member):
         try:
@@ -197,7 +243,7 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["setup"]:
         print(setup(sys.argv[2]))
     elif sys.argv[1:2] == ["teardown"]:
-        sys.exit(teardown(sys.argv[2], sys.argv[3]))
+        sys.exit(teardown(sys.argv[2], sys.argv[3], sys.argv[4]))
     elif sys.argv[1:2] == ["if-match"]:
         print(json.dumps(stale_if_match(client(), sys.argv[2])))
     elif sys.argv[1:2] == ["snapshot"]:
