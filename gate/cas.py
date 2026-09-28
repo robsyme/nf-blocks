@@ -446,6 +446,23 @@ class Store(object):
             raise StoreError("%s is not a dag-cbor block" % cid)
         return decode(self.read(cid))
 
+    def metadata_blocks_of_runs(self, completions):
+        """Sorted block paths of each RunCompletion, its RunManifest and its
+        OutputCollections, found by following the completion's own `run` and
+        `collections` links. Every block is read and verified on the way."""
+        out = set()
+        for cid in completions:
+            completion = self.read_block(cid)
+            if not isinstance(completion, dict) or completion.get("kind") != "RunCompletion":
+                raise StoreError("%s is not a RunCompletion" % cid)
+            out.add(self.block_path(cid))
+            links = [completion.get("run")] + list(completion.get("collections") or [])
+            for link in links:
+                if isinstance(link, Cid):
+                    self.read(link.text)
+                    out.add(self.block_path(link.text))
+        return sorted(out)
+
     STORE_LOG_KINDS = ("run", "selection", "claim")
 
     def store_log(self):

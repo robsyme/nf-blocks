@@ -218,39 +218,89 @@ class CasConfigTest extends Specification {
         return [cas: [stores: [lab: [location: '/data/cas']], snapshot: [maxBytes: maxBytes]]]
     }
 
-    def 'an S3 location is a read-only member that runs leave out and explore serves'() {
+    def 'S3 members resolve like local ones, writable first; texts name the cache file'() {
         given:
-        final Map cfg = [cas: [stores: [lab: [location: '/data/cas'], priv: [location: 's3://bucket/member']]]]
+        final Map cfg = [cas: [stores: [lab: [location: 's3://bucket/cas/'], shared: [location: '/mnt/shared'], priv: [location: 's3://other']]]]
 
         when:
         final CasConfig config = CasConfig.from(cfg, 'cas://lab')
 
         then:
-        config.members == ['lab']
-        config.configuredAliases == ['lab', 'priv']
-        config.isRemote('priv')
-        !config.isRemote('lab')
-        config.remoteLocationOf('priv') == URI.create('s3://bucket/member')
-        config.localLocations() == ['/data/cas']
+        config.members == ['lab', 'shared', 'priv']
+        config.isRemote('lab') && config.isRemote('priv') && !config.isRemote('shared')
+        config.remoteOf('lab').bucket == 'bucket'
+        config.remoteOf('lab').prefix == 'cas/'
+        config.remoteOf('priv').prefix == ''
+        config.writableLocation == null
+        config.locationOf('shared') == Path.of('/mnt/shared')
+        config.locationTexts() == ['s3://bucket/cas', '/mnt/shared', 's3://other']
+        config.remoteLocationOf('lab') == URI.create('s3://bucket/cas')
     }
 
-    def 'naming an S3 member in cas.resolve is refused for runs'() {
+    def 's3://bkt/p and s3://bkt/p/ are one member and one cache name (Review Focus 5)'() {
+        expect:
+        CasConfig.from([cas: [stores: [lab: [location: 's3://bkt/p']]]], 'cas://lab').locationTexts() ==
+            CasConfig.from([cas: [stores: [lab: [location: 's3://bkt/p/']]]], 'cas://lab').locationTexts()
+    }
+
+    def 'a location in another scheme is refused, naming the store'() {
         when:
-        CasConfig.from([cas: [stores: [lab: [location: '/data/cas'], priv: [location: 's3://bucket']], resolve: ['lab', 'priv']]], 'cas://lab')
+        CasConfig.from([cas: [stores: [lab: [location: 'gs://bucket/cas']]]], 'cas://lab')
 
         then:
         final IllegalArgumentException e = thrown()
-        e.message.contains('priv')
-        e.message.contains('nf-blocks:explore')
+        e.message.contains('cas.stores.lab.location')
+        e.message.contains('gs://bucket/cas')
     }
 
-    def 'the writable member cannot be on S3'() {
+    def 'archive storage classes are refused for a writable S3 member; infrequent access warns about packing'() {
         when:
-        CasConfig.from([cas: [stores: [lab: [location: 's3://bucket']]]], 'cas://lab')
+        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://bkt']]]], 'cas://lab')
 
         then:
         final IllegalArgumentException e = thrown()
-        e.message.contains('local directory')
+        e.message.contains(cls)
+        e.message.contains('packing')
+
+        where:
+        cls << ['GLACIER', 'DEEP_ARCHIVE']
+    }
+
+    def 'the storage-class warning (#cls)'() {
+        expect:
+        CasConfig.from([aws: [client: [storageClass: cls]], cas: [stores: [lab: [location: 's3://bkt']]]], 'cas://lab')
+            .storageClassWarning?.contains(fragment) ?: fragment == null
+
+        where:
+        cls                   | fragment
+        'STANDARD_IA'         | 'packing'
+        'INTELLIGENT_TIERING' | 'packing'
+        'GLACIER_IR'          | 'nf-amazon ignores'
+        'STANDARD'            | null
+    }
+
+    def 'a local writable member ignores the storage class'() {
+        expect:
+        CasConfig.from([aws: [client: [storageClass: 'GLACIER']], cas: [stores: [lab: [location: '/data/cas']]]], 'cas://lab').storageClassWarning == null
+    }
+
+    def 'cas.tmpDir defaults to java.io.tmpdir; cas.nodeHash defaults to fusion.enabled'() {
+        expect:
+        CasConfig.from(storeConfig(), 'cas://lab').tmpDir == Path.of(System.getProperty('java.io.tmpdir'))
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], tmpDir: '/scratch']], 'cas://lab').tmpDir == Path.of('/scratch')
+        !CasConfig.nodeHashEnabled([:])
+        CasConfig.nodeHashEnabled([fusion: [enabled: true]])
+        !CasConfig.nodeHashEnabled([fusion: [enabled: true], cas: [nodeHash: false]])
+        CasConfig.nodeHashEnabled([cas: [nodeHash: true]])
+    }
+
+    def 'a cas.nodeHash that is not a boolean is refused'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], nodeHash: 'yes']], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('cas.nodeHash')
     }
 
     def 'an S3 location with a query string is refused, since it would parse differently than it validated'() {

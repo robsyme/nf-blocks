@@ -9,7 +9,7 @@ import nextflow.Session
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
-import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.LocalBlockStore
@@ -39,7 +39,7 @@ class CasOccurrenceTest extends Specification {
         store = new LocalBlockStore(storeDir, 'lab', true)
         session = Mock(Session)
         Global.session = session
-        CasSession.bind(session, new CasSession(config, store, new CoordinateTree(storeDir.resolve('coords'))))
+        CasSession.bind(session, new CasSession(config, store, new LocalCoordinateTree(storeDir.resolve('coords'))))
         provider = new CasFileSystemProvider()
 
         bam = store.putStreaming(new ByteArrayInputStream('BAM A\n'.bytes))
@@ -47,9 +47,9 @@ class CasOccurrenceTest extends Specification {
         qcDir = store.putDagCbor(new DirectoryManifest([ManifestEntry.regular('summary.txt', summary, 8L)]).toCbor())
         final Cid manifest = store.putDagCbor(new RunManifest([assertedBy: 'test', pipeline: 'p', runName: 'r', nfRunHash: 'h',
             sessionId: 's', nextflowVersion: '26.04.6', params: [:], config: [:], startedAt: '2026-09-25T00:00:00.000Z']).toCbor())
-        item = store.putDagCbor(OutputItem.of([[sample: 'A'], Leaf.of('A.bam', bam, 6L, 'head-node'), Leaf.of('A_qc', qcDir, 0L, 'head-node')]).toCbor())
+        item = store.putDagCbor(OutputItem.of([[sample: 'A'], Leaf.of('A.bam', bam, 6L), Leaf.of('A_qc', qcDir, 0L)]).toCbor())
         collection = store.putDagCbor(new OutputCollection('test', manifest, 'aligned', [item], [['aligned/A/A.bam', 'qc/A']]).toCbor())
-        dupItem = store.putDagCbor(OutputItem.of([[sample: 'D'], Leaf.of('x.txt', bam, 6L, 'head-node'), Leaf.of('x.txt', bam, 6L, 'head-node')]).toCbor())
+        dupItem = store.putDagCbor(OutputItem.of([[sample: 'D'], Leaf.of('x.txt', bam, 6L), Leaf.of('x.txt', bam, 6L)]).toCbor())
         dupCollection = store.putDagCbor(new OutputCollection('test', manifest, 'dups', [dupItem], [['d/1/x.txt', 'd/2/x.txt']]).toCbor())
     }
 
@@ -122,5 +122,49 @@ class CasOccurrenceTest extends Specification {
         final IOException e = thrown()
         e.message.contains("'x.txt'")
         e.message.contains('1') && e.message.contains('2')
+    }
+
+    // ------------------------------------------------ Item Leaf (final review I1)
+
+    def 'an Item Leaf names a leaf without a collection: a file, a directory listed and walked, named by the leaf'() {
+        when:
+        final CasPath dir = p("cas://${item}/A_qc")
+
+        then:
+        provider.newInputStream(p("cas://${item}/A.bam")).text == 'BAM A\n'
+        provider.readAttributes(dir, java.nio.file.attribute.BasicFileAttributes).isDirectory()
+        dir.fileName.toString() == 'A_qc'
+        provider.newDirectoryStream(dir, null).collect { it.toString() } == ["cas://${item}/A_qc/summary.txt".toString()]
+        provider.newInputStream(p("cas://${item}/A_qc/summary.txt")).text == 'summary\n'
+    }
+
+    def 'an Item Leaf downloads a directory leaf under the target name'() {
+        given:
+        final Path target = tmp.resolve('staged/A_qc')
+
+        when:
+        provider.download(p("cas://${item}/A_qc"), target)
+
+        then:
+        Files.readString(target.resolve('summary.txt')) == 'summary\n'
+    }
+
+    def 'an Output Item with no leaf name asks for one; an unknown name is absent; a shared name is refused'() {
+        when:
+        provider.readAttributes(p("cas://${item}"), java.nio.file.attribute.BasicFileAttributes)
+        then:
+        final IOException e = thrown()
+        e.message.contains('is an Output Item')
+
+        when:
+        provider.readAttributes(p("cas://${item}/nope"), java.nio.file.attribute.BasicFileAttributes)
+        then:
+        thrown(NoSuchFileException)
+
+        when:
+        provider.readAttributes(p("cas://${dupItem}/x.txt"), java.nio.file.attribute.BasicFileAttributes)
+        then:
+        final IOException shared = thrown()
+        shared.message.contains("named 'x.txt'")
     }
 }

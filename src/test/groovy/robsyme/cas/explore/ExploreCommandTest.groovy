@@ -4,17 +4,15 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 import robsyme.cas.CasConfig
+import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.Fixtures
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.cli.CasCommands
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient
-import software.amazon.awssdk.regions.Region
-import software.amazon.awssdk.services.s3.S3Client
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -86,29 +84,47 @@ class ExploreCommandTest extends Specification {
 
     def 'membersOf builds S3MemberFiles for a remote alias and LocalMemberFiles for a local one, writable first'() {
         given:
-        // No real client is ever called: the factory hands membersOf a client
-        // built with an explicit region and static credentials, so building
-        // it (and this test) never reaches the network or IMDS.
-        S3Client noNetworkClient = S3Client.builder()
-            .region(Region.US_EAST_1)
-            .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('test', 'test')))
-            .httpClientBuilder(UrlConnectionHttpClient.builder())
-            .build()
         final CasConfig config = CasConfig.from([cas: [stores: [
             lab : [location: tempDir.resolve('lab').toString()],
             priv: [location: 's3://bucket/member'],
         ]]], 'cas://lab')
+        final List<String> asked = []
 
         when:
-        final LinkedHashMap<String, MemberFiles> members = ExploreCommand.membersOf(config, { -> noNetworkClient })
+        final LinkedHashMap<String, MemberFiles> members = ExploreCommand.membersOf(config,
+            { String bucket -> asked << bucket; new MemoryS3Ops(bucket) } as Closure<S3Ops>)
 
         then:
         members.keySet().toList() == ['lab', 'priv']
         members['lab'] instanceof LocalMemberFiles
         members['priv'] instanceof S3MemberFiles
+        asked == ['bucket']
+    }
+
+    def 'a failed listing for shadowed coordinates warns on stderr and explore still starts (rule 3)'() {
+        given:
+        MemoryS3Ops bucket = new MemoryS3Ops('member') {
+            @Override List<robsyme.cas.s3.S3Listed> list(String prefix, int maxKeys) {
+                if( prefix.startsWith('cas/coords') ) throw new IOException('403 Forbidden')
+                return super.list(prefix, maxKeys)
+            }
+        }
+        Closure<S3Ops> saved = CasSession.s3OpsFactory
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        Map cfg = [lineage: [store: [location: 'cas://lab']],
+                   cas: [stores: [lab: [location: 's3://member/cas']], index: [path: tempDir.resolve('s3-cache.sqlite').toString()],
+                         tmpDir: tempDir.resolve('t').toString()]]
+
+        when:
+        started = ExploreCommand.start([], cfg, new PrintStream(out, true), new PrintStream(err, true))
+
+        then:
+        started.server.port > 0
+        err.toString().contains("nf-blocks:explore: could not look for shadowed coordinates in 'lab' (403 Forbidden); continuing")
 
         cleanup:
-        noNetworkClient?.close()
+        started?.index?.close()
+        CasSession.s3OpsFactory = saved
     }
 
     def 'explore takes only --port'() {

@@ -106,11 +106,6 @@ class TestWalk(TempTree):
                          cas.cid_raw(b"summary for A\n"))
         self.assertIsNone(walked["summary.txt"]["target"])
 
-    def test_executable_bit_changes_the_mode(self):
-        self.write("tree/run.sh", b"#!/bin/sh\n", 0o755)
-        walked = gate_assert._walk(self.path("tree"), self.path("tree"))
-        self.assertEqual(walked["run.sh"]["mode"], "executable")
-
     def test_relative_symlink_inside_the_tree_is_a_link(self):
         self.write("tree/summary.txt", b"x\n")
         self.link("tree/alias.txt", "summary.txt")
@@ -610,6 +605,135 @@ class TestConsumerLogHasOutputDirLine(TempTree):
         self.write("logs/consumer/stdout.log", b"Launching `main.nf` [x] - revision: 1\n")
         gate = gate_assert.Gate(self.tmp)
         self.assertFalse(gate_assert._consumer_console_has_output_dir_line(gate))
+
+
+class ProvidersTest(unittest.TestCase):
+    def test_addresses_by_provider(self):
+        a, b = str(cas.cid_raw(b"a")), str(cas.cid_raw(b"b"))
+        rc = {"providers": {"head-node": [cas.Cid(a), cas.Cid(b)], "fusion-node": [cas.Cid(b)]}}
+        self.assertEqual(gate_assert._provider_of(rc), {a: {"head-node"}, b: {"head-node", "fusion-node"}})
+
+    def test_command_cas_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "x.txt"), "wb") as f:
+                f.write(b"x\n")
+            digest = cas.sha256_of_file(os.path.join(d, "x.txt"))
+            with open(os.path.join(d, ".command.cas"), "w") as f:
+                f.write("%s  x.txt\n%s  gone.txt\n" % (digest, "0" * 64))
+            self.assertEqual(gate_assert._command_cas_problems(d), ["%s: .command.cas names gone.txt, which is not in the task directory" % d])
+
+
+class WalkTest(unittest.TestCase):
+    def test_an_executable_file_is_regular(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "tool.sh")
+            with open(p, "w") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(p, 0o755)
+            self.assertEqual(gate_assert._walk(d, d)["tool.sh"]["mode"], "regular")
+
+
+class SeedingTest(unittest.TestCase):
+    def test_permission_failures_name_a_locked_block(self):
+        # Index.groovy:642 logs "<kind> <cid> could not be read (<e.message>)", and an
+        # AccessDeniedException's message is the path alone.
+        locked = ["/g/store/blocks/yx/bafyx"]
+        log = "WARN nextflow.cas - run bafyx could not be read (/g/store/blocks/yx/bafyx); it will be retried"
+        self.assertEqual(gate_assert._permission_failures(log, locked), [log])
+        self.assertEqual(gate_assert._permission_failures("run bafyz could not be read (/g/store/blocks/yz/bafyz); it will be retried", locked), [])
+        self.assertEqual(gate_assert._permission_failures("fine", locked), [])
+
+    def test_a_locked_completion_read_through_block_of_kind_counts(self):
+        # Measured on the Gate (2026-09-28): a RunCompletion read that hits mode
+        # 000 is caught in Index.groovy's blockOfKind and logged as "could not
+        # be decoded as RunCompletion: <path>", never "could not be read".
+        locked = ["/g/store/blocks/yx/bafyx"]
+        log = "WARN  robsyme.cas.core.Index - block bafyx could not be decoded as RunCompletion: /g/store/blocks/yx/bafyx"
+        self.assertEqual(gate_assert._permission_failures(log, locked), [log])
+
+
+class NodeHashEvidenceTest(TempTree):
+    """Review I1: again's leaves must be tied to verified .command.cas digests."""
+
+    def task(self, rel, data):
+        full = self.write(rel + "/out.txt", data)
+        with open(os.path.join(os.path.dirname(full), ".command.cas"), "w") as f:
+            f.write("%s  out.txt\n" % cas.sha256_of_file(full))
+        return os.path.dirname(full)
+
+    def test_no_command_cas_anywhere_fails(self):
+        os.makedirs(self.path("work", "ab", "cdef"))
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x")}, [self.path("work", "ab", "cdef")])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no task directory holds a .command.cas line", problems[0])
+
+    def test_a_leaf_no_command_cas_covers_fails(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x\n"), cas.cid_raw(b"other")}, [d])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(cas.cid_raw(b"other"), problems[0])
+
+    def test_a_digest_the_file_does_not_hash_to_covers_nothing(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        self.write("work/ab/cdef/out.txt", b"changed\n")
+        problems = gate_assert._node_hash_problems({cas.cid_raw(b"x\n")}, [d])
+        self.assertTrue(any("it hashes to" in p for p in problems))
+        self.assertTrue(any("no task directory holds" in p for p in problems))
+
+    def test_every_leaf_covered_passes(self):
+        d = self.task("work/ab/cdef", b"x\n")
+        self.assertEqual(gate_assert._node_hash_problems({cas.cid_raw(b"x\n")}, [d]), [])
+
+
+class HeadNodeTest(unittest.TestCase):
+    """Review I3: a leaf absent from cold's providers is not under head-node."""
+
+    def test_a_leaf_missing_from_cold_providers_fails(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(len(gate_assert._head_node_problems({a}, {})), 1)
+
+    def test_a_leaf_under_another_provider_fails(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(len(gate_assert._head_node_problems({a}, {a: {"fusion-node"}})), 1)
+
+    def test_head_node_passes(self):
+        a = cas.cid_raw(b"a")
+        self.assertEqual(gate_assert._head_node_problems({a}, {a: {"head-node"}}), [])
+
+
+class SeedingRunsTest(TempTree):
+    """Review I2: the locked runs come from the Store Log through the watermark."""
+
+    def setUp(self):
+        super(SeedingRunsTest, self).setUp()
+        self.b = StoreBuilder(self.path("store"))
+        self.old = self.b.block({"kind": "RunCompletion", "n": 1})
+        self.mid = self.b.block({"kind": "RunCompletion", "n": 2})
+        self.new = self.b.block({"kind": "RunCompletion", "n": 3})
+        self.b.store_log(1000, "run", self.old)
+        self.b.store_log(2000, "run", self.mid)
+        self.b.store_log(3000, "run", self.new)
+        self.watermark = "%013d-run-%s" % (9999999999999 - 2000, self.mid)
+
+    def test_runs_after_the_watermark_are_left_out(self):
+        self.assertEqual(gate_assert._store_log_runs_through(self.b.store, self.watermark),
+                         sorted([self.old, self.mid]))
+
+    def test_matching_snapshot_passes(self):
+        self.assertEqual(gate_assert._seeding_problems(self.b.store, self.watermark, [self.mid, self.old]), [])
+
+    def test_a_snapshot_missing_a_logged_run_fails(self):
+        problems = gate_assert._seeding_problems(self.b.store, self.watermark, [self.mid])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.old, problems[0])
+
+    def test_a_snapshot_holding_a_later_run_fails(self):
+        problems = gate_assert._seeding_problems(self.b.store, self.watermark, [self.old, self.mid, self.new])
+        self.assertEqual(len(problems), 1)
+        self.assertIn(self.new, problems[0])
+
+    def test_no_watermark_fails(self):
+        self.assertEqual(len(gate_assert._seeding_problems(self.b.store, None, [self.old])), 1)
 
 
 if __name__ == "__main__":

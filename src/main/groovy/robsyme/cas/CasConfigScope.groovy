@@ -49,6 +49,14 @@ class CasConfigScope implements ConfigScope {
     @Description('Overrides the Pipeline Identity recorded in the RunManifest.')
     String pipeline
 
+    @ConfigOption
+    @Description('Scratch directory for content of unknown length on its way to an S3 member. Defaults to java.io.tmpdir.')
+    String tmpDir
+
+    @ConfigOption
+    @Description('Hash declared outputs on the task node and publish their addresses from .command.cas. Defaults to fusion.enabled.')
+    Boolean nodeHash
+
     @Description('The derived SQLite index of the composition.')
     CasIndexScope index
 
@@ -71,7 +79,7 @@ class CasConfigScope implements ConfigScope {
         CasStoreScope() {}
 
         @ConfigOption
-        @Description('Where this member lives: a local directory, or s3://<bucket>[/<prefix>] for a read-only member browsed with nf-blocks:explore.')
+        @Description('Where this member lives: a local directory or s3://<bucket>[/<prefix>].')
         String location
     }
 

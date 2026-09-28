@@ -62,6 +62,28 @@ class CasCommandsTest extends Specification {
         } == completion.toString()
     }
 
+    def 'snapshot says not rewritten: fewer_runs, and exits 0, when the stored snapshot has more runs than the cache'() {
+        given: 'a stored snapshot counting three runs, and a Store Log with one'
+        logRun()
+        final Path file = tempDir.resolve('store/index/v3.sqlite')
+        Files.createDirectories(file.parent)
+        DriverManager.getConnection("jdbc:sqlite:${file}").withCloseable { c ->
+            c.createStatement().withCloseable { st ->
+                st.executeUpdate('CREATE TABLE run (id INTEGER PRIMARY KEY)')
+                st.executeUpdate('INSERT INTO run VALUES (1), (2), (3)')
+            }
+        }
+        final byte[] before = Files.readAllBytes(file)
+
+        when:
+        final int status = run('snapshot')
+
+        then:
+        status == 0
+        out.toString().trim() == 'nf-blocks:snapshot: not rewritten: fewer_runs'
+        Files.readAllBytes(file) == before
+    }
+
     def 'an unknown verb is a usage error listing the verbs'() {
         expect:
         run('frobnicate') == 2

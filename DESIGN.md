@@ -36,6 +36,11 @@ artifacts only.
    also covers `nf-blocks:items`, a read-only verb that lists a run's items
    from the plugin's own index so a downstream workflow can use them (§15,
    §16 Milestone 3). `put` stays the only command-line write path.*
+   *Amended 2026-09-28 (ticket 07):* a verb exists only for an operation the
+   spec names that a run cannot perform itself, and each lands in the
+   milestone that also adds the Gate assertion exercising it. Milestone 4
+   adds none; `sweep`, `prune`, `untrash`, `bundle`, `merge`, `verify` and
+   `project` wait for their milestones.
 6. The Gate's assertions never trust the plugin: they hash bytes themselves.
 
 ## 1. Plugin identity and layout
@@ -45,6 +50,13 @@ artifacts only.
 - Gradle: `io.nextflow.nextflow-plugin` `1.0.0-beta.15`, `nextflowVersion = '26.04.6'`.
   `extensionPoints` lists every extension class (that list is what generates
   `META-INF/extensions.idx`; `@Extension` alone registers nothing).
+  `requirePlugins = ['nf-amazon@>=3.9.2']`; the AWS SDK is `compileOnly`
+  through `io.nextflow:nf-amazon:3.9.2`, so the zip carries none and nf-blocks
+  links against the classes nf-amazon loads (ticket 02). Nextflow 26.04.6
+  does not download a required plugin for a plugin that is already unpacked
+  in `NXF_PLUGINS_DIR` (a local install, the Gate), so nf-amazon must be
+  installed beside it there (`nextflow plugin install nf-amazon@3.9.2`);
+  `gate/gate.sh` does so itself.
 - Packages:
   - `robsyme.cas.core` — no Nextflow imports at all. CID, DAG-CBOR, hashing,
     block store, records, directory manifest, coordinates, index, run log.
@@ -59,6 +71,10 @@ artifacts only.
   - `robsyme.cas.CasSession` — the one per-run shared object (see §9).
   - `robsyme.cas.cli` — `CasCommands` (the `nextflow plugin nf-blocks:<verb>` dispatch, §15) and `Options`.
   - `robsyme.cas.explore` — `ExploreServer`, `MemberFiles` and its local and S3 implementations (§15).
+  - `robsyme.cas.s3`: the one S3 seam (`S3Ops`, `SdkS3Ops`, `S3Access`) and
+    the S3 member (`S3BlockStore`, `S3StoreLogStorage`, `S3CoordinateTree`,
+    `S3SnapshotStorage`). The only package that imports
+    `software.amazon.awssdk.*` or `nextflow.cloud.aws.*`.
 - The page is an npm project under `web/`, built by Gradle into the plugin jar as
   `robsyme/cas/explorer/index.html` (block explorer spec section 2). Its output is not committed.
 - Tests: Spock, under `src/test/groovy`, same packages. Groovy `@CompileStatic`
@@ -75,13 +91,15 @@ outputDir = 'cas://lab'                // optional: unset means the writable mem
 
 cas {
     stores {
-        lab { location = '/data/cas' }            // writable member (alias = outputDir authority)
-        // shared { location = '/mnt/bundle' }    // read-only member (later)
+        lab { location = 's3://bucket/cas' }      // writable member: a local directory or s3://<bucket>[/<prefix>]
+        // shared { location = '/mnt/bundle' }    // read-only member
     }
     resolve = ['lab']          // optional; default = every alias, writable first
     asserted_by = 'anonymous'  // optional opaque label; default 'anonymous'. Never defaults to the OS user name.
     index { path = null }      // optional override of the SQLite cache path (the Gate sets XDG_CACHE_HOME instead)
     snapshot { maxBytes = 64.MB }   // optional; a run writes the Index Snapshot only while it is under this (§15)
+    tmpDir = null              // optional; scratch for S3 uploads of unknown length, default java.io.tmpdir
+    nodeHash = null            // optional; node-side hashing, default fusion.enabled
 }
 ```
 
@@ -118,16 +136,37 @@ cas {
   is not changed either). An
   `outputDir` from `-output-dir`, or `cas://<alias>/sub`, is explicit: the
   factory leaves it to `onFlowCreate`'s check.
-- In the Walking Skeleton a member location is a local directory path. The
-  store abstraction (§5) is written so an S3 member can be added later.
+- *Amended 2026-09-28 (milestone 4, ticket 02):* any member, the writable
+  one included, is a local directory or `s3://<bucket>[/<prefix>]` (a bucket
+  root allowed; a trailing slash dropped, so `s3://bkt/p/` is `s3://bkt/p`).
+  Another `<scheme>://`, or a malformed S3 URI, is refused naming the store.
+  Local locations go through `FileHelper.asPath`. `cas.resolve` may name S3
+  members; its default is every configured alias, writable first. The S3
+  client is nf-amazon's, built from the `aws` scope (`S3Access`): credentials,
+  profile and SSO, region (us-east-1 when none is set), endpoint, HTTP
+  settings; `aws.client.storageClass`, `storageEncryption`,
+  `storageKmsKeyId` and `requesterPays` go on each request. With an S3
+  writable member, `GLACIER` and `DEEP_ARCHIVE` are refused (blocks must stay
+  readable, and archive tiers need packing); `STANDARD_IA`, `ONEZONE_IA` and
+  `INTELLIGENT_TIERING` warn once that each block pays the per-object
+  minimum; any class nf-amazon does not accept (`GLACIER_IR`) warns that it is
+  ignored and blocks are written as `STANDARD`. The storage class is read
+  from `aws.client.storageClass`, else `uploadStorageClass`, and judged only
+  when the writable member is on S3.
+- `cas.tmpDir` holds a stream of unknown length on its way to an S3 member
+  (`putStreaming` spools while hashing, rule 2): an S3 member needs scratch
+  disk the size of the largest such output. That is an object over 5 GiB
+  published from S3 without a node digest, and also any S3-sourced output,
+  at any size, whose server-side copy failed and fell back to the head-node
+  read (§8); under the optional hardening bucket policy of §5 every
+  S3-to-S3 copy fails, so every S3-sourced output spools. The Index
+  Snapshot is built there too before it is uploaded (§15).
+- `cas.nodeHash` (Boolean; default `fusion.enabled`) turns on node-side
+  hashing (§11): the `afterScript` default and the `.command.cas` read. Any
+  value other than `true` or `false` is refused.
 - `cas.snapshot.maxBytes` (a number of bytes, a `MemoryUnit`, or a string such as
   `'64 MB'`; default 64 MiB): the cap under which a run rewrites its member's
   Index Snapshot at `onFlowComplete` (§15).
-- *Amended 2026-09-25:* a read-only member's `location` may be an S3 URI,
-  `s3://<bucket>[/<prefix>]`. Only `nf-blocks:explore` reads such a member (§15).
-  A run leaves S3 members out of its default `resolve` list and refuses one named
-  in `cas.resolve`, because no S3 `BlockStore` exists yet. The writable member is
-  always a local directory.
 
 ## 3. Content identity
 
@@ -219,10 +258,66 @@ index.html              The explorer page, self-contained (§15). Rewritten when
 wins; writes go only to `members[0]`, which must be writable; a write is never
 skipped because a read-only member holds the block.
 
+*Amended 2026-09-28 (milestone 4):* `S3BlockStore(ops, prefix, alias,
+writable, tmpDir)` keeps the local layout byte for byte under the member
+prefix: `blocks/<xx>/<cid>`, `log/`, `coords/`, `nf/`, `index/v3.sqlite`,
+`index.html`, plus `tmp/` (staging keys of the `s3-copy` provider, §8). A
+block of 1 MiB or more is looked for with `HeadObject` first (S3 reads a
+whole body before answering a conditional PUT's 412, ticket 14), and
+`put(cid, in, size)` makes that HEAD before it reads the caller's stream, so
+a known large block is never read at all; every write carries
+`If-None-Match: *` and a 412 is success; a write that meets a 409
+`ConditionalRequestConflict` is tried up to 3 times in all, a multipart
+upload restarting whole (a Store Log entry too, after which the run warns and
+continues). The storage class, SSE and requester-pays fields are set by
+`SdkS3Ops` on every write; `aws.client.s3Acl` is not applied. Up to 5 GiB a
+block is one `PutObject` with `ChecksumAlgorithm SHA256`, and the
+`ChecksumSHA256` S3 returns must equal the CID digest (a mismatch, a source
+file changed between hash and upload, deletes the object and fails the
+write; when the delete is refused, as under the hardening policy below, the
+publish aborts naming the key to remove by hand, as a mismatched copy does,
+§8); above, a multipart upload of `max(64 MiB, ceil(size/10000))` parts,
+each a file-channel range through `RequestBody.fromContentProvider` with its
+own SHA-256, completed with `If-None-Match: *` and aborted on any failure.
+The whole-object SHA-256 S3 returns for a multipart upload is composite
+(`<base64>-<parts>`) and is not compared. `put` and `putStreaming` spool
+through `cas.tmpDir` while hashing (rule 2); `putFile` for a file on the
+default filesystem hashes it in place and uploads from it; `putDagCbor`
+uploads its encoded bytes. Blocks carry
+`Cache-Control: public, max-age=31536000, immutable`. Immutability on S3 is
+the conditional writes; the documented hardening is a bucket policy denying
+`PutObject` on `blocks/*` without `s3:if-none-match` and `DeleteObject` on
+`blocks/*` except to a sweep role, and a lifecycle rule expiring `tmp/` after
+a day and aborting incomplete multipart uploads after a day. The deny needs
+`s3:ObjectCreationOperation` so `UploadPart` and `UploadPartCopy`, which take
+no conditional header, still pass (README). AWS documents that a bucket
+enforcing conditional writes refuses `CopyObject` into the enforced prefix
+(403 without the header, 501 with it); under this policy every `s3-copy`
+into `blocks/` would then fail and fall back to the head-node read (§8).
+Not measured; tier two runs without the policy. The Store Log is
+empty objects under `log/`, written `If-None-Match: *`; `ListObjectsV2` is
+lexicographic, so newest first holds. `StoreLog` finds a member's log through
+`LoggedStore`.
+
+`CoordinateTree` is an interface (`LocalCoordinateTree`, `S3CoordinateTree`),
+held to one contract (`CoordinateTreeContract`). On S3 a pointer is the
+object `coords/<rel>` with the local body and there are no directory
+markers; before a write the tree HEADs each ancestor (a pointer at `a`
+refuses `a/b`, `FileAlreadyExistsException`) and lists `coords/<rel>/` with
+max-keys 1 (a non-empty `a/` refuses a pointer at `a`,
+`DirectoryNotEmptyException`), the local outcomes. Last write wins on one
+coordinate. A pointer that two writers raced under an ancestor pointer is
+shadowed: `read`, `exists`, `isDirectory` and `children` treat it as absent,
+and `explore` lists up to 20 shadowed pointers on stderr. No locking
+anywhere.
+
+Snapshot and page storage is `SnapshotStorage` (`LocalSnapshotStorage`,
+`S3SnapshotStorage`), §15.
+
 ## 6. Block kinds
 
 Every metadata block is a DAG-CBOR map with `kind` (string) and `schema`
-(integer, `1`). Keys are `snake_case`. Links are `Cid` values (tag 42).
+(integer: `1`, except DirectoryManifest, OutputItem and RunCompletion, `2` since 2026-09-28). Keys are `snake_case`. Links are `Cid` values (tag 42).
 Timestamps are ISO-8601 UTC strings with millisecond precision, only ever as
 facts about a run, or as a Claim's advisory `timestamp`. Nothing store-local: no absolute paths, host names, user
 names, member aliases, or surrogate ids.
@@ -264,9 +359,11 @@ type DirEntry struct {
   name String
   mode EntryMode
   size Int
-  address nullable &Any         # raw cid for regular/executable, &DirectoryManifest for directory
+  address nullable &Any         # raw cid for regular, &DirectoryManifest for directory
   target nullable String        # relative in-tree target, or "[redacted-location]"
 }
+# `executable` appears only in a DirectoryManifest at schema 1, written before
+# 2026-09-28, and reads as regular; schema 2 never holds it.
 type EntryMode enum {
   | regular
   | executable
@@ -282,6 +379,15 @@ type OutputItem struct {
 # Not a Block member: found inside OutputItem.value by its kind field.
 type Leaf struct {
   kind String                   # always "Leaf"
+  name nullable String
+  address nullable &Any
+  size nullable Int
+  reason nullable LeafReason
+}
+# The Leaf of an OutputItem at schema 1, written before 2026-09-28. Readers
+# ignore its provider; the run records providers in its RunCompletion.
+type LeafV1 struct {
+  kind String
   name nullable String
   address nullable &Any
   size nullable Int
@@ -346,6 +452,7 @@ type RunCompletion struct {
   finished_at String
   anomalies Anomalies
   error nullable String
+  providers optional {String:[&Any]}  # schema 2: provider name -> every Leaf address of the run it supplied, sorted; absent at schema 1
 }
 type RunStatus enum {
   | succeeded
@@ -396,18 +503,18 @@ type ClaimVerb enum {
 
 ### DirectoryManifest
 ```
-{ kind: "DirectoryManifest", schema: 1,
+{ kind: "DirectoryManifest", schema: 2,
   entries: [ { name: string,                       // raw file name, one path segment
-               mode: "regular"|"executable"|"symlink"|"directory"|"unresolvable",
+               mode: "regular"|"symlink"|"directory"|"unresolvable",
                size: int,                          // bytes; for symlink/unresolvable, the byte length of target; for directory, 0
-               address: Cid|null,                  // raw cid for regular/executable, dag-cbor cid for directory, null for symlink/unresolvable
+               address: Cid|null,                  // raw cid for regular, dag-cbor cid for directory, null for symlink/unresolvable
                target: string|null } ] }           // link target text for symlink/unresolvable, else null
 ```
 Entries sorted ascending by the UTF-8 bytes of `name`. Rules for a symlink
 found while walking: if its target is relative and resolves inside the tree
 being published, record `mode: "symlink"` with `target` (the relative target
 string, which is portable and meaningful to a receiver); otherwise follow it
-and store what it points at as regular/executable/directory; if it dangles or
+and store what it points at as regular/directory; if it dangles or
 cycles, `mode: "unresolvable"`. **A stored `target` is only ever a relative,
 in-tree path.** An absolute target, or one that escapes the tree, is never
 written into a block: the manifest carries no `asserted_by` and travels in a
@@ -417,9 +524,14 @@ an entry `target` is `"[redacted-location]"` (the same marker `scrub` uses), so
 the fact of the broken link survives without its machine-local path. Cycle
 detection and depth limit 64. Empty directory = `entries: []`.
 
+*Amended 2026-09-28 (ticket 15 addendum, Rob):* a manifest records no execute
+bit. An object store keeps none, so the bit let the storage backend change a
+manifest address. A reader accepts schema 1 and reads its `executable` entries
+as `regular`; materialising a manifest sets no execute permission.
+
 ### OutputItem
 ```
-{ kind: "OutputItem", schema: 1,
+{ kind: "OutputItem", schema: 2,
   value: <the channel item structure> }
 ```
 `value` mirrors the published channel item: a `Map` stays a map, a
@@ -427,7 +539,6 @@ tuple/list stays a list, scalars keep their types. Every file or directory
 leaf is replaced by a **Leaf** map:
 ```
 { kind: "Leaf", name: string|null, address: Cid|null, size: int|null,
-  provider: "head-node"|"fusion-node"|null,
   reason: null|"declined"|"never_published"|"unresolvable"|"unaddressed" }
 ```
 `name` is the file name it was published under (last segment of the publish
@@ -437,6 +548,11 @@ as `null` in place of a path. A `never_published` leaf is a path in the item
 that never received a publish event (a path outside the work dir).
 Decoding rule: a map with `kind == "Leaf"` is a leaf. The item carries no run
 reference and no publish path.
+
+*Amended 2026-09-28 (ticket 16):* the Leaf carries no provider, so the same
+content published by different Address Providers is one OutputItem. An
+OutputItem is written at `schema: 2`; a reader accepts `schema: 1`, whose
+Leaves carry `provider`, and ignores it. The RunCompletion records providers.
 
 ### OutputCollection
 ```
@@ -518,7 +634,7 @@ Nothing reads `config` by machine: it is provenance for people.
 
 ### RunCompletion
 ```
-{ kind: "RunCompletion", schema: 1, asserted_by: string,
+{ kind: "RunCompletion", schema: 2, asserted_by: string,
   run: Cid,                             // RunManifest
   collections: [Cid, ...],              // OutputCollection links, sorted by output name
   input_set: Cid|null,                  // null in the skeleton
@@ -527,7 +643,8 @@ Nothing reads `config` by machine: it is provenance for people.
   possibly_incomplete: bool,            // true for every failed run (no barrier exists on that path)
   started_at: string, finished_at: string,
   anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int },
-  error: string|null }
+  error: string|null,
+  providers: { <provider>: [Cid, ...] } }   // schema 2: every Leaf address the run published (each file leaf and each directory leaf's manifest) under the provider that supplied it; not the files inside a directory (final review I5)
 ```
 
 ### Claim, InputSet, Attestation
@@ -558,6 +675,19 @@ as a CID (`Cid.parse` succeeds):
     it is that file. Canonical form: CIDs in their string form, no trailing
     slash. Built 2026-09-25 (milestone 2, Task 7): a leaf name two leaves of
     one item share is refused, naming both positions.
+  - *Amended 2026-09-28 (final review I1):* **Item Leaf**
+    `cas://<OutputItem cid>/<leaf name>[/<entry>...]`, one leaf of an item by
+    its name, with no collection: a raw leaf is that file, a directory leaf
+    that directory, and further segments traverse its manifest. A leaf name
+    two leaves of the item share is refused, as for an occurrence. With no
+    segment it is an error asking for a leaf name. `fromStore` emits a
+    directory leaf this way (§13), because a bare `cas://<manifest>` has no
+    segment to be staged under.
+  - A Store URI with no segments has its CID as its file name
+    (`CasPath.getFileName()`), so Nextflow stages a bare `cas://<cid>` under
+    `<cid>`. With no file name, FilePorter stages into its cache directory
+    itself and retries its integrity check without end (Task 14). A
+    coordinate root still has no file name.
 - **Publish Coordinate** `cas://<alias>/<relative path>`. The write-side name
   Nextflow's `PublishDir` hands us. Persisted in the writable member as a
   Pointer File tree under `coords/`: intermediate segments are real
@@ -574,7 +704,11 @@ as a CID (`Cid.parse` succeeds):
   function. Never `Path.equals`.
 - `CoordinateTree(Path coordsRoot)`: `Optional<StoreRef> read(String relPath)`,
   `void write(String relPath, StoreRef ref)`, `boolean exists(String relPath)`,
-  `boolean isDirectoryCoordinate(String relPath)`.
+  `boolean isDirectoryCoordinate(String relPath)`. *Amended 2026-09-28:*
+  `CoordinateTree` is now an interface; the class above is
+  `LocalCoordinateTree`, and `S3CoordinateTree` holds an S3 member's
+  coordinates (§5). `CasSession.coordinatesOf(alias)` gives any configured
+  member's tree, one outside `cas.resolve` included, built on first use.
 - `StoreRef(Cid cid, String name)` ⇄ `cas://<cid>/<name>`.
 - `Cid` parsing of a `lid://…` is never attempted here; `lid://` is Nextflow's.
 
@@ -583,7 +717,9 @@ as a CID (`Cid.parse` succeeds):
 `CasPathFactory extends FileSystemPathFactory`, listed in `extensionPoints`:
 - `parseUri(String)`: returns a `CasPath` for `cas://…`, else null.
 - `toUriString(Path)`: `cas://…` for a `CasPath`, else null.
-- `getBashLib`/`getUploadCmd`: return null (local executor only in the skeleton).
+- `getBashLib`/`getUploadCmd`: return null. No task script ever touches the
+  scheme: tasks unstage to the work dir as usual and the head node publishes
+  from there (measured on Batch, ticket 05).
 
 `CasFileSystemProvider extends FileSystemProvider implements nextflow.file.FileSystemTransferAware`.
 Install with `nextflow.file.FileHelper.getOrInstallProvider(CasFileSystemProvider)`
@@ -612,6 +748,12 @@ Read side (Store URIs and Coordinates alike), all must tell the truth:
 - `isSameFile`, `isHidden`, `getFileStore` (unsupported), `getFileAttributeView`.
 
 Write side (Coordinates only; any write to a Store URI is `AccessDeniedException`):
+*Amended 2026-09-28 (final review I3):* only the writable member's
+coordinates are written. `upload`, `newOutputStream`, `createDirectory`,
+`delete` and `deleteIfExists` on `cas://<alias>/...` for any other member
+throw `AccessDeniedException` naming both aliases, before anything is read or
+written: a pointer written there would name blocks only this run's writable
+member holds.
 - `createDirectory`: create the coordinate directory under `coords/`.
 - `newOutputStream` on a coordinate: allowed only so Nextflow's incidental
   writes (none expected in the skeleton) do not crash; implement as
@@ -623,13 +765,44 @@ Write side (Coordinates only; any write to a Store URI is `AccessDeniedException
   1. `key = Coordinates.key(target)`. If the coordinate exists and
      `REPLACE_EXISTING` is absent, throw `FileAlreadyExistsException(key)`
      **before reading any byte** (this is what makes `-resume` cheap).
-  2. Regular file: `cid = store.putStreaming(Files.newInputStream(source))`
-     with the 1 MiB buffer, then write the Pointer File. Record
-     `(key → StoreRef, size, provider 'head-node')` in `CasSession.publishes`.
-  3. Directory: walk it yourself (Nextflow does not recurse), hash every
-     file, build the `DirectoryManifest` recursively, put it, write the
-     Pointer File pointing at the manifest cid. Never return normally with
-     any child untransferred. Record the manifest and the anomaly counts.
+  2. Regular file: the address comes through `PublishAddresser` (the Address
+     Provider seam, spec §3), then the Pointer File is written, in this order:
+     the task node's digest in `<task dir>/.command.cas` when `cas.nodeHash`
+     is on (task dir = the first two path segments under `workDir`, both
+     compared as real paths; the file is read once per task directory per
+     run, ignored with a warning above 16 MiB; lines that do not parse are
+     skipped); for an S3 source into an S3 member, `S3BlockStore.copyFrom`
+     (below); else the head node streams the file with the 1 MiB buffer (a
+     default-filesystem file into an S3 member is hashed in place and
+     uploaded from it; any other source spools through `cas.tmpDir`). A node
+     digest and a computed address that differ abort the run, whether the
+     computed one is the head node's or S3's SHA-256 of a copy; the copy is
+     deleted first. Under the optional hardening bucket policy, which denies
+     `DeleteObject` on `blocks/`, that delete is refused, and the mismatch
+     becomes an abort whose message names the key to remove by hand. A copy
+     that fails for any other reason (an SDK refusal, no full-object SHA-256
+     in the answer) warns and falls back to the head-node read. A staging
+     copy under `tmp/` that cannot be deleted is left to the `tmp/` lifecycle
+     rule. A full `cas.tmpDir` aborts naming it and the bytes needed. Record
+     `(key -> StoreRef, size, provider)` in `CasSession.publishes`:
+     `fusion-node` when the node digest named a block the writable member
+     already held or drove an `UploadPartCopy`, `s3-copy` when S3 returned
+     the SHA-256 of a copy, `head-node` when the head node read the bytes.
+  3. Directory: walk it yourself (Nextflow does not recurse), address every
+     file through the same addresser, build the `DirectoryManifest`
+     recursively, put it, write the Pointer File pointing at the manifest
+     cid. Never return normally with any child untransferred. Record the
+     manifest and the anomaly counts. The manifest itself is encoded on the
+     head node and recorded `head-node`. The provider of each file inside is
+     counted by the addresser for the run's summary line (silent decision 8)
+     and not recorded in a block: `RunCompletion.providers` lists Leaf
+     addresses only, so a directory of millions of files cannot push the
+     RunCompletion past what the index reads (final review I5, reverting
+     pre-flight F30). `toRealPath` is used only where the
+     provider has it (an object store has no links to resolve, ticket 05).
+     From an object store, a directory holding a `.fusion.symlinks` object
+     has each listed name decoded as a link whose target is its object's body
+     (ticket 15; rules in §6), the sidecar left out; every file is `regular`.
 - `canDownload(source, target)`: `source instanceof CasPath`.
 - `download(source, target, options)`: raw → copy the block to `target`
   (symlink when both are on the same local filesystem and the block is
@@ -637,6 +810,33 @@ Write side (Coordinates only; any write to a Store URI is `AccessDeniedException
   manifest → materialise recursively, recreating `symlink` entries as
   relative symlinks, failing loudly on `unresolvable`. Absent block →
   `NoSuchFileException` naming the cid.
+
+`S3BlockStore.copyFrom(sourceBucket, sourceKey, size, expected)` (ticket 16):
+with a node digest, `HEAD` the final key first (present: `fusion-node`, at
+any size). Up to 5 GiB, with a node digest, `CopyObject` straight to the
+final key with `If-None-Match: *` and SHA-256 (a 412 is `fusion-node`),
+compared with the digest (mismatch: delete, abort); without one, copy to
+`tmp/<uuid>` with SHA-256, `HEAD` the final key, copy staging to final with
+`If-None-Match: *` (412 is success), delete staging. Above 5 GiB, with a node
+digest, `UploadPartCopy` to the final key, the node digest trusted as the
+address (it is asserted); without one, null, and the head node reads. Copies
+meeting a 409 are tried up to 3 times. The head node's byte count and each
+provider's count are logged at info at `onFlowComplete` (`nf-blocks: the
+head node read <n> bytes to address <m> file(s); head-node <a>, fusion-node
+<b>, s3-copy <c>`).
+
+*Amended 2026-09-28 (milestone 4):* `download` into an S3 target of a block
+an S3 member holds, up to 5 GiB, is a `CopyObject` with SHA-256 from the
+member's key, checked against the CID (a mismatch, or an answer with no
+full-object SHA-256, deletes the target and aborts); a copy the SDK
+refuses falls back to streaming. A local member
+staging into S3 streams through nf-amazon's output stream as before. A
+`symlink` manifest entry staged onto any non-default filesystem becomes a
+copy of what it names inside the tree (ticket 15 decision 7), the target
+resolved segment by segment as POSIX does, so a `..` after a directory link
+climbs from where the link landed (`dirlink -> sub/deep`, `l -> dirlink/../f`
+gives `sub/f`; final review I7); a link that names a directory already being
+materialised (`up -> ..`) aborts rather than recursing. Nothing is made executable: manifests carry no execute bit.
 
 Measured behaviours to respect (see `.scratch/research/plugin-filesystem-schemes.md`
 and the probe logs in `.scratch/research/nf-casx-probe/*.log`): Nextflow calls
@@ -651,10 +851,16 @@ One instance per Nextflow `Session`, obtained by `CasSession.of(session)`
 (a `ConcurrentHashMap<Session, CasSession>` in a static; the provider reaches
 it through `Global.session`). Holds: the `CasConfig`, the `CompositeStore`,
 the `CoordinateTree`, `asserted_by`, a `ConcurrentHashMap<String, Publish>`
-keyed by join key (`Publish(StoreRef ref, long size, String provider,
-Anomalies anomalies)`), the Nextflow run key once `save(<hash>, WorkflowRun)`
+keyed by join key (`Publish(StoreRef ref, long size, String provider)`;
+*amended 2026-09-28, final review I5:* the `contents` field of pre-flight F30
+is gone), a directory's anomalies keyed the same way, the run's `PublishAddresser`, the Nextflow run key once `save(<hash>, WorkflowRun)`
 is seen, the RunManifest cid once written, the captured `WorkflowOutputEvent`s,
-and a one-shot latch for `onFlowComplete`.
+and a one-shot latch for `onFlowComplete`. *Amended 2026-09-28:* also each
+member's `CoordinateTree` and `SnapshotStorage` (local or S3, built beside
+its block store; `coordinatesOf(alias)`, `snapshotsOf(alias)`), and the
+writable S3 member's clock check (`checkClock`, §11). The `PublishAddresser`
+is built on first publish over the composite and the writable member, with
+`cas.nodeHash` and the session's `workDir`.
 
 ## 10. `CasLinStore` (`robsyme.cas.lineage`)
 
@@ -663,6 +869,16 @@ and a one-shot latch for `onFlowComplete`.
   delegated `nextflow.lineage.DefaultLinStore` at `<writable>/nf` for
   Nextflow's own records. Abort with `AbortOperationException` if the writable
   member cannot be created.
+  *Amended 2026-09-28 (ticket 02 decision 7):* `DefaultLinStore` is opened on
+  the location string `FilesEx.toUriString` gives, so an S3 writable member's
+  records are at `s3://<bucket>/<prefix>/nf` through nf-amazon's filesystem
+  (no directory is made first; S3 has none). `nextflow lineage find` then
+  costs one GET per record. A read-only member joins the reader chain only
+  when both `nf/` and `nf/.history` already exist, because
+  `DefaultLinStore.open` creates its location and `DefaultLinHistoryLog`
+  creates `.history` when missing (`DefaultLinHistoryLog.groovy:37-40` at
+  v26.04.6), and a read-only member is never written; an S3 member that
+  cannot be looked at is skipped with a warning.
 - `save(key, value)`:
   - `WorkflowRun` → record `key` as the Nextflow run key in `CasSession`.
   - `FileOutput` whose `path` is a Publish Coordinate → rewrite `path` to the
@@ -681,7 +897,13 @@ and a one-shot latch for `onFlowComplete`.
 ## 11. `CasObserver` (`robsyme.cas.trace`)
 
 - `onFlowCreate(session)`: bind `CasSession`, validate config (`outputDir`
-  alias equals the lineage alias), open the index lazily.
+  alias equals the lineage alias), open the index lazily. Then, for an S3
+  writable member, one `HEAD` on its snapshot key and a comparison of the
+  local clock with the response's `Date`: above 1 minute a warning on the
+  terminal, above 5 minutes `ClockSkewException` (an `AbortRunException`)
+  naming the skew and NTP (ticket 03 decision 2). A `HEAD` that fails warns
+  and the run continues. `put` and `explore` check the same at start and
+  exit 1 above 5 minutes.
 - `onFlowBegin()`: write the `RunManifest` (the Nextflow run key is known
   because every observer's `onFlowCreate`, including `LinObserver`'s, has run).
 - `onFilePublish(event)`: nothing to hash (our `upload()` already did). Look
@@ -699,7 +921,11 @@ and a one-shot latch for `onFlowComplete`.
   `session.workflowMetadata.exitStatus`, `possibly_incomplete = !success`).
   Write the Store Log entry (`run`, stamped with the write time). Then update
   the index (§12) for this run; index failure logs and marks the index stale,
-  never aborts.
+  never aborts. *Amended 2026-09-28:* the RunCompletion is written at
+  schema 2 with `providers` (§6), and the addresser's byte and provider
+  counts are logged at info (§8). The snapshot base is taken before the
+  catch-up; the snapshot is not rewritten when the writable member's
+  catch-up threw (`catch_up_failed`) or a guard of §15 holds.
   *Amended 2026-09-25:* a failed run is notified twice, once on a Nextflow
   finalizer thread inside `Session.abort` and once from `Session.destroy` on
   main, and Nextflow interrupts the finalizer threads while the first is
@@ -723,6 +949,30 @@ and a one-shot latch for `onFlowComplete`.
   goes to the logger `nextflow.cas` (`robsyme.cas.trace.ConsoleLog`), whose
   name Nextflow's console filter admits, so it is printed on the terminal
   just above the launcher's error, and written to `.nextflow.log`.
+- `CasObserverFactory.create` (2026-09-28) also installs node-side hashing
+  when `cas.nodeHash` (default `fusion.enabled`) is on:
+  `NodeHash.install(session.config)` puts `node-hash.sh` ahead of every
+  `afterScript` string in `process` and in each `withName:`/`withLabel:`
+  selector (the process scope's default when none is set); a closure
+  `afterScript` is left alone with a terminal warning naming the selector,
+  and those tasks fall back to the head node. The script works in
+  `${NXF_CHDIR:-$PWD}` and does nothing without `.command.run`; it reads
+  `.command.run`'s `### outputs:` patterns, expands them (`nullglob`, and
+  `globstar` where the shell has it; brace patterns do not expand), skips
+  links and absent names, hashes files, and the files under directories,
+  with `sha256sum` (or `shasum -a 256`) into `.command.cas` through
+  `.command.cas.tmp`, and never fails the task. `afterScript` is not in the
+  task hash (rule 5).
+- `onProcessCreate(process)` (2026-09-28): `NodeHash.install` (above) only ever
+  reaches a process through Nextflow's process-scope/selector config
+  defaults, which `ProcessConfigBuilder.applyConfigDefaults` skips for any
+  process whose own body sets `afterScript` directly; that process gets none
+  of ours chained ahead, so it is not hashed on the node though
+  `cas.nodeHash`/`fusion.enabled` says it should be. When node hashing is
+  enabled, this warns once per process name, on the `nextflow.cas` logger,
+  when the process's effective `afterScript` does not start with
+  `NodeHash.script()`; that process's outputs are still addressed on the
+  head node, same as any other run without node hashing.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 
@@ -792,6 +1042,24 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `block_scan:<member>` in `meta`), which is also how a store written before
   the Store Log keeps its runs. `rebuild` reads the Store Log only to carry
   the watermark forward.
+- *Amended 2026-09-28 (ticket 04):* `catchUp(store, log, member, snapshots,
+  tempDir)` seeds first when the cache has no `store_log_watermark:<m>`, the
+  only trigger (ticket 04 decision 6): it fetches the member's snapshot, and
+  when its `schema_version` matches copies each run, Selection and Claim it
+  does not hold with their rows (`run.member` and `log_entry.member` set to
+  the alias), recomputes `claim_current` for every seeded subject, adopts
+  the snapshot's watermark, marks `block_scan:<m>` done and records
+  `seeded_from:<m>` = its `snapshot_written_at`; then the tail is read with
+  the usual overlap. A Store Log entry the snapshot's writer could not read
+  (it held only `missing(NULL, cid)`, which a snapshot does not carry) is
+  seeded as that `missing` row, so it is retried once its block arrives. No
+  usable snapshot (absent, another `schema_version`, unreadable) means the
+  full scan, with a warning on the `nextflow.cas` logger naming the member,
+  the reason and `nf-blocks:snapshot` when the member's Store Log is not
+  empty. `cas.index.path` on persistent disk (EFS, FSx; one file per head
+  node, since WAL needs shared memory) skips seeding; SQLite on S3 is not
+  supported. The cache file is named by the members' location texts, S3 URIs
+  included.
 - Ingest: `Index.ingestRun(store, completionCid)` reads the RunCompletion
   and its closure. `Index.catchUp(store, storeLog, member)` reads the Store
   Log past the watermark plus a 10-minute overlap (floor clamped to the local
@@ -830,7 +1098,10 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
 matching OutputItem restored to its published structure: a file leaf →
 `CasPath` `cas://<cid>/<name>`; a **directory leaf → `CasPath` `cas://<cid>`**
 (a dag-cbor manifest address the provider presents as a directory, per ticket
-08); declined → `null`; an `unaddressed` leaf → error naming the item. A run
+08; *amended 2026-09-28, final review I1:* now the Item Leaf
+`cas://<item>/<leaf name>` of §7, so a task stages it under its published
+name, and `cas://<manifest>` only when another leaf of the item shares its
+name, staged then under the manifest's CID); declined → `null`; an `unaddressed` leaf → error naming the item. A run
 without a RunCompletion → error. Implemented with `@Factory`; resolve eagerly
 so a bad run reference or an unaddressed item fails fast, but bind onto the
 channel inside a `session.addIgniter` closure so a downstream subscriber is
@@ -881,14 +1152,31 @@ the composition lacks fails the call, naming it. `run`, `output`, `where` and
 ## 14. The Gate (`gate/`)
 
 `gate/gate.sh` builds and installs the plugin into a throwaway
-`NXF_PLUGINS_DIR`, runs the Test Pipeline at
-`../.scratch/content-addressed-lineage/test-pipeline` four ways (cold; again
-into the same store; `--fail`; `-resume`) with `XDG_CACHE_HOME` and the store
-under a fresh temp directory, then runs `gate/assert.py` (Python 3 standard
-library only: `hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and
-CID encoder of its own). Exit non-zero on any failed assertion. The Gate
-config overlay lives at `gate/gate.config`. A `gate/Dockerfile` wraps the same
-script for CI.
+`NXF_PLUGINS_DIR`, installs `nf-amazon@3.9.2` beside it (§1: a fresh
+`GATE_ROOT` otherwise fails before any pipeline runs), and runs the Test
+Pipeline at `../.scratch/content-addressed-lineage/test-pipeline` five ways
+(cold; again into the same store with `gate/node-hash.config`, so its files
+are addressed from `.command.cas`; `--fail`; `-resume`; from a second launch
+directory), then the consumer, then the consumer twice more on a deleted
+cache (`consumer-seeded`, with the metadata blocks of the producer's runs at
+or before the snapshot's watermark unreadable; `consumer-scan`, with the
+snapshot moved aside too), with `XDG_CACHE_HOME` and the store under a fresh
+temp directory, then runs `gate/assert.py` (Python 3 standard library only:
+`hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and CID encoder
+of its own). Exit non-zero on any failed assertion. The Gate config overlay
+lives at `gate/gate.config`. Lineage tier: 12 PASS, 0 FAIL, 6 SKIP.
+Assertion 13, "a cold cache seeds from the Index Snapshot", takes its locked
+runs from the Store Log entries at or before the snapshot's watermark, and
+counts a permission failure when the seeded run's log says "could not be
+read" or "could not be decoded as <Kind>" together with a locked path (the
+plugin reports a locked RunCompletion as undecodable).
+
+*Tier two* (`make gate-tier2`, `gate/tier2/`, on demand): the scidev Batch
+queue, a throwaway S3 member, T1-T6 and T2b (`gate/tier2/README.md`); run
+before a milestone that touches the S3 store, the Fusion provider or the
+cloud publish path is accepted. It is the only part of the Gate that talks
+to AWS, from a person's SSO session; its own unit tests
+(`python3 -m unittest discover -s gate/tier2`) do not.
 
 ## 15. The block explorer (milestone 1)
 
@@ -915,15 +1203,30 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
   cache index, a Store Log entry name; absent when the member has no log) and
   `snapshot_written_at` (ISO-8601 UTC, milliseconds).
 - Written by inserting into a fresh database, `PRAGMA page_size=4096`, then
-  `VACUUM INTO` a temp file in `<member>/index/`, then an atomic move over the
-  old file. One rollback-journal file, no sidecars.
-- Writers: a run's `onFlowComplete`, after indexing, only while the existing
-  snapshot is under `cas.snapshot.maxBytes` and only if the new one is too;
-  `nf-blocks:snapshot` at any size; `nf-blocks:explore` at start and at exit, at
-  any size. Every writer writes only the writable member's snapshot.
+  `VACUUM INTO` a temp file. One rollback-journal file, no sidecars.
+  *Amended 2026-09-28:* the build is local (`IndexSnapshot.build`, in
+  `cas.tmpDir`); `SnapshotStorage.replace` puts it in place: locally a copy
+  into `<member>/index/` and an atomic move, on S3 one `PutObject` with
+  `Cache-Control: no-cache`, `x-amz-meta-runs: <run rows>` and `If-Match` on
+  the ETag it replaces (`If-None-Match: *` when there was none); a 412, a 409
+  `ConditionalRequestConflict` (not retried: another writer is replacing it,
+  and the snapshot is derived), or a 404 (the snapshot deleted meanwhile)
+  skips the rewrite (`replaced_meanwhile`).
+- Writers: a run's `onFlowComplete`, `nf-blocks:snapshot` (any size),
+  `nf-blocks:explore` (start and exit, any size). Each takes the base (`HEAD`,
+  or a local stat) before its catch-up and writes only the writable member's
+  snapshot, and none writes when the old snapshot is at or over
+  `cas.snapshot.maxBytes` or the new one is over it (`over_cap`, the run
+  only), when the new one has fewer `run` rows than the old (`fewer_runs`; an
+  S3 snapshot without `x-amz-meta-runs` is downloaded once and counted), when
+  another writer replaced it (`replaced_meanwhile`), or when the writable
+  member's catch-up failed (`catch_up_failed`). Locally `replace` does not
+  re-check the base; the move is atomic. Skips log at info; the verb prints
+  them and exits 0, and `explore` prints them on stderr.
 - `<member>/index.html` is the page from the plugin jar
   (`/robsyme/cas/explorer/index.html`), written beside the snapshot whenever a
-  snapshot is written and its bytes differ.
+  snapshot is written and its bytes differ; a page that cannot be written
+  warns and the snapshot stands.
 
 ### Plugin verbs
 
@@ -1054,7 +1357,9 @@ then fails with `snapshot_changed` rather than answering wrongly, but a user
 sees an error they did not need. `nf-blocks:explore` sends `no-cache` for the
 snapshot and `public, max-age=31536000, immutable` for a block
 (`ExploreServer.groovy`); `gate/cloud/s3tier.py`'s `upload` sends the same
-pair for a directly browsed bucket.
+pair for a directly browsed bucket. *Amended 2026-09-28:* a writable S3
+member's own writes set the same headers (§5, above), and on S3 the page is
+`no-cache` and rewritten only when its stored `ChecksumSHA256` differs.
 
 The page lists `log/` in the first form that answers:
 
@@ -1097,8 +1402,13 @@ on stdout once it is listening, then blocks until the JVM is interrupted.
 sent, `http://127.0.0.1:<port>` or `http://localhost:<port>`; otherwise `403`.
 No CORS headers are sent. No other path under a member is ever served:
 `coords/` and `nf/` hold host paths. Members are every configured store
-(`cas.stores`), local ones read from disk, S3 ones with the AWS SDK default
-credential chain (`AWS_PROFILE`, SSO) and ranged `GetObject`.
+(`cas.stores`), local ones read from disk, S3 ones through `S3Ops` over
+nf-amazon's client built from the loaded config's `aws` scope
+(`S3Access`, §2: profile and SSO, region with the us-east-1 fallback) and
+ranged `GetObject`. *Amended 2026-09-28:* with a writable S3 member,
+`explore` checks the clock at start (§11) and prints on stderr up to 20
+coordinates shadowed by a pointer above them (§5); a listing that fails
+warns and the explorer starts.
 
 Every snapshot and block answer carries a strong `ETag` taken from the file as
 opened for that answer, never from a second look at the path: size,
@@ -1254,7 +1564,8 @@ statement, so Gate assertion 2's counts are the query's cost.
 7. The whole-file cap is 64 MiB, `?cap=` per load.
 8. The launch token (decision 12 of the milestone 2 plan) guards `POST`;
    `GET`/`HEAD` stay token-free behind the `Host`/`Origin` check.
-9. S3 members are read-only and explore-only.
+9. S3 members are read-only and explore-only. *Superseded 2026-09-28:* S3
+   members may be writable and resolvable (§2).
 10. Nothing is filtered by `delete` Claims until Claims exist (milestone 2).
 
 ## 16. Selections (milestones 2 and 3)
@@ -1604,16 +1915,19 @@ reasoning.
     take their call line verbatim from the page (§14, Gate browser tier B).
     [07](../.scratch/block-explorer/ux/issues/07-fromstore-discoverable.md) Q6.
 
-`slf4j-api` (bundled transitively through the AWS SDK) is excluded from the
-plugin zip (Task 1b, controller-added fix), so a plugin `log.*` call reaches
+`slf4j-api` (bundled transitively through the AWS SDK until milestone 4 made
+the SDK `compileOnly`; the exclusion stays so no other dependency brings it
+back) is excluded from the plugin zip (Task 1b, controller-added fix), so a plugin `log.*` call reaches
 `nextflow.log` instead of a NOP logger. That is as far as a plugin logger
 named `robsyme.cas.*` gets: Nextflow's console appender admits only loggers
 whose names start with a configured package, `nextflow` among them
 (`LoggerHelper.ConsoleLoggerFilter`, `LoggerHelper.groovy:408-441` at
-v26.04.6). So the two lines written for the person at the terminal, §11's
-`onFlowError` hint and §2's `outputDir not set` line, go through the logger
-`nextflow.cas` and appear on the terminal as well; every other plugin log
-line, §0 rule 3's warnings included, is in `.nextflow.log` only. Gate
+v26.04.6). So the lines written for the person at the terminal, §11's
+`onFlowError` hint and §2's `outputDir not set` line (and, since milestone
+4, the clock-skew warning, the node-hashing warnings of §11 and §12's
+seeding fallback), go through the logger `nextflow.cas` and appear on the
+terminal as well; every other plugin log line, §0 rule 3's warnings
+included, is in `.nextflow.log` only. Gate
 assertion 6 requires the `outputDir` line in the consumer's `nextflow.log`
 and on its console (`logs/consumer/stdout.log`).
 
@@ -1621,3 +1935,234 @@ Left out, per the map: plugin factories on the typed `channel` namespace
 (nextflow-io/nextflow#7694, upstream), self-registration of `fromStore` so
 the include is optional, and a "one of" condition in the page and in
 `fromStore(where:)`.
+
+## 17. Milestone 4: cloud (2026-09-28)
+
+*Status 2026-09-28: built on `feat/cloud-m4`. `./gradlew check`: 1,029
+unit tests and 4 `memoryBoundTest` features (the S3 multipart case
+included) pass, `dependencyCheck` green, `webTest` 181 of 181. `make gate` on
+a fresh `GATE_ROOT`: lineage 12 PASS, 0 FAIL, 6 SKIP; browser tier A 5/5;
+tier B 12/12; the Gate's own unit tests 284 OK. Tier two's unit tests 31 OK.
+Not yet run, for Rob (they need his SSO session): `make gate-cloud`
+(A6-A7), `make gate-tier2` (T1-T6, T2b), one `explore` against a
+writable S3 member in a bucket he names, and, at release, a clean-machine
+install from the registry confirming nf-amazon is fetched (Task 1 ruling).*
+
+Plan `docs/plans/2026-09-27-cloud-milestone-4.md`, from the map
+`../.scratch/post-gate/map.md`; each ticket's `## Answer` (and addendum)
+holds the reasoning, and the execution ledger is
+`.superpowers/sdd/2026-09-27-cloud-milestone-4/progress.md`.
+
+1. There is one S3 client, nf-amazon's: the SDK is `compileOnly` through
+   `io.nextflow:nf-amazon:3.9.2`, `requirePlugins = ['nf-amazon@>=3.9.2']`,
+   `explore` builds its client through the same factory, and
+   `aws.client.s3Acl` is not applied (§1, §2).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q1,
+   [01](../.scratch/post-gate/issues/01-s3-facts-for-a-writable-store.md) Q1.
+2. A block of 1 MiB or more is looked for with `HeadObject` first, and every
+   write carries `If-None-Match: *` with a 412 as success (§5).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q2,
+   [14](../.scratch/post-gate/issues/14-measure-s3-write-behaviour.md) item 1.
+3. Up to 5 GiB a block is one `PutObject` with SHA-256, above it a
+   hand-driven multipart upload of `max(64 MiB, ceil(size/10000))` parts
+   streamed from a file channel, and `putStreaming` spools to `cas.tmpDir`
+   (§2, §5). [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q3,
+   [14](../.scratch/post-gate/issues/14-measure-s3-write-behaviour.md) items 3, 4.
+4. An S3 member keeps the local layout byte for byte under its prefix, plus
+   `tmp/` for staging copies (§5).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q4.
+5. Immutability on S3 is the conditional writes alone; the deny-overwrite and
+   deny-delete bucket policy is documented hardening (§5, README).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q5.
+6. Coordinate conflicts on S3 have the local outcomes, checked with a `HEAD`
+   per ancestor and one max-keys-1 listing; last write wins, a raced pointer
+   is shadowed, and nothing locks (§5).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q6,
+   [03](../.scratch/post-gate/issues/03-concurrent-writers-on-one-s3-member.md) Q3-4.
+7. `nf/` is `DefaultLinStore` on the member's URI string, and
+   `nextflow lineage find` costs a GET per record (§10).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q7,
+   [01](../.scratch/post-gate/issues/01-s3-facts-for-a-writable-store.md) Q6.
+8. The snapshot is built locally and uploaded with one conditional
+   `PutObject` (`no-cache`, `x-amz-meta-runs`, `If-Match` on the ETag it
+   replaces), a 412 skipping the rewrite; the page is rewritten only when its
+   `ChecksumSHA256` differs (§15).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q8,
+   [03](../.scratch/post-gate/issues/03-concurrent-writers-on-one-s3-member.md) Q1.
+9. Storage class and SSE come from the `aws.client` settings; `GLACIER` and
+   `DEEP_ARCHIVE` are refused, infrequent-access classes warn, and
+   `GLACIER_IR`, which nf-amazon 3.9.2 drops, warns that blocks go to
+   `STANDARD` (§2).
+   [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q9.
+10. Any member may be local or `s3://<bucket>[/<prefix>]`, the writable one
+    and `cas.resolve` included, through `FileHelper.asPath`; a malformed S3
+    URI and any other scheme are refused (§2).
+    [02](../.scratch/post-gate/issues/02-s3-blockstore-write-semantics.md) Q10.
+11. The local clock is compared with S3's `Date`: over 1 minute warns, over 5
+    minutes aborts (§11).
+    [03](../.scratch/post-gate/issues/03-concurrent-writers-on-one-s3-member.md) Q2.
+12. Blocks from two writers are conditional and idempotent, a 409 retried up
+    to 3 times in all, and the page's `put` behaves the same (§5).
+    [03](../.scratch/post-gate/issues/03-concurrent-writers-on-one-s3-member.md) Q5.
+13. `provider` leaves the Leaf: the RunCompletion's `providers` records it,
+    OutputItem goes to schema 2, and schema-1 readers ignore the old field
+    (§6). [16](../.scratch/post-gate/issues/16-s3-copy-address-provider.md) Q1-2.
+14. `s3-copy` is the default for every S3-to-S3 publish up to 5 GiB, checked
+    against a node digest when there is one; above 5 GiB a node digest drives
+    `UploadPartCopy`, else the head node reads (§8).
+    [16](../.scratch/post-gate/issues/16-s3-copy-address-provider.md) Q3-6.
+15. `DirectoryManifestBuilder` calls `toRealPath` only where the provider has
+    it (§8). [05](../.scratch/post-gate/issues/05-cloud-executor-publish-on-batch.md).
+16. Fusion's links are content: a directory's `.fusion.symlinks` is decoded
+    under the §6 link rules and left out of the manifest; without Fusion an S3
+    work dir's links arrive as copies (§8).
+    [15](../.scratch/post-gate/issues/15-fusion-symlinks-in-a-published-directory.md) Q1-6.
+17. A link staged onto an object store is a copy of its target (§8).
+    [15](../.scratch/post-gate/issues/15-fusion-symlinks-in-a-published-directory.md) Q7.
+18. The Fusion Address Provider is a chained `afterScript` default writing
+    `.command.cas`, read once per task at publish, with a fallback on a miss
+    (§8, §11). Spec §14,
+    [06](../.scratch/post-gate/issues/06-remeasure-fusion-on-batch.md).
+19. A cache with no watermark for a member seeds from that member's Index
+    Snapshot, else scans with a warning; a run rewrites the snapshot only
+    after a clean catch-up and without losing `run` rows (§12, §15).
+    [04](../.scratch/post-gate/issues/04-index-cache-on-an-ephemeral-head-node.md) Q1-10.
+20. No new verbs; rule 5 is reworded (§0).
+    [07](../.scratch/post-gate/issues/07-post-gate-cli-verbs.md).
+21. Gate tier one gains assertion 13 (a seeded and a scanned cold cache give
+    the same answer) and assertion 2's check that `head-node` and
+    `fusion-node` publishes give one OutputItem address (§14).
+    [04](../.scratch/post-gate/issues/04-index-cache-on-an-ephemeral-head-node.md) Q11,
+    [16](../.scratch/post-gate/issues/16-s3-copy-address-provider.md) Q1.
+22. Gate tier two, `make gate-tier2`, runs on demand on the scidev Batch
+    queue into a throwaway bucket: T1-T6, with T2 expecting `s3-copy` in a
+    fresh member and T2b `fusion-node` in T1's (§14, `gate/tier2/README.md`).
+    [11](../.scratch/post-gate/issues/11-gate-tier-two-harness.md),
+    [03](../.scratch/post-gate/issues/03-concurrent-writers-on-one-s3-member.md) Q6.
+23. Directory Manifests carry no execute bit (schema 2), so no backend can
+    change a manifest address (§6).
+    [15](../.scratch/post-gate/issues/15-fusion-symlinks-in-a-published-directory.md) addendum.
+
+### Decisions made where the tickets are silent, as built
+
+1. RunCompletion is at schema 2 too; schema 1 reads as `providers: {}`, and
+   in the IPLD Schema `providers` is the one `optional` field, which the page
+   requires on a schema-2 RunCompletion.
+2. The schema-1 Leaf survives as `LeafV1`; the page validates leaves by the
+   item's `schema`, and Groovy refuses an OutputItem or RunCompletion whose
+   `schema` is not 1 or 2.
+3. `providers` covers every Leaf address the run published: each file leaf,
+   and each directory leaf by its manifest, which is always `head-node`; one
+   address may appear under two providers. Pre-flight F30 had it list the
+   files inside published directories too (`Publish.contents`, merged by
+   `Join`). The final review (I5) reverted that: at about 41 bytes of
+   DAG-CBOR per CID, a run publishing about 1.6 million files inside
+   directories writes a RunCompletion over the index's 64 MiB block limit,
+   so that run would never be indexed. The files inside a directory are
+   counted per provider in the summary line (8) instead. The cost: `verify`
+   cannot target an asserted file inside a directory from a block; a
+   separate linked block could add that later without changing this one.
+   For Rob.
+4. `fusion-node` is recorded when the node digest named a block the writable
+   member already held (a `HEAD` hit, or a 412 on the direct copy) or drove an
+   `UploadPartCopy`; `s3-copy` when S3 returned a copy's SHA-256; `head-node`
+   when the head node read the bytes, including an S3 source into a local
+   member, whose hash must then equal the node digest.
+5. `cas.nodeHash`, a Boolean defaulting to `fusion.enabled`, turns on both
+   halves; tier one sets it for `again`; the name stays `fusion-node`.
+6. The hashing script is `src/main/resources/robsyme/cas/node-hash.sh`, as
+   described in §11; a closure `afterScript` is left alone with a warning. A
+   process whose own body sets `afterScript` gets no config default, so
+   `onProcessCreate` warns once per such process (Task 9 review).
+7. `.command.cas` is parsed with coreutils' escaping, lines that do not parse
+   skipped, a file over 16 MiB ignored with a warning; the task directory is
+   the first two segments under `workDir`, both compared as real paths; it is
+   read once per task directory per run and kept by the addresser.
+8. The head-node byte count and the provider counts are one info line at
+   `onFlowComplete` (§8).
+9. Staging out of an S3 member into S3 is a `CopyObject` checked by SHA-256,
+   up to 5 GiB; an SDK refusal streams instead, a mismatch or a missing
+   full-object SHA-256 aborts (§8).
+10. The client factory is `new AwsClientFactory(new AwsConfig(aws),
+    aws.resolveS3Region()).getS3Client(S3SyncClientConfiguration.create(props),
+    global)`, needing no session and skipping the wrapper's `listBuckets`.
+11. Every S3 request goes through `S3Ops` (`SdkS3Ops`; `MemoryS3Ops` in
+    tests), and `S3MemberFiles` reads through it too.
+12. The single-request limit is 5 GiB (5,368,709,120 bytes).
+13. A `PutObject`'s `ChecksumSHA256` is compared with the CID (a composite
+    multipart one is not); `put(cid, in, size)` HEADs a block of 1 MiB or
+    more before it reads the stream (Task 5 review) and spools through
+    `cas.tmpDir`; `putDagCbor` uploads its bytes; `putFile` hashes in place.
+14. A 409 is tried up to 3 times in all, a multipart upload restarting
+    whole; the Store Log's `putEntry` then throws and the observer warns.
+15. Cache-Control: blocks `public, max-age=31536000, immutable`, snapshot and
+    page `no-cache`, nothing on `coords/`, `log/`, `nf/` or `tmp/`.
+16. The snapshot base is taken before the catch-up; the run-count guard
+    applies to every writer; an S3 snapshot without `x-amz-meta-runs` is
+    counted once; a 409 on the snapshot PUT skips as `replaced_meanwhile`
+    without a retry, and so does a 404 on its `If-Match` (Task 7, Task 11
+    reviews); skips log at info.
+17. Seeding copies per run, Selection and Claim not already held, tagging
+    `run.member` and `log_entry.member`, and carries a logged block the
+    snapshot's writer could not read as `missing(NULL, cid)` (Task 8
+    review); the fallback warning is on `nextflow.cas` and only for a
+    non-empty Store Log.
+18. Assertion 13 locks the RunManifest, RunCompletion and OutputCollection
+    blocks of the producer's runs at or before the snapshot's watermark,
+    taken from the Store Log, and requires the seeded run to succeed with the
+    same answer and no permission failure in its log; the matcher accepts
+    "could not be read" or "could not be decoded as <Kind>" with a locked
+    path, since the plugin reports a locked RunCompletion as undecodable
+    (Task 13 ruling).
+19. The clock check is one `HEAD` on the writable S3 member's snapshot key;
+    a failing `HEAD` warns and continues; `put` and `explore` refuse to start
+    above 5 minutes.
+20. On S3 a coordinate under an ancestor pointer answers absent to `read`,
+    `exists`, `isDirectory` and `children`; `explore` prints up to 20.
+21. S3 coordinates have no directory markers; the pointer body is the local
+    one.
+22. `cas.tmpDir` is a path string; a trailing slash on an S3 location is
+    dropped; the storage class is read from `aws.client.storageClass`, else
+    `uploadStorageClass`, and judged only for a writable S3 member.
+23. A `.fusion.symlinks` over 1 MiB, not UTF-8, holding NUL, or with an empty
+    or `/`-bearing name is unparseable (one `unresolvable`); a listed name
+    with no object is `unresolvable`. A decoded link is chased to the end of
+    its chain, so a dangling chain or a cycle is `unresolvable` as the local
+    walk records it (ticket 15 decisions 1 and 3 disagree here; Rob to
+    confirm, pre-flight F31). A target is resolved segment by segment, as
+    POSIX does: a segment that is a decoded link is chased before the next,
+    and a later `..` climbs from where it landed, so a target through a
+    decoded directory link records `symlink` as a local run does (Task 3
+    ruling, fixed in the final wave, I6). A sidecar that lists its own name
+    does not enter the manifest.
+24. Tier two's details are in `gate/tier2/README.md`. T4 passes the directory
+    as an Item Occurrence `cas://<collection>/<item>/A_qc` rather than
+    `cas://<manifest>`, because staging a bare manifest URI had no file name
+    and Nextflow's FilePorter retried its integrity check forever (Task 14
+    finding). Fixed in the final wave (I1): a bare Store URI is named by its
+    CID, and `fromStore` emits a directory leaf as `cas://<item>/<leaf name>`
+    (§7, §13).
+
+Added during execution:
+
+25. A read-only lineage member is opened only when `nf/` and `nf/.history`
+    both exist, so a pure read never writes it (§10, Task 11 review).
+26. `gate/gate.sh` installs `nf-amazon@3.9.2` into its `NXF_PLUGINS_DIR`,
+    since Nextflow 26.04.6 does not fetch a required plugin for one already
+    unpacked there; a fresh `GATE_ROOT` works (§1, §14, Task 1 review).
+27. A copy whose SHA-256 disagrees with the node digest, and whose delete is
+    refused (the hardening policy), aborts naming the key, never falls back
+    (§8, Task 10 ruling, for Rob).
+28. `CasSession.coordinatesOf` builds the tree of a configured alias left out
+    of `cas.resolve` on first use (§7).
+29. `web/src/generated/schema.json` stays gitignored; `cd web && npm test`
+    regenerates it (Task 2 ruling).
+30. A staging link that names a directory already being materialised aborts
+    rather than recursing (§8, Task 12 review).
+31. Found while documenting (Task 15, from the AWS guide "Enforce
+    conditional writes on Amazon S3 buckets"): the deny-overwrite policy of
+    carried decision 5 needs an `s3:ObjectCreationOperation` exemption for
+    multipart parts, and a bucket enforcing conditional writes refuses
+    `CopyObject` into the enforced prefix, so under it `s3-copy` falls back
+    to the head-node read (§5). For Rob: keep the policy as optional
+    hardening with that cost, or narrow it.

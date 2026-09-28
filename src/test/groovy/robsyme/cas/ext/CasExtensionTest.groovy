@@ -1,16 +1,26 @@
 package robsyme.cas.ext
 
+import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.TimeUnit
 
 import nextflow.Channel
 import nextflow.Global
 import nextflow.Session
 import nextflow.extension.CH
+import nextflow.extension.FilesEx
+import nextflow.file.FilePorter
 import nextflow.util.RecordMap
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.Cid
+import robsyme.cas.core.DirectoryManifest
+import robsyme.cas.core.ManifestEntry
 import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
 import robsyme.cas.core.Leaf
@@ -105,7 +115,7 @@ class CasExtensionTest extends Specification {
         (args.items as List<Map>).each { Map spec ->
             final Leaf leaf = spec.reason
                 ? Leaf.without(spec.name as String, spec.reason as String)
-                : Leaf.of(spec.name as String, spec.content as Cid, spec.size as Long, 'head-node')
+                : Leaf.of(spec.name as String, spec.content as Cid, spec.size as Long)
             // `shape`, when given, builds the item's whole value around its leaf.
             final OutputItem item = OutputItem.of(spec.shape ? ((Closure) spec.shape).call(leaf) : [spec.meta, leaf])
             itemCids << cas.store.putDagCbor(item.toCbor())
@@ -227,6 +237,89 @@ class CasExtensionTest extends Specification {
 
         then:
         thrown(IllegalStateException)
+    }
+
+    // ------------------------------------------ directory leaves staged (final review I1)
+
+    /** A manifest holding a.txt (and, in sub/, b.txt); returns [manifest, a.txt's block]. */
+    private List<Cid> directoryInStore() {
+        final Cid a = cas.store.putStreaming(new ByteArrayInputStream('alpha\n'.bytes))
+        final Cid b = cas.store.putStreaming(new ByteArrayInputStream('beta\n'.bytes))
+        final Cid sub = cas.store.putDagCbor(new DirectoryManifest([ManifestEntry.regular('b.txt', b, 5L)]).toCbor())
+        final Cid top = cas.store.putDagCbor(new DirectoryManifest([ManifestEntry.regular('a.txt', a, 6L), ManifestEntry.directory('sub', sub)]).toCbor())
+        return [top, a]
+    }
+
+    /**
+     * Stages source the way a task input is staged from a foreign filesystem:
+     * Nextflow's own FilePorter, into a local stage dir. On a thread of its own,
+     * bounded, since the bug this pins is FilePorter retrying without end.
+     */
+    private Path stage(Path source) {
+        final FilePorter porter = new FilePorter(session)
+        final Path stageDir = tempDir.resolve('stage')
+        final ExecutorService pool = Executors.newSingleThreadExecutor({ Runnable r ->
+            final Thread t = new Thread(r, 'stage-under-test'); t.daemon = true; t } as ThreadFactory)
+        try {
+            return pool.submit({ ->
+                final FilePorter.Batch batch = porter.newBatch(stageDir)
+                final Path target = batch.addToForeign(source)
+                porter.transfer(batch)
+                return target
+            } as Callable<Path>).get(30, TimeUnit.SECONDS)
+        }
+        finally {
+            pool.shutdownNow()
+        }
+    }
+
+    def 'a directory leaf from fromStore is named by its leaf and stages through FilePorter under that name'() {
+        given:
+        final List<Cid> dir = directoryInStore()
+        storeRun(
+            pipeline: 'p', nfHash: 'nfhashDir', output: 'refs', withCompletion: true,
+            items: [[meta: [sample: 'A'], name: 'ref.d', content: dir[0], size: null, path: 'refs/A/ref.d']])
+
+        when:
+        final Path emitted = (drain(ext.fromStore(run: 'lid://nfhashDir', output: 'refs'))[0] as List)[1] as Path
+        final Path staged = stage(emitted)
+
+        then:
+        FilesEx.getName(emitted) == 'ref.d'
+        Files.isDirectory(emitted)
+        staged.fileName.toString() == 'ref.d'
+        Files.readString(staged.resolve('a.txt')) == 'alpha\n'
+        Files.readString(staged.resolve('sub/b.txt')) == 'beta\n'
+    }
+
+    def 'a bare manifest Store URI stages under its address and does not loop'() {
+        given:
+        final Cid manifest = directoryInStore()[0]
+        final Path bare = CasPlugin.provider().getPath(URI.create("cas://${manifest}"))
+
+        when:
+        final Path staged = stage(bare)
+
+        then:
+        FilesEx.getName(bare) == manifest.toString()
+        staged.fileName.toString() == manifest.toString()
+        Files.readString(staged.resolve('a.txt')) == 'alpha\n'
+    }
+
+    def 'a directory leaf whose name another leaf of its item shares stages under its address instead'() {
+        given:
+        final List<Cid> dir = directoryInStore()
+        storeRun(
+            pipeline: 'p', nfHash: 'nfhashTwin', output: 'refs', withCompletion: true,
+            items: [[name: 'ref.d', content: dir[0], size: null, path: 'refs/A/ref.d',
+                     shape: { Leaf leaf -> [leaf, Leaf.of('ref.d', dir[1], 6L)] }]])
+
+        when:
+        final Path emitted = (drain(ext.fromStore(run: 'lid://nfhashTwin', output: 'refs'))[0] as List)[0] as Path
+
+        then:
+        emitted.toString() == "cas://${dir[0]}".toString()
+        stage(emitted).fileName.toString() == dir[0].toString()
     }
 
     def 'a declined leaf emits null in place'() {

@@ -47,29 +47,35 @@ block, not as a silently different value. Order violations raise
 2. `./gradlew -q assemble installPlugin` into `NXF_PLUGINS_DIR=$GATE_ROOT/plugins`
    (falling back to unzipping `build/distributions/nf-blocks-*.zip` if
    `installPlugin` ignores the variable).
-3. Exports `XDG_CACHE_HOME=$GATE_ROOT/cache`, `GATE_STORE=$GATE_ROOT/store`,
+3. `nextflow plugin install nf-amazon@3.9.2` into the same `NXF_PLUGINS_DIR`: nf-blocks'
+   `requirePlugins` (Task 1) names a dependency Nextflow never auto-downloads for a
+   plugin already unpacked on disk at its pinned version, so a fresh `GATE_ROOT` needs it
+   installed directly once.
+4. Exports `XDG_CACHE_HOME=$GATE_ROOT/cache`, `GATE_STORE=$GATE_ROOT/store`,
    `GATE_STORE_OUT=$GATE_ROOT/store-out`.
-4. Copies the Test Pipeline to `$GATE_ROOT/pipeline-a` and `$GATE_ROOT/pipeline-b`
+5. Copies the Test Pipeline to `$GATE_ROOT/pipeline-a` and `$GATE_ROOT/pipeline-b`
    and this directory's `consumer/` to `$GATE_ROOT/consumer`.
-5. Runs, all with `-c gate/gate.config`, keeping stdout, stderr, the exit code
+6. Runs, all with `-c gate/gate.config`, keeping stdout, stderr, the exit code
    and `.nextflow.log` under `$GATE_ROOT/logs/<name>/`:
 
    | run | where | why |
    |---|---|---|
    | `cold` | pipeline-a | the baseline; snapshot to `blocks-after-cold.txt` |
-   | `again` | pipeline-a | same store again; snapshot to `blocks-after-again.txt` |
+   | `again` | pipeline-a | same store again, plus `-c gate/node-hash.config` (`cas.nodeHash = true`); snapshot to `blocks-after-again.txt` |
    | `fail` | pipeline-a | `--fail`, MAYBE_FAIL exits 7 for sample B; non-zero exit is expected and does not stop the script |
    | `resumed` | pipeline-a | `-resume cold`, with every published source file at mode 000 |
    | `elsewhere` | pipeline-b | a second launch directory into the same store |
    | `consumer` | consumer | reads back through `lid://`, `cas://` and `fromStore` |
+   | `consumer-seeded` | consumer | the consumer again with its cache deleted and the metadata blocks of the runs in `store/`'s snapshot at mode 000 (restored to 444 after) |
+   | `consumer-scan` | consumer | the consumer again with its cache deleted and `store/`'s snapshot moved aside (put back after) |
 
-6. Snapshots the whole store after `cold` and again after `again`, through
+7. Snapshots the whole store after `cold` and again after `again`, through
    `assert.py --snapshot`: block cids, run-log entries, `nf/` record keys and
    every `coords/` pointer with its text.
-7. Reads the read-back references out of the store (`assert.py --refs`) and
+8. Reads the read-back references out of the store (`assert.py --refs`) and
    passes them to the consumer as `--lid` and `--cas`, because neither exists
    before the producer has run.
-8. `python3 gate/assert.py "$GATE_ROOT"`, then browser tier A
+9. `python3 gate/assert.py "$GATE_ROOT"`, then browser tier A
    (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
    both below. Exits non-zero when any tier fails.
 
@@ -305,6 +311,7 @@ consumer/                the second pipeline
 logs/<name>/             stdout.log stderr.log nextflow.log exit
 blocks-after-cold.txt    find blocks -type f, after `cold`
 blocks-after-again.txt   the same, after `again`; assertion 2 diffs them
+seeding.json             lab's snapshot watermark and run counts before assertion 13's runs
 ```
 
 ## The assertions
@@ -317,16 +324,17 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 |---|---|---|
 | 0 | every block decodes, re-encodes to its own address, and every run exited as the Gate drove it | re-hashes each block and re-runs the canonical encoder over each metadata block; reads `logs/<name>/exit` and requires `fail` non-zero and every other run zero |
 | 1 | three byte-identical `.stats` get one Content Address, three Output Items, and three *different* Nextflow fingerprints | hashes the three files itself, then opens the three `item_cid`s the `producer` rows name and requires each to be an `OutputItem` with one Leaf addressing that content under the name `<sample>.stats` |
-| 2 | `again` writes no new content block and loses no record; Output Item addresses are identical | diffs blocks, run-log entries, `nf/` keys and `coords/` pointer *text* between the two snapshots, and re-hashes every block in the store |
+| 2 | `again` writes no new content block and loses no record; Output Item addresses are identical, and `again`, run with `gate/node-hash.config`, records every file `fusion-node` from `.command.cas` while `cold` recorded `head-node`: the same OutputItem addresses either way (ticket 16) | diffs blocks, run-log entries, `nf/` keys and `coords/` pointer *text* between the two snapshots, and re-hashes every block in the store; reads both RunCompletions' `providers`, requires no Leaf to carry `provider`, and hashes every file each task's `.command.cas` names, comparing against the digest on its line |
 | 3 | the failed run is marked failed, is partial and says so, and is not `latest` | requires `status: failed`, `possibly_incomplete: true`, an `anomalies` map, a `reports` collection with no `sample == 'B'` item and at most 2 items, and agreement between the index and the Store Log that `latest` is some other run |
 | 4 | the resumed run's output layer is complete | collection names exactly `{aligned, stats, qc, chunks, reports}`, each with 3 items |
 | 4 | the resumed run's task layer is populated through our own `onTaskCached` | `SKIP`: filling the task layer on resume is deferred out of the Walking Skeleton; native Nextflow leaves it empty (7 not 15, issue 17) |
 | 4 | the resumed run re-hashed nothing | proved by the filesystem: `gate.sh` sets every published source file in `pipeline-a/work` to mode 000 for the duration of the run, so anything that re-reads one to re-address it gets `AccessDenied`. No counter is trusted. See the caveat below |
-| 5 | the published directory is a Directory Manifest matching an independent walk, with the internal symlink recorded as a link | walks `pipeline-a/work/**/A_qc` and compares names, modes, sizes and per-file raw CIDs, recursing into `nested/`; the PASS message states how many of each kind were compared |
+| 5 | the published directory is a Directory Manifest matching an independent walk, with the internal symlink recorded as a link | walks `pipeline-a/work/**/A_qc` and compares names, modes, sizes and per-file raw CIDs, recursing into `nested/`; a manifest records no execute bit, so the walk calls every file `regular`; the PASS message states how many of each kind were compared |
 | 5 | every recorded publish path resolves | for each `paths[i][j]` in every `cold` collection, requires a `coords/` pointer whose Store URI is that leaf's own address and name |
 | 6 | `lid://` and `cas://` each stage into a second pipeline and hash to the expected address; the consumer, with no `outputDir` line, publishes into its store | requires exactly one file under each of `hashes/lid/` and `hashes/cas/` in `store-out`, compares its digest against the Gate's own sha256 of `A.bam`, and requires the consumer's lineage `WorkflowRun` (`store-out/nf/*/.data.json`, `name` `consumer`) to have `metadata.outputDir` `cas://out`; it also requires the consumer's `nextflow.log` to carry the plugin's `outputDir not set` line, which is also the proof that the plugin's own logging reaches Nextflow's log at all, and its console (`stdout.log` or `stderr.log`) to show the same line, which the plugin logs through `nextflow.cas` so Nextflow's console filter prints it |
 | 7 | `fromStore` with `where: [sample: 'B']` returns exactly one item | requires exactly one file under `hashes/fromstore/` digesting to the Gate's sha256 of `B.bam` |
 | 10 | two launch directories give identical Output Item and Directory Manifest addresses, and nothing store-local leaks into a block | compares the two closures; searches every decoded `bafy…` block, whole and without exemption, for the `GATE_ROOT` path and the OS user name, naming the JSON path of any hit |
+| 13 | a cold cache seeds from the Index Snapshot: `consumer-seeded` (cache deleted, the producer's run metadata blocks at mode 000) and `consumer-scan` (snapshot removed too) stage the same bytes as the consumer; the first reads no locked block, the second prints the fallback warning; store-out's snapshot run count does not fall | reads each consumer run's own `hashes` collection in `store-out` and the sha256sum text its leaves address; the locked set (`logs/consumer-seeded/locked`) is computed by the Gate from the snapshot's `run` rows and the RunCompletions' own links, and any `could not be read` or `could not be decoded as` line in `nextflow.log` naming one of those paths fails it (a locked RunCompletion read logs the second); the snapshot run counts are `count(*)` over `run`, read-only, before (`seeding.json`) and after |
 | 8, 9, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
 **Assertion 4c is inconclusive under `mode 'copy'`, and says so.** Measured on
@@ -381,15 +389,27 @@ outputs (including the multi-leaf `chunks` items and the partial `reports` of
 the failed run), work trees with the real bytes, `qc` directories with a nested
 subdirectory and an internal symlink, a Store Log, `nf/` records, coords pointers
 for every publish path, a consumer store covering the three read-back sources,
-and a populated SQLite index. It is what DESIGN says a correct plugin must
-produce, so it exercises every PASS branch of `assert.py` before the plugin
-can.
+and a populated SQLite index. It was built to what DESIGN said a correct
+plugin produced before milestone 4, and it has not been regenerated since
+(Task 13 parked it), so it no longer passes every assertion:
 
 ```
 python3 gate/fixtures/make_fixture.py                  # regenerate (deterministic)
-python3 gate/assert.py gate/fixtures/root --offline    # 10 PASS, 0 FAIL, 7 SKIP
-python3 gate/assert.py gate/fixtures/root              # 12 PASS, 0 FAIL, 5 SKIP
+python3 gate/assert.py gate/fixtures/root --offline    # 8 PASS, 3 FAIL, 7 SKIP
+python3 gate/assert.py gate/fixtures/root              # 9 PASS, 4 FAIL, 5 SKIP
 ```
+
+The failures are the fixture's age, not the plugin's. Assertion 2 fails
+because its RunCompletions are schema 1 without `providers` and its work
+dirs hold no `.command.cas` (ticket 16, milestone 4). Assertion 3 fails
+because its RunManifest records `config` as a map, where DESIGN §6 records
+the resolved config text. Assertion 13 fails because the fixture has no
+`seeding.json` or Index Snapshot (milestone 4). Without `--offline`,
+assertion 6 also fails: the fixture's consumer store has no WorkflowRun
+named `consumer` under `store-out/nf`. A real `make gate` run is the evidence; this
+fixture still exercises the PASS branches of the other assertions offline.
+Bringing it up to date means teaching `make_fixture.py` schema 2, the
+config text, `.command.cas` lines and a snapshot.
 
 `--offline` skips only the two assertions that need a real consumer run.
 The fixture is generated with `cas.py`'s own encoder, which the unit tests pin

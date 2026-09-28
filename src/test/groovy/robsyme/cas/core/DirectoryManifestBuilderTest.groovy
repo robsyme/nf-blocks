@@ -60,7 +60,7 @@ class DirectoryManifestBuilderTest extends Specification {
         result.anomalies == Anomalies.NONE
     }
 
-    def 'a file with the owner execute bit set is executable'() {
+    def 'a file with the owner execute bit set is still just regular (ticket 15 addendum): the store keeps no execute bit'() {
         given:
         final Path tree = work.resolve('tree')
         file(tree, 'plain.txt', 'p')
@@ -73,7 +73,7 @@ class DirectoryManifestBuilderTest extends Specification {
         final DirectoryManifest manifest = read(builder.build(tree).cid)
 
         then:
-        manifest.entry('run.sh').mode == 'executable'
+        manifest.entry('run.sh').mode == 'regular'
         manifest.entry('plain.txt').mode == 'regular'
     }
 

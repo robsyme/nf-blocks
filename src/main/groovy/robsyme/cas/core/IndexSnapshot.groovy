@@ -1,15 +1,14 @@
 package robsyme.cas.core
 
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.PosixFilePermissions
 import java.security.SecureRandom
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
 import java.sql.ResultSet
+import java.sql.SQLException
 import java.sql.Statement
 import java.time.Instant
 import java.time.ZoneOffset
@@ -34,6 +33,12 @@ class IndexSnapshot {
     static final String WRITTEN_AT_KEY = 'snapshot_written_at'
     static final String PAGE_NAME = 'index.html'
     static final String PAGE_RESOURCE = '/robsyme/cas/explorer/index.html'
+
+    /** Why a write kept the old snapshot (Result.skipped). */
+    static final String OVER_CAP = 'over_cap'
+    static final String FEWER_RUNS = 'fewer_runs'
+    static final String REPLACED_MEANWHILE = 'replaced_meanwhile'
+    static final String CATCH_UP_FAILED = 'catch_up_failed'
 
     private static final SecureRandom RANDOM = new SecureRandom()
     private static final DateTimeFormatter MILLIS =
@@ -90,7 +95,7 @@ class IndexSnapshot {
         final long bytes
         final int runs
         final String watermark
-        /** Null when written; `over_cap` when the cap kept the old snapshot. */
+        /** Null when written; otherwise the guard that kept the old snapshot (OVER_CAP, FEWER_RUNS, REPLACED_MEANWHILE, CATCH_UP_FAILED). */
         final String skipped
 
         Result(boolean written, Path path, long bytes, int runs, String watermark, String skipped) {
@@ -110,34 +115,72 @@ class IndexSnapshot {
 
     static Path pathIn(Path memberRoot) { memberRoot.resolve(relativePath()) }
 
-    /**
-     * Writes the snapshot of {@code member} into {@code memberRoot}. With a
-     * positive {@code maxBytes}, an existing snapshot at or over it is left
-     * alone, and a new one over it is discarded, keeping the old.
-     */
-    static Result write(Index index, String member, Path memberRoot, long maxBytes) {
-        final Path target = pathIn(memberRoot)
-        if( maxBytes > 0 && Files.isRegularFile(target) && Files.size(target) >= maxBytes )
-            return new Result(false, target, Files.size(target), -1, null, 'over_cap')
-        Files.createDirectories(target.parent)
+    @CompileStatic
+    static final class Built {
+        final Path file; final long bytes; final int runs; final String watermark
+        Built(Path file, long bytes, int runs, String watermark) { this.file = file; this.bytes = bytes; this.runs = runs; this.watermark = watermark }
+    }
+
+    /** The member's snapshot as a local file in tempDir; the caller deletes it. */
+    static Built build(Index index, String member, Path tempDir) {
+        Files.createDirectories(tempDir)
         final String token = token()
-        final Path build = target.resolveSibling(".tmp-${token}.build")
-        final Path vacuumed = target.resolveSibling(".tmp-${token}.sqlite")
+        final Path buildFile = tempDir.resolve(".tmp-${token}.build")
+        final Path vacuumed = tempDir.resolve("nf-blocks-snapshot-${token}.sqlite")
         try {
             final String watermark = index.watermark(member)
-            final int runs = buildAndVacuum(build, vacuumed, index.file, member, watermark)
-            final long bytes = Files.size(vacuumed)
-            if( maxBytes > 0 && bytes > maxBytes )
-                return new Result(false, target, bytes, runs, watermark, 'over_cap')
-            if( FileSystems.default.supportedFileAttributeViews().contains('posix') )
-                Files.setPosixFilePermissions(vacuumed, PosixFilePermissions.fromString('rw-r--r--'))
-            Files.move(vacuumed, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            return new Result(true, target, bytes, runs, watermark, null)
+            final int runs = buildAndVacuum(buildFile, vacuumed, index.file, member, watermark)
+            return new Built(vacuumed, Files.size(vacuumed), runs, watermark)
+        }
+        catch( Throwable e ) {
+            Files.deleteIfExists(vacuumed)
+            throw e
         }
         finally {
-            for( Path path : [build, vacuumed] )
-                for( String suffix : ['', '-journal', '-wal', '-shm'] )
-                    Files.deleteIfExists(path.resolveSibling(path.fileName.toString() + suffix))
+            for( String suffix : ['', '-journal', '-wal', '-shm'] )
+                Files.deleteIfExists(buildFile.resolveSibling(buildFile.fileName.toString() + suffix))
+        }
+    }
+
+    /**
+     * Writes the member's snapshot into storage unless a guard keeps the old
+     * one (DESIGN.md §15, ticket 04 decision 3): the cap (maxBytes > 0), fewer
+     * run rows than base, or another writer's version in place of base.
+     */
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) {
+        if( maxBytes > 0 && base != null && base.bytes >= maxBytes )
+            return new Result(false, null, base.bytes, -1, null, OVER_CAP)
+        final Built built = build(index, member, tempDir)
+        try {
+            if( maxBytes > 0 && built.bytes > maxBytes )
+                return new Result(false, null, built.bytes, built.runs, built.watermark, OVER_CAP)
+            if( base != null && base.runs > built.runs )
+                return new Result(false, null, built.bytes, built.runs, built.watermark, FEWER_RUNS)
+            if( !storage.replace(built.file, built.runs, base) )
+                return new Result(false, null, built.bytes, built.runs, built.watermark, REPLACED_MEANWHILE)
+            return new Result(true, null, built.bytes, built.runs, built.watermark, null)
+        }
+        finally {
+            Files.deleteIfExists(built.file)
+        }
+    }
+
+    /** The old entry point: a local member, its own base, temp files beside it. */
+    static Result write(Index index, String member, Path memberRoot, long maxBytes) {
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(memberRoot)
+        final Path temp = pathIn(memberRoot).parent
+        final Result r = write(index, member, storage, maxBytes, storage.base(temp), temp)
+        return new Result(r.written, pathIn(memberRoot), r.bytes, r.runs, r.watermark, r.skipped)
+    }
+
+    static int countRuns(Path sqlite) {
+        try {
+            return DriverManager.getConnection("jdbc:sqlite:file:${sqlite.toAbsolutePath()}?mode=ro".toString()).withCloseable { c ->
+                count(c, 'SELECT count(*) FROM run')
+            }
+        }
+        catch( SQLException e ) {
+            return -1
         }
     }
 

@@ -77,7 +77,6 @@ class JoinTest extends Specification {
         final leavesByName = out.items.collectMany { it.leaves() }.collectEntries { [(it.name): it] }
         leavesByName['A.bam'].address == cidA
         leavesByName['A.bam'].size == 100L
-        leavesByName['A.bam'].provider == 'head-node'
         leavesByName['A.bam'].reason == null
         leavesByName['B.bam'].address == cidB
 
@@ -183,5 +182,45 @@ class JoinTest extends Specification {
 
         and: 'the directory publish anomaly is folded into the totals'
         result.anomalies.unresolvable == 1
+    }
+
+    def 'providers maps each provider to its leaf addresses'() {
+        given:
+        final cidA = rawCid(1)
+        final cidB = rawCid(2)
+        final dir = dagCid(3)
+        final session = sessionWith([
+            'cas://lab/aligned/A/A.bam': new CasSession.Publish(new StoreRef(cidA, 'A.bam'), 1L, 's3-copy'),
+            'cas://lab/aligned/B/B.bam': new CasSession.Publish(new StoreRef(cidB, 'B.bam'), 1L, 'fusion-node'),
+            'cas://lab/qc/A/A_qc'      : new CasSession.Publish(new StoreRef(dir, 'A_qc'), 1L, 'head-node'),
+        ], dagCid(9))
+
+        when:
+        final result = Join.join([
+            aligned: [[[sample: 'A'], coord('cas://lab/aligned/A/A.bam')], [[sample: 'B'], coord('cas://lab/aligned/B/B.bam')]],
+            qc     : [[[sample: 'A'], coord('cas://lab/qc/A/A_qc')]],
+        ] as Map<String, Object>, session)
+
+        then:
+        result.providers == ['fusion-node': [cidB], 'head-node': [dir], 's3-copy': [cidA]]
+    }
+
+    def 'the same bytes published by two providers in one run: one item address, the address under both (Review Focus 2)'() {
+        given:
+        final cid = rawCid(7)
+        final session = sessionWith([
+            'cas://lab/a/x.txt': new CasSession.Publish(new StoreRef(cid, 'x.txt'), 5L, 'head-node'),
+            'cas://lab/b/x.txt': new CasSession.Publish(new StoreRef(cid, 'x.txt'), 5L, 's3-copy'),
+        ], dagCid(9))
+
+        when:
+        final result = Join.join([
+            a: [[[id: 1], coord('cas://lab/a/x.txt')]],
+            b: [[[id: 1], coord('cas://lab/b/x.txt')]],
+        ] as Map<String, Object>, session)
+
+        then:
+        result.outputs[0].collection.items == result.outputs[1].collection.items
+        result.providers == ['head-node': [cid], 's3-copy': [cid]]
     }
 }

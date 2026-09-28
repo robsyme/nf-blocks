@@ -17,6 +17,7 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.LocalBlockStore
@@ -48,7 +49,7 @@ class CasFileSystemProviderTest extends Specification {
                 [lineage: [store: [location: 'cas://lab']], cas: [stores: [lab: [location: storeDir.toString()]]]],
                 'cas://lab')
         store = new LocalBlockStore(storeDir, 'lab', true)
-        coords = new CoordinateTree(storeDir.resolve('coords'))
+        coords = new LocalCoordinateTree(storeDir.resolve('coords'))
         session = Mock(Session)
         Global.session = session
         CasSession.bind(session, new CasSession(config, store, coords))
@@ -158,6 +159,31 @@ class CasFileSystemProviderTest extends Specification {
         def sub = manifest.entry('sub')
         sub.mode == ManifestEntry.DIRECTORY
         manifestAt(sub.address).entry('b.txt').mode == ManifestEntry.REGULAR
+    }
+
+    def 'a directory publish addresses every file inside through the run addresser, and providers lists only its leaf, head-node (final review I5)'() {
+        given:
+        def dir = tmp.resolve('work/trio')
+        Files.createDirectories(dir.resolve('sub'))
+        Files.writeString(dir.resolve('a.txt'), 'alpha\n')
+        Files.writeString(dir.resolve('b.txt'), 'beta\n')
+        Files.writeString(dir.resolve('sub/c.txt'), 'gamma\n')
+        def key = 'cas://lab/trio/out'
+        sess().runManifest = store.putDagCbor([kind: 'RunManifest'])
+
+        when:
+        provider.upload(dir, p(key))
+        final robsyme.cas.trace.Join.Result joined = robsyme.cas.trace.Join.join([trio: [[[id: 1], p(key)]]] as Map<String, Object>, sess())
+
+        then: 'every file inside went through the addresser, which counts them for its summary line'
+        sess().addresser.counts == ['head-node': 3]
+
+        and: "the directory leaf's address is its manifest, always head-node"
+        sess().publishFor(key).provider == 'head-node'
+        sess().publishFor(key).ref.cid.isDagCbor()
+
+        and: 'RunCompletion.providers names the leaf alone, never the files inside it'
+        joined.providers == ['head-node': [sess().publishFor(key).ref.cid]]
     }
 
     private DirectoryManifest manifestAt(Cid cid) {
@@ -349,6 +375,69 @@ class CasFileSystemProviderTest extends Specification {
         then: 'the pointer is gone but the block stays'
         !coords.exists('d.txt')
         store.has(cid)
+    }
+
+    // ------------------------------------------------- read-only members (final review I3)
+
+    /** Rebinds the session with a second, read-only member `core` beside the writable `lab`; returns core's root. */
+    private Path withReadOnlyCore() {
+        final Path coreDir = Files.createDirectories(tmp.resolve('core'))
+        final config = CasConfig.from(
+                [lineage: [store: [location: 'cas://lab']],
+                 cas: [stores: [lab: [location: tmp.resolve('store').toString()], core: [location: coreDir.toString()]],
+                       resolve: ['lab', 'core']]],
+                'cas://lab')
+        CasSession.unbind(session)
+        CasSession.bind(session, new CasSession(config, store, coords))
+        return coreDir
+    }
+
+    /** Every file under dir, relative, so a refused write can be shown to have left nothing. */
+    private static List<String> filesUnder(Path dir) {
+        if( !Files.exists(dir) ) return []
+        return Files.walk(dir).withCloseable { s -> s.filter { Files.isRegularFile(it) }.collect { dir.relativize(it).toString() }.sort() } as List<String>
+    }
+
+    def 'a write through a read-only alias is refused naming the writable member: #verb'() {
+        given:
+        final Path coreDir = withReadOnlyCore()
+        final LocalCoordinateTree coreCoords = new LocalCoordinateTree(coreDir.resolve('coords'))
+        coreCoords.write('kept.txt', new StoreRef(Cid.parse('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'), 'kept.txt'))
+        final Path src = sourceFile('work/r.txt', 'r\n')
+        final List<String> before = filesUnder(coreDir)
+
+        when:
+        action.call(provider, src, p(target))
+
+        then:
+        final AccessDeniedException e = thrown()
+        e.message.contains("'core'")
+        e.message.contains("'lab'")
+        filesUnder(coreDir) == before
+        sess().publishFor(target) == null
+
+        where:
+        verb              | target                  | action
+        'upload file'     | 'cas://core/new.txt'    | { CasFileSystemProvider pr, Path s, CasPath t -> pr.upload(s, t) }
+        'upload dir'      | 'cas://core/newdir'     | { CasFileSystemProvider pr, Path s, CasPath t -> pr.upload(s.parent, t) }
+        'createDirectory' | 'cas://core/d'          | { CasFileSystemProvider pr, Path s, CasPath t -> pr.createDirectory(t) }
+        'delete'          | 'cas://core/kept.txt'   | { CasFileSystemProvider pr, Path s, CasPath t -> pr.delete(t) }
+        'deleteIfExists'  | 'cas://core/kept.txt'   | { CasFileSystemProvider pr, Path s, CasPath t -> pr.deleteIfExists(t) }
+        'newOutputStream' | 'cas://core/stream.txt' | { CasFileSystemProvider pr, Path s, CasPath t -> pr.newOutputStream(t).close() }
+    }
+
+    def 'the writable member still takes writes when a read-only member is configured'() {
+        given:
+        withReadOnlyCore()
+
+        when:
+        provider.upload(sourceFile('work/w.txt', 'w\n'), p('cas://lab/w.txt'))
+        provider.createDirectory(p('cas://lab/dir'))
+        provider.delete(p('cas://lab/w.txt'))
+
+        then:
+        notThrown(AccessDeniedException)
+        !coords.exists('w.txt')
     }
 
     // ------------------------------------------------------------------ download

@@ -12,6 +12,8 @@ import nextflow.Session
 import nextflow.dataflow.ChannelNamespace
 import nextflow.exception.AbortRunException
 import nextflow.exception.MissingProcessException
+import nextflow.processor.TaskProcessor
+import nextflow.script.ProcessConfig
 import nextflow.script.ScriptMeta
 import nextflow.script.WorkflowMetadata
 import nextflow.trace.event.TaskEvent
@@ -22,6 +24,8 @@ import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -408,6 +412,84 @@ class CasObserverTest extends Specification {
         thrown(AbortRunException)
     }
 
+    /**
+     * A real ProcessConfig (its own afterScript, or none), since a mocked one
+     * cannot satisfy TaskProcessor.getConfig()'s declared return type. A null
+     * BaseScript defeats ProcessConfig's runtime constructor selection (a null
+     * argument carries no runtime type, so Groovy's
+     * ScriptBytecodeAdapter.selectConstructorAndTransformArguments picks the
+     * (Map) constructor instead of (BaseScript, String), leaving
+     * configProperties null) -- a Stub gives it a real type to match against.
+     */
+    private TaskProcessor process(String name, String afterScript = null) {
+        final ProcessConfig pc = new ProcessConfig(Stub(nextflow.script.BaseScript), name)
+        if( afterScript != null )
+            pc.put('afterScript', afterScript)
+        return Stub(TaskProcessor) {
+            getName() >> name
+            getConfig() >> pc
+        }
+    }
+
+    def 'onProcessCreate warns once, on the console logger, when a process sets its own afterScript and node hashing is enabled'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when: 'created twice, as a process invoked more than once might be'
+        observer.onProcessCreate(process('FOO', 'echo mine'))
+        observer.onProcessCreate(process('FOO', 'echo mine'))
+
+        then:
+        warnings(appender, "process 'FOO' sets its own afterScript") == 1
+    }
+
+    def 'onProcessCreate says nothing when the process\'s afterScript is chained ahead by node hashing'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('BAR', NodeHash.script() + '\necho mine'))
+
+        then:
+        warnings(appender, 'BAR') == 0
+    }
+
+    def 'onProcessCreate says nothing when the process has no afterScript at all (the top-level default applies)'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).nodeHash = true
+        bind(cfg)
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('QUX', NodeHash.script()))
+
+        then:
+        warnings(appender, 'QUX') == 0
+    }
+
+    def 'onProcessCreate says nothing when node hashing is not enabled'() {
+        given:
+        bind(config())
+        final appender = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+
+        when:
+        observer.onProcessCreate(process('BAZ', 'echo mine'))
+
+        then:
+        warnings(appender, 'BAZ') == 0
+    }
+
     private static List<List<Object>> snapshotRows(Path db, String sql) {
         final def c = java.sql.DriverManager.getConnection("jdbc:sqlite:${db}")
         try {
@@ -475,6 +557,60 @@ class CasObserverTest extends Specification {
         then:
         noExceptionThrown()
         blocksOfKind('RunCompletion').size() == 1
+    }
+
+    def 'onFlowCreate aborts when the writable S3 member reports a clock 400 s away (ticket 03 decision 2)'() {
+        given:
+        MemoryS3Ops bucket = new MemoryS3Ops('member')
+        bucket.serverDateMillis = System.currentTimeMillis() - 400_000L
+        Closure<S3Ops> saved = CasSession.s3OpsFactory
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final Map cfg = config()
+        ((Map) ((Map) cfg.cas).stores).lab = [location: 's3://member/cas']
+        ((Map) cfg.cas).tmpDir = tempDir.resolve('t').toString()
+        bind(cfg)
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('400 s ahead of')
+
+        cleanup:
+        CasSession.s3OpsFactory = saved
+    }
+
+    def 'a failed catch-up of the writable member keeps the old snapshot and logs catch_up_failed at info'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
+        Files.createDirectories(snapshot.parent)
+        Files.write(snapshot, 'old'.bytes)
+        final ListAppender<ILoggingEvent> logged = capture()
+        ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = Level.INFO
+        Index failing = Spy(cas.openIndex()) {
+            catchUp(_, _, 'lab', _, _) >> { throw new IOException('the Store Log cannot be listed') }
+        }
+        observer = new CasObserver() {
+            @Override
+            protected Index openIndex() { failing }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        new String(Files.readAllBytes(snapshot)) == 'old'
+        logged.list.any { ILoggingEvent e -> e.level == Level.INFO && e.formattedMessage.contains('(catch_up_failed)') }
+        blocksOfKind('RunCompletion').size() == 1
+
+        cleanup:
+        ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = null
     }
 
     def 'onFlowError warns once with the include line for an untyped script missing it'() {

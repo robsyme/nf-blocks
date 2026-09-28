@@ -25,6 +25,8 @@ class CasConfigScopeTest extends Specification {
         scope.getOption(['resolve']) != null
         scope.getOption(['asserted_by']) != null
         scope.getOption(['pipeline']) != null
+        scope.getOption(['tmpDir']) != null
+        scope.getOption(['nodeHash']) != null
 
         and: 'the nested index scope'
         scope.getOption(['index', 'path']) != null

@@ -1,8 +1,11 @@
 package robsyme.cas.explore
 
+import robsyme.cas.s3.S3PreconditionFailed
+import robsyme.cas.s3.S3WriteOptions
+import robsyme.cas.s3.SdkS3Ops
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider
-import software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient
+import software.amazon.awssdk.http.apache.ApacheHttpClient
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
 import spock.lang.Specification
@@ -23,7 +26,7 @@ class S3MemberFilesTest extends Specification {
             .forcePathStyle(true)
             .region(Region.US_EAST_1)
             .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create('test', 'test')))
-            .httpClientBuilder(UrlConnectionHttpClient.builder())
+            .httpClientBuilder(ApacheHttpClient.builder())
             .build()
         s3.objects['bucket/member/index/v3.sqlite'] = snapshot
         s3.objects["bucket/member/blocks/${CID[-2..-1]}/${CID}".toString()] = [0xa0] as byte[]
@@ -39,7 +42,7 @@ class S3MemberFilesTest extends Specification {
     def 'size, ranged reads and a paged listing under the member prefix'() {
         given:
         s3.pageSize = 2
-        final S3MemberFiles files = new S3MemberFiles(client, 'bucket', 'member/')
+        final S3MemberFiles files = new S3MemberFiles(new SdkS3Ops(client, 'bucket', S3WriteOptions.NONE), 'member/')
 
         when:
         final List<String> logNames = files.list('log')
@@ -56,7 +59,7 @@ class S3MemberFilesTest extends Specification {
 
     def 'an opened object reads only the version it opened: a replaced object fails the read (final review finding 1)'() {
         given:
-        final S3MemberFiles files = new S3MemberFiles(client, 'bucket', 'member/')
+        final S3MemberFiles files = new S3MemberFiles(new SdkS3Ops(client, 'bucket', S3WriteOptions.NONE), 'member/')
         final MemberFiles.Opened opened = files.open('index/v3.sqlite')
         final String tag = opened.tag
 
@@ -65,7 +68,7 @@ class S3MemberFilesTest extends Specification {
         opened.read(0, 100).withCloseable { it.readAllBytes() }
 
         then:
-        thrown(Exception)
+        thrown(S3PreconditionFailed)
         tag == s3.etagOf(snapshot)
         files.open('index/v3.sqlite').tag != tag
     }
@@ -90,7 +93,7 @@ class S3MemberFilesTest extends Specification {
     def 'explore serves an S3 member with Range, end to end'() {
         given:
         final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
-        members.put('priv', new S3MemberFiles(client, 'bucket', 'member/'))
+        members.put('priv', new S3MemberFiles(new SdkS3Ops(client, 'bucket', S3WriteOptions.NONE), 'member/'))
         final ExploreServer server = new ExploreServer(members, 'lab', 'x'.bytes).start(0)
 
         when:

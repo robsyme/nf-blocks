@@ -11,6 +11,8 @@
 //   fromstore  channel.fromStore(run: 'latest', ..., where: [sample: 'B'])
 //   lid        channel.fromPath('lid://<run>/aligned/A/A.bam')
 //   cas        channel.fromPath('cas://<cid>/A.bam')
+//   dir        channel.fromPath('cas://<collection>/<item>/A_qc', type: 'dir'),
+//              an Item Occurrence naming a directory; tier two's T4 only
 //
 // gate.sh discovers the URIs from the store after the producer has run and
 // passes them as --lid and --cas. The Pipeline Identity is fixed by
@@ -44,6 +46,23 @@ process HASH {
     """
 }
 
+// A staged directory, hashed file by file with links followed: one
+// sha256sum line per file, sorted, in `<dir name>.sha256`.
+process HASH_DIR {
+    tag "${source}:${staged.name}"
+
+    input:
+    tuple val(source), path(staged)
+
+    output:
+    tuple val(source), path("${staged.name}.sha256"), emit: sha
+
+    script:
+    """
+    find -L '${staged}' -type f | LC_ALL=C sort | while read -r f; do sha256sum "\$f" 2>/dev/null || shasum -a 256 "\$f"; done > '${staged.name}.sha256'
+    """
+}
+
 workflow {
     main:
     if( !params.lid && !params.cas )
@@ -57,6 +76,11 @@ workflow {
         ? channel.fromPath(params.cas).map { f -> tuple('cas', f) }
         : channel.empty()
 
+    // Tier two T4 only: a directory input, to measure what staging a manifest into S3 does (ticket 15 decision 7).
+    ch_dir = params.dir
+        ? channel.fromPath(params.dir, type: 'dir').map { d -> tuple('dir', d) }
+        : channel.empty()
+
     // The third load-bearing query: aligned outputs where sample == 'B'.
     // Exactly one item must come back, restored to [meta, path].
     ch_store = channel
@@ -65,9 +89,10 @@ workflow {
         .map { meta, bam -> tuple('fromstore', bam) }
 
     HASH(ch_lid.mix(ch_cas, ch_store))
+    HASH_DIR(ch_dir)
 
     publish:
-    hashes = HASH.out.sha
+    hashes = HASH.out.sha.mix(HASH_DIR.out.sha)
 }
 
 output {

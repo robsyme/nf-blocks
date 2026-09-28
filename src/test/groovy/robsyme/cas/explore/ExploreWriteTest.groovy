@@ -5,6 +5,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 import groovy.json.JsonSlurper
+import robsyme.cas.CasConfig
+import robsyme.cas.CasSession
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagJson
@@ -14,6 +16,8 @@ import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.Put
 import robsyme.cas.core.Samplesheet
 import robsyme.cas.core.StoreLog
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -210,6 +214,45 @@ class ExploreWriteTest extends Specification {
         final Map body = (Map) DagJson.decode(response.body)
         body.written == true
         store.has((Cid) body.address)
+    }
+
+    def 'over an S3 writable member the write endpoint puts the Selection and its Store Log entry in the bucket, and serves the block back'() {
+        given:
+        MemoryS3Ops bucket = new MemoryS3Ops('member')
+        Closure<S3Ops> saved = CasSession.s3OpsFactory
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        Map raw = [cas: [stores: [lab: [location: 's3://member/cas']], index: [path: tempDir.resolve('s3-cache.sqlite').toString()],
+                               tmpDir: tempDir.resolve('t').toString()]]
+        final CasConfig config = CasConfig.from(raw, 'cas://lab')
+        final CasSession session = new CasSession(config)
+        final BlockStore writable = session.members()[0]
+        final Cid manifest = writable.putDagCbor(Fixtures.runManifest())
+        final Cid s3Item = writable.putDagCbor(Fixtures.outputItem([[sample: 'A']]))
+        final Cid s3Collection = writable.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', [[s3Item, ['aligned/A']]]))
+        final Index s3Index = session.openIndex()
+        final ExploreServer s3Server = new ExploreServer(
+            ExploreCommand.membersOf(config, { String name -> CasSession.s3OpsFactory.call(raw, name) } as Closure<S3Ops>),
+            'lab', '<!doctype html>'.bytes, session.newPut(s3Index), token).start(0)
+        final byte[] body = ('{"kind":"Selection","members":["cas://' + s3Collection + '/' + s3Item + '"],"derived_from":[]}').getBytes('UTF-8')
+
+        when:
+        final def r = RawHttp.send(s3Server.port, 'POST', '/api/put',
+            good(Origin: "http://127.0.0.1:${s3Server.port}".toString()), body)
+        final Cid selection = (Cid) ((Map) DagJson.decode(r.body)).address
+        final String text = selection.toString()
+        final def served = RawHttp.send(s3Server.port, 'GET', "/m/lab/blocks/${text.substring(text.length() - 2)}/${text}".toString())
+
+        then:
+        r.status == 200
+        bucket.objects.containsKey("cas/blocks/${text.substring(text.length() - 2)}/${text}".toString())
+        bucket.objects.keySet().any { it.startsWith('cas/log/') && it.contains('-selection-') }
+        served.status == 200
+        served.body == bucket.objects["cas/blocks/${text.substring(text.length() - 2)}/${text}".toString()].bytes
+
+        cleanup:
+        s3Server?.stop()
+        s3Index?.close()
+        CasSession.s3OpsFactory = saved
     }
 
     def 'GET /api/samplesheet/<selection>.csv and .json answer the export'() {

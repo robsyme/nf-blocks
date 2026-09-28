@@ -17,6 +17,7 @@ import robsyme.cas.core.Put
 import robsyme.cas.core.PutError
 import robsyme.cas.core.PutResult
 import robsyme.cas.core.Records
+import robsyme.cas.core.SnapshotBase
 import robsyme.cas.explore.ExploreCommand
 
 /**
@@ -112,6 +113,8 @@ class CasCommands {
                 throw new UsageException("--name names a Selection; this request is a ${kind}")
         }
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        // Ticket 03 decision 2: a ClockSkewException reaches run(), which prints it and exits 1.
+        cas.checkClock()
         final Index index = cas.openIndex()
         try {
             final Put builder = cas.newPut(index)
@@ -221,11 +224,16 @@ class CasCommands {
         if( options.positionals )
             throw new UsageException("snapshot takes no arguments, got ${options.positionals}")
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final SnapshotBase base = cas.snapshotBase()
         final Index index = cas.openIndex()
         try {
-            cas.catchUpIndex(index)
-            final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L)
-            out.println("wrote ${result.path} (${result.bytes} bytes, ${result.runs} runs, watermark ${result.watermark ?: 'none'})")
+            final Set<String> failed = cas.catchUpIndex(index)
+            final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed)
+            // Exit 0 either way: the snapshot is derived, and the old one stands.
+            if( result.skipped )
+                out.println("nf-blocks:snapshot: not rewritten: ${result.skipped}")
+            else
+                out.println("wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.bytes} bytes, ${result.runs} runs, watermark ${result.watermark ?: 'none'})")
             return 0
         }
         finally {
