@@ -76,3 +76,9 @@ gate:
 .PHONY: gate-cloud
 gate-cloud:
 	./gate/cloud/cloud.sh "$(GATE_ROOT)"
+
+# Gate tier two (gate/tier2/README.md): the scidev Batch queue, a throwaway bucket,
+# Rob's SSO session. Run after `make gate` with the same GATE_ROOT.
+.PHONY: gate-tier2
+gate-tier2:
+	./gate/tier2/tier2.sh "$(GATE_ROOT)"
