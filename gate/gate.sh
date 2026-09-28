@@ -38,7 +38,8 @@ export NXF_ANSI_LOG=false
 rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/cache" \
        "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt \
        "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite" \
-       "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection" "${GATE_ROOT:?}/selection-typed"
+       "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection" "${GATE_ROOT:?}/selection-typed" \
+       "${GATE_ROOT:?}/seeding.json" "${GATE_ROOT:?}/snapshot-aside.sqlite"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/logs"
 
@@ -169,7 +170,7 @@ published_sources() {
 run "$GATE_ROOT/pipeline-a" cold
 snapshot blocks-after-cold.txt
 
-run "$GATE_ROOT/pipeline-a" again
+run "$GATE_ROOT/pipeline-a" again -c "$REPO/gate/node-hash.config"
 # assertion 2 diffs this against the snapshot above: `again` must add no
 # content block and lose no record, run-log entry, nf record or coordinate.
 snapshot blocks-after-again.txt
@@ -238,6 +239,47 @@ if [[ -f "$GATE_ROOT/consumer/.nextflow.log" ]]; then
     cp "$GATE_ROOT/consumer/.nextflow.log" "$log/nextflow.log"
 fi
 echo "    exit $status  -> $log"
+
+# --------------------------------------------------------------------------
+# Assertion 13: a cold cache seeds from the Index Snapshot (ticket 04 decision 11)
+# --------------------------------------------------------------------------
+
+consumer_cache_delete() {
+    python3 "$REPO/gate/assert.py" "$GATE_ROOT" --delete-consumer-cache
+}
+
+consumer_again() {   # <name>: the consumer, as above, under another run name
+    local name="$1" log="$GATE_ROOT/logs/$1" status=0
+    mkdir -p "$log"
+    echo "--- run $name"
+    ( cd "$GATE_ROOT/consumer" && "$NEXTFLOW" run . -name "$name" "${consumer_args[@]+"${consumer_args[@]}"}" ) \
+        > "$log/stdout.log" 2> "$log/stderr.log" || status=$?
+    echo "$status" > "$log/exit"
+    cp "$GATE_ROOT/consumer/.nextflow.log" "$log/nextflow.log" 2> /dev/null || true
+    echo "    exit $status  -> $log"
+}
+
+python3 "$REPO/gate/assert.py" "$GATE_ROOT" --seeding-before > "$GATE_ROOT/seeding.json"
+consumer_cache_delete
+python3 "$REPO/gate/assert.py" "$GATE_ROOT" --seeding-lock > "$GATE_ROOT/logs/seeding-lock.txt"
+mkdir -p "$GATE_ROOT/logs/consumer-seeded"
+cp "$GATE_ROOT/logs/seeding-lock.txt" "$GATE_ROOT/logs/consumer-seeded/locked"
+# Mode 444 is the r--r--r-- LocalBlockStore writes blocks with, so the browser
+# tiers after this see the blocks exactly as the plugin left them.
+relock() {
+    while IFS= read -r f; do [[ -n "$f" ]] && chmod 444 "$f" 2> /dev/null || true; done < "$GATE_ROOT/logs/consumer-seeded/locked"
+}
+trap relock EXIT
+while IFS= read -r f; do [[ -n "$f" ]] && chmod 000 "$f"; done < "$GATE_ROOT/logs/consumer-seeded/locked"
+consumer_again consumer-seeded
+relock
+trap - EXIT
+
+consumer_cache_delete
+snap="$(ls "$GATE_STORE"/index/v*.sqlite)"
+mv "$snap" "$GATE_ROOT/snapshot-aside.sqlite"
+consumer_again consumer-scan
+mv "$GATE_ROOT/snapshot-aside.sqlite" "$snap"
 
 # --------------------------------------------------------------------------
 echo

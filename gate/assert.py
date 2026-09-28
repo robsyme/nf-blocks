@@ -4,6 +4,9 @@
     python3 gate/assert.py <GATE_ROOT> [--offline]
     python3 gate/assert.py <GATE_ROOT> --refs               # shell vars for gate.sh
     python3 gate/assert.py <GATE_ROOT> <file> --snapshot    # store snapshot
+    python3 gate/assert.py <GATE_ROOT> --seeding-before     # seeding.json for assertion 13
+    python3 gate/assert.py <GATE_ROOT> --delete-consumer-cache
+    python3 gate/assert.py <GATE_ROOT> --seeding-lock       # blocks to lock for consumer-seeded
 
 Every address this file checks is derived here, with hashlib, from the bytes
 the pipeline actually produced in its work directory or from the bytes of a
@@ -17,8 +20,10 @@ reported as SKIP with the spec's own wording, so the list stays complete.
 """
 
 import getpass
+import json
 import os
 import re
+import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -235,8 +240,19 @@ class Gate(object):
         return sorted(out)
 
     def work_dirs(self, launch, name):
+        """Every directory named `name` under <launch>/work, or with `name`
+        None every task directory (work/<2 hex>/<rest of the hash>)."""
         root = os.path.join(self.root, launch, "work")
         out = []
+        if name is None:
+            for shard in _listdir(root):
+                shard_dir = os.path.join(root, shard)
+                if len(shard) != 2 or not os.path.isdir(shard_dir):
+                    continue
+                for task in _listdir(shard_dir):
+                    if os.path.isdir(os.path.join(shard_dir, task)):
+                        out.append(os.path.join(shard_dir, task))
+            return sorted(out)
         for dirpath, dirnames, _filenames in os.walk(root):
             for d in dirnames:
                 if d == name:
@@ -552,14 +568,71 @@ def assert_two(gate):
             "only in again %s" % (sorted(cold_items - again_items)[:5],
                                   sorted(again_items - cold_items)[:5]))
 
+    # Ticket 16: `again` runs with cas.nodeHash = true (gate/node-hash.config),
+    # so its file leaves are addressed from each task's .command.cas and
+    # recorded fusion-node, while cold's were hashed on the head node. The
+    # item addresses above must not care which.
+    cold_rc, again_rc = gate.run("cold").completion or {}, gate.run("again").completion or {}
+    for name, rc in (("cold", cold_rc), ("again", again_rc)):
+        if rc.get("schema") != 2 or "providers" not in rc:
+            problems.append("run %s's RunCompletion is schema %r without providers; "
+                            "ticket 16 moves them there" % (name, rc.get("schema")))
+    cold_p, again_p = _provider_of(cold_rc), _provider_of(again_rc)
+    raw_leaves = {_address_text(leaf.get("address")) for _cid, item in gate.run("again").items(gate)
+                  for leaf in _leaves(item.get("value")) if leaf.get("address") is not None
+                  and cas.cid_codec(_address_text(leaf.get("address"))) == cas.RAW}
+    not_node = sorted(a for a in raw_leaves if "fusion-node" not in again_p.get(a, set()))
+    if not_node:
+        problems.append("run again (cas.nodeHash = true) has %d file leaf address(es) "
+                        "not under fusion-node: %s" % (len(not_node), not_node[:3]))
+    not_head = sorted(a for a in raw_leaves if a in cold_p and "head-node" not in cold_p[a])
+    if not_head:
+        problems.append("run cold has file leaves not under head-node: %s" % not_head[:3])
+    with_provider = [cid for cid, item in gate.run("again").items(gate)
+                     for leaf in _leaves(item.get("value")) if "provider" in leaf]
+    if with_provider:
+        problems.append("%d OutputItem(s) of again still carry a Leaf provider: %s"
+                        % (len(with_provider), with_provider[:3]))
+    for task_dir in gate.work_dirs("pipeline-a", None):
+        if os.path.isfile(os.path.join(task_dir, ".command.cas")):
+            problems.extend(_command_cas_problems(task_dir)[:3])
+
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("%d blocks, %d Store Log entries, %d nf records and %d coords "
                   "pointers survive `again` unchanged; %d raw blocks added 0; "
-                  "%d identical OutputItems"
+                  "%d identical OutputItems; again's %d file leaves came from "
+                  ".command.cas (fusion-node), cold's from the head node, one item "
+                  "address each"
                   % (len(after_again["blocks"]), len(after_again["log"]),
                      len(after_again["nf"]), len(after_again["coords"]),
-                     len(raw_cold), len(cold_items)))
+                     len(raw_cold), len(cold_items), len(raw_leaves)))
+
+
+def _provider_of(completion):
+    """{address text: {provider, ...}} from a RunCompletion's providers."""
+    out = {}
+    for name, links in (completion.get("providers") or {}).items():
+        for link in links:
+            out.setdefault(_address_text(link), set()).add(name)
+    return out
+
+
+def _command_cas_problems(task_dir):
+    """Every .command.cas line must name a file in the task dir that hashes to its digest."""
+    path = os.path.join(task_dir, ".command.cas")
+    problems = []
+    with open(path, encoding="utf-8") as f:
+        for line in f.read().splitlines():
+            digest, name = line[:64], line[66:]
+            full = os.path.join(task_dir, name)
+            if not os.path.isfile(full):
+                problems.append("%s: .command.cas names %s, which is not in the task "
+                                "directory" % (task_dir, name))
+            elif cas.sha256_of_file(full) != digest:
+                problems.append("%s: .command.cas says %s is %s; it hashes to %s"
+                                % (task_dir, name, digest, cas.sha256_of_file(full)))
+    return problems
 
 
 # --------------------------------------------------------------------------
@@ -921,8 +994,7 @@ def _qc_manifest_cid(gate, sample):
 
 
 def _count_manifest(gate, manifest_cid, seen=None):
-    counts = {"regular": 0, "executable": 0, "symlink": 0, "directory": 0,
-              "unresolvable": 0}
+    counts = {"regular": 0, "symlink": 0, "directory": 0, "unresolvable": 0}
     seen = seen if seen is not None else set()
     if manifest_cid in seen:
         return counts
@@ -976,7 +1048,7 @@ def _compare_manifest(gate, manifest_cid, dirpath, label, root, depth=0):
                 problems.append("%s/%s: %s expected %r, manifest says %r"
                                 % (label, name, field, want[field], got.get(field)))
         address = _address_text(got.get("address"))
-        if want["mode"] in ("regular", "executable"):
+        if want["mode"] == "regular":
             if address != want["address"]:
                 problems.append("%s/%s: address expected %s (sha256 of the file), "
                                 "manifest says %s"
@@ -1027,8 +1099,9 @@ def _walk(dirpath, root):
             out[name] = {"mode": "directory", "size": 0, "address": None,
                          "target": None}
         else:
-            mode = "executable" if os.stat(full).st_mode & 0o111 else "regular"
-            out[name] = {"mode": mode, "size": os.path.getsize(full),
+            # A manifest records no execute bit (ticket 15 addendum): every
+            # file is regular, whatever its permission bits.
+            out[name] = {"mode": "regular", "size": os.path.getsize(full),
                          "address": cas.cid_of_file(full), "target": None}
     return out
 
@@ -1303,6 +1376,193 @@ def _find_string(value, needle, path="$"):
 
 
 # --------------------------------------------------------------------------
+# Assertion 13: a cold cache seeds from the Index Snapshot
+# --------------------------------------------------------------------------
+
+@assertion(13, "a cold cache seeds from the Index Snapshot")
+def assert_thirteen(gate):
+    """Ticket 04 decision 11. gate.sh deletes the consumer's cache twice.
+
+    consumer-seeded runs with every RunManifest, RunCompletion and
+    OutputCollection block of the runs in lab's snapshot at mode 000: a
+    catch-up that read one logs "could not be read (<path>)", and one that
+    skipped them without seeding would lose the runs and change the answer.
+    consumer-scan runs with lab's snapshot moved aside: it must scan, warn,
+    and still give the same answer.
+    """
+    with open(os.path.join(gate.root, "seeding.json")) as fh:
+        before = json.load(fh)
+    problems = []
+    baseline = _consumer_hashes_of_run(gate, "consumer")
+    for name in ("consumer-seeded", "consumer-scan"):
+        if gate.exit_code(name) != 0:
+            problems.append("%s exited %s; see logs/%s/" % (name, gate.exit_code(name), name))
+            continue
+        got = _consumer_hashes_of_run(gate, name)
+        if got != baseline:
+            problems.append("%s staged %s, the first consumer %s: the answer changed"
+                            % (name, got, baseline))
+    seeded_log = _read(os.path.join(gate.root, "logs", "consumer-seeded", "nextflow.log"))
+    locked = _read(os.path.join(gate.root, "logs", "consumer-seeded", "locked")).split()
+    denied = _permission_failures(seeded_log, locked)
+    if denied:
+        problems.append("the seeded run read a locked metadata block of a run the "
+                        "snapshot holds: %s" % denied[:2])
+    if "no usable Index Snapshot" in seeded_log:
+        problems.append("the seeded run fell back to the full scan although lab's "
+                        "snapshot was there")
+    scan_out = (_read(os.path.join(gate.root, "logs", "consumer-scan", "stdout.log"))
+                + _read(os.path.join(gate.root, "logs", "consumer-scan", "nextflow.log")))
+    if not ("no usable Index Snapshot" in scan_out and "'lab'" in scan_out
+            and "nf-blocks:snapshot" in scan_out):
+        problems.append("consumer-scan printed no fallback warning naming lab and "
+                        "nf-blocks:snapshot")
+    out_runs = _snapshot_runs(os.path.join(gate.store_out.root, "index", "v3.sqlite"))
+    if out_runs < before["out_runs_before"]:
+        problems.append("store-out's snapshot fell from %d to %d runs"
+                        % (before["out_runs_before"], out_runs))
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, ("with the cache deleted and %d metadata blocks of lab's %d snapshot "
+                  "runs unreadable, the consumer seeded from the snapshot and staged "
+                  "the same bytes; with the snapshot gone too it scanned, warned and "
+                  "staged them again; store-out's snapshot has %d runs"
+                  % (len(locked), before["runs"], out_runs))
+
+
+# How the plugin reports a block it failed to read. Index.groovy's
+# ingestTolerant logs "<kind> <cid> could not be read (<e.message>)"; a
+# RunCompletion read in blockOfKind is caught there instead and logged as
+# "block <cid> could not be decoded as <kind>: <e.message>" (measured on the
+# Gate, 2026-09-28). An AccessDeniedException's message is the path alone.
+_READ_FAILURE_PHRASES = ("could not be read", "could not be decoded as")
+
+
+def _permission_failures(log_text, locked_paths):
+    """Lines where the plugin failed to read one of the locked blocks."""
+    return [line for line in log_text.splitlines()
+            if any(phrase in line for phrase in _READ_FAILURE_PHRASES)
+            and any(p in line for p in locked_paths)]
+
+
+def _read(path):
+    """The text of a file, or "" when it is absent."""
+    if not os.path.isfile(path):
+        return ""
+    with open(path, errors="replace") as fh:
+        return fh.read()
+
+
+def _snapshot_runs(path):
+    """count(*) of an Index Snapshot's run table, read-only; 0 when absent."""
+    if not os.path.isfile(path):
+        return 0
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        return con.execute("SELECT count(*) FROM run").fetchone()[0]
+    finally:
+        con.close()
+
+
+def _snapshot_meta(path):
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        return dict(con.execute("SELECT key, value FROM meta").fetchall())
+    finally:
+        con.close()
+
+
+def _snapshot_completions(path):
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        return sorted(row[0] for row in con.execute("SELECT completion_cid FROM run"))
+    finally:
+        con.close()
+
+
+def _consumer_hashes_of_run(gate, name):
+    """{source: {published file name: sha256 hex}} for one consumer run.
+
+    All three consumer runs publish to the same coordinates, so coords/ holds
+    only the last. This reads run `name`'s own `hashes` OutputCollection in
+    store-out instead: its publish paths give the source, and each item's leaf
+    names the raw block whose text is the sha256sum line.
+    """
+    manifests, by_run = [], {}
+    for cid, _path in gate.store_out.blocks("dagcbor"):
+        block = gate.store_out.read_block(cid)
+        if not isinstance(block, dict):
+            continue
+        if block.get("kind") == "RunManifest" and block.get("run_name") == name:
+            manifests.append(cid)
+        elif block.get("kind") == "RunCompletion" and isinstance(block.get("run"), cas.Cid):
+            by_run.setdefault(block["run"].text, []).append(block)
+    if len(manifests) != 1:
+        raise cas.GateError("expected one RunManifest named %r in %s, found %d"
+                            % (name, gate.store_out.root, len(manifests)))
+    completions = by_run.get(manifests[0], [])
+    if len(completions) != 1:
+        raise cas.GateError("expected one RunCompletion for run %r in %s, found %d"
+                            % (name, gate.store_out.root, len(completions)))
+    out = {}
+    for link in completions[0].get("collections") or []:
+        collection = gate.store_out.read_block(link.text)
+        if collection.get("name") != "hashes":
+            continue
+        items = collection.get("items") or []
+        paths = collection.get("paths") or []
+        for item_link, item_paths in zip(items, paths):
+            if item_link is None:
+                continue
+            item = gate.store_out.read_block(item_link.text)
+            for leaf, publish_path in zip(_leaves(item.get("value")), item_paths or []):
+                if publish_path is None:
+                    continue
+                rel = "/".join(publish_path) if isinstance(publish_path, list) \
+                    else str(publish_path)
+                parts = rel.split("/")
+                text = gate.store_out.read(_address_text(leaf.get("address"))) \
+                    .decode("utf-8", "replace")
+                digest = re.match(r"\s*([0-9a-f]{64})", text)
+                if len(parts) < 3 or parts[0] != "hashes" or not digest:
+                    raise cas.GateError("run %r published %r holding %r, not a "
+                                        "sha256sum line under hashes/"
+                                        % (name, rel, text[:80]))
+                out.setdefault(parts[1], {})[parts[-1]] = digest.group(1)
+    return out
+
+
+def seeding_before(gate):
+    """seeding.json: lab's snapshot watermark, run count and write time, and
+    store-out's snapshot run count, before the two cold-cache consumers."""
+    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    meta = _snapshot_meta(lab)
+    return {"watermark": meta.get("store_log_watermark"),
+            "runs": _snapshot_runs(lab),
+            "written_at": meta.get("snapshot_written_at"),
+            "out_runs_before": _snapshot_runs(
+                os.path.join(gate.store_out.root, "index", "v3.sqlite"))}
+
+
+def delete_consumer_cache(gate):
+    """Remove the consumer's composite index (and its -wal/-shm); its path."""
+    path = cas.Index.locate_for_pipeline(os.path.join(gate.root, "cache"),
+                                         CONSUMER_IDENTITY)
+    for each in (path, path + "-wal", path + "-shm"):
+        if os.path.exists(each):
+            os.remove(each)
+    return path
+
+
+def seeding_lock(gate):
+    """Block paths of every RunManifest, RunCompletion and OutputCollection of
+    the runs lab's snapshot holds, the snapshot's own list of runs at or
+    before its watermark."""
+    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    return gate.store.metadata_blocks_of_runs(_snapshot_completions(lab))
+
+
+# --------------------------------------------------------------------------
 # Out of the Walking Skeleton: reported, never run
 # --------------------------------------------------------------------------
 
@@ -1318,9 +1578,10 @@ NOT_IN_SKELETON = [
      "sweep after deleting a default projection removes exactly that run's "
      "unshared content and none of its metadata."),
     (11, "Fusion node-side addressing",
-     "Under Fusion, published files carry provider `fusion-node`, "
-     "`.command.cas` verifies with `sha256sum -c`, and recorded addresses equal "
-     "hashes the test computes."),
+     "Under Fusion, each published file's address comes from the task node's "
+     "`.command.cas` or from S3's SHA-256 of a server-side copy (`s3-copy`), "
+     "both checked against hashes the test computes; tier two runs it "
+     "(`make gate-tier2`, T2 and T2b)."),
     (12, "cloud executor publish",
      "A cloud-executor publish to `cas://` arrives with lineage records that "
      "reference it; `getBashLib` and `getUploadCmd` are exercised."),
@@ -1377,7 +1638,8 @@ def _shquote(text):
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
-    known = {"--offline", "--refs", "--snapshot"}
+    known = {"--offline", "--refs", "--snapshot", "--seeding-before",
+             "--delete-consumer-cache", "--seeding-lock"}
     if not args or flags - known:
         sys.stderr.write(__doc__)
         return 2
@@ -1397,6 +1659,16 @@ def main(argv):
         return 0
     if "--refs" in flags:
         return emit_refs(gate)
+    if "--seeding-before" in flags:
+        print(json.dumps(seeding_before(gate)))
+        return 0
+    if "--delete-consumer-cache" in flags:
+        print(delete_consumer_cache(gate))
+        return 0
+    if "--seeding-lock" in flags:
+        for path in seeding_lock(gate):
+            print(path)
+        return 0
     if len(args) != 1:
         sys.stderr.write(__doc__)
         return 2
