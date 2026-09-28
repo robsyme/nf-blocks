@@ -101,6 +101,10 @@ class PublishAddresser implements FileAddresser {
             final InputStream in = Files.newInputStream(file)
             try { return writable.putStreaming(in) } finally { in.close() }
         }
+        catch( S3UnremovedCopyException e ) {
+            // Rule 3: bytes that are not the address sit at its block key, where a later HEAD would accept them.
+            throw new AbortRunException("${file}: ${e.message}", e)
+        }
         catch( IOException e ) {
             if( e.message?.contains('cas.tmpDir') )
                 throw new AbortRunException("${file}: ${e.message}; S3 cannot copy it server-side (over ${singleRequestMax} bytes, no node digest), so it passes through cas.tmpDir, which needs ${Files.size(file)} bytes free", e)

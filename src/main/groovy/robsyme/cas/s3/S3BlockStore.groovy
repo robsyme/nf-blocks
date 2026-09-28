@@ -429,14 +429,16 @@ class S3BlockStore implements BlockStore, LoggedStore {
         }
     }
 
-    /** S3 validated and stored a SHA-256 of what it received; it must be the address (silent decision 13). */
+    /**
+     * S3 validated and stored a SHA-256 of what it received; it must be the
+     * address (silent decision 13). A mismatch is deleted; one that cannot be
+     * deleted is an S3UnremovedCopyException naming the key, as for a copy.
+     */
     private void checkDigest(Cid cid, String key, String sha256) {
         if( sha256 == null )
             return
-        if( !Arrays.equals(Base64.decoder.decode(sha256), cid.digest) ) {
-            ops.delete(key)
-            throw new BlockMismatchException(cid, "S3 stored bytes whose SHA-256 is ${sha256}; the source changed while it was read")
-        }
+        if( !Arrays.equals(Base64.decoder.decode(sha256), cid.digest) )
+            throw removeOrRefuse(key, new BlockMismatchException(cid, "S3 stored bytes whose SHA-256 is ${sha256}; the source changed while it was read"))
     }
 
     private void checkWritable() {

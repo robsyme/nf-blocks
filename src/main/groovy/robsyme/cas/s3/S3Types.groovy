@@ -141,15 +141,15 @@ class S3Copied {
 }
 
 /**
- * A server-side copy placed bytes at a block key that nothing confirmed, and
- * they could not be deleted (Task 10): a later HEAD would accept them, so the
- * run must stop and a person must remove the key.
+ * A server-side copy or a PUT placed bytes at a block key that nothing
+ * confirmed, and they could not be deleted (Task 10, final review I2): a later
+ * HEAD would accept them, so the run must stop and a person must remove the key.
  */
 @CompileStatic
 class S3UnremovedCopyException extends IOException {
     final String location
     S3UnremovedCopyException(String location, IOException cause) {
-        super("${cause.message}; the copy at ${location} could not be deleted and must be removed by hand before any run publishes that address".toString(), cause)
+        super("${cause.message}; the object at ${location} could not be deleted and must be removed by hand before any run publishes that address".toString(), cause)
         this.location = location
     }
 }

@@ -274,7 +274,9 @@ continues). The storage class, SSE and requester-pays fields are set by
 block is one `PutObject` with `ChecksumAlgorithm SHA256`, and the
 `ChecksumSHA256` S3 returns must equal the CID digest (a mismatch, a source
 file changed between hash and upload, deletes the object and fails the
-write); above, a multipart upload of `max(64 MiB, ceil(size/10000))` parts,
+write; when the delete is refused, as under the hardening policy below, the
+publish aborts naming the key to remove by hand, as a mismatched copy does,
+§8); above, a multipart upload of `max(64 MiB, ceil(size/10000))` parts,
 each a file-channel range through `RequestBody.fromContentProvider` with its
 own SHA-256, completed with `If-None-Match: *` and aborted on any failure.
 The whole-object SHA-256 S3 returns for a multipart upload is composite

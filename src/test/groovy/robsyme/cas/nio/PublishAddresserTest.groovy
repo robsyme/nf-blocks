@@ -259,4 +259,29 @@ class PublishAddresserTest extends Specification {
         s3.calls.count { it == "HEAD ${member.key(said)}".toString() } == 1
         a.counts.isEmpty()
     }
+
+    def 'a head-node PUT whose SHA-256 disagrees and cannot be deleted aborts naming the key (final review I2)'() {
+        given:
+        final robsyme.cas.s3.MemoryS3Ops s3 = new robsyme.cas.s3.MemoryS3Ops('member') {
+            @Override robsyme.cas.s3.S3Written put(String key, robsyme.cas.s3.S3Body body, robsyme.cas.s3.S3PutOptions o) {
+                final robsyme.cas.s3.S3Written w = super.put(key, body, o)
+                return new robsyme.cas.s3.S3Written(w.status, w.etag, Base64.encoder.encodeToString(new byte[32]))
+            }
+            @Override void delete(String key) { throw new IllegalStateException('Access Denied (403) by bucket policy') }
+        }
+        final robsyme.cas.s3.S3BlockStore member = new robsyme.cas.s3.S3BlockStore(s3, 'cas/', 'lab', true, tmp.resolve('spool'))
+        final Path f = taskFile('A.bam', 'bam-A')
+        final Cid cid = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest('bam-A'.bytes))
+        final PublishAddresser a = new PublishAddresser(member, member, false, tmp.resolve('work'))
+
+        when:
+        a.address(f, 5L)
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('A.bam')
+        e.message.contains(member.key(cid))
+        e.cause instanceof robsyme.cas.s3.S3UnremovedCopyException
+        a.counts.isEmpty()
+    }
 }

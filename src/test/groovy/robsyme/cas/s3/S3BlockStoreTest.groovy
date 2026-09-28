@@ -167,6 +167,31 @@ class S3BlockStoreTest extends Specification {
         lying.objects.isEmpty()
     }
 
+    def 'a ChecksumSHA256 mismatch whose delete is refused names the key it leaves, the mismatch its cause (final review I2)'() {
+        given:
+        final MemoryS3Ops guarded = new MemoryS3Ops('member') {
+            @Override S3Written put(String key, S3Body body, S3PutOptions o) {
+                final S3Written w = super.put(key, body, o)
+                return new S3Written(w.status, w.etag, Base64.encoder.encodeToString(new byte[32]))
+            }
+            @Override void delete(String key) { throw new IllegalStateException('Access Denied (403) by bucket policy') }
+        }
+        final S3BlockStore b = new S3BlockStore(guarded, 'cas/', 'lab', true, tmp)
+        final Path f = file('a', 'abc'.bytes)
+        final Cid cid = Hashing.hashRaw(Files.newInputStream(f), new byte[1024])
+
+        when:
+        b.putFile(f)
+
+        then:
+        final S3UnremovedCopyException e = thrown()
+        e.location == "memory://member/${b.key(cid)}"
+        e.message.contains(b.key(cid))
+        e.cause instanceof BlockMismatchException
+        e.suppressed*.message == ['Access Denied (403) by bucket policy']
+        guarded.objects.containsKey(b.key(cid))
+    }
+
     def 'above the single-request limit: multipart from file ranges, each part hashed, completed conditionally'() {
         given:
         final S3BlockStore b = store('cas/', 1L << 20)
