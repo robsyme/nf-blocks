@@ -267,9 +267,13 @@ class DirectoryManifestBuilder {
             return remember(dir, parsed.names)
         }
 
+        /** A sidecar that lists itself is still the sidecar, never an entry (Task 3 minor). */
         private Set<String> remember(Path dir, Set<String> names) {
-            linksByDir.put(keyOf(dir), names)
-            return names
+            final Set<String> links = names.contains(FusionLinks.SIDECAR)
+                ? names.findAll { String n -> n != FusionLinks.SIDECAR } as Set<String>
+                : names
+            linksByDir.put(keyOf(dir), links)
+            return links
         }
 
         /** Whether p is a decoded link, reading its directory's sidecar once. */
@@ -281,6 +285,8 @@ class DirectoryManifestBuilder {
                 final Path sidecar = parent.resolve(FusionLinks.SIDECAR)
                 final FusionLinks.Parsed parsed = Files.isRegularFile(sidecar)
                     ? FusionLinks.parse(readAtMost(sidecar, FusionLinks.MAX_SIDECAR_BYTES + 1)) : null
+                if( parsed != null && !parsed.ok )
+                    log.debug("${sidecar}: ${parsed.problem}; reached only through a link, so its names are read as objects")
                 names = remember(parent, parsed?.ok ? parsed.names : Collections.<String> emptySet())
             }
             return names.contains(p.fileName.toString())
@@ -300,17 +306,51 @@ class DirectoryManifestBuilder {
             return followed(name, found, depth, ancestors)
         }
 
-        /** The non-link a target leads to, or null when it is missing, cyclic or not resolvable by key. */
+        /**
+         * The non-link a target leads to, or null when it is missing, cyclic or
+         * not resolvable by key. The target is resolved segment by segment, as
+         * POSIX does: a segment that is a decoded link is chased before the
+         * next one, so `dirlink/deep.txt` goes through `dirlink` and a later
+         * `..` climbs from where the link landed (final review I6). An
+         * absolute `/fusion/s3` target inside the tree is walked the same way
+         * from the root; one outside it is taken as its key.
+         */
         private Path chase(Path fromDir, String target, Set<String> seen, int hops) {
             if( hops >= MAX_DEPTH ) return null
-            final Path p = target.startsWith('/') ? fusionPath(target) : fromDir.resolve(target).normalize()
+            if( !target.startsWith('/') )
+                return walkTarget(fromDir, target.split('/') as List<String>, seen, hops)
+            final Path p = fusionPath(target)
             if( p == null ) return null
-            if( isLink(p) ) {
-                if( !seen.add(keyOf(p)) ) return null
-                final String next = FusionLinks.target(readAtMost(p, FusionLinks.MAX_TARGET_BYTES + 1))
-                return next == null ? null : chase(p.parent, next, seen, hops + 1)
+            final String key = keyOf(p)
+            if( key.startsWith(rootKey + '/') )
+                return walkTarget(root, key.substring(rootKey.length() + 1).split('/') as List<String>, seen, hops)
+            if( key == rootKey )
+                return root
+            return walkTarget(p.parent, [p.fileName.toString()], seen, hops)
+        }
+
+        private Path walkTarget(Path start, List<String> segments, Set<String> seen, int hops) {
+            Path here = start
+            for( String segment : segments ) {
+                if( !segment || segment == '.' )
+                    continue
+                if( segment == '..' ) {
+                    here = here.parent
+                    if( here == null ) return null
+                    continue
+                }
+                here = here.resolve(segment)
+                if( isLink(here) ) {
+                    // Each hop carries its own copy, so one link met twice on separate hops is not a cycle.
+                    final Set<String> chain = new HashSet<String>(seen)
+                    if( !chain.add(keyOf(here)) ) return null
+                    final String next = FusionLinks.target(readAtMost(here, FusionLinks.MAX_TARGET_BYTES + 1))
+                    if( next == null ) return null
+                    here = chase(here.parent, next, chain, hops + 1)
+                    if( here == null ) return null
+                }
             }
-            return Files.exists(p) ? p : null
+            return Files.exists(here) ? here : null
         }
 
         /** `/fusion/s3/<bucket>/<key>` is `s3://<bucket>/<key>`; any other absolute target has no key. */

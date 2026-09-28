@@ -2127,9 +2127,12 @@ holds the reasoning, and the execution ledger is
     with no object is `unresolvable`. A decoded link is chased to the end of
     its chain, so a dangling chain or a cycle is `unresolvable` as the local
     walk records it (ticket 15 decisions 1 and 3 disagree here; Rob to
-    confirm, pre-flight F31). A target whose path passes through a decoded
-    directory link is not yet resolved through it, so it records
-    `unresolvable` where a local run gives `symlink` (Task 3 review, open).
+    confirm, pre-flight F31). A target is resolved segment by segment, as
+    POSIX does: a segment that is a decoded link is chased before the next,
+    and a later `..` climbs from where it landed, so a target through a
+    decoded directory link records `symlink` as a local run does (Task 3
+    ruling, fixed in the final wave, I6). A sidecar that lists its own name
+    does not enter the manifest.
 24. Tier two's details are in `gate/tier2/README.md`. T4 passes the directory
     as an Item Occurrence `cas://<collection>/<item>/A_qc` rather than
     `cas://<manifest>`, because staging a bare manifest URI had no file name

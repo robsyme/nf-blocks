@@ -109,6 +109,73 @@ class ObjectStoreManifestTest extends Specification {
         r.anomalies.unresolvable == 1
     }
 
+    def 'a link whose target passes through a decoded directory link is a symlink, as a local run records it (final review I6)'() {
+        given: 'via.txt -> dirlink/deep.txt, with dirlink -> nested/deeper, and a chain through two directory links'
+        final Path fusion = fusionTree()
+        obj('w/d/via.txt', 'dirlink/deep.txt')
+        obj('w/d/hop', 'dirlink')
+        obj('w/d/twice.txt', 'hop/deep.txt')
+        obj('w/d/back.txt', 'dirlink/../up.txt')
+        obj('w/d/.fusion.symlinks', 'rel.txt\ndangling.txt\ndirlink\nescape.txt\nvia.txt\nhop\ntwice.txt\nback.txt')
+        final Path local = localTree()
+        Files.createSymbolicLink(local.resolve('via.txt'), Path.of('dirlink/deep.txt'))
+        Files.createSymbolicLink(local.resolve('hop'), Path.of('dirlink'))
+        Files.createSymbolicLink(local.resolve('twice.txt'), Path.of('hop/deep.txt'))
+        Files.createSymbolicLink(local.resolve('back.txt'), Path.of('dirlink/../up.txt'))
+
+        when:
+        final def f = new DirectoryManifestBuilder(store).build(fusion)
+        final def l = new DirectoryManifestBuilder(store).build(local)
+        final DirectoryManifest m = read(f.cid)
+
+        then: 'back.txt climbs from the physical nested/deeper to nested/up.txt, itself a link to ../target.txt'
+        m.entry('via.txt').mode == 'symlink' && m.entry('via.txt').target == 'dirlink/deep.txt'
+        m.entry('twice.txt').mode == 'symlink' && m.entry('twice.txt').target == 'hop/deep.txt'
+        m.entry('back.txt').mode == 'symlink' && m.entry('back.txt').target == 'dirlink/../up.txt'
+        f.cid == l.cid
+        f.anomalies == l.anomalies
+    }
+
+    def 'an escaping link to a directory is followed and stored as that directory (final review I6)'() {
+        given:
+        obj('ext/data/f.txt', 'f\n')
+        obj('w/d/keep.txt', 'k\n')
+        obj('w/d/outdir', '../../ext/data')
+        obj('w/d/.fusion.symlinks', 'outdir')
+        final Path local = Files.createDirectories(work.resolve('local/w/d'))
+        Files.createDirectories(work.resolve('local/ext/data'))
+        Files.writeString(work.resolve('local/ext/data/f.txt'), 'f\n')
+        Files.writeString(local.resolve('keep.txt'), 'k\n')
+        Files.createSymbolicLink(local.resolve('outdir'), Path.of('../../ext/data'))
+
+        when:
+        final def f = new DirectoryManifestBuilder(store).build(zip.getPath('/w/d'))
+        final def l = new DirectoryManifestBuilder(store).build(local)
+        final DirectoryManifest m = read(f.cid)
+
+        then:
+        m.entry('outdir').mode == 'directory'
+        read(m.entry('outdir').address).entry('f.txt').mode == 'regular'
+        f.cid == l.cid
+        f.anomalies.unresolvable == 0
+    }
+
+    def 'a sidecar that lists itself does not enter the manifest (Task 3 minor)'() {
+        given:
+        obj('w/d/target.txt', 't\n')
+        obj('w/d/rel.txt', 'target.txt')
+        obj('w/d/.fusion.symlinks', 'rel.txt\n.fusion.symlinks')
+
+        when:
+        final def r = new DirectoryManifestBuilder(store).build(zip.getPath('/w/d'))
+        final DirectoryManifest m = read(r.cid)
+
+        then:
+        m.entry('.fusion.symlinks') == null
+        m.entry('rel.txt').mode == 'symlink'
+        r.anomalies.unresolvable == 0
+    }
+
     def 'a chain is followed, a cycle is unresolvable and counted (Review Focus 4)'() {
         given:
         obj('w/d/target.txt', 't\n')
