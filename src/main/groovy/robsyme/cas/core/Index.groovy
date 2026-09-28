@@ -482,6 +482,16 @@ class Index implements Closeable {
         'INSERT INTO main.claim SELECT * FROM snap.claim WHERE claim_cid IN seed_claim',
         'INSERT INTO main.claim_supersedes SELECT * FROM snap.claim_supersedes WHERE claim_cid IN seed_claim',
         'INSERT OR IGNORE INTO main.log_entry SELECT cid, kind, :member, written_at FROM snap.log_entry',
+        // A logged block the snapshot's writer could not read left it only
+        // missing(NULL, cid), which the snapshot does not carry. Without this
+        // row the seeded watermark is past the entry and retryMissingLogged
+        // never ingests the block once it arrives; a full scan would.
+        '''INSERT INTO main.missing(have_cid, needed_cid) SELECT DISTINCT NULL, cid FROM snap.log_entry
+             WHERE kind IN ('run', 'selection', 'claim')
+               AND cid NOT IN (SELECT completion_cid FROM main.run)
+               AND cid NOT IN (SELECT collection_cid FROM main.collection)
+               AND cid NOT IN (SELECT claim_cid FROM main.claim)
+               AND cid NOT IN (SELECT needed_cid FROM main.missing WHERE have_cid IS NULL)''',
     ]
 
     /**
