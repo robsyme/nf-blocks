@@ -1,6 +1,7 @@
 package robsyme.cas.core
 
 import java.nio.file.DirectoryStream
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.NotDirectoryException
 import java.nio.file.Path
@@ -8,18 +9,19 @@ import java.nio.file.Paths
 import java.nio.file.attribute.BasicFileAttributes
 
 import groovy.transform.CompileStatic
+import groovy.util.logging.Slf4j
 
 /**
- * Walks a directory on the default filesystem into a DirectoryManifest
- * (DESIGN.md §6, §8). Nextflow hands a published directory to
- * {@code upload()} once and does not recurse, so this is the only thing that
- * ever sees inside a published tree.
+ * Walks a directory into a DirectoryManifest (DESIGN.md §6, §8), on local
+ * disk or in an object store (see {@link ObjectWalk}). Nextflow hands a
+ * published directory to {@code upload()} once and does not recurse, so this
+ * is the only thing that ever sees inside a published tree.
  *
- * Every regular file is streamed into the store through
- * {@link BlockStore#putStreaming}; nothing is ever read into memory. Manifests
- * are built bottom-up, so a subdirectory's address exists before its parent's
- * entry mentions it, and a manifest is never written referring to a block that
- * is not there.
+ * Every regular file is addressed through the {@link FileAddresser}, which
+ * streams it into the store or finds it already there; nothing is ever read
+ * into memory. Manifests are built bottom-up, so a subdirectory's address
+ * exists before its parent's entry mentions it, and a manifest is never
+ * written referring to a block that is not there.
  *
  * Symlinks follow DESIGN.md §6: a relative target that resolves inside the
  * tree stays a link, anything else is followed and stored as what it points
@@ -29,6 +31,7 @@ import groovy.transform.CompileStatic
  * Dangling links are counted, never dropped and never fatal: real tools emit
  * them.
  */
+@Slf4j
 @CompileStatic
 class DirectoryManifestBuilder {
 
@@ -39,10 +42,13 @@ class DirectoryManifestBuilder {
     static class Result {
         final Cid cid
         final Anomalies anomalies
+        /** Each provider the addresser returned for a file in the tree, to those files' addresses. */
+        final Map<String, List<Cid>> providers
 
-        Result(Cid cid, Anomalies anomalies) {
+        Result(Cid cid, Anomalies anomalies, Map<String, List<Cid>> providers) {
             this.cid = cid
             this.anomalies = anomalies
+            this.providers = providers
         }
 
         @Override
@@ -50,9 +56,19 @@ class DirectoryManifestBuilder {
     }
 
     private final BlockStore store
+    private final FileAddresser addresser
+    private final Closure<Path> objectPath
+    /** The providers of the build in progress; one builder runs one build at a time. */
+    private final Map<String, TreeMap<String, Cid>> tally = new TreeMap<String, TreeMap<String, Cid>>()
 
     DirectoryManifestBuilder(BlockStore store) {
+        this(store, new HeadNodeAddresser(store), null)
+    }
+
+    DirectoryManifestBuilder(BlockStore store, FileAddresser addresser, Closure<Path> objectPath) {
         this.store = store
+        this.addresser = addresser
+        this.objectPath = objectPath
     }
 
     /**
@@ -62,11 +78,50 @@ class DirectoryManifestBuilder {
     Result build(Path directory) {
         if( !Files.isDirectory(directory) )
             throw new NotDirectoryException(directory.toString())
-        final Path root = directory.toRealPath()
+        tally.clear()
         final int[] unresolvable = new int[1]
-        final Cid cid = walk(root, root, 1, new LinkedHashSet<Path>([root]), unresolvable)
-        return new Result(cid, Anomalies.unresolvable(unresolvable[0]))
+        final Cid cid
+        if( directory.fileSystem == FileSystems.default ) {
+            final Path root = directory.toRealPath()
+            cid = walk(root, root, 1, new LinkedHashSet<Path>([root]), unresolvable)
+        }
+        else {
+            final Path root = realOf(directory)
+            cid = new ObjectWalk(root, unresolvable).walk(root, 1, new LinkedHashSet<String>([keyOf(root)]))
+        }
+        final Map<String, List<Cid>> providers = new TreeMap<String, List<Cid>>()
+        tally.each { String p, TreeMap<String, Cid> cids -> providers.put(p, Collections.unmodifiableList(new ArrayList<Cid>(cids.values()))) }
+        return new Result(cid, Anomalies.unresolvable(unresolvable[0]), Collections.unmodifiableMap(providers))
     }
+
+    /**
+     * Every file inside the tree is addressed here, in both walks, so the
+     * result can say which provider supplied each address (ticket 16 decision 1:
+     * RunCompletion.providers covers every address the run published).
+     */
+    private Cid addressOf(Path file, long size) {
+        final Addressed a = addresser.address(file, size)
+        tally.computeIfAbsent(a.provider, { String k -> new TreeMap<String, Cid>() }).put(a.cid.toString(), a.cid)
+        return a.cid
+    }
+
+    /** toRealPath where the provider has it; an object store has no links to resolve (ticket 05). */
+    static Path realOf(Path p) {
+        try {
+            return p.toRealPath()
+        }
+        catch( UnsupportedOperationException e ) {
+            return p.toAbsolutePath().normalize()
+        }
+    }
+
+    /**
+     * An object's key as the walk compares it: the path's absolute, normalized
+     * string form. Not realOf: an object store has no links to resolve, and a
+     * provider that does support toRealPath (the JDK's zip filesystem) throws
+     * for a key with no object, which a dangling or escaping target names.
+     */
+    private static String keyOf(Path p) { p.toAbsolutePath().normalize().toString() }
 
     /**
      * @param dir       the directory being walked, already a real path
@@ -115,7 +170,7 @@ class DirectoryManifestBuilder {
                                        LinkedHashSet<Path> ancestors, int[] unresolvable, String linkTarget) {
         final BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes)
         if( attrs.isDirectory() ) {
-            final Path real = path.toRealPath()
+            final Path real = realOf(path)
             if( ancestors.contains(real) ) {
                 // A link back into the tree we are already inside. Only an
                 // absolute or escaping link reaches here, so its target is
@@ -132,19 +187,8 @@ class DirectoryManifestBuilder {
             unresolvable[0]++
             return ManifestEntry.unresolvable(name, portableTarget(path, root, linkTarget))
         }
-        final Cid address = putFile(path)
+        final Cid address = addressOf(path, attrs.size())
         return ManifestEntry.regular(name, address, attrs.size())
-    }
-
-    private Cid putFile(Path file) {
-        InputStream input = null
-        try {
-            input = Files.newInputStream(file)
-            return store.putStreaming(input)
-        }
-        finally {
-            input?.close()
-        }
     }
 
     /**
@@ -169,11 +213,150 @@ class DirectoryManifestBuilder {
      */
     private static boolean resolvesInside(Path link, Path root) {
         try {
-            return link.toRealPath().startsWith(root)
+            return realOf(link).startsWith(root)
         }
         catch( IOException e ) {
             return false
         }
     }
 
+    /**
+     * The walk of a directory in an object store (ticket 15). Keys are compared
+     * as the paths' string forms, which are absolute on every object store
+     * provider nf-amazon and the JDK's zip provider have. A directory holding
+     * a parseable `.fusion.symlinks` has its listed names decoded as links; the
+     * sidecar never enters the manifest. Every file is regular: an object has
+     * no execute bit (nf-amazon's checkAccess(EXECUTE) always throws).
+     */
+    private class ObjectWalk {
+        final Path root
+        final String rootKey
+        final int[] unresolvable
+        final Map<String, Set<String>> linksByDir = new HashMap<String, Set<String>>()
+
+        ObjectWalk(Path root, int[] unresolvable) {
+            this.root = root
+            this.rootKey = keyOf(root)
+            this.unresolvable = unresolvable
+        }
+
+        Cid walk(Path dir, int depth, LinkedHashSet<String> ancestors) {
+            if( depth > MAX_DEPTH )
+                throw new IOException("directory tree is deeper than $MAX_DEPTH levels at $dir")
+            final Map<String, Path> children = new TreeMap<String, Path>()
+            Files.newDirectoryStream(dir).withCloseable { stream ->
+                for( Path child : stream ) children.put(child.fileName.toString().replaceAll('/+$', ''), child)
+            }
+            final Set<String> links = linksIn(dir, children)
+            final List<ManifestEntry> entries = new ArrayList<ManifestEntry>()
+            for( String name : links )
+                if( !children.containsKey(name) )
+                    entries.add(unresolvable(name, null))
+            for( Map.Entry<String, Path> e : children.entrySet() ) {
+                if( links.contains(e.key) )
+                    entries.add(linkEntry(dir, e.key, e.value, depth, ancestors))
+                else
+                    entries.add(content(e.key, e.value, depth, ancestors))
+            }
+            return store.putDagCbor(new DirectoryManifest(entries).toCbor())
+        }
+
+        /** The decoded link names of a directory being walked; a parsed sidecar leaves `children`. */
+        private Set<String> linksIn(Path dir, Map<String, Path> children) {
+            final Path sidecar = children.get(FusionLinks.SIDECAR)
+            if( sidecar == null || Files.isDirectory(sidecar) )
+                return remember(dir, Collections.<String> emptySet())
+            final FusionLinks.Parsed parsed = FusionLinks.parse(readAtMost(sidecar, FusionLinks.MAX_SIDECAR_BYTES + 1))
+            if( !parsed.ok ) {
+                unresolvable[0]++
+                log.warn("${sidecar}: ${parsed.problem}; the directory is recorded as its objects, links as files")
+                return remember(dir, Collections.<String> emptySet())
+            }
+            children.remove(FusionLinks.SIDECAR)
+            return remember(dir, parsed.names)
+        }
+
+        private Set<String> remember(Path dir, Set<String> names) {
+            linksByDir.put(keyOf(dir), names)
+            return names
+        }
+
+        /** Whether p is a decoded link, reading its directory's sidecar once. */
+        private boolean isLink(Path p) {
+            final Path parent = p.parent
+            if( parent == null ) return false
+            Set<String> names = linksByDir.get(keyOf(parent))
+            if( names == null ) {
+                final Path sidecar = parent.resolve(FusionLinks.SIDECAR)
+                final FusionLinks.Parsed parsed = Files.isRegularFile(sidecar)
+                    ? FusionLinks.parse(readAtMost(sidecar, FusionLinks.MAX_SIDECAR_BYTES + 1)) : null
+                names = remember(parent, parsed?.ok ? parsed.names : Collections.<String> emptySet())
+            }
+            return names.contains(p.fileName.toString())
+        }
+
+        private ManifestEntry linkEntry(Path dir, String name, Path child, int depth, LinkedHashSet<String> ancestors) {
+            final String target = Files.isDirectory(child) ? null : FusionLinks.target(readAtMost(child, FusionLinks.MAX_TARGET_BYTES + 1))
+            if( target == null )
+                return unresolvable(name, Files.isDirectory(child) ? null : Records.REDACTED_LOCATION)
+            final boolean absolute = target.startsWith('/')
+            final boolean textInTree = !absolute && within(dir.resolve(target).normalize())
+            final Path found = chase(dir, target, new HashSet<String>([keyOf(child)]), 0)
+            if( found == null )
+                return unresolvable(name, textInTree ? target : Records.REDACTED_LOCATION)
+            if( !absolute && within(found) )
+                return ManifestEntry.symlink(name, target)
+            return followed(name, found, depth, ancestors)
+        }
+
+        /** The non-link a target leads to, or null when it is missing, cyclic or not resolvable by key. */
+        private Path chase(Path fromDir, String target, Set<String> seen, int hops) {
+            if( hops >= MAX_DEPTH ) return null
+            final Path p = target.startsWith('/') ? fusionPath(target) : fromDir.resolve(target).normalize()
+            if( p == null ) return null
+            if( isLink(p) ) {
+                if( !seen.add(keyOf(p)) ) return null
+                final String next = FusionLinks.target(readAtMost(p, FusionLinks.MAX_TARGET_BYTES + 1))
+                return next == null ? null : chase(p.parent, next, seen, hops + 1)
+            }
+            return Files.exists(p) ? p : null
+        }
+
+        /** `/fusion/s3/<bucket>/<key>` is `s3://<bucket>/<key>`; any other absolute target has no key. */
+        private Path fusionPath(String target) {
+            final java.util.regex.Matcher m = target =~ /^\/fusion\/s3\/([^\/]+)\/(.+)$/
+            return m.matches() && objectPath != null ? objectPath.call("s3://${m.group(1)}/${m.group(2)}".toString()) : null
+        }
+
+        private boolean within(Path p) {
+            final String key = keyOf(p)
+            return key == rootKey || key.startsWith(rootKey + '/')
+        }
+
+        private ManifestEntry followed(String name, Path p, int depth, LinkedHashSet<String> ancestors) {
+            if( Files.isDirectory(p) && ancestors.contains(keyOf(p)) )
+                return unresolvable(name, Records.REDACTED_LOCATION)
+            return content(name, p, depth, ancestors)
+        }
+
+        private ManifestEntry content(String name, Path p, int depth, LinkedHashSet<String> ancestors) {
+            final BasicFileAttributes attrs = Files.readAttributes(p, BasicFileAttributes)
+            if( attrs.isDirectory() ) {
+                final LinkedHashSet<String> deeper = new LinkedHashSet<String>(ancestors)
+                deeper.add(keyOf(p))
+                return ManifestEntry.directory(name, walk(p, depth + 1, deeper))
+            }
+            return ManifestEntry.regular(name, addressOf(p, attrs.size()), attrs.size())
+        }
+
+        private ManifestEntry unresolvable(String name, String target) {
+            unresolvable[0]++
+            return ManifestEntry.unresolvable(name, target)
+        }
+    }
+
+    /** At most max bytes of a small object: a sidecar or a link body, never file content. */
+    private static byte[] readAtMost(Path p, int max) {
+        Files.newInputStream(p).withCloseable { InputStream in -> in.readNBytes(max) }
+    }
 }
