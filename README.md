@@ -129,9 +129,10 @@ cas {
 ```
 
 The head node needs scratch disk. An output whose bytes the head node must
-read from S3 (over 5 GiB, with no node digest) is spooled to `cas.tmpDir`
-while it is hashed, then uploaded, so `cas.tmpDir` needs room for the
-largest such output. A full `cas.tmpDir` stops the run with a message naming
+read from S3 is spooled to `cas.tmpDir` while it is hashed, then uploaded,
+so `cas.tmpDir` needs room for the largest such output. That is an output
+over 5 GiB with no node digest, and also any S3-sourced output, whatever its
+size, whose server-side copy failed and fell back to the head-node read. A full `cas.tmpDir` stops the run with a message naming
 it and the bytes needed.
 
 Blocks are written with `aws.client.storageClass`, `storageEncryption`,
@@ -179,7 +180,9 @@ placeholders):
 That policy has two costs. AWS documents that a bucket enforcing
 conditional writes refuses `CopyObject` into the enforced prefix, so every
 server-side copy into `blocks/` fails and the head node reads the bytes
-instead (untested). And when a copy's SHA-256 disagrees with the task
+instead (untested), so every S3-sourced output then passes through the head
+node and spools through `cas.tmpDir`, which needs room for the largest of
+them. And when a copy's SHA-256 disagrees with the task
 node's digest, nf-blocks cannot delete the wrong object, so the run stops
 naming the key to remove with the sweep role.
 

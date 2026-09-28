@@ -155,9 +155,12 @@ cas {
   when the writable member is on S3.
 - `cas.tmpDir` holds a stream of unknown length on its way to an S3 member
   (`putStreaming` spools while hashing, rule 2): an S3 member needs scratch
-  disk the size of the largest such output (in practice an object over 5 GiB
-  published from S3 without a node digest). The Index Snapshot is built there
-  too before it is uploaded (§15).
+  disk the size of the largest such output. That is an object over 5 GiB
+  published from S3 without a node digest, and also any S3-sourced output,
+  at any size, whose server-side copy failed and fell back to the head-node
+  read (§8); under the optional hardening bucket policy of §5 every
+  S3-to-S3 copy fails, so every S3-sourced output spools. The Index
+  Snapshot is built there too before it is uploaded (§15).
 - `cas.nodeHash` (Boolean; default `fusion.enabled`) turns on node-side
   hashing (§11): the `afterScript` default and the `.command.cas` read. Any
   value other than `true` or `false` is refused.
@@ -1913,8 +1916,9 @@ included) pass, `dependencyCheck` green, `webTest` 181 of 181. `make gate` on
 a fresh `GATE_ROOT`: lineage 12 PASS, 0 FAIL, 6 SKIP; browser tier A 5/5;
 tier B 12/12; the Gate's own unit tests 284 OK. Tier two's unit tests 31 OK.
 Not yet run, for Rob (they need his SSO session): `make gate-cloud`
-(A6-A7), `make gate-tier2` (T1-T6, T2b), and one `explore` against a
-writable S3 member in a bucket he names.*
+(A6-A7), `make gate-tier2` (T1-T6, T2b), one `explore` against a
+writable S3 member in a bucket he names, and, at release, a clean-machine
+install from the registry confirming nf-amazon is fetched (Task 1 ruling).*
 
 Plan `docs/plans/2026-09-27-cloud-milestone-4.md`, from the map
 `../.scratch/post-gate/map.md`; each ticket's `## Answer` (and addendum)
