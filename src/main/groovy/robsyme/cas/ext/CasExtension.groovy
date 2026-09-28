@@ -8,6 +8,7 @@ import nextflow.Session
 import nextflow.extension.CH
 import nextflow.plugin.extension.Factory
 import nextflow.plugin.extension.PluginExtensionPoint
+import nextflow.script.dsl.Description
 import nextflow.util.RecordMap
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
@@ -54,6 +55,7 @@ class CasExtension extends PluginExtensionPoint {
     }
 
     @Factory
+    @Description('Emits Output Items from the store: selection: <address>, or run: <ref> with output: <name>; optionally where: [...] and records: true.')
     DataflowWriteChannel fromStore(Map opts) {
         final DataflowWriteChannel channel = CH.create()
         // Resolve now, so a bad run reference or an unaddressed item fails fast
