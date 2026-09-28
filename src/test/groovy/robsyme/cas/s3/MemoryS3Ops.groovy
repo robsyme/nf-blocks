@@ -160,6 +160,16 @@ class MemoryS3Ops implements S3Ops {
         return new S3Written(S3Written.Status.WRITTEN, obj.etag, obj.sha256)
     }
 
+    @Override S3Written copyOut(String key, String targetBucket, String targetKey) {
+        calls << "COPYOUT ${key} ${targetBucket}/${targetKey}".toString()
+        final Obj src = objects[key]
+        if( src == null ) throw new FileNotFoundException("no such source ${describe()}/${key}")
+        final MemoryS3Ops target = bucketNamed(targetBucket)
+        final byte[] digest = MessageDigest.getInstance('SHA-256').digest(src.bytes)
+        final Obj obj = target.store(targetKey, src.bytes, S3PutOptions.create().sha256(), digest)
+        return new S3Written(S3Written.Status.WRITTEN, obj.etag, obj.sha256)
+    }
+
     @Override List<S3Listed> list(String prefix, int maxKeys) {
         calls << "LIST ${prefix}".toString()
         final List<S3Listed> out = objects.findAll { k, v -> k.startsWith(prefix) }

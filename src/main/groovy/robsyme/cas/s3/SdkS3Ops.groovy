@@ -224,6 +224,22 @@ class SdkS3Ops implements S3Ops {
         }
     }
 
+    /**
+     * A CopyObject out of this bucket into targetBucket, always with a
+     * SHA-256 and never conditional: a stage target is overwritten, as
+     * FilePorter expects (silent decision 9).
+     */
+    @Override
+    S3Written copyOut(String key, String targetBucket, String targetKey) {
+        final CopyObjectRequest.Builder b = CopyObjectRequest.builder()
+            .sourceBucket(bucket).sourceKey(key).destinationBucket(targetBucket).destinationKey(targetKey)
+            .storageClass(options.storageClass).serverSideEncryption(options.sse).ssekmsKeyId(options.kmsKeyId)
+            .requestPayer(payer()).checksumAlgorithm(ChecksumAlgorithm.SHA256)
+        final CopyObjectResponse r = client.copyObject(b.build())
+        note(r)
+        return new S3Written(S3Written.Status.WRITTEN, r.copyObjectResult().eTag(), r.copyObjectResult().checksumSHA256())
+    }
+
     @Override
     List<S3Listed> list(String prefix, int maxKeys) {
         final ListObjectsV2Request.Builder b = ListObjectsV2Request.builder().bucket(bucket).prefix(prefix).requestPayer(payer())

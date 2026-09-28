@@ -22,7 +22,6 @@ import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.FileAttributeView
 import java.nio.file.attribute.FileTime
-import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.spi.FileSystemProvider
 import java.security.MessageDigest
@@ -30,10 +29,12 @@ import java.security.MessageDigest
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.exception.AbortRunException
+import nextflow.extension.FilesEx
 import nextflow.file.FileHelper
 import nextflow.file.FileSystemTransferAware
 import robsyme.cas.CasSession
 import robsyme.cas.core.Addressed
+import robsyme.cas.core.BlockMismatchException
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CompositeStore
@@ -52,6 +53,7 @@ import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Providers
 import robsyme.cas.core.Records
 import robsyme.cas.core.StoreRef
+import robsyme.cas.s3.S3BlockStore
 
 /**
  * The `cas` scheme, for real (DESIGN.md section 8).
@@ -252,12 +254,10 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
                     here = entry.address
                     break
                 case ManifestEntry.REGULAR:
-                case ManifestEntry.EXECUTABLE:
                     if( !last )
                         return CasNode.absent()   // cannot descend into a file
                     return new CasNode(present: true, directory: false, size: entry.size,
-                            mtime: store().lastModifiedMillis(entry.address), content: entry.address,
-                            executable: entry.mode == ManifestEntry.EXECUTABLE)
+                            mtime: store().lastModifiedMillis(entry.address), content: entry.address)
                 case ManifestEntry.SYMLINK:
                     if( !last )
                         return CasNode.absent()
@@ -404,7 +404,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         // Content staging follows a directory coordinate's pointer to its manifest;
         // only the delete/overwrite path treats it as a single pointer file.
         if( node.directory || node.dirPointer ) {
-            materialiseDirectory(node.content, target)
+            materialiseDirectory(node.content, target, node.content, Collections.<String>emptyList())
         }
         else if( node.symlink ) {
             throw new AbortRunException("cas: cannot download a bare symlink '${src}' -> '${node.linkTarget}'")
@@ -412,23 +412,50 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         else {
             if( replace )
                 Files.deleteIfExists(target)
-            materialiseFile(node.content, target, node.executable, true)
+            materialiseFile(node.content, target, true)
         }
     }
 
-    /** A single raw block to {@code target}: a symlink to the read-only block on the same local fs, else stream-and-verify. */
-    private void materialiseFile(Cid cid, Path target, boolean executable, boolean allowSymlink) throws IOException {
+    /**
+     * A single raw block to {@code target}: a symlink to the read-only block
+     * on the same local fs; a server-side S3-to-S3 copy when a member already
+     * holds the block in S3 (silent decision 9); else stream-and-verify.
+     */
+    private void materialiseFile(Cid cid, Path target, boolean allowSymlink) throws IOException {
         final Path block = localBlockPath(cid)
-        if( allowSymlink && !executable && block != null && target.fileSystem == FileSystems.default ) {
+        if( allowSymlink && block != null && target.fileSystem == FileSystems.default ) {
             // Blocks are stored read-only, so an in-place write by a task fails
             // rather than corrupting the store. No hash is needed for a symlink.
             Files.deleteIfExists(target)
             Files.createSymbolicLink(target, block)
             return
         }
+        final String targetUri = FilesEx.toUriString(target)
+        if( targetUri.startsWith('s3://') ) {
+            final BlockStore holder = holderOf(cid)
+            if( holder instanceof S3BlockStore ) {
+                final int slash = targetUri.indexOf('/', 5)
+                final String targetBucket = slash < 0 ? targetUri.substring(5) : targetUri.substring(5, slash)
+                final String targetKey = slash < 0 ? '' : targetUri.substring(slash + 1)
+                try {
+                    ((S3BlockStore) holder).copyOut(cid, targetBucket, targetKey)
+                    return
+                }
+                catch( BlockMismatchException e ) {
+                    Files.deleteIfExists(target)
+                    throw new AbortRunException("cas: ${e.message}", e)
+                }
+            }
+        }
         streamAndVerify(cid, target)
-        if( executable )
-            makeExecutable(target)
+    }
+
+    /** The first member holding cid, or null; a seam over storeMembers() for materialiseFile's S3-to-S3 branch. */
+    private BlockStore holderOf(Cid cid) {
+        for( BlockStore member : storeMembers() )
+            if( member.has(cid) )
+                return member
+        return null
     }
 
     /** Streams a block to {@code target}, hashing in flight; a mismatch aborts and removes the partial file. */
@@ -458,31 +485,120 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         finally { input.close() }
     }
 
-    /** Materialises a Directory Manifest under {@code dir}, recreating internal symlinks and failing on unresolvable entries. */
-    private void materialiseDirectory(Cid manifestCid, Path dir) throws IOException {
+    /**
+     * Materialises a Directory Manifest under {@code dir}. A symlink stays a
+     * link when {@code dir} is on the default filesystem; onto any other
+     * filesystem (an object store has no links) it is staged as a copy of
+     * whatever it names inside the tree (ticket 15 decision 7). {@code root}
+     * and {@code at} are the manifest this walk started from and the path
+     * segments from that root to {@code dir}, so an in-tree link can be
+     * resolved without ever leaving the manifest.
+     */
+    private void materialiseDirectory(Cid manifestCid, Path dir, Cid root, List<String> at) throws IOException {
         Files.createDirectories(dir)
         final DirectoryManifest manifest = manifestOf(manifestCid)
         for( ManifestEntry entry : manifest.entries ) {
             final Path child = dir.resolve(entry.name)
             switch( entry.mode ) {
                 case ManifestEntry.DIRECTORY:
-                    materialiseDirectory(entry.address, child)
-                    break
-                case ManifestEntry.EXECUTABLE:
-                    materialiseFile(entry.address, child, true, false)
+                    final List<String> deeper = new ArrayList<String>(at)
+                    deeper.add(entry.name)
+                    materialiseDirectory(entry.address, child, root, deeper)
                     break
                 case ManifestEntry.REGULAR:
-                    materialiseFile(entry.address, child, false, false)
+                    materialiseFile(entry.address, child, false)
                     break
                 case ManifestEntry.SYMLINK:
-                    // Recreated verbatim: the target text is relative and stays inside the tree.
-                    Files.deleteIfExists(child)
-                    Files.createSymbolicLink(child, child.fileSystem.getPath(entry.target))
+                    if( child.fileSystem == FileSystems.default ) {
+                        // Recreated verbatim: the target text is relative and stays inside the tree.
+                        Files.deleteIfExists(child)
+                        Files.createSymbolicLink(child, child.fileSystem.getPath(entry.target))
+                    }
+                    else {
+                        // No links on an object store: stage what the link names, from inside the tree (ticket 15 decision 7).
+                        final ManifestEntry resolved = resolveInTree(root, at, entry.target, 0)
+                        if( resolved == null )
+                            throw new AbortRunException("cas: manifest ${manifestCid}: '${entry.name}' -> '${entry.target}' does not resolve inside the tree; cannot stage it as a copy")
+                        if( resolved.isDirectory() ) materialiseDirectory(resolved.address, child, root, segmentsOf(at, entry.target))
+                        else materialiseFile(resolved.address, child, false)
+                    }
                     break
                 default: // unresolvable
                     throw new AbortRunException("cas: manifest ${manifestCid} has an unresolvable entry '${entry.name}' (was '${entry.target}'); cannot materialise")
             }
         }
+    }
+
+    /**
+     * The entry a symlink's target text resolves to, walking the manifest
+     * tree from {@code root} entry by entry (ticket 15 decision 7: an object
+     * store has no links, so a link staged there is materialised as a copy
+     * of what it names). {@code at} is the path segments from {@code root} to
+     * the directory the symlink lives in; {@code target} is its (always
+     * relative, always in-tree -- DESIGN.md §6) target text. A symlink met on
+     * the way is itself followed, one more hop; null past
+     * {@link DirectoryManifestBuilder#MAX_DEPTH} hops, or when the path
+     * climbs above {@code root}, is missing, or cannot be descended into.
+     */
+    private ManifestEntry resolveInTree(Cid root, List<String> at, String target, int hops) {
+        if( hops > DirectoryManifestBuilder.MAX_DEPTH )
+            return null
+        final List<String> segments = segmentsOf(at, target)
+        if( segments == null || segments.isEmpty() )
+            return null
+        Cid here = root
+        ManifestEntry entry = null
+        for( int i = 0; i < segments.size(); i++ ) {
+            final DirectoryManifest manifest = manifestOf(here)
+            entry = manifest.entry(segments.get(i))
+            if( entry == null )
+                return null
+            final boolean last = i == segments.size() - 1
+            if( entry.mode == ManifestEntry.SYMLINK ) {
+                final ManifestEntry resolved = resolveInTree(root, segments.subList(0, i), entry.target, hops + 1)
+                if( resolved == null )
+                    return null
+                if( last )
+                    return resolved
+                if( !resolved.isDirectory() )
+                    return null   // cannot descend into a file
+                here = resolved.address
+                continue
+            }
+            if( entry.isDirectory() ) {
+                if( last )
+                    return entry
+                here = entry.address
+                continue
+            }
+            if( !last )
+                return null   // cannot descend into a file, or past an unresolvable entry
+            return entry
+        }
+        return entry
+    }
+
+    /**
+     * {@code at + target} normalised into path segments from {@code root}:
+     * {@code ..} pops the last segment, refusing to climb above the root
+     * (null). A non-link caller never sees this text; only a manifest
+     * SYMLINK's target text is normalised this way.
+     */
+    private static List<String> segmentsOf(List<String> at, String target) {
+        final List<String> segments = new ArrayList<String>(at)
+        for( String part : target.split('/') ) {
+            if( part.isEmpty() || part == '.' )
+                continue
+            if( part == '..' ) {
+                if( segments.isEmpty() )
+                    return null
+                segments.remove(segments.size() - 1)
+            }
+            else {
+                segments.add(part)
+            }
+        }
+        return segments
     }
 
     /** Stages each addressed leaf of an occurrence under {@code dir} by its name. */
@@ -493,22 +609,9 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             if( !leaf.addressed )
                 continue
             if( leaf.address.isRaw() )
-                materialiseFile(leaf.address, dir.resolve(e.key), false, true)
+                materialiseFile(leaf.address, dir.resolve(e.key), true)
             else
-                materialiseDirectory(leaf.address, dir.resolve(e.key))
-        }
-    }
-
-    private static void makeExecutable(Path target) {
-        try {
-            final Set<PosixFilePermission> perms = Files.getPosixFilePermissions(target)
-            perms.add(PosixFilePermission.OWNER_EXECUTE)
-            perms.add(PosixFilePermission.GROUP_EXECUTE)
-            perms.add(PosixFilePermission.OTHERS_EXECUTE)
-            Files.setPosixFilePermissions(target, perms)
-        }
-        catch( UnsupportedOperationException e ) {
-            // A filesystem without POSIX permissions: nothing to set.
+                materialiseDirectory(leaf.address, dir.resolve(e.key), leaf.address, Collections.<String>emptyList())
         }
     }
 

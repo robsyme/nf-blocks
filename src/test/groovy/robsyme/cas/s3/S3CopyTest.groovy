@@ -71,6 +71,39 @@ class S3CopyTest extends Specification {
         member.calls.count { it.startsWith('PARTCOPY ') } == 1
     }
 
+    def 'copyOut puts the bytes in the peer bucket by a server-side copy, with no GET'() {
+        given:
+        store.copyFrom('work', 'w/ab/cd/A.bam', 5L, cidOf('bam-A'))
+        member.calls.clear()
+
+        when:
+        store.copyOut(cidOf('bam-A'), 'work', 'stage/A.bam')
+
+        then:
+        work.objects['stage/A.bam'].text() == 'bam-A'
+        member.calls.any { it.startsWith('COPYOUT ') }
+        member.calls.every { !it.startsWith('GET ') }
+    }
+
+    def 'copyOut throws BlockMismatchException when S3 answers a different SHA-256'() {
+        given:
+        store.copyFrom('work', 'w/ab/cd/A.bam', 5L, cidOf('bam-A'))
+        final MemoryS3Ops lying = new MemoryS3Ops('member') {
+            @Override S3Written copyOut(String key, String targetBucket, String targetKey) {
+                final S3Written w = super.copyOut(key, targetBucket, targetKey)
+                return new S3Written(w.status, w.etag, Base64.encoder.encodeToString(cidOf('something else').digest))
+            }
+        }
+        lying.objects.putAll(member.objects)
+        lying.peers['work'] = work
+
+        when:
+        new S3BlockStore(lying, 'cas/', 'lab', true, tmp, 1L << 20).copyOut(cidOf('bam-A'), 'work', 'stage/A.bam')
+
+        then:
+        thrown(BlockMismatchException)
+    }
+
     private S3BlockStore storeOver(MemoryS3Ops ops) {
         ops.peers['work'] = work
         return new S3BlockStore(ops, 'cas/', 'lab', true, tmp, 1L << 20)

@@ -93,6 +93,18 @@ class SdkS3OpsTest extends Specification {
         header('x-amz-metadata-directive') == 'REPLACE'
     }
 
+    def 'copyOut names its source, the target bucket and key, and always asks for SHA-256'() {
+        when:
+        ops().copyOut('cas/blocks/am/x', 'work', 'stage/A.bam')
+
+        then:
+        thrown(SdkClientException)
+        header('x-amz-copy-source') == 'member/cas/blocks/am/x'
+        sent.last().encodedPath() == '/work/stage/A.bam'
+        header('x-amz-checksum-algorithm') == 'SHA256'
+        header('If-None-Match') == null
+    }
+
     def 'HEAD asks for the stored SHA-256 (x-amz-checksum-mode)'() {
         when:
         ops().head('cas/index.html')

@@ -267,6 +267,13 @@ class S3BlockStore implements BlockStore, LoggedStore {
         }
     }
 
+    /** A block into another bucket without the bytes leaving S3, checked by S3's SHA-256 (silent decision 9). */
+    void copyOut(Cid cid, String targetBucket, String targetKey) {
+        final S3Written w = ops.copyOut(key(cid), targetBucket, targetKey)
+        if( w.sha256 == null || Base64.decoder.decode(w.sha256) != cid.digest )
+            throw new BlockMismatchException(cid, "S3 copied it to s3://${targetBucket}/${targetKey} as ${w.sha256}")
+    }
+
     @Override
     Cid putDagCbor(Object value) {
         checkWritable()

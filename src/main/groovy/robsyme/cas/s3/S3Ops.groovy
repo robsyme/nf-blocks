@@ -34,6 +34,9 @@ interface S3Ops {
     /** A server-side copy into this bucket; no byte passes through the JVM. */
     S3Written copy(String sourceBucket, String sourceKey, String key, S3PutOptions options)
 
+    /** A server-side copy of a key in this bucket into another bucket; no byte passes through the JVM. */
+    S3Written copyOut(String key, String targetBucket, String targetKey)
+
     /** Keys under prefix in lexicographic order, at most maxKeys (all when maxKeys <= 0). */
     List<S3Listed> list(String prefix, int maxKeys)
 
