@@ -389,15 +389,27 @@ outputs (including the multi-leaf `chunks` items and the partial `reports` of
 the failed run), work trees with the real bytes, `qc` directories with a nested
 subdirectory and an internal symlink, a Store Log, `nf/` records, coords pointers
 for every publish path, a consumer store covering the three read-back sources,
-and a populated SQLite index. It is what DESIGN says a correct plugin must
-produce, so it exercises every PASS branch of `assert.py` before the plugin
-can.
+and a populated SQLite index. It was built to what DESIGN said a correct
+plugin produced before milestone 4, and it has not been regenerated since
+(Task 13 parked it), so it no longer passes every assertion:
 
 ```
 python3 gate/fixtures/make_fixture.py                  # regenerate (deterministic)
-python3 gate/assert.py gate/fixtures/root --offline    # 10 PASS, 0 FAIL, 7 SKIP
-python3 gate/assert.py gate/fixtures/root              # 12 PASS, 0 FAIL, 5 SKIP
+python3 gate/assert.py gate/fixtures/root --offline    # 8 PASS, 3 FAIL, 7 SKIP
+python3 gate/assert.py gate/fixtures/root              # 9 PASS, 4 FAIL, 5 SKIP
 ```
+
+The failures are the fixture's age, not the plugin's. Assertion 2 fails
+because its RunCompletions are schema 1 without `providers` and its work
+dirs hold no `.command.cas` (ticket 16, milestone 4). Assertion 3 fails
+because its RunManifest records `config` as a map, where DESIGN §6 records
+the resolved config text. Assertion 13 fails because the fixture has no
+`seeding.json` or Index Snapshot (milestone 4). Without `--offline`,
+assertion 6 also fails: the fixture's consumer store has no WorkflowRun
+named `consumer` under `store-out/nf`. A real `make gate` run is the evidence; this
+fixture still exercises the PASS branches of the other assertions offline.
+Bringing it up to date means teaching `make_fixture.py` schema 2, the
+config text, `.command.cas` lines and a snapshot.
 
 `--offline` skips only the two assertions that need a real consumer run.
 The fixture is generated with `cas.py`'s own encoder, which the unit tests pin
