@@ -93,6 +93,25 @@ if [[ -z "${GATE_SKIP_BUILD:-}" ]]; then
     rm -rf "${installed:?}"
     unzip -q -o "$zip" -d "$installed"
 fi
+
+# nf-blocks declares `requirePlugins = ['nf-amazon@>=3.9.2']` (Task 1), but a
+# plugin already unpacked on disk at its pinned version is skipped by
+# PluginUpdater.isAlreadyInstalled, so nf-blocks' own metadata (and with it
+# its declared dependency) is never prefetched; pf4j's generic
+# downloadPlugin() then finds nf-amazon in no repository's cached metadata
+# and a fresh GATE_ROOT fails before any pipeline runs. `nextflow plugin
+# install` prefetches the plugin it is asked for directly, so this puts
+# nf-amazon on disk once; every run below then finds it already there under
+# NXF_PLUGINS_DIR and never needs the registry for it. Idempotent: a no-op
+# once nf-amazon is already unpacked, so a reused GATE_ROOT (including
+# GATE_SKIP_BUILD) pays this cost at most once.
+echo "installing nf-amazon@3.9.2 into $NXF_PLUGINS_DIR"
+"$NEXTFLOW" plugin install nf-amazon@3.9.2 \
+    > "$GATE_ROOT/logs/nf-amazon-install.log" 2>&1 || {
+        echo "gate: nf-amazon install failed, see $GATE_ROOT/logs/nf-amazon-install.log" >&2
+        tail -30 "$GATE_ROOT/logs/nf-amazon-install.log" >&2
+        exit 2
+    }
 ls -1 "$NXF_PLUGINS_DIR" 2> /dev/null || true
 echo
 

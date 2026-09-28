@@ -47,11 +47,15 @@ block, not as a silently different value. Order violations raise
 2. `./gradlew -q assemble installPlugin` into `NXF_PLUGINS_DIR=$GATE_ROOT/plugins`
    (falling back to unzipping `build/distributions/nf-blocks-*.zip` if
    `installPlugin` ignores the variable).
-3. Exports `XDG_CACHE_HOME=$GATE_ROOT/cache`, `GATE_STORE=$GATE_ROOT/store`,
+3. `nextflow plugin install nf-amazon@3.9.2` into the same `NXF_PLUGINS_DIR`: nf-blocks'
+   `requirePlugins` (Task 1) names a dependency Nextflow never auto-downloads for a
+   plugin already unpacked on disk at its pinned version, so a fresh `GATE_ROOT` needs it
+   installed directly once.
+4. Exports `XDG_CACHE_HOME=$GATE_ROOT/cache`, `GATE_STORE=$GATE_ROOT/store`,
    `GATE_STORE_OUT=$GATE_ROOT/store-out`.
-4. Copies the Test Pipeline to `$GATE_ROOT/pipeline-a` and `$GATE_ROOT/pipeline-b`
+5. Copies the Test Pipeline to `$GATE_ROOT/pipeline-a` and `$GATE_ROOT/pipeline-b`
    and this directory's `consumer/` to `$GATE_ROOT/consumer`.
-5. Runs, all with `-c gate/gate.config`, keeping stdout, stderr, the exit code
+6. Runs, all with `-c gate/gate.config`, keeping stdout, stderr, the exit code
    and `.nextflow.log` under `$GATE_ROOT/logs/<name>/`:
 
    | run | where | why |
@@ -63,13 +67,13 @@ block, not as a silently different value. Order violations raise
    | `elsewhere` | pipeline-b | a second launch directory into the same store |
    | `consumer` | consumer | reads back through `lid://`, `cas://` and `fromStore` |
 
-6. Snapshots the whole store after `cold` and again after `again`, through
+7. Snapshots the whole store after `cold` and again after `again`, through
    `assert.py --snapshot`: block cids, run-log entries, `nf/` record keys and
    every `coords/` pointer with its text.
-7. Reads the read-back references out of the store (`assert.py --refs`) and
+8. Reads the read-back references out of the store (`assert.py --refs`) and
    passes them to the consumer as `--lid` and `--cas`, because neither exists
    before the producer has run.
-8. `python3 gate/assert.py "$GATE_ROOT"`, then browser tier A
+9. `python3 gate/assert.py "$GATE_ROOT"`, then browser tier A
    (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
    both below. Exits non-zero when any tier fails.
 

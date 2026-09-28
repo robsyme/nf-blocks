@@ -38,6 +38,18 @@ echo "smoke: root $SMOKE_ROOT"
 
 "$REPO_DIR/gradlew" -q -p "$REPO_DIR" assemble installPlugin
 
+# nf-blocks declares `requirePlugins = ['nf-amazon@>=3.9.2']` (Task 1); a
+# plugin already unpacked on disk at its pinned version is never prefetched
+# for metadata, so this fresh SMOKE_ROOT's plugins dir would otherwise fail
+# to auto-download nf-amazon the first time nf-blocks loads (see gate.sh for
+# the full explanation). `nextflow plugin install` prefetches directly.
+echo "smoke: installing nf-amazon@3.9.2 into $NXF_PLUGINS_DIR"
+"$NEXTFLOW" plugin install nf-amazon@3.9.2 > "$SMOKE_ROOT/nf-amazon-install.log" 2>&1 || {
+    echo "smoke: nf-amazon install failed, see $SMOKE_ROOT/nf-amazon-install.log" >&2
+    tail -30 "$SMOKE_ROOT/nf-amazon-install.log" >&2
+    exit 1
+}
+
 PLUGIN_DIR=$(find "$NXF_PLUGINS_DIR" -maxdepth 1 -type d -name 'nf-blocks-*' | head -1)
 if [[ -z "$PLUGIN_DIR" ]]; then
     echo "smoke: the plugin did not install into $NXF_PLUGINS_DIR" >&2
