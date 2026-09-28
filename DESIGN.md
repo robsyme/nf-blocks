@@ -735,6 +735,12 @@ Read side (Store URIs and Coordinates alike), all must tell the truth:
 - `isSameFile`, `isHidden`, `getFileStore` (unsupported), `getFileAttributeView`.
 
 Write side (Coordinates only; any write to a Store URI is `AccessDeniedException`):
+*Amended 2026-09-28 (final review I3):* only the writable member's
+coordinates are written. `upload`, `newOutputStream`, `createDirectory`,
+`delete` and `deleteIfExists` on `cas://<alias>/...` for any other member
+throw `AccessDeniedException` naming both aliases, before anything is read or
+written: a pointer written there would name blocks only this run's writable
+member holds.
 - `createDirectory`: create the coordinate directory under `coords/`.
 - `newOutputStream` on a coordinate: allowed only so Nextflow's incidental
   writes (none expected in the skeleton) do not crash; implement as

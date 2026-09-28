@@ -376,6 +376,69 @@ class CasFileSystemProviderTest extends Specification {
         store.has(cid)
     }
 
+    // ------------------------------------------------- read-only members (final review I3)
+
+    /** Rebinds the session with a second, read-only member `core` beside the writable `lab`; returns core's root. */
+    private Path withReadOnlyCore() {
+        final Path coreDir = Files.createDirectories(tmp.resolve('core'))
+        final config = CasConfig.from(
+                [lineage: [store: [location: 'cas://lab']],
+                 cas: [stores: [lab: [location: tmp.resolve('store').toString()], core: [location: coreDir.toString()]],
+                       resolve: ['lab', 'core']]],
+                'cas://lab')
+        CasSession.unbind(session)
+        CasSession.bind(session, new CasSession(config, store, coords))
+        return coreDir
+    }
+
+    /** Every file under dir, relative, so a refused write can be shown to have left nothing. */
+    private static List<String> filesUnder(Path dir) {
+        if( !Files.exists(dir) ) return []
+        return Files.walk(dir).withCloseable { s -> s.filter { Files.isRegularFile(it) }.collect { dir.relativize(it).toString() }.sort() } as List<String>
+    }
+
+    def 'a write through a read-only alias is refused naming the writable member: #verb'() {
+        given:
+        final Path coreDir = withReadOnlyCore()
+        final LocalCoordinateTree coreCoords = new LocalCoordinateTree(coreDir.resolve('coords'))
+        coreCoords.write('kept.txt', new StoreRef(Cid.parse('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'), 'kept.txt'))
+        final Path src = sourceFile('work/r.txt', 'r\n')
+        final List<String> before = filesUnder(coreDir)
+
+        when:
+        action.call(provider, src, p(target))
+
+        then:
+        final AccessDeniedException e = thrown()
+        e.message.contains("'core'")
+        e.message.contains("'lab'")
+        filesUnder(coreDir) == before
+        sess().publishFor(target) == null
+
+        where:
+        verb              | target                  | action
+        'upload file'     | 'cas://core/new.txt'    | { CasFileSystemProvider pr, Path s, CasPath t -> pr.upload(s, t) }
+        'upload dir'      | 'cas://core/newdir'     | { CasFileSystemProvider pr, Path s, CasPath t -> pr.upload(s.parent, t) }
+        'createDirectory' | 'cas://core/d'          | { CasFileSystemProvider pr, Path s, CasPath t -> pr.createDirectory(t) }
+        'delete'          | 'cas://core/kept.txt'   | { CasFileSystemProvider pr, Path s, CasPath t -> pr.delete(t) }
+        'deleteIfExists'  | 'cas://core/kept.txt'   | { CasFileSystemProvider pr, Path s, CasPath t -> pr.deleteIfExists(t) }
+        'newOutputStream' | 'cas://core/stream.txt' | { CasFileSystemProvider pr, Path s, CasPath t -> pr.newOutputStream(t).close() }
+    }
+
+    def 'the writable member still takes writes when a read-only member is configured'() {
+        given:
+        withReadOnlyCore()
+
+        when:
+        provider.upload(sourceFile('work/w.txt', 'w\n'), p('cas://lab/w.txt'))
+        provider.createDirectory(p('cas://lab/dir'))
+        provider.delete(p('cas://lab/w.txt'))
+
+        then:
+        notThrown(AccessDeniedException)
+        !coords.exists('w.txt')
+    }
+
     // ------------------------------------------------------------------ download
 
     def 'download of a raw block on the same filesystem is a symlink to the read-only block'() {

@@ -96,6 +96,19 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         return session().coordinatesOf(p.alias())
     }
 
+    /**
+     * The coordinate tree of the writable member, for a write or a delete. A
+     * member other than the writable one is never written (DESIGN.md §2): its
+     * pointers would name blocks only this run's writable member holds.
+     */
+    private CoordinateTree writableCoordsFor(CasPath p) throws AccessDeniedException {
+        final String writable = session().config.writableAlias
+        if( p.alias() != writable )
+            throw new AccessDeniedException(p.toString(), null,
+                "store '${p.alias()}' is read-only in this run; only '${writable}' (lineage.store.location) is written".toString())
+        return coordsFor(p)
+    }
+
     /** The coordinate path relative to its coords root, i.e. the join tail. */
     private static String relOf(CasPath p) {
         return p.segments.join('/')
@@ -359,7 +372,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         if( dest.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable: '${dest}'")
         final String key = Coordinates.key(target)
-        final CoordinateTree tree = coordsFor(dest)
+        final CoordinateTree tree = writableCoordsFor(dest)
         final String rel = relOf(dest)
         final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
         // The existence check happens before a byte of the source is read: that
@@ -713,7 +726,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
             throw new AccessDeniedException("a Store URI is immutable: '${p}'")
         // Hash-on-close: Nextflow's transfer-aware path never lands here, but an
         // incidental write must still hash into the store and leave a pointer.
-        final CoordinateTree tree = coordsFor(p)
+        final CoordinateTree tree = writableCoordsFor(p)
         final String rel = relOf(p)
         final String key = Coordinates.key(path)
         final String name = p.getFileName().toString()
@@ -787,7 +800,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(dir)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI has no directories to create: '${p}'")
-        coordsFor(p).createDirectories(relOf(p))
+        writableCoordsFor(p).createDirectories(relOf(p))
     }
 
     @Override
@@ -795,7 +808,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(path)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
-        if( !coordsFor(p).delete(relOf(p)) )
+        if( !writableCoordsFor(p).delete(relOf(p)) )
             throw new NoSuchFileException(p.toString())
     }
 
@@ -804,7 +817,7 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(path)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
-        return coordsFor(p).delete(relOf(p))
+        return writableCoordsFor(p).delete(relOf(p))
     }
 
     @Override
