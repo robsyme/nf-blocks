@@ -104,7 +104,9 @@ function rowModel({ allItems = null } = {}) {
 }
 
 function rowCtx(tray = new Tray(null)) {
-  const ctx = { tray, changed: [], write: { available: false, reason: 'read only' }, rerender: () => {} }
+  // hrefFor is defined even when writing is unavailable (app.js's own write object always has it): retentionPanel
+  // builds its unavailable-note href unconditionally, the way actions() already did.
+  const ctx = { tray, changed: [], write: { available: false, reason: 'read only', hrefFor: (h) => h }, rerender: () => {} }
   ctx.trayChanged = () => ctx.changed.push(tray.size)
   return ctx
 }
@@ -294,7 +296,8 @@ function fixture({ runClaims = [], collectionClaims = [], itemClaims = [], conte
     claimStates: async (cids) => new Map(cids.map(c => [c, claimState(contentClaims)])),
   }
   const ctx = { tray: new Tray(null), rerender: () => {}, progress: () => {},
-    write: { available: true, here: writable, writable: 'lab', hrefFor: (h) => h, writer: fakeWriter(calls),
+    // hrefFor is not the identity, so a test can tell the note links through it (fix round 1: shared unavailableNote).
+    write: { available: true, here: writable, writable: 'lab', hrefFor: (h) => `http://h/m/lab${h}`, writer: fakeWriter(calls),
       run: async (status, fn) => { await fn() } } }
   ctx.trayChanged = () => {}
   return { ex, ctx, calls }
@@ -355,6 +358,20 @@ test('outside the writable member the badges show and no write is offered', asyn
   assert.ok(node.querySelector('[data-badge="content-released"]'))
   assert.equal(node.querySelector('#restore'), null)
   assert.ok(node.querySelector('[data-unavailable]'))
+})
+
+// Fix round 1 (review): the run page's unavailable note is the same shared
+// helper the Selection view's actions() uses, so it names its own actions
+// and links to itself in the writable member, the way actions() always has.
+test('a run page outside the writable member shows the note with a link to the same route in the writable member', async () => {
+  installDom()
+  const { ex, ctx } = fixture({ writable: false })
+  const node = await run(ex, RUN, ctx)
+  const note = node.querySelector('[data-unavailable]')
+  assert.equal(note.textContent, 'Pin, release and restore write to the writable member, lab. Open this run there.')
+  const a = note.querySelector('a')
+  assert.equal(a.textContent, 'Open this run there')
+  assert.equal(a.getAttribute('href'), ctx.write.hrefFor(`#/run/${RUN}`))
 })
 
 test('a collection page pins the same way, below its heading', async () => {
