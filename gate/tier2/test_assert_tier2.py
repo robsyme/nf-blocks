@@ -146,8 +146,9 @@ FUSION_QC = {"A_qc/summary.txt": SUMMARY, "A_qc/alias.txt": b"summary.txt",
              "A_qc/.fusion.symlinks": b"alias.txt\n", "A_qc/nested/detail.txt": DETAIL}
 FUSION_QC_NODE = {"A_qc/summary.txt": SUMMARY, "A_qc/nested/detail.txt": DETAIL}   # find -type f: no link, no sidecar
 
-# Ticket 18: cas-sarek's ts run. The index.json task file sits at the work bucket task dir's top level
-# (as Nextflow stages it); nf-blocks publishes it at multiqc/index.json, the OutputIndex's declared path.
+# Ticket 18: cas-sarek's ts run. Nextflow's PublishOp writes a workflow output's Output Index File
+# (ticket 26) from the head node straight into the output directory: it is never a task's own output, so
+# it has no file in any task work dir and lives only in the member (a block plus a coords/ pointer).
 TS_META = {"id": "sarek"}
 MQ_REPORT = b"multiqc report\n"
 MQ_DATA = b"multiqc data\n"
@@ -158,7 +159,6 @@ TASKS = {
     "t1": {"11/aaaa": {"A.bam": A_BAM}, "12/bbbb": {"B.bam": B_BAM}, "13/cccc": FLAT_QC},
     "t2": {"21/aaaa": {"A.bam": A_BAM}, "22/bbbb": {"B.bam": B_BAM}, "23/cccc": FUSION_QC},
     "t2b": {"31/aaaa": {"A.bam": A_BAM}, "33/cccc": FUSION_QC},
-    "ts": {"41/dddd": {"index.json": INDEX_JSON}},
 }
 NODE = {"t2": {"21/aaaa": {"A.bam": A_BAM}, "22/bbbb": {"B.bam": B_BAM}, "23/cccc": FUSION_QC_NODE}}
 
@@ -743,17 +743,34 @@ class FailPathTest(WorldTest):
         self.assertEqual(status, t.FAIL)
         self.assertIn("anomalies.unjoined is 3; 5 coords/", message)
 
-    def test_ts_fails_when_the_index_leafs_address_is_not_the_work_buckets(self):
+    def test_ts_fails_when_the_index_leaf_does_not_match_the_members_bytes(self):
         # A wrong index leaf address is also, itself, an unreferenced coords/multiqc/index.json pointer
         # (the real one): the independent count rises from 5 to 6, so unjoined is given as 6 to isolate
-        # the index-leaf-address FAIL from an unjoined-count one.
+        # the index-leaf FAIL from an unjoined-count one. No block was ever written for this address, so
+        # Member.verified (fetch + re-hash) fails to find it: the member's bytes don't back the claim.
         self.w.drop_run("cas-sarek", "ts")
-        self.w.write_ts(unjoined=6, index_address=cas.cid_raw(b"not the index.json bytes\n"))
+        wrong = cas.cid_raw(b"not the index.json bytes\n")
+        self.w.write_ts(unjoined=6, index_address=wrong)
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("index leaf %s: NoSuchKey" % wrong, message)
+
+    def test_ts_fails_when_the_index_leaf_disagrees_with_its_coordinate(self):
+        # The RunCompletion's index leaf keeps the real, correctly-hashing address; only the standalone
+        # coords/multiqc/index.json pointer (a second, independently-written source) is rewritten to a
+        # different, also validly-stored block, isolating the pointer cross-check from a bytes mismatch.
+        other = self.w.block("cas-sarek", b"a different index.json\n")
+        self.w.coord("cas-sarek", "multiqc/index.json", other, "index.json")
         status, message = self.status(t.ts)
         self.assertEqual(status, t.FAIL)
         self.assertIn("index leaf's address is", message)
-        self.assertIn("the work bucket's object(s) named index.json hash to", message)
-        self.assertNotIn("anomalies.unjoined is", message)
+        self.assertIn("coords/multiqc/index.json names %s" % other, message)
+
+    def test_ts_fails_when_an_item_leafs_address_disagrees_with_its_coordinate(self):
+        self.w.coord("cas-sarek", "multiqc/multiqc_report.html", cas.cid_raw(b"different bytes\n"), "multiqc_report.html")
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("coords/multiqc/multiqc_report.html names", message)
 
 
 class VerdictTest(unittest.TestCase):

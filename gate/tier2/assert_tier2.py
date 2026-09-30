@@ -762,19 +762,24 @@ def t6(ctx):
 
 def ts(ctx):
     """Ticket 18 on the queue: exit 0; the RunCompletion succeeded; collection multiqc has >= 1 item,
-    each with a Meta Map carrying "id", and every item Leaf addressed; its index leaf's address equals
-    the SHA-256 CID of the object at coords/<index.path> (ctx.sha); anomalies.unjoined equals the number
-    of coords/ keys whose pointer CID is neither an item leaf nor the index leaf, and is > 0; the log
-    names at least one "uses publishDir" warning."""
+    each with a Meta Map carrying "id"; every item Leaf is independently verified against the member --
+    a raw Leaf's block hashes to its address (Member.verified) and coords/ names the same CID for its
+    recorded publish path; a directory Leaf's block decodes and hashes to its address (Member.decoded)
+    -- and the index leaf the same way, against coords/<index.path> (ticket 26; the Output Index File is
+    written by the head node straight to the output directory, so it is never a task's own output --
+    Nextflow's PublishOp -- and is verified from the member, not the work bucket); anomalies.unjoined
+    equals the number of coords/ keys whose pointer CID is neither an item leaf nor the index leaf, and
+    is > 0; the log names at least one "uses publishDir" warning."""
     problems = _exit_problem(ctx, "ts")
     m = ctx.member("cas-sarek")
     run = _run_or_problem(ctx, "cas-sarek", "ts", problems)
-    items, recorded, actual = [], None, None
+    items, recorded, actual, index_leaf_address = [], None, None, None
     if run is not None:
         if run.completion.get("status") != "succeeded":
             problems.append("ts's RunCompletion status is %r, not succeeded" % run.completion.get("status"))
+        coords = m.coords()
+        referenced = set()
         entry = run.collections().get("multiqc")
-        index_leaf_address = None
         if entry is None:
             problems.append("ts's RunCompletion has no multiqc collection")
         else:
@@ -782,30 +787,45 @@ def ts(ctx):
             items = run.items("multiqc")
             if not items:
                 problems.append("multiqc collection has no item")
-            for item_cid, item in items:
+            for (item_cid, item), item_paths in zip(items, block.get("paths") or []):
                 value = item.get("value")
                 meta = value[0] if isinstance(value, list) and value else None
                 if not isinstance(meta, dict) or "id" not in meta:
                     problems.append("multiqc item %s carries no Meta Map with 'id': %r" % (item_cid, meta))
-                for leaf in _leaves(value):
-                    if leaf.get("address") is None:
+                for leaf, publish_path in zip(_leaves(value), item_paths or []):
+                    address = _text(leaf.get("address"))
+                    if address is None:
                         problems.append("multiqc item %s's %r leaf is not addressed (reason %r)"
                                         % (item_cid, leaf.get("name"), leaf.get("reason")))
+                        continue
+                    referenced.add(address)
+                    try:
+                        m.decoded(address) if _codec(leaf.get("address")) == cas.DAG_CBOR else m.verified(address)
+                    except Exception as exc:
+                        problems.append("multiqc item %s's %r leaf %s: %s" % (item_cid, leaf.get("name"), address, exc))
+                    if publish_path is not None:
+                        rel = "/".join(publish_path) if isinstance(publish_path, list) else str(publish_path)
+                        coord_cid, _name = _pointer(coords.get(rel))
+                        if coord_cid != address:
+                            problems.append("multiqc item %s's %r leaf is %s; coords/%s names %s"
+                                            % (item_cid, leaf.get("name"), address, rel, coord_cid))
             index = block.get("index")
             if not index or not index.get("leaf"):
                 problems.append("multiqc collection has no index (index { path \"multiqc/index.json\" } expected)")
             else:
                 index_path = index.get("path") or ""
                 index_leaf_address = _text(index["leaf"].get("address"))
-                name = index_path.rsplit("/", 1)[-1]
-                want = {_digest_cid(ctx.sha(k)) for k in ctx.work().get(name, [])}
-                if index_leaf_address not in want:
-                    problems.append("index leaf's address is %s; the work bucket's object(s) named %s hash to %s"
-                                    % (index_leaf_address, name, _few(want) or "nothing"))
-        referenced = {_text(leaf.get("address")) for leaf in run.leaves() if leaf.get("address") is not None}
+                try:
+                    m.verified(index_leaf_address)
+                except Exception as exc:
+                    problems.append("index leaf %s: %s" % (index_leaf_address, exc))
+                coord_cid, _name = _pointer(coords.get(index_path))
+                if coord_cid != index_leaf_address:
+                    problems.append("index leaf's address is %s; coords/%s names %s"
+                                    % (index_leaf_address, index_path, coord_cid))
         if index_leaf_address is not None:
             referenced.add(index_leaf_address)
-        unjoined_keys = [rel for rel, pointer in sorted(m.coords().items())
+        unjoined_keys = [rel for rel, pointer in sorted(coords.items())
                          if _pointer(pointer)[0] is not None and _pointer(pointer)[0] not in referenced]
         actual = len(unjoined_keys)
         recorded = (run.completion.get("anomalies") or {}).get("unjoined") or 0
@@ -816,9 +836,10 @@ def ts(ctx):
             problems.append("anomalies.unjoined is %r; want > 0 (sarek publishes files outside the workflow output)" % actual)
     if "uses publishDir" not in ctx.text("logs", "ts", "nextflow.log"):
         problems.append("logs/ts/nextflow.log names no 'uses publishDir' warning")
-    return _verdict(problems, "ts exited 0; multiqc has %d item(s) each Meta-addressed; its index leaf hashes to the "
-                              "work bucket's object; anomalies.unjoined %s matches %s coords/ key(s) no leaf "
-                              "references; the log names a publishDir warning" % (len(items), recorded, actual))
+    return _verdict(problems, "ts exited 0; multiqc has %d item(s) each Meta-addressed and independently verified "
+                              "against the member; its index leaf hashes to coords/multiqc/index.json's block; "
+                              "anomalies.unjoined %s matches %s coords/ key(s) no leaf references; the log names a "
+                              "publishDir warning" % (len(items), recorded, actual))
 
 
 CHECKS = [("T1", "cloud executor publish (assertion 12)", t1),
