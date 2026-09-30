@@ -2253,9 +2253,13 @@ Added during execution:
 `GATE_ROOT`: lineage 15 PASS, 0 FAIL, 6 SKIP; browser tier A 5/5; tier B
 12/12 (no flake this run). Tier two's own unit tests, `python3 -m unittest
 discover -s gate/tier2`, 43 OK.
-Not yet run, for Rob (needs his SSO session): `make gate-tier2 GATE_ROOT=<the
-same root>` (T1-T6, T2b, TS) against nf-core/sarek 3.10.0 in its own member;
-then merge `feat/m5-nfcore` to `main`.*
+Accepted 2026-09-30 with Rob's SSO session on `9f5463a`: `make gate-tier2`
+8 PASS, 0 FAIL, 0 SKIP (T1-T6, T2b, TS), 93 Batch jobs. TS: nf-core/sarek
+3.10.0 exited 0; `multiqc` holds 3 items, each verified against the member;
+its index leaf hashes to `coords/multiqc/index.json`'s block;
+`anomalies.unjoined` 40 equals the 40 `coords/` keys no leaf references. The
+head node read 0 bytes in every Test Pipeline run, and 40,984 bytes for 172
+files in sarek's (s3-copy 159, fusion-node 12, head-node 1). Merged to `main`.*
 
 Plan `docs/plans/2026-09-29-nfcore-milestone-5.md`, from the map
 `../.scratch/post-gate/roadmap.md` ("Milestone 5"); each ticket's `## Answer`
