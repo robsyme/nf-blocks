@@ -2359,3 +2359,27 @@ holds the reasoning, and the execution ledger is
    silently replaced by that day's `nf-schema 3.0.0` release, and the run
    failed until the pipeline's pins were repeated beside nf-blocks's own.
    Documented in README (ticket 18 finding, for Rob).
+
+## 19. Milestone 6: retention (2026-09-30)
+
+Every run registers as a Live Writer in its writable member's `live/`
+(ticket 20 answers 1 and 5): `CasObserver.onFlowCreate` calls
+`CasSession.startLiveWriter` right after `checkClock()`, which writes
+`live/<session>`, starts a 60 s heartbeat, and then blocks while a fresh
+`sweep.lock` is held (polling every 30 s), so a sweep and a run always see
+each other. `completeRun` calls `CasSession.stopLiveWriter` in its
+`finally`, after `completionWritten()`, on the winning notification only,
+deleting the registration.
+
+This can precede every `fromStore` read and every publish because
+`Session.start()` calls `notifyFlowCreate()` before returning, ahead of the
+script (`Session.groovy:606` at v26.04.6, confirmed with
+`git -C nextflow show v26.04.6:modules/nextflow/src/main/groovy/nextflow/Session.groovy`):
+
+    Session start() {
+        ...
+        // signal start to trace observers
+        notifyFlowCreate()
+
+        return this
+    }

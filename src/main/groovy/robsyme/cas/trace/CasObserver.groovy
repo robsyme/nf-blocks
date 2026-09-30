@@ -82,6 +82,13 @@ class CasObserver implements TraceObserverV2 {
         validateOutputDir()
         // Ticket 03 decision 2: one HEAD on the writable S3 member, before any entry is stamped.
         cas.checkClock()
+        // Ticket 20 answers 1 and 5: register as a Live Writer before any fromStore read or publish.
+        final WorkflowMetadata meta = session.workflowMetadata
+        cas.startLiveWriter(session.uniqueId.toString(), [
+            run_name  : runName(meta),
+            pipeline  : pipelineIdentity(meta, meta?.manifest),
+            started_at: iso(meta?.start),
+        ])
     }
 
     /**
@@ -237,6 +244,8 @@ class CasObserver implements TraceObserverV2 {
         }
         finally {
             cas.completionWritten()
+            // The winning notification only: the loser returned above and leaves this to us.
+            cas.stopLiveWriter()
         }
     }
 

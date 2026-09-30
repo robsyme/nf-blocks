@@ -88,6 +88,8 @@ class CasObserverFactoryTest extends Specification {
             getOutputDir() >> { holder[0] }
             setOutputDir(_) >> { Path p -> holder[0] = p }
             getRunName() >> 'test-run'
+            // Task 10: onFlowCreate now registers a Live Writer keyed by the session id.
+            getUniqueId() >> UUID.fromString('00000000-0000-0000-0000-0000000000fc')
         }
         box = holder
         Global.session = session
