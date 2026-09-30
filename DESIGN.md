@@ -557,6 +557,14 @@ path). `reason` is null when `address` is set and non-null otherwise; an absent
 address is never an absent field. A `declined` leaf is what Nextflow hands us
 as `null` in place of a path. A `never_published` leaf is a path in the item
 that never received a publish event (a path outside the work dir).
+*Amended 2026-09-30 (patch 0.3.0-beta.2):* that includes a path that is not
+`cas://` at all, such as an https or local input FASTQ a record carries
+(nf-core/rnaseq): `Join` makes it a `never_published` Leaf named by the
+path's file name, puts `null` in its `paths` entry, gives it no join key, and
+counts it in `anomalies.never_published`. Before this, `Coordinates.key`
+threw on it and the whole RunCompletion was lost. A malformed `cas://` path
+is still refused. Recording such inputs by address is milestone 7
+(input-side lineage).
 Decoding rule: a map with `kind == "Leaf"` is a leaf. The item carries no run
 reference and no publish path.
 
@@ -992,6 +1000,36 @@ is built on first publish over the composite and the writable member, with
   an `AbortRunException` there skips `notifyError` (`Session.groovy:1125-1128`)
   for every observer, losing the user's `onError` and the hint below. A clean
   run keeps the abort.
+  *Amended 2026-09-30 (patch 0.3.0-beta.2):* whatever stops the RunCompletion
+  being written is also logged at error on `nextflow.cas` (`ConsoleLog`),
+  naming the run and the cause, before it is rethrown or (on a failing run)
+  logged at warn as above. `Session.notifyEvent` logs any other exception
+  than `AbortRunException` at debug (`Session.groovy:1125-1128`), so without
+  this line a run could go unrecorded with nothing on the terminal.
+  *Amended 2026-09-30 (patch 0.3.0-beta.2, aborted runs):* from Nextflow
+  26.08.0-edge (`14d5f26c4`, #7349, "Fix race condition calling workflow
+  onComplete twice") `Session.shutdown0` runs once (a `compareAndSet` on
+  `shutdownInitiated`), so an aborted run is notified only on the thread
+  that called `Session.abort`, after its shutdown callbacks (the user's
+  `onComplete`, `TaskPollingMonitor.cleanup` killing tasks), and
+  `Session.destroy` on main no longer notifies at all. Main goes straight on
+  to `Plugins.stop()` and `System.exit` (`ScriptRunner.shutdown`,
+  `ScriptRunner.groovy:243-248`), and the aborting thread's write was lost
+  (agitated_hodgkin on 26.09.0-edge: "Session aborted" at 13:01:33.996,
+  nf-blocks stopped at 13:01:34.092, no RunCompletion). `CasPlugin.stop()`
+  therefore calls `CasObserver.finishPending()`: for each observer of the
+  JVM whose RunCompletion is not written, if the latch is claimed it waits
+  up to 60 s for the write; if not, and `session.isAborted()`, it runs
+  `onFlowComplete()` itself on main (failing-run rules above). The latch
+  still keeps one RunCompletion per run; a notification that arrives after
+  is the loser and returns once the write is done. On 26.04.6 the second
+  notification from `Session.destroy` still waits, and the stop finds
+  nothing left to do. A completion written from the stop may precede
+  `WorkflowMetadata.invokeOnComplete` (a shutdown callback on the aborting
+  thread), so a failed run's `error` falls back to `session.error`'s
+  message when the metadata has none, scrubbed as any `error` is
+  (`Records.scrubText`); `exit_status` and `finished_at` then have no such
+  source and stay null and the write time.
   *Amended 2026-09-29 (milestone 5, ticket 19):* `RunCompletion.anomalies`
   gains `unjoined`: `publishedKeys` minus `Join`'s `joinedKeys` (every key
   an `onFilePublish` event named that no item or `index` Leaf claimed),
@@ -1314,6 +1352,34 @@ nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --ru
                                               [--pipeline <id>] [--format csv|json|occurrences|selection]
 ```
 
+*Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
+`1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
+`int exec(String pluginId, String cmd, List<String> args)`: the Launcher, and
+with it every launcher option, is gone, and a plugin without that method
+fails with "does not define or inherit an implementation of the resolved
+method". `CasPlugin` implements both; the plugin compiles against 26.04.6,
+so the 3-argument one carries no `@Override`, and each Nextflow calls the
+one its interface names. Both reach `CasCommands.run`. The new
+`PluginAbstractExec` builds its config from `NXF_WORK` and
+`NXF_CLOUDCACHE_PATH` alone and `CmdPlugin.executePluginCommand` passes the
+plugin nothing else, so on the 3-argument path `CasCommands` reads the files
+`ConfigCmdAdapter.resolveConfigFiles` reads when no `-c` is given
+(`robsyme.cas.cli.LaunchConfig`): `$NXF_HOME/config` (`Const.APP_HOME_DIR`),
+then `./nextflow.config`, or the file `NXF_CONFIG_FILE` names, each when it
+exists, later overriding earlier, with the `standard` profile, parsed with
+`ConfigParserFactory`, whose API is the same on both versions. Measured on
+26.09.1-edge: `./nextflow.config` and `NXF_CONFIG_FILE=<file>` work;
+`nextflow -c <file> plugin nf-blocks:<verb>` is accepted by the launcher and
+never reaches the plugin, so the verb sees no store unless one of the
+default files names it (use `NXF_CONFIG_FILE` instead). `-C` does not
+reach it either. On 26.04.6 the 4-argument path and `-c`
+are unchanged. So that a verb never acts on another store unannounced, the
+3-argument path first checks the verb against `VERBS` (a usage error, exit
+2, reads no config), then prints on stderr the config files it read, or
+that it read none, and that `-c` does not reach plugin verbs on 26.08.0-edge
+and later (use `NXF_CONFIG_FILE` or `./nextflow.config`). stdout is
+untouched, so `items ... | put /dev/stdin` still pipes.
+
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
 on a usage error.
@@ -1406,7 +1472,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.3.0-beta.1'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.3.0-beta.2'` in `gate.config` needs none of this.
 
 ### What a member serves
 

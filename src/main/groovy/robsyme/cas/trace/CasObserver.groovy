@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import groovy.util.logging.Slf4j
 import nextflow.Session
 import nextflow.config.Manifest
@@ -73,12 +74,16 @@ class CasObserver implements TraceObserverV2 {
     /** Processes already warned about publishDir, so each is warned once. */
     private final Set<String> publishDirWarned = ConcurrentHashMap.newKeySet()
 
+    /** Observers of this JVM whose RunCompletion is not yet written, for {@link #finishPending}. */
+    private static final Set<CasObserver> PENDING = ConcurrentHashMap.newKeySet()
+
     // --------------------------------------------------------------- lifecycle
 
     @Override
     void onFlowCreate(Session session) {
         this.session = session
         this.cas = CasSession.of(session)
+        PENDING.add(this)
         validateOutputDir()
         // Ticket 03 decision 2: one HEAD on the writable S3 member, before any entry is stamped.
         cas.checkClock()
@@ -235,6 +240,8 @@ class CasObserver implements TraceObserverV2 {
             // The other notification is writing the RunCompletion. A failed
             // run's second notification comes from Session.destroy on main,
             // which reaches System.exit next, so wait until the write is done.
+            // Either way this observer has nothing left for the plugin stop to do.
+            PENDING.remove(this)
             if( !cas.awaitCompletionWritten(COMPLETION_WAIT_MILLIS) )
                 log.warn("the run's RunCompletion was still being written after ${COMPLETION_WAIT_MILLIS} ms; not waiting longer")
             return
@@ -242,11 +249,67 @@ class CasObserver implements TraceObserverV2 {
         try {
             runUninterrupted { writeCompletion() }
         }
+        catch( Throwable t ) {
+            // Session.notifyEvent logs anything but an AbortRunException at debug
+            // (Session.groovy:1125-1128), so the user would never see the run go
+            // unrecorded. Say so on the terminal, then fail as before (§0 rule 3).
+            ConsoleLog.LOG.error("nf-blocks: run '${runName(session?.workflowMetadata)}' was not recorded in the store; " +
+                "its RunCompletion could not be written: ${t.message ?: t.class.name}")
+            throw t
+        }
         finally {
             cas.completionWritten()
+            PENDING.remove(this)
             // The winning notification only: the loser returned above and leaves this to us.
             cas.stopLiveWriter()
         }
+    }
+
+    /**
+     * Called from {@code CasPlugin.stop()}, which Nextflow runs on main from
+     * {@code ScriptRunner.shutdown} (Session.destroy, then Plugins.stop, then
+     * System.exit). From 26.08.0-edge (nextflow 14d5f26c4, #7349)
+     * {@code Session.shutdown0} runs once, so an aborted run is notified only
+     * on the thread that called {@code Session.abort}, and main no longer
+     * waits for it. Here main either waits for that thread's write, or, when
+     * the notification has not reached this observer yet, writes the failed
+     * RunCompletion itself; the latch keeps it to one either way.
+     */
+    static void finishPending() {
+        for( CasObserver observer : new ArrayList<CasObserver>(PENDING) ) {
+            try {
+                observer.finishOnStop()
+            }
+            catch( Throwable t ) {
+                // completeRun has already said so on the terminal.
+                log.warn("nf-blocks could not record the run when the plugin stopped: ${t.message}", t)
+            }
+            finally {
+                PENDING.remove(observer)
+            }
+        }
+    }
+
+    /** Test seam: forgets every pending observer, so one test's observers never reach another's stop. */
+    @PackageScope
+    static void resetPending() {
+        PENDING.clear()
+    }
+
+    private void finishOnStop() {
+        if( cas == null || session == null )
+            return
+        if( cas.completionClaimed() ) {
+            if( !cas.awaitCompletionWritten(COMPLETION_WAIT_MILLIS) )
+                log.warn("the run's RunCompletion was still being written after ${COMPLETION_WAIT_MILLIS} ms when the plugin stopped; not waiting longer")
+            return
+        }
+        // Only an aborted run can reach the stop unnotified: a run that ends
+        // normally is notified on main, from Session.destroy, before Plugins.stop.
+        if( !session.isAborted() )
+            return
+        log.debug('the aborted run was not yet notified of its completion when the plugin stopped; writing its RunCompletion now')
+        onFlowComplete()
     }
 
     /**
@@ -351,7 +414,7 @@ class CasObserver implements TraceObserverV2 {
             startedAt         : iso(meta?.start),
             finishedAt        : iso(meta?.complete),
             anomalies         : anomalies,
-            error             : success ? null : (meta?.errorMessage ?: null),
+            error             : success ? null : errorText(meta),
             providers         : joined.providers,
         ]).toCbor(), 'RunCompletion')
 
@@ -404,6 +467,20 @@ class CasObserver implements TraceObserverV2 {
         ]).toCbor(), 'RunManifest')
         cas.setRunManifest(cid)
         return cid
+    }
+
+    /**
+     * A failed run's error: WorkflowMetadata's, else the session's own. On an
+     * aborted run written from the plugin stop, WorkflowMetadata's onComplete
+     * attributes may not be set yet (it runs on the aborting thread). The
+     * RunCompletion scrubs whichever it gets (Records.scrubText).
+     */
+    private String errorText(WorkflowMetadata meta) {
+        final String fromMeta = meta?.errorMessage
+        if( fromMeta )
+            return fromMeta
+        final Throwable error = session.error
+        return error == null ? null : (error.message ?: error.class.name)
     }
 
     private String pipelineIdentity(WorkflowMetadata meta, Manifest manifest) {

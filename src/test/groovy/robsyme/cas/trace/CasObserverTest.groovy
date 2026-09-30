@@ -104,6 +104,7 @@ class CasObserverTest extends Specification {
         if( session != null )
             CasSession.unbind(session)
         Global.session = null
+        CasObserver.resetPending()
     }
 
     /**
@@ -1014,5 +1015,184 @@ class CasObserverTest extends Specification {
         then:
         warnings(console, "process 'LOCAL' uses publishDir") == 1
         readBlock(latestCompletion()).anomalies.unjoined == 0L
+    }
+    private static List<ILoggingEvent> errors(ListAppender<ILoggingEvent> appender) {
+        return appender.list.findAll { ILoggingEvent e -> e.level == Level.ERROR }
+    }
+
+    def 'a RunCompletion that cannot be written is logged at error on the console, naming the run and the cause, then rethrown'() {
+        // Session.notifyEvent logs a non-abort observer exception at debug only
+        // (Session.groovy:1125-1128 at v26.04.6), so without this the user sees nothing.
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final Path elsewhere = java.nio.file.Paths.get('/not/in/the/store/reads.fastq.gz')
+        observer.onWorkflowOutput(new WorkflowOutputEvent('reads', [elsewhere], null))
+        final List<Path> dirs = []
+        makeBlocksUnwritable(dirs)
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        thrown(AbortRunException)
+        final logged = errors(console)
+        logged.size() == 1
+        logged[0].formattedMessage.contains('test-run')
+        logged[0].formattedMessage.contains('Unable to write the')
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+
+    def 'on a run that is already failing, a RunCompletion write failure is still logged at error on the console'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.getError() >> new RuntimeException('task failed')
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final List<Path> dirs = []
+        makeBlocksUnwritable(dirs)
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        errors(console).size() == 1
+        errors(console)[0].formattedMessage.contains('test-run')
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+    private robsyme.cas.CasPlugin plugin() {
+        final descriptor = Stub(org.pf4j.PluginDescriptor) { getPluginId() >> 'nf-blocks' }
+        final wrapper = Stub(org.pf4j.PluginWrapper) { getDescriptor() >> descriptor }
+        return new robsyme.cas.CasPlugin(wrapper)
+    }
+
+    def 'an aborted run whose completion notification has not arrived when the plugin stops is recorded by the stop, once'() {
+        // Nextflow >= 26.08.0-edge (14d5f26c4, #7349): Session.shutdown0 runs once, so an
+        // abort notifies onFlowComplete only on the aborting thread, while main goes on to
+        // Session.destroy, Plugins.stop and System.exit (ScriptRunner.groovy:243-248).
+        // agitated_hodgkin (26.09.0-edge) lost its RunCompletion to that race.
+        given:
+        bind(config(), meta(1))
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        session.getError() >> new RuntimeException('Salmon failed to produce lib_format_counts')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when: 'main stops the plugins before the aborting thread notifies the observer'
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion').size() == 1
+        blocksOfKind('RunCompletion')[0].get('status') == 'failed'
+        blocksOfKind('RunCompletion')[0].get('possibly_incomplete') == true
+        StoreLog.read(cas.store).size() == 1
+
+        when: 'the aborting thread notifies it afterwards'
+        final long started = System.nanoTime()
+        observer.onFlowComplete()
+
+        then: 'no second RunCompletion, and no wait'
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).size() == 1
+        (System.nanoTime() - started) < 5_000_000_000L
+    }
+
+    def 'the plugin stop waits for a completion the aborting thread is still writing'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        and: 'the aborting thread has claimed the latch and is still writing'
+        cas.claimCompletion()
+
+        when:
+        final stopper = Thread.start { plugin().stop() }
+        stopper.join(300)
+        final boolean waited = stopper.isAlive()
+        cas.completionWritten()
+        stopper.join(5_000)
+
+        then:
+        waited
+        !stopper.isAlive()
+        blocksOfKind('RunCompletion').isEmpty()
+    }
+
+    def 'the plugin stop writes nothing for a run that was neither completed nor aborted'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when:
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion').isEmpty()
+    }
+
+    def 'a failed RunCompletion written from the plugin stop falls back to the session error when WorkflowMetadata has none yet'() {
+        given: 'meta() leaves errorMessage unset, as before WorkflowMetadata.invokeOnComplete has run'
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        session.getError() >> new RuntimeException('Salmon failed to produce lib_format_counts')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when:
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion')[0].get('error') == 'Salmon failed to produce lib_format_counts'
+    }
+
+    def 'the notification that loses the latch leaves nothing pending for the plugin stop'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        cas.claimCompletion()
+        cas.completionWritten()
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        !CasObserver.PENDING.contains(observer)
+    }
+
+    def 'resetPending forgets observers whose run was never notified'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+
+        when:
+        CasObserver.resetPending()
+
+        then:
+        CasObserver.PENDING.isEmpty()
     }
 }

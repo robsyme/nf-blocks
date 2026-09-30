@@ -290,4 +290,56 @@ class JoinTest extends Specification {
         result.outputs[0].collection.items.isEmpty()
         result.anomalies.unaddressed == 0
     }
+    def 'a path outside the store is a never_published leaf with no publish path, and the join still completes'() {
+        // nf-core/rnaseq's workflow-output records carry the input FASTQs (https),
+        // which were never published; recording inputs by address is milestone 7.
+        given:
+        final cidA = rawCid(1)
+        final session = sessionWith([
+            'cas://lab/quant/A/A.sf': new CasSession.Publish(new StoreRef(cidA, 'A.sf'), 10L, 'head-node'),
+        ], dagCid(9))
+        final Path https = nextflow.file.FileHelper.asPath('https://example.org/testdata/SRR6357073_1.fastq.gz')
+        final Path local = java.nio.file.Paths.get('/data/reads/SRR6357073_2.fastq.gz')
+        final captured = [
+            quant: [
+                [[id: 'A'], [https, local], coord('cas://lab/quant/A/A.sf')],
+            ],
+        ] as Map<String, Object>
+
+        when:
+        final result = Join.join(captured, session)
+
+        then: 'the cas leaf is addressed; the https and local leaves are never_published under their file names'
+        final out = result.outputs[0]
+        final leaves = out.items[0].leaves()
+        leaves.size() == 3
+        final byName = leaves.collectEntries { [(it.name): it] }
+        byName['SRR6357073_1.fastq.gz'].reason == Leaf.NEVER_PUBLISHED
+        byName['SRR6357073_1.fastq.gz'].address == null
+        byName['SRR6357073_2.fastq.gz'].reason == Leaf.NEVER_PUBLISHED
+        byName['SRR6357073_2.fastq.gz'].address == null
+        byName['A.sf'].address == cidA
+        byName['A.sf'].reason == null
+
+        and: 'the paths entries of the outside leaves are null, in leaf order'
+        out.collection.paths == [[null, null, 'quant/A/A.sf']]
+
+        and: 'counted as never_published, and only the cas leaf is a join key'
+        result.anomalies.neverPublished == 2
+        result.anomalies.unaddressed == 0
+        result.anomalies.declined == 0
+        result.joinedKeys == ['cas://lab/quant/A/A.sf'] as Set
+    }
+
+    def 'a malformed cas path is still refused'() {
+        given:
+        final session = sessionWith([:], dagCid(9))
+        final Path storeUri = coord('cas://bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy/x.txt')
+
+        when:
+        Join.join([bad: [storeUri]] as Map<String, Object>, session)
+
+        then:
+        thrown(IllegalArgumentException)
+    }
 }
