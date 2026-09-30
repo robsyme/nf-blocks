@@ -444,12 +444,12 @@ class CasFileSystemProviderTest extends Specification {
         csvStyle(target)
 
         when:
-        target.text = 'fresh\n'
+        target.text = 'replaced\n'
         sess().finalizePending('cas://lab/records/index.csv')
 
         then:
-        coords.read('records/index.csv').get().cid == rawCidOf('fresh\n')
-        sess().publishFor('cas://lab/records/index.csv').size == 6
+        coords.read('records/index.csv').get().cid == rawCidOf('replaced\n')
+        sess().publishFor('cas://lab/records/index.csv').size == 9
     }
 
     def 'an APPEND onto a coordinate that already resolves seeds the spool with its content'() {
@@ -503,6 +503,26 @@ class CasFileSystemProviderTest extends Specification {
         dropped
         !coords.exists('records/index.csv')
         sess().publishFor('cas://lab/records/index.csv') == null
+    }
+
+    def 'finalizeAllPending drops a spool whose stream is still open and names it, finalising the rest'() {
+        given:
+        csvStyle(p('cas://lab/records/index.csv'))
+        def open = provider.newOutputStream(p('cas://lab/records/partial.csv'), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+        open.write('half'.getBytes('UTF-8'))
+
+        when:
+        def dropped = sess().finalizeAllPending()
+
+        then:
+        dropped == ['cas://lab/records/partial.csv']
+        !sess().hasPendingSpools()
+        sess().publishFor('cas://lab/records/partial.csv') == null
+        !coords.exists('records/partial.csv')
+        coords.read('records/index.csv').get().cid == rawCidOf('ab\ncd\n')
+
+        cleanup:
+        open?.close()
     }
 
     def 'finalizeAllPending leaves no spool file behind'() {

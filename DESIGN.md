@@ -782,8 +782,10 @@ member holds.
   an `upload`), when `onFilePublish` names it, and for every spool left at the
   join (`finalizeAllPending`, before `Join.join`). A later `APPEND` seeds a
   new spool from the published content. `delete`/`deleteIfExists` drop a
-  pending spool. A spool whose stream was never closed at the join aborts the
-  run; a failure to hash a spool from the observer aborts it too (rule 3).
+  pending spool. A spool whose stream is still open at the join (a publish
+  thread racing a failed run's completion) is dropped with a console warning
+  naming the coordinate, and the rest of the run is recorded; a failure to
+  hash or write a closed spool from the observer aborts the run (rule 3).
   Spool operations for one key are serialised on a per-key lock.
 - `delete`/`deleteIfExists` on a coordinate: remove the Pointer File only.
   Never touches a block.

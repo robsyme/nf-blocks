@@ -301,7 +301,10 @@ class CasObserver implements TraceObserverV2 {
     private void writeCompletion() {
         final Cid manifest = ensureManifest()
         // A write through the provider with no publish event is still recorded.
-        finalizeSpools { cas.finalizeAllPending() }
+        final List<String> unclosed = (List<String>) finalizeSpools { cas.finalizeAllPending() }
+        if( unclosed )
+            ConsoleLog.LOG.warn("nf-blocks: ${unclosed.size()} file(s) written through cas:// were still open when the run completed, so they are not recorded: " +
+                "${unclosed.take(3).join(', ')}${unclosed.size() > 3 ? ', ...' : ''}")
         final Join.Result joined = Join.join(capturedOutputs, capturedIndexes, cas)
 
         final List<String> unjoined = new ArrayList<String>(publishedKeys)
@@ -468,9 +471,9 @@ class CasObserver implements TraceObserverV2 {
     // ------------------------------------------------------------- plumbing
 
     /** Hashing a spool is a provenance write: a failure aborts the run (Rule 3). */
-    private static void finalizeSpools(Closure body) {
+    private static Object finalizeSpools(Closure body) {
         try {
-            body.call()
+            return body.call()
         }
         catch( AbortRunException e ) {
             throw e

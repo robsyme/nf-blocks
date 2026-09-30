@@ -15,7 +15,6 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.Global
 import nextflow.Session
-import nextflow.exception.AbortRunException
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
@@ -429,6 +428,7 @@ class CasSession {
         Spool spool = null
         synchronized( spoolLock(key) ) {
             Spool pending = spools.get(key)
+            // Assumes no stream on the old spool is still open: Nextflow writes one path sequentially.
             if( pending != null && !append ) {
                 spools.remove(key)
                 Files.deleteIfExists(pending.file)
@@ -517,11 +517,15 @@ class CasSession {
 
     /**
      * Every pending spool finalised, for the join (a write with no publish
-     * event is still recorded). A spool whose stream was never closed holds
-     * bytes no one finished writing: it is deleted and the run aborts naming
-     * it (DESIGN.md §0 rule 3).
+     * event is still recorded). A spool whose stream is still open holds bytes
+     * no one finished writing, most likely a publish thread racing a failed
+     * run's completion: it is deleted and its key returned, so the caller can
+     * warn and still record the rest of the run. A hash or write failure of a
+     * closed spool throws.
+     *
+     * @return the keys of the spools dropped because a stream on them was open, sorted
      */
-    void finalizeAllPending() throws IOException {
+    List<String> finalizeAllPending() throws IOException {
         final List<String> unclosed = new ArrayList<String>()
         for( String key : new ArrayList<String>(spools.keySet()) ) {
             finalizePending(key)
@@ -533,8 +537,7 @@ class CasSession {
                 }
             }
         }
-        if( !unclosed.isEmpty() )
-            throw new AbortRunException("cas: a stream written to ${unclosed.sort().join(', ')} was never closed; its content cannot be recorded")
+        return unclosed.sort()
     }
 
     /** Drops the coordinate's pending spool, as a delete does; true when there was one. */

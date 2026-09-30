@@ -859,6 +859,31 @@ class CasObserverTest extends Specification {
         cas.coordinates.read('notes.txt').get().cid == expected
     }
 
+    def 'a file still being written when the run completes is dropped with a warning, and the run is still recorded'() {
+        given: 'a failed run whose completion races a publish thread mid-append'
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/records/A/A.txt', 'A\n')
+        final Path idx = coord('cas://lab/records/index.csv')
+        final OutputStream open = provider.newOutputStream(idx, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+        open.write('"id"'.getBytes('UTF-8'))
+        observer.onWorkflowOutput(new WorkflowOutputEvent('records', [[[id: 'A'], a]], idx))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final completion = readBlock(latestCompletion())
+        (completion.collections as List).size() == 1
+        cas.publishFor('cas://lab/records/index.csv') == null
+        warnings(console, 'still open when the run completed') == 1
+        console.list.find { it.formattedMessage.contains('still open') }.formattedMessage.contains('cas://lab/records/index.csv')
+
+        cleanup:
+        open?.close()
+    }
+
     def 'a process that declares publishDir is warned about once'() {
         given:
         bind(config())
