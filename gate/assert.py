@@ -2016,142 +2016,15 @@ def retention_runs(store):
     return out
 
 
-def _run_items(store, completion_block):
-    """[(item cid, item block)] of every collection of a run."""
-    out = []
-    for link in completion_block.get("collections") or []:
-        collection = store.read_block(link.text)
-        for item in collection.get("items") or []:
-            if isinstance(item, cas.Cid):
-                out.append((item.text, store.read_block(item.text)))
-    return out
-
-
-def _content_under(store, address, out):
-    """`address` and, for a DirectoryManifest, everything under it."""
-    if address in out:
-        return
-    out.add(address)
-    if cas.cid_codec(address) != cas.DAG_CBOR:
-        store.read(address)                       # re-hashes the bytes
-        return
-    block = store.read_block(address)
-    if isinstance(block, dict) and block.get("kind") == "DirectoryManifest":
-        for e in block.get("entries") or []:
-            if isinstance(e, dict) and isinstance(e.get("address"), cas.Cid):
-                _content_under(store, e["address"].text, out)
-
-
-def content_closure(store, completion_block, only_items=None):
-    """Every content address under a run (or under only_items): each item's Leaf
-    addresses, and for a DirectoryManifest leaf, the manifest and everything
-    under it; with no only_items, each collection's index leaf too. Every
-    block is read through cas.Store.read, which re-hashes it."""
-    out = set()
-    items = _run_items(store, completion_block)
-    for cid, item in items:
-        if only_items is not None and cid not in only_items:
-            continue
-        for leaf in _leaves(item.get("value")):
-            if isinstance(leaf.get("address"), cas.Cid):
-                _content_under(store, leaf["address"].text, out)
-    if only_items is None:
-        for link in completion_block.get("collections") or []:
-            index = (store.read_block(link.text) or {}).get("index")
-            if isinstance(index, dict) and isinstance((index.get("leaf") or {}).get("address"), cas.Cid):
-                _content_under(store, index["leaf"]["address"].text, out)
-    return out
-
-
-def metadata_closure(store, completion_cid):
-    """The RunCompletion, its RunManifest and script, its collections and items."""
-    completion = store.read_block(completion_cid)
-    out = {completion_cid}
-    run = completion.get("run")
-    if isinstance(run, cas.Cid):
-        out.add(run.text)
-        script = store.read_block(run.text).get("script")
-        if isinstance(script, cas.Cid):
-            store.read(script.text)
-            out.add(script.text)
-    for link in completion.get("collections") or []:
-        out.add(link.text)
-    out.update(cid for cid, _item in _run_items(store, completion))
-    return out
-
-
-def _item_by_leaf_name(store, completion_block, name):
-    found = [cid for cid, item in _run_items(store, completion_block)
-             if any(leaf.get("name") == name for leaf in _leaves(item.get("value")))]
-    if len(found) != 1:
-        raise cas.GateError("expected one item with a Leaf named %s, found %d" % (name, len(found)))
-    return found[0]
-
-
 def retention_closures(store):
-    """Everything assertion 9 expects, computed from the blocks themselves."""
-    runs = retention_runs(store)
-    (a_cid, a_block), (b_cid, b_block) = runs["a"], runs["b"]
-    pinned = _item_by_leaf_name(store, b_block, "pin_b.txt")
-    dir_item = _item_by_leaf_name(store, b_block, "dir_b")
-    dir_leaf = [leaf for leaf in _leaves(store.read_block(dir_item).get("value"))
-                if leaf.get("name") == "dir_b"][0]
-    manifest = store.read_block(dir_leaf["address"].text)
-    ones = [e["address"].text for e in manifest.get("entries") or []
-            if e.get("name") == "one.txt" and isinstance(e.get("address"), cas.Cid)]
-    if len(ones) != 1:
-        raise cas.GateError("dir_b's DirectoryManifest has no one.txt entry")
-    return {
-        "runs": {"a": a_cid, "b": b_cid},
-        "a_content": sorted(content_closure(store, a_block)),
-        "b_content": sorted(content_closure(store, b_block)),
-        "pinned_item": pinned,
-        "pinned_content": sorted(content_closure(store, b_block, only_items={pinned})),
-        "a_meta": sorted(metadata_closure(store, a_cid)),
-        "b_meta": sorted(metadata_closure(store, b_cid)),
-        "b_one": ones[0],
-    }
-
-
-def _parse_claim(store, cid):
-    try:
-        block = store.read_block(cid)
-    except cas.GateError:
-        return None
-    if not isinstance(block, dict) or block.get("kind") != "Claim":
-        return None
-    return block
-
-
-def _retain_claims(store, subject):
-    """[(rts, cid, block)] of every retain Claim on `subject` in the Store Log,
-    oldest first."""
-    out = []
-    for rts, kind, cid in store.store_log():
-        if kind != "claim":
-            continue
-        block = _parse_claim(store, cid)
-        if block and _address_text(block.get("subject")) == subject and block.get("attribute") == "retain":
-            out.append((rts, cid, block))
-    out.sort(key=lambda row: row[0], reverse=True)   # reverse timestamps: oldest first
-    return out
+    """Everything assertion 9 expects, computed from the blocks themselves (the
+    closure and Claim code is gate/cas.py's, shared with tier two's T7)."""
+    return cas.retention_closures(store, retention_runs(store))
 
 
 def retention_refs(gate):
     store = retention_store(gate)
-    runs = retention_runs(store)
-    b_cid, b_block = runs["b"]
-    claims = _retain_claims(store, b_cid)
-    superseded = {s.text for _r, _c, block in claims for s in block.get("supersedes") or []
-                  if isinstance(s, cas.Cid)}
-    current_sets = [cid for _r, cid, block in claims
-                    if cid not in superseded and block.get("verb") == "set"]
-    dels = [cid for _r, cid, block in claims if block.get("verb") == "del"]
-    # RET_RELEASE: the newest current `set retain` (what a restore supersedes);
-    # RET_RESTORE: the newest `del retain` (what a second release supersedes).
-    return {"RET_A": runs["a"][0], "RET_B": b_cid,
-            "RET_PIN_ITEM": _item_by_leaf_name(store, b_block, "pin_b.txt"),
-            "RET_RELEASE": (current_sets or [""])[-1], "RET_RESTORE": (dels or [""])[-1]}
+    return cas.retention_refs(store, retention_runs(store))
 
 
 def retention_age(gate, days):
@@ -2262,22 +2135,31 @@ def _verb_json(logs, step):
         return None
 
 
-@assertion(9, "sweep and trash")
-def assertion_9(gate):
-    store = retention_store(gate)
-    logs = _retention_logs(gate)
-    problems = []
+def load_retention_checkpoints(directory, hint):
+    """({name: checkpoint}, None), or (None, why) when one is missing."""
     cp = {}
     for name in RETENTION_CHECKPOINTS:
-        path = os.path.join(logs, name + ".json")
+        path = os.path.join(directory, name + ".json")
         if not os.path.isfile(path):
-            return FAIL, "no checkpoint %s (gate.sh writes it with --retention-checkpoint)" % path
+            return None, "no checkpoint %s (%s)" % (path, hint)
         with open(path) as fh:
             cp[name] = json.load(fh)
+    return cp, None
+
+
+def retention_problems(cp, logs, store, run_exits, refused_run):
+    """Assertion 9's eight steps over checkpoints `cp`, the verbs' <step>.exit,
+    .out and .err files in `logs`, the member `store` as it is now (for its
+    Store Log's Claims), {run name: exit code} of the two runs, and the run
+    name the refused sweep must name. Shared with tier two's T7.
+
+    (problems, summary): summary is None when the checkpoints give nothing to
+    judge, else {"unshared": n, "meta_b": n}."""
+    problems = []
     first = cp["after-runs"]
     if "closures" not in first:
-        return FAIL, ("after-runs: the Gate could not resolve both runs from store-retention's "
-                      "blocks: %s" % first.get("closures_error"))
+        return ["after-runs: the Gate could not resolve both runs from the member's blocks: %s"
+                % first.get("closures_error")], None
     c = first["closures"]
     b_cid, a_cid = c["runs"]["b"], c["runs"]["a"]
     shared_with_a = set(c["a_content"])
@@ -2285,7 +2167,7 @@ def assertion_9(gate):
     unshared = set(c["b_content"]) - shared_with_a - pinned
     meta_b, meta_a = set(c["b_meta"]), set(c["a_meta"])
     if not unshared:
-        return FAIL, "run b has no content a does not share and the pin does not hold; nothing to test"
+        return ["run b has no content a does not share and the pin does not hold; nothing to test"], None
 
     def kind_of(cid):
         if cid in meta_b or cid in meta_a:
@@ -2319,9 +2201,9 @@ def assertion_9(gate):
         if code != want:
             problems.append("%s exited %s, expected %d (see %s/%s.err)" % (step, code, want, logs, step))
 
-    for run in RETENTION_RUNS:
-        if gate.exit_code(run) != 0:
-            problems.append("run %s exited %s" % (run, gate.exit_code(run)))
+    for run, code in sorted(run_exits.items()):
+        if code != 0:
+            problems.append("run %s exited %s" % (run, code))
 
     # 1. The dry run straight after the runs: nothing dead, nothing written.
     exit_is("dry-1", 0)
@@ -2343,25 +2225,21 @@ def assertion_9(gate):
     exit_is("prune", 0)
     exit_is("pin", 0)
     before = set(cp["before-sweep"]["blocks"])
-    releases = [cid for _r, cid, block in _retain_claims(store, b_cid)
+    releases = [cid for _r, cid, block in cas.retain_claims(store, b_cid)
                 if block.get("verb") == "set" and block.get("value") == "lineage"
                 and cid in before and cid not in first["blocks"]]
     if not releases:
         problems.append("no set retain \"lineage\" Claim on run b's RunCompletion %s in the Store Log "
                         "before the first sweep (prune --keep-last 1 should have written one)" % b_cid)
-    if _retain_claims(store, a_cid):
+    if cas.retain_claims(store, a_cid):
         problems.append("run a, the newest run, carries a retain Claim; prune --keep-last 1 keeps it")
-    pins = [cid for _rts, kind, cid in store.store_log() if kind == "claim"
-            for block in [_parse_claim(store, cid)]
-            if block and _address_text(block.get("subject")) == c["pinned_item"]
-            and block.get("verb") == "add" and block.get("attribute") == "pin"]
-    if not pins:
+    if not cas.pin_claims(store, c["pinned_item"]):
         problems.append("no add pin Claim on b's pin_b item %s in the Store Log" % c["pinned_item"])
 
     # 3. A fresh registration refuses --apply and names the run.
     exit_is("live-refused", 1)
-    if "gate_fake_run" not in _verb_text(logs, "live-refused"):
-        problems.append("the refused sweep's output does not name the live run gate_fake_run")
+    if refused_run not in _verb_text(logs, "live-refused"):
+        problems.append("the refused sweep's output does not name the live run %s" % refused_run)
     if "gate-fake" not in cp["before-sweep"]["live"]:
         problems.append("before-sweep: the stale fake registration live/gate-fake is not there to clean up")
 
@@ -2430,11 +2308,24 @@ def assertion_9(gate):
     if s4["live"]:
         problems.append("after-sweep-4: live/ holds %s" % s4["live"])
 
+    return problems, {"unshared": len(unshared), "meta_b": len(meta_b)}
+
+
+RETENTION_SUMMARY = ("released run's %(unshared)d unshared blocks trashed, restored by del retain, then deleted "
+                     "past the deadline; its %(meta_b)d metadata blocks, the pinned item and shared content kept")
+
+
+@assertion(9, "sweep and trash")
+def assertion_9(gate):
+    logs = _retention_logs(gate)
+    cp, missing = load_retention_checkpoints(logs, "gate.sh writes it with --retention-checkpoint")
+    if missing:
+        return FAIL, missing
+    problems, summary = retention_problems(cp, logs, retention_store(gate),
+                                           {run: gate.exit_code(run) for run in RETENTION_RUNS}, "gate_fake_run")
     if problems:
         return FAIL, "; ".join(problems[:5])
-    return PASS, ("released run's %d unshared blocks trashed, restored by del retain, then deleted past the "
-                  "deadline; its %d metadata blocks, the pinned item and shared content kept"
-                  % (len(unshared), len(meta_b)))
+    return PASS, RETENTION_SUMMARY % summary
 
 
 # --------------------------------------------------------------------------

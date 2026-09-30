@@ -35,7 +35,7 @@ first use.
 
 One run id, `t2-<UTC date>-<time>-<random>`, names everything:
 
-    s3://nf-blocks-t2-<run id>/                     the members: cas, cas-t2, cas-out, cas-t6, cas-sarek (us-east-1)
+    s3://nf-blocks-t2-<run id>/                     the members: cas, cas-t2, cas-out, cas-t6, cas-sarek, cas-t7 (us-east-1)
     s3://scidev-playground-us-east-1/robsyme/nf-blocks-gate/<run id>/work/
                                                     the Batch work dir (the instance role allows only that bucket)
     $GATE_ROOT/tier2/<run id>/                      logs, traces, evidence; kept
@@ -70,6 +70,7 @@ remains. `T2_TIMEOUT` (seconds) shortens the watchdog for testing the harness.
 | t4 | consumer, on Batch | off | `cas-out` (`out`), reading `lab` = `cas` |
 | t5 | consumer again, its cache deleted | off | as t4 |
 | t6a, t6b | Test Pipeline from two launch dirs, started together | off | `cas-t6` (fresh) |
+| t7b, t7a | `gate/retention` (`--tag b`, then `--tag a`), local executor | off | `cas-t7` (fresh) |
 
 `ts` is started first, in the background: nf-core/sarek's test profile is the
 longest run (about 15 min) of the tier, so it runs beside t1 through t6 rather
@@ -86,6 +87,34 @@ image.
 After t6 the harness runs `nf-blocks:items` and `nf-blocks:snapshot` against
 `cas-t6`, then up to three attempts at two snapshot verbs started together, and
 a boto3 probe of S3's own If-Match refusal.
+
+T7's two runs go next, before t1: `gate/retention`, the pipeline of tier
+one's assertion 9, on the local executor with `gate/tier2/t7.config` applied
+last (T7 is about the S3 member, not Batch). Straight after them come the
+dry-run sweep and a fake registration `live/gate-fake`. The rest of T7 runs
+after ts: gate.sh's retention sequence (prune, pin, a refused sweep, four real
+sweeps, untrash, restore, release again), with `verb` pointed at `cas-t7` and
+each checkpoint read from S3 by `assert_tier2.py t7-checkpoint <name>`.
+
+S3's `LastModified` cannot be backdated the way tier one backdates a local
+store's mtimes. So `t7.config` sets `cas.sweep.ageFloor = '10m'`, the minimum
+(plan decision 8), and T7's sweeps come about 40 minutes after its runs. By
+then its blocks are well past the floor, and `live/gate-fake` is well past the
+10 minutes after which a registration is stale. If T1 to TS ever finish
+sooner, the harness waits until the youngest of those objects is 11 minutes
+old by S3's clock (`LastModified` against the `Date` of the same listing) and
+prints how long it waits and why. Since the stale registration cannot refuse
+a sweep, the refusal check writes a second, fresh one (`live/gate-fresh`, run
+`gate_fresh_run`) just before the refused sweep and deletes it right after.
+
+Each T7 verb runs with `-log logs/t7/<step>.nextflow.log -trace
+software.amazon.awssdk.request`, so the AWS SDK logs every request's method,
+path, header names and query parameter names there. That log is the only
+place tier two can see which writes were conditional and how blocks were
+deleted.
+
+T7 adds about 2 minutes before t1 and about 5 minutes after ts, which brings a
+typical tier two close to the 45-minute watchdog.
 
 `gate/tier2/small` is ALIGN and QC_DIR of the Test Pipeline, verbatim, for
 sample A, under the Pipeline Identity `cas-tier2-small`. It must stay in step
@@ -163,6 +192,32 @@ number of `cas-sarek`'s `coords/` pointers that name a block neither an item
 the declared workflow output), and is greater than zero. `logs/ts/` names at
 least one "uses publishDir" warning (Task 3).
 
+T7 (ticket 21 answer 7, spec assertion 9 on an S3 member). These are the
+eight checks of tier one's assertion 9 (`gate/assert.py retention_problems`),
+run over checkpoints read from `cas-t7` with boto3. Every expected set comes
+from blocks the harness read and re-hashed (`s3gate.Blocks`, the closure code
+in `gate/cas.py` that assertion 9 also uses), taken at `after-runs`, before
+anything is swept. Of the plugin's output it reads only the dry run's
+`applied` and `dead`, each verb's exit status, and the refused sweep's
+mention of `gate_fresh_run`. Beyond those eight, T7 checks what only an S3
+member shows:
+
+- After every real sweep, `sweep.lock`'s body in S3 has state `released`.
+- In the SDK log of every verb that takes the lock (the refused sweep,
+  untrash, and sweeps 1 to 4), each PUT of `cas-t7/sweep.lock` carries
+  `If-None-Match` or `If-Match`. The first one, in the refused sweep, carries
+  `If-None-Match`, and every one of those verbs releases with an `If-Match`
+  PUT.
+- Sweeps 1 and 3 each PUT their ledger under `cas-t7/trash/`, and the
+  checkpoints find exactly one ledger object there.
+- Sweep 4 deletes with `DeleteObjects` (a POST with `?delete`), and no verb
+  deletes a `cas-t7/blocks/` key with its own DELETE.
+- At `before-sweep`, `live/gate-fake` is at least 11 minutes old by S3's
+  clock and `live/gate-fresh` is gone. After sweep 1, `live/` is empty.
+- No `log/` entry present before the sweeps is missing after sweep 4. None of
+  the deleted blocks has a Store Log entry, and the sweep removes a dangling
+  entry only once it is older than the age floor.
+
 After the table the harness prints the Batch job count and total job seconds
 from `trace/*.txt`, and each producer's `nf-blocks: the head node read ...`
 line. Those are reported, never asserted. The head node is a laptop nearest
@@ -175,9 +230,13 @@ ids.env                  BUCKET, WORK, RUN_ID
 pids, pids.done          every nextflow the harness started, and those it has reaped
 logs/<run>/              stdout.log nextflow.log exit (refs.log for t4, t5)
 logs/t6-*.txt            the plugin verbs' output
+logs/t7/<step>.*         T7's verbs: .out .err .exit, .nextflow.log (with the AWS SDK's request log),
+                         .request (a put's Claim)
+logs/t7a/, logs/t7b/     T7's two runs, as logs/<run>/
 trace/<run>.txt          Nextflow's trace: task_id hash native_id name status exit realtime workdir
 evidence/                refs-t4.env refs-t5.env, if-match.json, cas-out-after-t4.json, downloaded
-                         snapshots (*.sqlite), coords-cas.json, command-cas/t2/*.command.cas
+                         snapshots (*.sqlite), coords-cas.json, command-cas/t2/*.command.cas,
+                         t7/<checkpoint>.json (cas-t7 read from S3 between T7's steps)
 <run>/                   each run's launch directory
-cache-<run>/, cache-consumer/   each head-node index cache
+cache-<run>/, cache-consumer/, cache-t7/   each head-node index cache (cache-t7: every T7 verb)
 ```

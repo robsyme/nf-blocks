@@ -4,9 +4,15 @@
 #                                                 the qc/A/A_qc manifest of cas, t2b's, whose alias.txt is symlink, as
 #                                                 the Item Occurrence cas://<collection>/<item>/A_qc
 #   assert_tier2.py t6-refs <T2_ROOT>             T6_RUNS
+#   assert_tier2.py t7-refs <T2_ROOT>             T7_A, T7_B, T7_PIN_ITEM, T7_RELEASE, T7_RESTORE (all five, empty when
+#                                                 the runs cannot be resolved)
+#   assert_tier2.py t7-checkpoint <T2_ROOT> <name> evidence/t7/<name>.json, read from cas-t7 in S3
+#   assert_tier2.py t7-untrash-pick <T2_ROOT>     b's one.txt, from cas-t7's one Trash ledger
+#   assert_tier2.py t7-wait <T2_ROOT>             seconds until cas-t7's blocks and live/gate-fake are 11 minutes old
+#                                                 by S3's clock (0 when they are), then why, on one line
 #   assert_tier2.py check <T2_ROOT> <GATE_ROOT>   the table; exit 1 on any FAIL
 #   assert_tier2.py summary <T2_ROOT>             Batch job count, total job seconds, head-node lines (reported only)
-"""Gate tier two's assertions (ticket 11 T1-T6, T2b).
+"""Gate tier two's assertions (ticket 11 T1-T6, T2b; ticket 18 TS; ticket 21 answer 7 T7).
 
 Every address checked here is derived with hashlib from bytes read out of S3 by
 boto3 (gate/tier2/s3gate.py): the work bucket's task outputs, the member's
@@ -22,6 +28,7 @@ import re
 import shlex
 import sqlite3
 import sys
+from urllib.parse import unquote
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -842,6 +849,228 @@ def ts(ctx):
                               "publishDir warning" % (len(items), recorded, actual))
 
 
+# --------------------------------------------------------------------------
+# T7 (ticket 21 answer 7): Gate assertion 9's retention sequence on an S3 member
+# --------------------------------------------------------------------------
+# gate/retention's two runs (--tag b, then --tag a) into the fresh member cas-t7, on the local executor,
+# then tier2.sh's t7verb drives sweep, prune, untrash and put against it. S3's LastModified cannot be
+# backdated, so gate/tier2/t7.config sets cas.sweep.ageFloor = '10m' (the minimum) and the harness waits
+# until everything the runs wrote is 11 minutes old by S3's clock. The eight checks are assertion 9's own
+# (gate/assert.py retention_problems, over checkpoints read here from S3 and re-hashed); T7 adds what only
+# an S3 member shows, from the AWS SDK's request log of each verb (-trace software.amazon.awssdk.request).
+
+T7_MEMBER = "cas-t7"
+T7_RUNS = {"a": "t7a", "b": "t7b"}
+T7_STALE = "gate-fake"            # written before T1, stale (over 10 minutes by S3's clock) by sweep-1
+T7_FRESH = "gate-fresh"           # written just before live-refused, deleted just after it
+T7_FRESH_RUN = "gate_fresh_run"
+T7_AGE = 660                      # seconds: 11 minutes, a minute past the age floor and the 10-minute staleness
+T7_LOCKING_STEPS = ("live-refused", "sweep-1", "untrash", "sweep-2", "sweep-3", "sweep-4")   # each takes sweep.lock
+
+
+def t7_runs(ctx):
+    """{'a': (cid, block), 'b': (cid, block)} of t7a and t7b in cas-t7's Store Log."""
+    out = {}
+    for tag, name in sorted(T7_RUNS.items()):
+        run = ctx.run(T7_MEMBER, name)
+        if run is None:
+            raise cas.GateError("no RunCompletion of %s in s3://%s/%s's Store Log" % (name, ctx.bucket, T7_MEMBER))
+        out[tag] = (run.completion_cid, run.completion)
+    return out
+
+
+def t7_blocks(ctx):
+    return s3gate.Blocks(ctx.member(T7_MEMBER))
+
+
+def t7_checkpoint(ctx, name):
+    """evidence/t7/<name>.json, the shape gate/assert.py retention_checkpoint writes for a local member, read
+    from S3: every block address present, every ledger under trash/ parsed, the sweep.lock body, the live/
+    names, the closures computed now from verified blocks (or why not); plus live/ ages and the clock (S3's
+    Date) they were judged by, and the Store Log's names."""
+    m = ctx.member(T7_MEMBER)
+    blocks, _date = m.listing("blocks/")
+    ledgers = {}
+    for rel, _mtime in m.listing("trash/")[0]:
+        body = m.read(rel)
+        try:
+            ledgers[rel[len("trash/"):]] = json.loads(body.decode("utf-8"))
+        except ValueError as exc:
+            ledgers[rel[len("trash/"):]] = {"unparsable": str(exc)}
+    lock = m.body_or_none("sweep.lock")
+    live, clock = m.listing("live/")
+    data = {"name": name,
+            "blocks": sorted(rel.rsplit("/", 1)[1] for rel, _t in blocks if cas.is_cid(rel.rsplit("/", 1)[1])),
+            "ledgers": ledgers,
+            "lock": lock.decode("utf-8", "replace") if lock is not None else None,
+            "live": sorted(rel[len("live/"):] for rel, _t in live),
+            "live_ages": {rel[len("live/"):]: (clock - t if clock is not None and t is not None else None)
+                          for rel, t in live},
+            "clock": clock,
+            "log": sorted(m.log())}
+    try:
+        data["closures"] = cas.retention_closures(t7_blocks(ctx), t7_runs(ctx))
+    except Exception as exc:
+        data["closures_error"] = "%s: %s" % (type(exc).__name__, exc)
+    with open(ctx.evidence("t7", name + ".json"), "w") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True)
+    return data
+
+
+def t7_refs(ctx):
+    """T7_A, T7_B, T7_PIN_ITEM, T7_RELEASE, T7_RESTORE: gate/assert.py's RET_* for cas-t7."""
+    refs = cas.retention_refs(t7_blocks(ctx), t7_runs(ctx))
+    return {"T7_" + key[len("RET_"):]: value for key, value in sorted(refs.items())}
+
+
+def t7_untrash_pick(ctx):
+    """b's one.txt, which must sit in cas-t7's one Trash ledger: from the after-runs checkpoint's closures,
+    which the Gate computed from verified blocks, else from the blocks now."""
+    recorded = (_json(os.path.join(ctx.root, "evidence", "t7", "after-runs.json")) or {}).get("closures")
+    one = (recorded or cas.retention_closures(t7_blocks(ctx), t7_runs(ctx)))["b_one"]
+    m = ctx.member(T7_MEMBER)
+    names = [rel[len("trash/"):] for rel, _t in m.listing("trash/")[0]]
+    holding = [n for n in names
+               if one in {b.get("cid") for b in json.loads(m.read("trash/" + n).decode()).get("blocks") or []
+                          if isinstance(b, dict)}]
+    if len(names) != 1 or holding != names:
+        raise cas.GateError("b's one.txt %s is not in cas-t7's one Trash ledger (ledgers: %s)" % (one, ", ".join(names) or "none"))
+    return one
+
+
+def t7_wait(ctx, before="after-runs"):
+    """(seconds, why): how long until every block the checkpoint `before` recorded and live/gate-fake are
+    T7_AGE old by S3's clock. A member's clock is S3's (LastModified against the Date of the same listing),
+    so the harness cannot backdate anything; it waits instead."""
+    m = ctx.member(T7_MEMBER)
+    recorded = set((_json(os.path.join(ctx.root, "evidence", "t7", before + ".json")) or {}).get("blocks") or [])
+    blocks, clock = m.listing("blocks/")
+    live, live_clock = m.listing("live/")
+    clock = live_clock if live_clock is not None else clock
+    if clock is None:
+        return 0, "S3 sent no Date header; not waiting"
+    ages = [clock - t for rel, t in blocks if t is not None and rel.rsplit("/", 1)[1] in recorded]
+    ages += [clock - t for rel, t in live if t is not None and rel == "live/" + T7_STALE]
+    if not ages:
+        return 0, "nothing of T7's runs is in s3://%s/%s; not waiting" % (ctx.bucket, T7_MEMBER)
+    youngest = min(ages)
+    left = int(max(0, T7_AGE - youngest) + 0.999)
+    if not left:
+        return 0, "T7's blocks and live/%s are at least %d s old by S3's clock" % (T7_STALE, youngest)
+    return left, ("T7 waits %d s: its youngest block or live/%s is %d s old by S3's clock, and the sweep needs "
+                  "them past cas.sweep.ageFloor (10m, t7.config) and the registration past 10 minutes stale; "
+                  "S3's LastModified cannot be backdated" % (left, T7_STALE, youngest))
+
+
+_SDK_REQUEST = re.compile(r"(?:Sending|Retrying) Request: DefaultSdkHttpFullRequest\((.*)\)\s*$")
+
+
+def parse_sdk_requests(text):
+    """[(method, path, {header names, lower case}, {query parameter names})] of the AWS SDK's request log
+    lines (software.amazon.awssdk.request at DEBUG: DefaultSdkHttpFullRequest's toString, header names only)."""
+    out = []
+    for line in text.splitlines():
+        m = _SDK_REQUEST.search(line)
+        if not m:
+            continue
+        body = m.group(1)
+        method = re.search(r"httpMethod=([A-Z]+)", body)
+        path = re.search(r"encodedPath=([^,\s)]*)", body)
+        headers = re.search(r"headers=\[([^\]]*)\]", body)
+        query = re.search(r"queryParameters=\[([^\]]*)\]", body)
+
+        def names(match, lower):
+            items = [n.strip() for n in (match.group(1).split(",") if match else []) if n.strip()]
+            return {n.lower() for n in items} if lower else set(items)
+        out.append((method.group(1) if method else "", unquote(path.group(1)) if path else "",
+                    names(headers, True), names(query, False)))
+    return out
+
+
+def t7_sdk_problems(ctx):
+    """What the SDK's request log of each verb that takes sweep.lock shows: sweep.lock only ever PUT conditionally (taken
+    with If-None-Match the first time, released with If-Match every time), each Trash ledger PUT under
+    cas-t7/trash/, and blocks deleted by DeleteObjects (POST ?delete), never one DELETE per block."""
+    problems = []
+    lock_key, blocks_under = "/%s/sweep.lock" % T7_MEMBER, "/%s/blocks/" % T7_MEMBER
+    first_lock_put = None
+    delete_objects = 0
+    for step in T7_LOCKING_STEPS:
+        path = os.path.join(ctx.root, "logs", "t7", step + ".nextflow.log")
+        requests = parse_sdk_requests(ctx.text("logs", "t7", step + ".nextflow.log"))
+        if not requests:
+            problems.append("%s: no AWS SDK request line in %s (tier2.sh runs each verb with -trace "
+                            "software.amazon.awssdk.request)" % (step, path))
+            continue
+        lock_puts = [headers for method, p, headers, _q in requests if method == "PUT" and p.endswith(lock_key)]
+        if first_lock_put is None and lock_puts:
+            first_lock_put = (step, lock_puts[0])
+        bare = [h for h in lock_puts if not ({"if-none-match", "if-match"} & h)]
+        if bare:
+            problems.append("%s PUT sweep.lock %d time(s) without If-None-Match or If-Match" % (step, len(bare)))
+        if not any("if-match" in h for h in lock_puts):
+            problems.append("%s never PUT sweep.lock with If-Match (the release)" % step)
+        singles = [p for method, p, _h, _q in requests if method == "DELETE" and blocks_under in p]
+        if singles:
+            problems.append("%s deleted %d block(s) one DELETE at a time (%s), not by DeleteObjects"
+                            % (step, len(singles), _few(singles, 2)))
+        posts = [q for method, _p, _h, q in requests if method == "POST" and "delete" in q]
+        delete_objects += len(posts)
+        if step == "sweep-4" and not posts:
+            problems.append("sweep-4 deleted past the deadline without a DeleteObjects request (POST ?delete)")
+        if step in ("sweep-1", "sweep-3"):
+            puts = [p for method, p, _h, _q in requests if method == "PUT" and "/%s/trash/" % T7_MEMBER in p]
+            if not puts:
+                problems.append("%s wrote no Trash ledger object under %s/trash/" % (step, T7_MEMBER))
+    if first_lock_put is None:
+        problems.append("no verb PUT %s/sweep.lock" % T7_MEMBER)
+    elif "if-none-match" not in first_lock_put[1]:
+        problems.append("%s took the absent sweep.lock without If-None-Match" % first_lock_put[0])
+    return problems, delete_objects
+
+
+def t7(ctx):
+    """Gate assertion 9 on an S3 member, plus: sweep.lock taken and released with conditional writes (its body
+    `released` in S3 after every sweep), each ledger an object under cas-t7/trash/, the deletion by
+    DeleteObjects, a stale live/ object (11 minutes old by S3's clock) deleted, and no log/ entry swept."""
+    t1_module = _tier_one()
+    evidence, logs = os.path.join(ctx.root, "evidence", "t7"), os.path.join(ctx.root, "logs", "t7")
+    cp, missing = t1_module.load_retention_checkpoints(evidence, "tier2.sh writes it with assert_tier2.py t7-checkpoint")
+    if missing:
+        return FAIL, missing
+    problems, summary = t1_module.retention_problems(
+        cp, logs, t7_blocks(ctx), {name: ctx.exit(name) for name in sorted(T7_RUNS.values())}, T7_FRESH_RUN)
+    for name in ("after-sweep-1", "after-sweep-2", "after-sweep-3", "after-sweep-4"):
+        lock = cp[name].get("lock")
+        try:
+            state = json.loads(lock).get("state") if lock is not None else None
+        except (ValueError, AttributeError):
+            state = "unparsable"
+        if state != "released":
+            problems.append("%s: s3://%s/%s/sweep.lock is %r, expected a body with state released"
+                            % (name, ctx.bucket, T7_MEMBER, lock))
+    before = cp["before-sweep"]
+    age = (before.get("live_ages") or {}).get(T7_STALE)
+    if age is None or age < T7_AGE:
+        problems.append("before-sweep: live/%s is %s s old by S3's clock, not the %d s the stale check needs"
+                        % (T7_STALE, "no" if age is None else "%.0f" % age, T7_AGE))
+    if T7_FRESH in (before.get("live") or ()):
+        problems.append("before-sweep: the fresh registration live/%s was not deleted after live-refused" % T7_FRESH)
+    kept = set(cp["after-sweep-4"].get("log") or [])
+    swept = sorted(set(before.get("log") or []) - kept)
+    if swept:
+        problems.append("the sweeps removed %d Store Log entr(ies) though no deleted block has one: %s"
+                        % (len(swept), _few(swept, 2)))
+    sdk, delete_objects = t7_sdk_problems(ctx)
+    problems.extend(sdk)
+    if problems:
+        return FAIL, "; ".join(problems[:6])
+    return PASS, (t1_module.RETENTION_SUMMARY % summary + "; in s3://%s/%s sweep.lock was taken with If-None-Match "
+                  "and released with If-Match, the ledgers were objects under trash/, %d DeleteObjects request(s) "
+                  "deleted the released blocks, and live/%s (%.0f s old by S3's clock) was deleted"
+                  % (ctx.bucket, T7_MEMBER, delete_objects, T7_STALE, age))
+
+
 CHECKS = [("T1", "cloud executor publish (assertion 12)", t1),
           ("T2", "Fusion publish into a fresh member (assertion 11)", t2),
           ("T2b", "Fusion publish into T1's member", t2b),
@@ -849,7 +1078,8 @@ CHECKS = [("T1", "cloud executor publish (assertion 12)", t1),
           ("T4", "the consumer on Batch reads back (assertion 6)", t4),
           ("T5", "a cold consumer cache seeds from S3 (ticket 04)", t5),
           ("T6", "two writers into one member (ticket 03 decision 6)", t6),
-          ("TS", "nf-core/sarek: its workflow output joins and its publishDir files are counted (ticket 18)", ts)]
+          ("TS", "nf-core/sarek: its workflow output joins and its publishDir files are counted (ticket 18)", ts),
+          ("T7", "retention on an S3 member: release, pin, sweep, restore, delete (assertion 9)", t7)]
 
 
 # --------------------------------------------------------------------------
@@ -967,6 +1197,32 @@ def main(argv):
         ids = read_ids(argv[2])
         for key, value in t6_refs(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2])).items():
             print("%s=%s" % (key, _shquote(value)))
+        return 0
+    if len(argv) >= 3 and argv[1] == "t7-refs":
+        ids = read_ids(argv[2])
+        try:
+            values = t7_refs(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2]))
+        except Exception as exc:
+            sys.stderr.write("t7-refs: %s: %s\n" % (type(exc).__name__, exc))
+            values = {k: "" for k in ("T7_A", "T7_B", "T7_PIN_ITEM", "T7_RELEASE", "T7_RESTORE")}
+        for key, value in sorted(values.items()):
+            print("%s=%s" % (key, _shquote(value)))
+        return 0
+    if len(argv) == 4 and argv[1] == "t7-checkpoint":
+        ids = read_ids(argv[2])
+        data = t7_checkpoint(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2]), argv[3])
+        print("    t7 checkpoint %s: %d blocks, %d ledger(s), live %s%s" % (
+            argv[3], len(data["blocks"]), len(data["ledgers"]), data["live"] or "empty",
+            "" if "closures" in data else "; " + data.get("closures_error", "")))
+        return 0
+    if len(argv) == 3 and argv[1] == "t7-untrash-pick":
+        ids = read_ids(argv[2])
+        print(t7_untrash_pick(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2])))
+        return 0
+    if len(argv) == 3 and argv[1] == "t7-wait":
+        ids = read_ids(argv[2])
+        seconds, why = t7_wait(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2]))
+        print("%d %s" % (seconds, why))
         return 0
     if len(argv) == 4 and argv[1] == "check":
         return check(Ctx.from_root(argv[2], argv[3]))

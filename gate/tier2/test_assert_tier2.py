@@ -3,6 +3,8 @@
 Run: python3 -m unittest discover -s gate/tier2
 """
 import contextlib
+import datetime
+import email.utils
 import hashlib
 import io
 import json
@@ -70,7 +72,11 @@ class Paginator(object):
             yield {"Uploads": [u for u in self.s3.uploads if u["Bucket"] == Bucket and u["Key"].startswith(Prefix)]}
             return
         keys = sorted(k for (b, k) in self.s3.objects if b == Bucket and k.startswith(Prefix))
-        yield {"Contents": [{"Key": k, "Size": len(self.s3.objects[(Bucket, k)])} for k in keys]}
+        yield {"Contents": [{"Key": k, "Size": len(self.s3.objects[(Bucket, k)]),
+                             "LastModified": datetime.datetime.fromtimestamp(self.s3.modified[(Bucket, k)],
+                                                                            datetime.timezone.utc)}
+                            for k in keys],
+               "ResponseMetadata": {"HTTPHeaders": {"date": email.utils.formatdate(self.s3.now, usegmt=True)}}}
 
 
 class FakeS3(object):
@@ -80,10 +86,12 @@ class FakeS3(object):
     def __init__(self):
         self.objects, self.metadata, self.deleted_buckets = {}, {}, []
         self.missing, self.uploads, self.undeletable, self.late = set(), [], set(), {}
+        self.now, self.modified = 1759233600.0, {}      # S3's clock (2026-09-30T12:00Z): LastModified and Date
 
     def put(self, bucket, key, data, metadata=None):
         self.objects[(bucket, key)] = data
         self.metadata[(bucket, key)] = metadata or {}
+        self.modified[(bucket, key)] = self.now
 
     def get_paginator(self, name):
         return Paginator(self, name)
@@ -120,7 +128,7 @@ class FakeS3(object):
                 self.objects.pop((Bucket, o["Key"]), None)
         for (bucket, key), data in list(self.late.items()):   # a writer that was still running
             if bucket == Bucket:
-                self.objects[(bucket, key)] = data
+                self.put(bucket, key, data)
                 del self.late[(bucket, key)]
         return {"Errors": errors} if errors else {}
 
@@ -174,6 +182,7 @@ class World(object):
         self._work()
         self._members()
         self._logs()
+        build_t7(self)
 
     # -- the work bucket -------------------------------------------------
     def _work(self):
@@ -423,6 +432,159 @@ class World(object):
 
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# T7: gate/retention's two runs in cas-t7 and the verbs' sequence, as an honest tier2.sh leaves them
+# --------------------------------------------------------------------------
+
+T7 = t.T7_MEMBER
+T7_HOST = "%s.s3.us-east-1.amazonaws.com" % BUCKET
+
+
+def sdk_line(method, path, headers=(), query=()):
+    """One line of the AWS SDK's request log as Nextflow's file appender writes it."""
+    return ("Sep-30 12:00:00.000 [main] DEBUG software.amazon.awssdk.request - Sending Request: "
+            "DefaultSdkHttpFullRequest(httpMethod=%s, protocol=https, host=%s, encodedPath=%s, headers=[%s], "
+            "queryParameters=[%s])\n" % (method, T7_HOST, path, ", ".join(["amz-sdk-invocation-id", "Content-Length"]
+                                                                            + list(headers) + ["User-Agent"]),
+                                          ", ".join(query)))
+
+
+def lock_take(first=False):
+    """The requests of SweepLock.take: If-None-Match, and when the lock exists, a read and an If-Match PUT."""
+    put = ("PUT", "/%s/sweep.lock" % T7, ["Content-Type", "If-None-Match"])
+    if first:
+        return [put]
+    return [put, ("HEAD", "/%s/sweep.lock" % T7), ("GET", "/%s/sweep.lock" % T7, ["If-Match"]),
+            ("PUT", "/%s/sweep.lock" % T7, ["Content-Type", "If-Match"])]
+
+
+LOCK_RELEASE = [("PUT", "/%s/sweep.lock" % T7, ["Content-Type", "If-Match"])]
+
+
+def build_t7(w, trash_extra=None, bare_lock_put=False, single_deletes=False, wait=2400):
+    """cas-t7 in the fake S3 and <T2_ROOT>/logs/t7, stepped the way tier2.sh steps the plugin, with every
+    checkpoint written by assert_tier2.t7_checkpoint itself. trash_extra "shared_two" ledgers b's two.txt,
+    which a shares, in sweeps 1 and 3 and deletes it in sweep 4. bare_lock_put: sweep-2 takes sweep.lock with a
+    plain PUT. single_deletes: sweep-4 deletes each block with its own DELETE. wait: seconds of S3's clock
+    between live/gate-fake's write and the sweep steps (T1 to TS)."""
+    s3, logs = w.s3, "logs/t7/"
+    blocks = {}
+
+    def put(rel, data):
+        s3.put(BUCKET, "%s/%s" % (T7, rel), data)
+
+    def step(name, code, out="", requests=()):
+        w.write(logs + name + ".exit", "%d\n" % code)
+        w.write(logs + name + ".out", out)
+        w.write(logs + name + ".err", "")
+        w.write(logs + name + ".nextflow.log", "".join(sdk_line(*r) for r in requests))
+        s3.now += 5
+
+    def checkpoint(name):
+        t.t7_checkpoint(w.ctx(), name)
+
+    def claim(subject, verb, attribute, value, supersedes=()):
+        cid = w.block(T7, {"kind": "Claim", "schema": 1, "asserted_by": "gate", "subject": cas.Cid(subject),
+                           "verb": verb, "attribute": attribute, "value": value,
+                           "supersedes": [cas.Cid(c) for c in supersedes], "timestamp": "2026-09-30T12:40:00.000Z"})
+        w.rts -= 1
+        put("log/%d-claim-%s" % (w.rts, cid), b"")
+        return cid
+
+    def run(tag):
+        items = []
+        for name in ("shared", "only_" + tag, "pin_" + tag):
+            data = ("%s\n" % name).encode()
+            blocks["%s_%s" % (tag, name)] = w.block(T7, data)
+            items.append(w.item(T7, {"id": name}, name + ".txt", cas.cid_raw(data), len(data)))
+            blocks["%s_item_%s" % (tag, name)] = items[-1]
+        one = ("%s one\n" % tag).encode()
+        blocks[tag + "_one"], blocks["shared_two"] = w.block(T7, one), w.block(T7, b"shared two\n")
+        directory = w.block(T7, {"kind": "DirectoryManifest", "schema": 2, "entries": [
+            {"name": "one.txt", "mode": "regular", "size": len(one), "address": cas.Cid(blocks[tag + "_one"]), "target": None},
+            {"name": "two.txt", "mode": "regular", "size": 11, "address": cas.Cid(blocks["shared_two"]), "target": None}]})
+        blocks[tag + "_dir"] = directory
+        dir_item = w.item(T7, {"id": "dir_" + tag}, "dir_" + tag, directory, None)
+        completion = w.run(T7, "t7" + tag, {"files": (items, [["files/%s" % n] for n in ("shared", "only_" + tag, "pin_" + tag)]),
+                                            "dirs": ([dir_item], [["dirs/dir_" + tag]])},
+                           {}, "h7" + tag, pipeline="cas-gate-retention")
+        w.write("logs/t7%s/exit" % tag, "0\n")
+        return completion
+
+    run_b = run("b")
+    run_a = run("a")
+    unshared = [blocks["b_only_b"], blocks["b_dir"], blocks["b_one"]]
+    trashed = unshared + ([blocks[trash_extra]] if trash_extra else [])
+    checkpoint("after-runs")
+    step("dry-1", 0, json.dumps({"applied": False, "dead": 0}) + "\n", [("GET", "/", [], ["list-type", "prefix"])])
+    checkpoint("after-dry-1")
+    put("live/" + t.T7_STALE, b'{"session":"gate-fake","run_name":"gate_fake_run"}')
+
+    s3.now += wait                                                   # T1 to TS
+    step("prune-dry", 0)
+    step("prune", 0)
+    release = claim(run_b, "set", "retain", "lineage")
+    step("pin", 0)
+    claim(blocks["b_item_pin_b"], "add", "pin", "figure 3")
+    put("live/" + t.T7_FRESH, b'{"session":"gate-fresh","run_name":"gate_fresh_run"}')
+    step("live-refused", 1, "", lock_take(first=True) + LOCK_RELEASE)
+    w.write(logs + "live-refused.err", "nf-blocks:sweep: a pipeline is running: gate_fresh_run (session gate-fresh)\n")
+    released = json.dumps({"sweep": "x", "state": "released", "started_at": "x", "beat": 0}).encode()
+    put("sweep.lock", released)
+    s3.delete_object(Bucket=BUCKET, Key="%s/live/%s" % (T7, t.T7_FRESH))
+    checkpoint("before-sweep")
+
+    def ledger(name, cids):
+        put("trash/" + name, json.dumps({"sweep": name.split("-", 1)[1], "blocks": [{"cid": c, "size": 1} for c in sorted(cids)]}).encode())
+
+    first = "1760400000000-20260930T124000Z-aaaaaaaa"
+    step("sweep-1", 0, json.dumps({"applied": True, "ledger": first}) + "\n",
+         lock_take() + [("PUT", "/%s/trash/%s" % (T7, first), ["Content-Type"]),
+                        ("DELETE", "/%s/live/%s" % (T7, t.T7_STALE))] + LOCK_RELEASE)
+    ledger(first, trashed)
+    s3.delete_object(Bucket=BUCKET, Key="%s/live/%s" % (T7, t.T7_STALE))
+    put("sweep.lock", released)
+    checkpoint("after-sweep-1")
+
+    step("untrash", 0, "", lock_take() + [("PUT", "/%s/trash/%s" % (T7, first), ["Content-Type"])] + LOCK_RELEASE)
+    ledger(first, [c for c in trashed if c != blocks["b_one"]])
+    put("sweep.lock", released)
+    checkpoint("after-untrash")
+
+    step("restore", 0)
+    restore = claim(run_b, "del", "retain", None, [release])
+    take = lock_take()
+    if bare_lock_put:
+        take = [("PUT", "/%s/sweep.lock" % T7, ["Content-Type"])]
+    step("sweep-2", 0, json.dumps({"applied": True}) + "\n",
+         take + [("DELETE", "/%s/trash/%s" % (T7, first))] + LOCK_RELEASE)
+    s3.delete_object(Bucket=BUCKET, Key="%s/trash/%s" % (T7, first))
+    put("sweep.lock", released)
+    checkpoint("after-sweep-2")
+
+    step("release-again", 0)
+    claim(run_b, "set", "retain", "lineage", [restore])
+    second = "1759236300000-20260930T124500Z-bbbbbbbb"
+    step("sweep-3", 0, json.dumps({"applied": True, "ledger": second}) + "\n",
+         lock_take() + [("PUT", "/%s/trash/%s" % (T7, second), ["Content-Type"])] + LOCK_RELEASE)
+    ledger(second, trashed)
+    put("sweep.lock", released)
+    checkpoint("after-sweep-3")
+
+    if single_deletes:
+        deletion = [("DELETE", "/%s/blocks/%s/%s" % (T7, c[-2:], c)) for c in trashed]
+    else:
+        deletion = [("POST", "/", ["Content-MD5", "Content-Type"], ["delete"])]
+    step("sweep-4", 0, json.dumps({"applied": True}) + "\n",
+         lock_take() + deletion + [("DELETE", "/%s/trash/%s" % (T7, second))] + LOCK_RELEASE)
+    for c in trashed:
+        s3.delete_object(Bucket=BUCKET, Key=World.key(T7, c))
+    s3.delete_object(Bucket=BUCKET, Key="%s/trash/%s" % (T7, second))
+    put("sweep.lock", released)
+    checkpoint("after-sweep-4")
+    return blocks
 
 
 class WorldTest(unittest.TestCase):
@@ -771,6 +933,78 @@ class FailPathTest(WorldTest):
         status, message = self.status(t.ts)
         self.assertEqual(status, t.FAIL)
         self.assertIn("coords/multiqc/multiqc_report.html names", message)
+
+
+class T7Test(unittest.TestCase):
+    """T7 over a fake cas-t7: one honest member, then one fault at a time (each a fresh World)."""
+
+    def world(self, **faults):
+        """A World whose cas-t7 and T7 logs and evidence are built again, with `faults`."""
+        w = World()
+        self.addCleanup(w.close)
+        w.s3.objects = {k: v for k, v in w.s3.objects.items() if not (k[0] == BUCKET and k[1].startswith(T7 + "/"))}
+        for rel in ("logs/t7", "evidence/t7"):
+            shutil.rmtree(os.path.join(w.root, rel), ignore_errors=True)
+        w.blocks = build_t7(w, **faults)
+        return w
+
+    def test_passes_on_an_honest_member(self):
+        status, message = t.t7(self.world().ctx())
+        self.assertEqual(status, t.PASS, message)
+        self.assertIn("3 unshared blocks trashed", message)
+        self.assertIn("1 DeleteObjects request(s)", message)
+
+    def test_fails_when_a_shared_block_was_ledgered(self):
+        status, message = t.t7(self.world(trash_extra="shared_two").ctx())
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("sweep-1 trashed content shared with run a", message)
+
+    def test_fails_when_sweep_lock_was_put_without_a_condition(self):
+        status, message = t.t7(self.world(bare_lock_put=True).ctx())
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("sweep-2 PUT sweep.lock 1 time(s) without If-None-Match or If-Match", message)
+
+    def test_fails_when_blocks_were_deleted_one_at_a_time(self):
+        status, message = t.t7(self.world(single_deletes=True).ctx())
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("one DELETE at a time", message)
+        self.assertIn("without a DeleteObjects request", message)
+
+    def test_fails_when_the_stale_registration_was_not_eleven_minutes_old(self):
+        status, message = t.t7(self.world(wait=300).ctx())
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("live/gate-fake is 3", message)
+
+    def test_refs_name_both_runs_the_pinned_item_and_the_current_retain_claims(self):
+        w = self.world()
+        refs = t.t7_refs(w.ctx())
+        self.assertEqual(sorted(refs), ["T7_A", "T7_B", "T7_PIN_ITEM", "T7_RELEASE", "T7_RESTORE"])
+        self.assertEqual(refs["T7_PIN_ITEM"], w.blocks["b_item_pin_b"])
+        member = w.ctx().member(T7)
+        self.assertEqual(member.decoded(refs["T7_RELEASE"])["supersedes"][0].text, refs["T7_RESTORE"])
+
+    def test_wait_counts_down_by_s3s_clock_to_eleven_minutes(self):
+        w = self.world()
+        w.s3.put(BUCKET, "%s/live/%s" % (T7, t.T7_STALE), b"{}")         # written now, by S3's clock
+        w.s3.now += 100
+        seconds, why = t.t7_wait(w.ctx())
+        self.assertEqual(seconds, t.T7_AGE - 100)
+        self.assertIn("cannot be backdated", why)
+        w.s3.now += t.T7_AGE
+        self.assertEqual(t.t7_wait(w.ctx())[0], 0)
+
+    def test_untrash_pick_is_bs_one_txt(self):
+        w = self.world()
+        # after sweep-4 there is no ledger and dir_b is gone; tier2.sh picks after sweep-1, when one ledger holds it
+        w.s3.put(BUCKET, "%s/trash/1759236300000-x" % T7, json.dumps(
+            {"sweep": "x", "blocks": [{"cid": w.blocks["b_one"], "size": 1}]}).encode())
+        self.assertEqual(t.t7_untrash_pick(w.ctx()), w.blocks["b_one"])
+
+    def test_parses_the_sdks_request_line(self):
+        [(method, path, headers, query)] = t.parse_sdk_requests(
+            sdk_line("PUT", "/cas-t7/trash/1759236300000-x%3Ay", ["If-None-Match"]))
+        self.assertEqual((method, path, query), ("PUT", "/cas-t7/trash/1759236300000-x:y", set()))
+        self.assertIn("if-none-match", headers)
 
 
 class VerdictTest(unittest.TestCase):
