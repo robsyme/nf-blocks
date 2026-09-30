@@ -21,8 +21,9 @@ import robsyme.cas.core.Records
  * and the run-wide anomaly totals.
  *
  * "Pure" here means it holds no Nextflow event type: it is handed the output
- * name and the already-normalised published value (whose file leaves are
- * {@code cas://} coordinate {@link Path}s), and it reads addresses out of the
+ * name and the already-normalised published value (whose published file leaves
+ * are {@code cas://} coordinate {@link Path}s; any other Path is an input the
+ * run never published, a {@code never_published} Leaf), and it reads addresses out of the
  * session's {@code publishes} map. It stores nothing; the observer writes the
  * blocks whose addresses this computes.
  *
@@ -175,6 +176,14 @@ class Join {
 
     private static Leaf leafFor(Path path, List<String> leafPaths, Counters counters, CasSession session,
                                Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
+        if( !isCas(path) ) {
+            // A path outside the store (an https or local input carried in the item)
+            // never received a publish event: never_published, no publish path and no
+            // join key (DESIGN.md §6). Recording inputs by address is milestone 7.
+            leafPaths.add(null)
+            counters.neverPublished += 1
+            return Leaf.without(path.fileName?.toString(), Leaf.NEVER_PUBLISHED)
+        }
         final String key = Coordinates.key(path)
         joined.add(key)
         final List<String> segments = segmentsOf(key)
@@ -213,6 +222,11 @@ class Join {
         final List<String> ignored = new ArrayList<String>()
         final Leaf leaf = leafFor(indexPath, ignored, counters, session, byProvider, joined)
         return new OutputIndex(leaf, segmentsOf(Coordinates.key(indexPath)).join('/'))
+    }
+
+    /** A {@code cas://} path, well formed or not; a malformed one is still refused by {@link Coordinates#key}. */
+    private static boolean isCas(Path path) {
+        return Coordinates.SCHEME.equalsIgnoreCase(path.toUri().scheme ?: '')
     }
 
     private static void fold(Counters counters, Anomalies a) {

@@ -968,4 +968,60 @@ class CasObserverTest extends Specification {
         warnings(console, "process 'LOCAL' uses publishDir") == 1
         readBlock(latestCompletion()).anomalies.unjoined == 0L
     }
+    private static List<ILoggingEvent> errors(ListAppender<ILoggingEvent> appender) {
+        return appender.list.findAll { ILoggingEvent e -> e.level == Level.ERROR }
+    }
+
+    def 'a RunCompletion that cannot be written is logged at error on the console, naming the run and the cause, then rethrown'() {
+        // Session.notifyEvent logs a non-abort observer exception at debug only
+        // (Session.groovy:1125-1128 at v26.04.6), so without this the user sees nothing.
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final Path elsewhere = java.nio.file.Paths.get('/not/in/the/store/reads.fastq.gz')
+        observer.onWorkflowOutput(new WorkflowOutputEvent('reads', [elsewhere], null))
+        final List<Path> dirs = []
+        makeBlocksUnwritable(dirs)
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        thrown(AbortRunException)
+        final logged = errors(console)
+        logged.size() == 1
+        logged[0].formattedMessage.contains('test-run')
+        logged[0].formattedMessage.contains('Unable to write the')
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+
+    def 'on a run that is already failing, a RunCompletion write failure is still logged at error on the console'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.getError() >> new RuntimeException('task failed')
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        final List<Path> dirs = []
+        makeBlocksUnwritable(dirs)
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        errors(console).size() == 1
+        errors(console)[0].formattedMessage.contains('test-run')
+
+        cleanup:
+        dirs.each { Path d -> d.toFile().setWritable(true, false) }
+    }
 }

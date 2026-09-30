@@ -2,6 +2,9 @@
 // index, one publishDir process whose files no run records, and one collectFile(storeDir:)
 // that stores a file with no publish event at all (final review C1, as sarek's csv/ does).
 // Its own store, so the Test Pipeline's assertions and the browser tiers never see it.
+// Each record also carries a path from outside the store and the work dir (this script),
+// which Nextflow never publishes: the join records it as a never_published leaf rather
+// than losing the RunCompletion (patch 0.3.0-beta.2, nf-core/rnaseq's https inputs).
 params.outdir = 'cas://lab'
 
 process SAMPLE {
@@ -42,7 +45,7 @@ workflow {
 
     publish:
     tuples = tuples
-    records = tuples.map { meta, f -> [id: meta.id, file: f] }
+    records = tuples.map { meta, f -> [id: meta.id, file: f, input: file("${projectDir}/main.nf")] }
 }
 
 output {

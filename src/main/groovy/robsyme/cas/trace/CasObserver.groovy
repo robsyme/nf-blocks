@@ -235,6 +235,14 @@ class CasObserver implements TraceObserverV2 {
         try {
             runUninterrupted { writeCompletion() }
         }
+        catch( Throwable t ) {
+            // Session.notifyEvent logs anything but an AbortRunException at debug
+            // (Session.groovy:1125-1128), so the user would never see the run go
+            // unrecorded. Say so on the terminal, then fail as before (§0 rule 3).
+            ConsoleLog.LOG.error("nf-blocks: run '${runName(session?.workflowMetadata)}' was not recorded in the store; " +
+                "its RunCompletion could not be written: ${t.message ?: t.class.name}")
+            throw t
+        }
         finally {
             cas.completionWritten()
         }

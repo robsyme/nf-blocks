@@ -807,7 +807,8 @@ class OutputsAssertionsTest(TempTree):
         with open(os.path.join(d, "nextflow.log"), "w") as fh:
             fh.write(text)
 
-    def _build_outputs_run(self, tuples_leaf_address=None, unjoined=3, collected=True):
+    def _build_outputs_run(self, tuples_leaf_address=None, unjoined=3, collected=True,
+                           records_input=None):
         """Run "outputs": tuples/records join with a Meta Map carrying "id",
         each with an index Nextflow wrote; LEGACY's two publishDir files and
         the collectFile(storeDir:) file are addressed coordinates no item or
@@ -817,14 +818,17 @@ class OutputsAssertionsTest(TempTree):
         address (assertion 14's FAIL case); `unjoined` overrides
         RunCompletion.anomalies.unjoined (assertion 16's FAIL case);
         `collected=False` leaves the collectFile coordinate out.
+        `records_input` overrides each records item's input Leaf, a path
+        outside the store (assertion 14's FAIL case for patch 0.3.0-beta.2).
         """
         run_link = self._manifest("outputs")
         a_leaf, _a_cid = self._addressed_leaf("A.txt", b"sample A\n")
         b_leaf, _b_cid = self._addressed_leaf("B.txt", b"sample B\n")
         tuples_items = [self._item([{"id": "A"}, a_leaf]),
                         self._item([{"id": "B"}, b_leaf])]
-        records_items = [self._item({"id": "A", "file": a_leaf}),
-                         self._item({"id": "B", "file": b_leaf})]
+        outside = records_input or self._never_published_leaf("main.nf")
+        records_items = [self._item({"id": "A", "file": a_leaf, "input": outside}),
+                         self._item({"id": "B", "file": b_leaf, "input": outside})]
 
         tuples_index_bytes = b'[[{"id":"A"},"tuples/A/A.txt"],[{"id":"B"},"tuples/B/B.txt"]]'
         tuples_index_cid = self.b.raw(tuples_index_bytes)
@@ -850,7 +854,7 @@ class OutputsAssertionsTest(TempTree):
             "kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
             "run": cas.Cid(run_link), "name": "records",
             "items": [cas.Cid(c) for c in records_items],
-            "paths": [["records/A/A.txt"], ["records/B/B.txt"]],
+            "paths": [["records/A/A.txt", None], ["records/B/B.txt", None]],
             "index": {"leaf": records_leaf, "path": "records/index.csv"}})
 
         legacy_a = self.b.raw(b"legacy A\n")
@@ -906,6 +910,13 @@ class OutputsAssertionsTest(TempTree):
         status, message = gate_assert.assert_fourteen(self.gate)
         self.assertEqual(status, gate_assert.FAIL)
         self.assertIn("tuples", message)
+
+    def test_fourteen_fails_when_a_records_input_outside_the_store_is_not_never_published(self):
+        addressed, _cid = self._addressed_leaf("main.nf", b"workflow {}\n")
+        self._build_outputs_run(records_input=addressed)
+        status, message = gate_assert.assert_fourteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("never_published", message)
 
     # -- assertion 15 -----------------------------------------------------
 

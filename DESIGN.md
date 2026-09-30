@@ -557,6 +557,14 @@ path). `reason` is null when `address` is set and non-null otherwise; an absent
 address is never an absent field. A `declined` leaf is what Nextflow hands us
 as `null` in place of a path. A `never_published` leaf is a path in the item
 that never received a publish event (a path outside the work dir).
+*Amended 2026-09-30 (patch 0.3.0-beta.2):* that includes a path that is not
+`cas://` at all, such as an https or local input FASTQ a record carries
+(nf-core/rnaseq): `Join` makes it a `never_published` Leaf named by the
+path's file name, puts `null` in its `paths` entry, gives it no join key, and
+counts it in `anomalies.never_published`. Before this, `Coordinates.key`
+threw on it and the whole RunCompletion was lost. A malformed `cas://` path
+is still refused. Recording such inputs by address is milestone 7
+(input-side lineage).
 Decoding rule: a map with `kind == "Leaf"` is a leaf. The item carries no run
 reference and no publish path.
 
@@ -992,6 +1000,12 @@ is built on first publish over the composite and the writable member, with
   an `AbortRunException` there skips `notifyError` (`Session.groovy:1125-1128`)
   for every observer, losing the user's `onError` and the hint below. A clean
   run keeps the abort.
+  *Amended 2026-09-30 (patch 0.3.0-beta.2):* whatever stops the RunCompletion
+  being written is also logged at error on `nextflow.cas` (`ConsoleLog`),
+  naming the run and the cause, before it is rethrown or (on a failing run)
+  logged at warn as above. `Session.notifyEvent` logs any other exception
+  than `AbortRunException` at debug (`Session.groovy:1125-1128`), so without
+  this line a run could go unrecorded with nothing on the terminal.
   *Amended 2026-09-29 (milestone 5, ticket 19):* `RunCompletion.anomalies`
   gains `unjoined`: `publishedKeys` minus `Join`'s `joinedKeys` (every key
   an `onFilePublish` event named that no item or `index` Leaf claimed),

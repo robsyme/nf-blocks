@@ -1736,7 +1736,10 @@ OUTPUTS_UNJOINED = ("collected/samples.txt", "legacy/A.legacy", "legacy/B.legacy
 def assert_fourteen(gate):
     """Tickets 26 answers 1, 2: both outputs join with their Meta Maps, and
     each collection's index leaf is the raw CID of the bytes at its own
-    coordinate (hashed here, not trusted)."""
+    coordinate (hashed here, not trusted). Patch 0.3.0-beta.2: each records
+    item's `input`, a path outside the store and the work dir, is a
+    never_published Leaf named main.nf with a null publish path, and the
+    run still has its RunCompletion."""
     store = outputs_store(gate)
     run, lookup = _run_of(store, "outputs")
     if not run.completion:
@@ -1757,6 +1760,20 @@ def assert_fourteen(gate):
             if "id" not in meta:
                 problems.append("%s item %s: no 'id' in its Meta Map (%r)"
                                 % (name, item_cid, meta))
+            if name == "records":
+                value = (item or {}).get("value")
+                outside = value.get("input") if isinstance(value, dict) else None
+                if not (isinstance(outside, dict) and outside.get("kind") == "Leaf"
+                        and outside.get("reason") == "never_published"
+                        and outside.get("name") == "main.nf" and outside.get("address") is None):
+                    problems.append("records item %s: its input (a path outside the store) "
+                                    "should be a never_published Leaf named main.nf, found %r"
+                                    % (item_cid, outside))
+        if name == "records":
+            for entry in block.get("paths") or []:
+                if not (isinstance(entry, list) and None in entry):
+                    problems.append("records paths entry %r has no null for the input "
+                                    "outside the store" % (entry,))
         index = block.get("index")
         if not isinstance(index, dict):
             problems.append("%s: OutputCollection has no index (%r)" % (name, index))
@@ -1793,6 +1810,7 @@ def assert_fourteen(gate):
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("tuples and records both join with Meta Maps carrying 'id'; each "
+                  "records item's input outside the store is a never_published leaf; each "
                   "collection's index leaf is the raw CID of the bytes at its own "
                   "coordinate, matching the coords pointer; tuples/index.json has 2 "
                   "rows and records/index.csv has a header and 2 rows")
