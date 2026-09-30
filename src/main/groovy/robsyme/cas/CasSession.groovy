@@ -1,6 +1,10 @@
 package robsyme.cas
 
+import java.nio.file.FileSystems
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -11,6 +15,7 @@ import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import nextflow.Global
 import nextflow.Session
+import nextflow.exception.AbortRunException
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
@@ -23,6 +28,7 @@ import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.LocalSnapshotStorage
+import robsyme.cas.core.Providers
 import robsyme.cas.core.Put
 import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.SnapshotStorage
@@ -378,6 +384,170 @@ class CasSession {
 
     Publish publishFor(String joinKey) {
         return publishes.get(joinKey)
+    }
+
+    // ------------------------------------------------------------------ spools
+
+    /**
+     * A coordinate's bytes written through {@code newOutputStream}, on their
+     * way to one block (DESIGN.md §8). Nextflow builds a CSV Output Index File
+     * from a series of appends, so a close is not the end of the file: the
+     * spool is hashed once, when something needs the coordinate.
+     */
+    @CompileStatic
+    private static class Spool {
+        final CoordinateTree tree
+        final String rel
+        final String name
+        final Path file
+        /** Streams opened on the spool and not yet closed; guarded by the key's lock. */
+        int writers
+        Spool(CoordinateTree tree, String rel, String name, Path file) {
+            this.tree = tree; this.rel = rel; this.name = name; this.file = file
+        }
+    }
+
+    /** join key -> its spool, while one is pending. */
+    private final ConcurrentHashMap<String, Spool> spools = new ConcurrentHashMap<>()
+
+    /** join key -> the object its spool operations synchronise on; never removed, so two threads always share one. */
+    private final ConcurrentHashMap<String, Object> spoolLocks = new ConcurrentHashMap<>()
+
+    private Object spoolLock(String key) {
+        return spoolLocks.computeIfAbsent(key, { String k -> new Object() })
+    }
+
+    /**
+     * A stream into the coordinate's spool. Without {@code append} the spool
+     * starts empty, replacing a pending one; with it, a pending spool is
+     * appended to, else a new one is seeded from {@code current} (the
+     * coordinate's content, or null when it resolves to no file). The bytes are
+     * copied by streams, never held (DESIGN.md §0 rule 2). Closing the stream
+     * hashes nothing: {@link #finalizePending} does, once.
+     */
+    OutputStream openSpool(String key, CoordinateTree tree, String rel, String name, boolean append, Closure<InputStream> current) throws IOException {
+        Spool spool = null
+        synchronized( spoolLock(key) ) {
+            Spool pending = spools.get(key)
+            if( pending != null && !append ) {
+                spools.remove(key)
+                Files.deleteIfExists(pending.file)
+                pending = null
+            }
+            if( pending == null ) {
+                pending = new Spool(tree, rel, name, newSpoolFile())
+                if( append ) {
+                    final InputStream seed = current.call()
+                    if( seed != null ) {
+                        try { Files.copy(seed, pending.file, StandardCopyOption.REPLACE_EXISTING) }
+                        catch( IOException e ) { Files.deleteIfExists(pending.file); throw e }
+                        finally { seed.close() }
+                    }
+                }
+                spools.put(key, pending)
+            }
+            pending.writers++
+            spool = pending
+        }
+        final OutputStream out = Files.newOutputStream(spool.file, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
+        final Object lock = spoolLock(key)
+        return new FilterOutputStream(out) {
+            private boolean closed = false
+            @Override void write(byte[] b, int off, int len) throws IOException { out.write(b, off, len) }
+            @Override
+            void close() throws IOException {
+                if( closed ) return
+                closed = true
+                try { super.close() }
+                finally { synchronized( lock ) { spool.writers-- } }
+            }
+        }
+    }
+
+    private Path newSpoolFile() throws IOException {
+        final Path dir = config.tmpDir ?: Path.of(System.getProperty('java.io.tmpdir'))
+        Files.createDirectories(dir)
+        final Path file = Files.createTempFile(dir, 'cas-spool-', '.tmp')
+        if( file.fileSystem == FileSystems.default )
+            file.toFile().deleteOnExit()
+        return file
+    }
+
+    /** True while any coordinate has a spool not yet finalised; lets a read skip the lookup. */
+    boolean hasPendingSpools() {
+        return !spools.isEmpty()
+    }
+
+    /**
+     * Hashes the coordinate's pending spool into one block, writes its Pointer
+     * File and records the publish, then deletes the spool; a no-op when none
+     * is pending, or while a stream on it is still open. A failure leaves the
+     * spool pending, so a later call can still record it.
+     */
+    void finalizePending(String key) throws IOException {
+        if( spools.isEmpty() )
+            return
+        synchronized( spoolLock(key) ) {
+            final Spool spool = spools.get(key)
+            if( spool == null || spool.writers > 0 )
+                return
+            final long size = Files.size(spool.file)
+            Cid cid = null
+            final InputStream input = Files.newInputStream(spool.file)
+            try { cid = store.putStreaming(input) }
+            finally { input.close() }
+            final StoreRef ref = new StoreRef(cid, spool.name)
+            spool.tree.write(spool.rel, ref)
+            recordPublish(key, new Publish(ref, size, Providers.HEAD_NODE))
+            spools.remove(key)
+            Files.deleteIfExists(spool.file)
+            log.debug "cas: published appended file as block ${cid} at ${key} (${size} bytes)"
+        }
+    }
+
+    /** {@link #finalizePending} for every coordinate under {@code dirKey}, so a listing of it sees them. */
+    void finalizePendingUnder(String dirKey) throws IOException {
+        if( spools.isEmpty() )
+            return
+        final String prefix = dirKey + '/'
+        for( String key : new ArrayList<String>(spools.keySet()) )
+            if( key.startsWith(prefix) )
+                finalizePending(key)
+    }
+
+    /**
+     * Every pending spool finalised, for the join (a write with no publish
+     * event is still recorded). A spool whose stream was never closed holds
+     * bytes no one finished writing: it is deleted and the run aborts naming
+     * it (DESIGN.md §0 rule 3).
+     */
+    void finalizeAllPending() throws IOException {
+        final List<String> unclosed = new ArrayList<String>()
+        for( String key : new ArrayList<String>(spools.keySet()) ) {
+            finalizePending(key)
+            synchronized( spoolLock(key) ) {
+                final Spool left = spools.remove(key)
+                if( left != null ) {
+                    unclosed.add(key)
+                    Files.deleteIfExists(left.file)
+                }
+            }
+        }
+        if( !unclosed.isEmpty() )
+            throw new AbortRunException("cas: a stream written to ${unclosed.sort().join(', ')} was never closed; its content cannot be recorded")
+    }
+
+    /** Drops the coordinate's pending spool, as a delete does; true when there was one. */
+    boolean dropPending(String key) throws IOException {
+        if( spools.isEmpty() )
+            return false
+        synchronized( spoolLock(key) ) {
+            final Spool spool = spools.remove(key)
+            if( spool == null )
+                return false
+            Files.deleteIfExists(spool.file)
+            return true
+        }
     }
 
     void recordUploadAnomalies(String joinKey, Anomalies anomalies) {

@@ -127,6 +127,8 @@ class CasObserver implements TraceObserverV2 {
         publishedKeys.add(key)
         if( event.labels )
             labels.put(key, event.labels)
+        // A file written by appends (a CSV Output Index File) is hashed now, once.
+        finalizeSpools { cas.finalizePending(key) }
         // Our upload() already hashed and recorded this; if neither the publish
         // nor its durable pointer file names the coordinate, provenance is lost.
         if( cas.publishFor(key) != null )
@@ -298,6 +300,8 @@ class CasObserver implements TraceObserverV2 {
 
     private void writeCompletion() {
         final Cid manifest = ensureManifest()
+        // A write through the provider with no publish event is still recorded.
+        finalizeSpools { cas.finalizeAllPending() }
         final Join.Result joined = Join.join(capturedOutputs, capturedIndexes, cas)
 
         final List<String> unjoined = new ArrayList<String>(publishedKeys)
@@ -462,6 +466,19 @@ class CasObserver implements TraceObserverV2 {
     }
 
     // ------------------------------------------------------------- plumbing
+
+    /** Hashing a spool is a provenance write: a failure aborts the run (Rule 3). */
+    private static void finalizeSpools(Closure body) {
+        try {
+            body.call()
+        }
+        catch( AbortRunException e ) {
+            throw e
+        }
+        catch( Exception e ) {
+            throw new AbortRunException("Unable to record a file written through cas://: ${e.message}", e)
+        }
+    }
 
     /** Writes a provenance block; a failure here aborts the run (Rule 3). */
     private Cid putBlock(Object cbor, String kind) {

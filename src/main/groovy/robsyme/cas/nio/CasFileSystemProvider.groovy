@@ -302,6 +302,12 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
     }
 
     private CasNode resolveCoordinate(CasPath p) {
+        // A reader sees every byte appended so far, and a listing every child (DESIGN.md §8).
+        if( session().hasPendingSpools() ) {
+            final String key = Coordinates.key(p)
+            session().finalizePending(key)
+            session().finalizePendingUnder(key)
+        }
         final CoordinateTree tree = coordsFor(p)
         final String rel = relOf(p)
         if( tree.isDirectory(rel) )
@@ -393,6 +399,8 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CoordinateTree tree = writableCoordsFor(dest)
         final String rel = relOf(dest)
         final boolean replace = options.toList().contains(StandardCopyOption.REPLACE_EXISTING)
+        // Bytes appended to the coordinate this run count as its content for the existence check.
+        session().finalizePending(key)
         // The existence check happens before a byte of the source is read: that
         // is what makes -resume cheap and never re-hashes an unchanged output.
         if( !replace && tree.exists(rel) )
@@ -732,39 +740,38 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         return store().open(node.content)   // streams the block, never buffers it
     }
 
+    /**
+     * A write to a coordinate goes to its spool in {@link CasSession}, not
+     * straight to a block: Nextflow builds a CSV Output Index File from a
+     * delete and a series of appends (CsvWriter.apply), so each close is not
+     * the end of the file. Without APPEND the spool starts empty; with it the
+     * write continues the pending spool, or the coordinate's current content.
+     * The spool becomes one block when the coordinate is next read, published
+     * or listed, or when the run completes (DESIGN.md §8).
+     */
     @Override
     OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         final CasPath p = cas(path)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable: '${p}'")
-        // Hash-on-close: Nextflow's transfer-aware path never lands here, but an
-        // incidental write must still hash into the store and leave a pointer.
         final CoordinateTree tree = writableCoordsFor(p)
         final String rel = relOf(p)
-        final String key = Coordinates.key(path)
-        final String name = p.getFileName().toString()
-        final Path temp = Files.createTempFile('cas-out-', '.tmp')
-        final OutputStream out = Files.newOutputStream(temp, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+        final boolean append = options.toList().contains(StandardOpenOption.APPEND)
         final CasFileSystemProvider self = this
-        return new FilterOutputStream(out) {
-            private boolean closed = false
-            @Override void write(byte[] b, int off, int len) throws IOException { out.write(b, off, len) }
-            @Override
-            void close() throws IOException {
-                if( closed ) return
-                closed = true
-                super.close()
-                try {
-                    Cid cid = null
-                    final InputStream input = Files.newInputStream(temp)
-                    try { cid = self.store().putStreaming(input) }
-                    finally { input.close() }
-                    tree.write(rel, new StoreRef(cid, name))
-                    self.session().recordPublish(key, new CasSession.Publish(new StoreRef(cid, name), Files.size(temp), Providers.HEAD_NODE))
-                }
-                finally { Files.deleteIfExists(temp) }
-            }
-        }
+        return session().openSpool(Coordinates.key(path), tree, rel, p.getFileName().toString(), append,
+            { -> self.currentContent(tree, rel, p) } as Closure<InputStream>)
+    }
+
+    /** The coordinate's content as a stream to seed an append from; null when it names no file. */
+    private InputStream currentContent(CoordinateTree tree, String rel, CasPath p) throws IOException {
+        if( tree.isDirectory(rel) )
+            throw new IOException("is a directory: '${p}'")
+        final Optional<StoreRef> ref = tree.read(rel)
+        if( !ref.isPresent() )
+            return null
+        if( ref.get().isDirectory() )
+            throw new IOException("is a directory: '${p}'")
+        return store().open(ref.get().cid)
     }
 
     @Override
@@ -821,7 +828,9 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(path)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
-        if( !writableCoordsFor(p).delete(relOf(p)) )
+        final CoordinateTree tree = writableCoordsFor(p)
+        final boolean dropped = session().dropPending(Coordinates.key(p))
+        if( !tree.delete(relOf(p)) && !dropped )
             throw new NoSuchFileException(p.toString())
     }
 
@@ -830,7 +839,9 @@ class CasFileSystemProvider extends FileSystemProvider implements FileSystemTran
         final CasPath p = cas(path)
         if( p.isStoreUri() )
             throw new AccessDeniedException("a Store URI is immutable; a block is never deleted through the scheme: '${p}'")
-        return writableCoordsFor(p).delete(relOf(p))
+        final CoordinateTree tree = writableCoordsFor(p)
+        final boolean dropped = session().dropPending(Coordinates.key(p))
+        return tree.delete(relOf(p)) || dropped
     }
 
     @Override

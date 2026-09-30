@@ -818,6 +818,47 @@ class CasObserverTest extends Specification {
         (collection.index as Map).path == 'tuples/index.json'
     }
 
+    def 'a CSV index written by appends is recorded as one leaf of its full bytes (Task 6a)'() {
+        given: 'CsvWriter.apply at Nextflow 26.04.6: a delete, then one append per piece'
+        bind(config())
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/records/A/A.txt', 'A\n')
+        final Path idx = coord('cas://lab/records/index.csv')
+        idx.delete()
+        idx << '"id","file"' << '\n'
+        idx << '"A","A.txt"' << '\n'
+        observer.onFilePublish(new FilePublishEvent(null, idx, null))
+        observer.onWorkflowOutput(new WorkflowOutputEvent('records', [[[id: 'A'], a]], idx))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final byte[] full = '"id","file"\n"A","A.txt"\n'.getBytes('UTF-8')
+        final Cid expected = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest(full))
+        final completion = readBlock(latestCompletion())
+        completion.anomalies.unjoined == 0L
+        final collection = readBlock((Cid) (completion.collections as List)[0])
+        (collection.index as Map).path == 'records/index.csv'
+        ((collection.index as Map).leaf as Map).address == expected
+        cas.store.open(expected).withStream { it.bytes } == full
+    }
+
+    def 'an appended file with no publish event is still recorded when the run completes'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+        coord('cas://lab/notes.txt') << 'one\n' << 'two\n'
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final Cid expected = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest('one\ntwo\n'.getBytes('UTF-8')))
+        cas.publishFor('cas://lab/notes.txt').ref.cid == expected
+        cas.coordinates.read('notes.txt').get().cid == expected
+    }
+
     def 'a process that declares publishDir is warned about once'() {
         given:
         bind(config())

@@ -767,9 +767,24 @@ throw `AccessDeniedException` naming both aliases, before anything is read or
 written: a pointer written there would name blocks only this run's writable
 member holds.
 - `createDirectory`: create the coordinate directory under `coords/`.
-- `newOutputStream` on a coordinate: allowed only so Nextflow's incidental
-  writes (none expected in the skeleton) do not crash; implement as
-  hash-on-close through a temp file, then write the pointer.
+- `newOutputStream` on a coordinate (*amended 2026-09-30, Task 6a*): Nextflow
+  writes a CSV Output Index File as a delete and then one append per piece
+  (`CsvWriter.apply`, v26.04.6), so a close is not the end of the file. The
+  stream writes to a per-coordinate spool file that `CasSession` holds, keyed
+  by the join key, under `cas.tmpDir`. Without `APPEND` the spool starts
+  empty, replacing a pending one; with `APPEND` the write continues the
+  pending spool, or else a new one seeded by streaming the coordinate's
+  current block (empty when it names no file; a directory is refused).
+  `close()` hashes nothing. A pending spool is finalised exactly once, into
+  one block, one Pointer File write and one `recordPublish` (`head-node`, the
+  spool's byte count), then deleted: when the provider next resolves the
+  coordinate or a directory above it (a read, attributes, access, a listing,
+  an `upload`), when `onFilePublish` names it, and for every spool left at the
+  join (`finalizeAllPending`, before `Join.join`). A later `APPEND` seeds a
+  new spool from the published content. `delete`/`deleteIfExists` drop a
+  pending spool. A spool whose stream was never closed at the join aborts the
+  run; a failure to hash a spool from the observer aborts it too (rule 3).
+  Spool operations for one key are serialised on a per-key lock.
 - `delete`/`deleteIfExists` on a coordinate: remove the Pointer File only.
   Never touches a block.
 - `canUpload(source, target)`: `target instanceof CasPath && target.isCoordinate()`.
