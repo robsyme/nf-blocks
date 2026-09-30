@@ -33,6 +33,9 @@ examples below do. What it supports today:
   tree, but counted as `unjoined` rather than recorded against any run. An
   output that declares `index { }` records its Output Index File too, linked
   from its Output Collection. See "Pipelines that use publishDir" below.
+- Milestone 6 (retention): every run's content is a root by default and is
+  kept until you release it; a sweep only ever deletes what is released,
+  unpinned, and past its grace period. See "Getting space back" below.
 - nf-blocks requires the `nf-amazon` plugin (`>=3.9.2`). If you install
   nf-blocks by unpacking a local build into `NXF_PLUGINS_DIR` rather than
   from the registry, Nextflow 26.04.6 does not fetch that dependency, so
@@ -444,6 +447,82 @@ occurrence string instead of `{"item": {"address": ..., "via": [...]}}`,
 meaning the item as picked from that collection. `put --name` writes the name
 Claim after the Selection, and nothing when the Selection already has that
 one name; renaming is the same command with a new name.
+
+## Getting space back
+
+Every run's content is a root by default, so nothing a sweep can delete until
+you release it.
+
+`put` a `set retain "lineage"` Claim on a run's RunCompletion to release its
+content, or use the explorer's Release content button on the run page. The
+run's own metadata stays (its RunManifest, its Output Collections and Items
+are still listed and browsable); only the bytes become eligible for a sweep
+to delete once nothing else needs them. `del retain`, or the explorer's
+Restore content button, undoes it at any time before a sweep has actually
+deleted the blocks; after that, `untrash` within the grace period is what
+brings them back.
+
+`put` an `add pin "<note>"` Claim on a run, a collection, an item, or a raw
+block to pin it, or use the explorer's Pin button. A pin keeps its subject's
+whole content closure regardless of `retain` or `delete`: a pinned run's
+content is never swept even after it is released, and a pinned item inside a
+deleted run keeps that run visible in the explorer as "hidden but pinned".
+`del pin`, or Unpin, removes one pin; several pins on the same subject do not
+conflict with each other.
+
+`prune` writes those `set retain "lineage"` Claims for you, per pipeline:
+`--keep-last <n>` releases every run of that pipeline except the newest
+`<n>` (failed and incomplete runs count); `--keep-newer <period>` releases
+every run finished before the cutoff. Without `--pipeline` it prunes every
+pipeline separately. It never deletes anything and never sweeps; a pinned
+run is released like any other (its pins still protect its content), and a
+run whose retain state is already in conflict is skipped and reported.
+
+`sweep` is what actually deletes bytes, and only content that is released
+(or was never registered as a root) and has been dead for at least the age
+floor (`cas.sweep.ageFloor`, default 14 days). It never deletes straight
+away: a sweep first moves newly dead content into a Trash ledger, and only
+deletes blocks from an older ledger once they have sat there for the grace
+period (`cas.sweep.grace`, default 14 days) and are still unreachable in a
+fresh check. With no `--apply` it is a dry run that reports what it would do
+and touches nothing. A sweep never runs alongside a running pipeline: it
+refuses to start while a run is registered, or with `--wait` waits for it,
+and a run that starts first makes any later sweep wait in turn.
+
+```bash
+nextflow plugin nf-blocks:prune --keep-last 3            # what would be released
+nextflow plugin nf-blocks:prune --keep-last 3 --apply true
+
+nextflow plugin nf-blocks:sweep                          # dry run: roots, live, dead, Trash
+nextflow plugin nf-blocks:sweep --apply true             # trash the newly dead; delete what is past its grace
+```
+
+`sweep --apply` also takes `--wait true`, to wait for a running pipeline
+instead of refusing, and `--budget <size>` (for example `--budget '10 GB'`),
+to cap how many bytes it newly trashes in one run.
+
+`untrash` takes content back out of Trash before its grace period ends:
+`nextflow plugin nf-blocks:untrash <cid> [<cid> ...]` for specific addresses,
+or `--sweep <id>` for everything one sweep trashed. It is a stopgap, not a
+retention decision: whatever it restores is trashed again by the next sweep
+unless you also pin it or `del retain` its run.
+
+A run waits for a sweep the same way a sweep waits for a run, so the two
+never act on the store at once. If a run's own registration fails to write,
+the run warns and carries on; the age floor and grace period still give it
+room before anything it wrote could be swept.
+
+An S3 sweep role needs `s3:DeleteObject` on `blocks/*`, `log/*`, `live/*`,
+`trash/*` and `tmp/*` under the member prefix, plus
+`s3:AbortMultipartUpload` and `s3:ListBucketMultipartUploads` for abandoned
+uploads older than the age floor. See "Publishing into S3" above for the
+bucket policy that restricts deletes to this role.
+
+See `DESIGN.md` §19 for the full contract, including what a sweep does not
+protect: a pipeline that only reads a member (`fromStore`, no publish)
+cannot register there, so a mid-run input can in principle vanish under it,
+and a Claim or Selection written in the narrow window between a sweep's last
+re-check and its delete batch is not caught by that check.
 
 ## Plugin development
 

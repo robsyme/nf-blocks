@@ -40,7 +40,13 @@ artifacts only.
    spec names that a run cannot perform itself, and each lands in the
    milestone that also adds the Gate assertion exercising it. Milestone 4
    adds none; `sweep`, `prune`, `untrash`, `bundle`, `merge`, `verify` and
-   `project` wait for their milestones.
+   `project` wait for their milestones. *Landed 2026-09-30 (milestone 6):*
+   `sweep`, `prune` and `untrash` land with Gate assertion 9 (§14, §15, §19);
+   `bundle`, `merge`, `verify` and `project` still wait. `sweep` and `prune`
+   are dry runs unless `--apply true`; `untrash` acts on its first call.
+   `put` stays the only way to write a Claim from the command line: `sweep`
+   and `prune` write Trash ledgers and index rows, `prune --apply` writes
+   `set retain "lineage"` Claims through the same `Put` builder `put` uses.
 6. The Gate's assertions never trust the plugin: they hash bytes themselves.
 
 ## 1. Plugin identity and layout
@@ -60,6 +66,11 @@ artifacts only.
 - Packages:
   - `robsyme.cas.core` — no Nextflow imports at all. CID, DAG-CBOR, hashing,
     block store, records, directory manifest, coordinates, index, run log.
+    *Since milestone 6:* retention, too — `RetentionStorage`
+    (`LocalRetentionStorage` the local implementation), `RetainedStore`,
+    `SweepLock`, `LiveRegistry`, `LiveWriter`, `Mark`, `Sweep`, `SweepPolicy`,
+    `SweepReport`, `TrashLedger`, `Prune`, `PruneDecision`, `ClaimState`'s
+    `retain` and `pin` groups (§19).
   - `robsyme.cas.nio` — `CasFileSystemProvider`, `CasFileSystem`, `CasPath`,
     `CasPathFactory` (extends `nextflow.file.FileSystemPathFactory`).
   - `robsyme.cas.lineage` — `CasLinStoreFactory` (extends `nextflow.lineage.LinStoreFactory`),
@@ -73,8 +84,10 @@ artifacts only.
   - `robsyme.cas.explore` — `ExploreServer`, `MemberFiles` and its local and S3 implementations (§15).
   - `robsyme.cas.s3`: the one S3 seam (`S3Ops`, `SdkS3Ops`, `S3Access`) and
     the S3 member (`S3BlockStore`, `S3StoreLogStorage`, `S3CoordinateTree`,
-    `S3SnapshotStorage`). The only package that imports
-    `software.amazon.awssdk.*` or `nextflow.cloud.aws.*`.
+    `S3SnapshotStorage`, and, since milestone 6, `S3RetentionStorage`: the
+    sweep lock, `live/` registrations and Trash ledgers as S3 objects, §19).
+    The only package that imports `software.amazon.awssdk.*` or
+    `nextflow.cloud.aws.*`.
 - The page is an npm project under `web/`, built by Gradle into the plugin jar as
   `robsyme/cas/explorer/index.html` (block explorer spec section 2). Its output is not committed.
 - Tests: Spock, under `src/test/groovy`, same packages. Groovy `@CompileStatic`
@@ -104,6 +117,10 @@ cas {
     snapshot { maxBytes = 64.MB }   // optional; a run writes the Index Snapshot only while it is under this (§15)
     tmpDir = null              // optional; scratch for S3 uploads of unknown length, default java.io.tmpdir
     nodeHash = null            // optional; node-side hashing, default fusion.enabled
+    sweep {
+        ageFloor = '14d'       // optional; how old a dead block must be before sweep trashes it, default 14d (§19)
+        grace = '14d'          // optional; how long a trashed block stays in Trash before deletion, default 14d (§19)
+    }
 }
 ```
 
@@ -171,6 +188,12 @@ cas {
 - `cas.snapshot.maxBytes` (a number of bytes, a `MemoryUnit`, or a string such as
   `'64 MB'`; default 64 MiB): the cap under which a run rewrites its member's
   Index Snapshot at `onFlowComplete` (§15).
+- `cas.sweep.ageFloor` and `cas.sweep.grace` (each a `Duration` string such as
+  `'14d'` or `'12h'`; default 14 days each, §19 plan decision 8): the age a
+  dead block must reach before a sweep trashes it, and how long a trashed
+  block then waits before a later sweep deletes it. `ageFloor` must be at
+  least the Live Writer stale threshold (10 minutes, §19); `grace` may be 0.
+  Either under a day warns once, on stderr, from the `sweep` verb.
 
 ## 3. Content identity
 
@@ -256,7 +279,17 @@ nf/<key>/.data.json     Nextflow's own lineage records, DefaultLinStore layout. 
 index/v<N>.sqlite       Index Snapshot of this member's rows, N = Index.SCHEMA_VERSION (§15). Derived,
                         rewritten whole by an atomic move, mode 0644. Not a block, not a root.
 index.html              The explorer page, self-contained (§15). Rewritten when its bytes differ.
+sweep.lock              Since milestone 6 (§19): one file, held by a sweep for its whole run. Local:
+                        create-exclusive to take, compare-then-move to heartbeat and to release.
+live/<session>          A run's Live Writer registration, one file per session, heartbeated every 60 s,
+                        deleted at run end; a sweep treats one with no heartbeat for 10 min as dead.
+trash/<deadline>-<id>   A Trash ledger: the addresses one sweep trashed, JSON, plan decision 14. Blocks
+                        named in a ledger stay in place and readable until a later sweep, past the
+                        deadline and still dead in its own fresh mark, deletes them.
 ```
+
+Nothing under `sweep.lock`, `live/` or `trash/` is a block: they are not
+content-addressed, not swept themselves, and a dry run writes none of them.
 
 `CompositeStore(List<BlockStore> members)`: reads resolve in order, first hit
 wins; writes go only to `members[0]`, which must be writable; a write is never
@@ -292,7 +325,12 @@ uploads its encoded bytes. Blocks carry
 the conditional writes; the documented hardening is a bucket policy denying
 `PutObject` on `blocks/*` without `s3:if-none-match` and `DeleteObject` on
 `blocks/*` except to a sweep role, and a lifecycle rule expiring `tmp/` after
-a day and aborting incomplete multipart uploads after a day. The deny needs
+a day and aborting incomplete multipart uploads after a day. Since milestone
+6 the sweep role also needs, on the member prefix: `s3:DeleteObject` on
+`blocks/*`, `log/*`, `live/*`, `trash/*` and `tmp/*` (a sweep deletes trashed
+blocks, dangling Store Log entries, stale Live Writer registrations and old
+scratch), plus `s3:AbortMultipartUpload` and `s3:ListBucketMultipartUploads`
+(an abandoned multipart upload older than the age floor, README). The deny needs
 `s3:ObjectCreationOperation` so `UploadPart` and `UploadPartCopy`, which take
 no conditional header, still pass (README). AWS documents that a bucket
 enforcing conditional writes refuses `CopyObject` into the enforced prefix
@@ -1181,13 +1219,28 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `latestSuccessfulRun(String pipeline) → Optional<Cid completion>`;
   `items(Cid completion, String outputName, Map<String,Object> where) → List<Cid item>`;
   `runByNextflowHash(String) → Optional<Cid completion>`;
-  `runByManifest(Cid) → Optional<Cid completion>`.
+  `runByManifest(Cid) → Optional<Cid completion>`;
+  `pipelines() → List<String>` (distinct pipelines any run names, sorted);
+  `runsOf(String pipeline) → List<IndexedRun>` (that pipeline's runs, newest
+  `finished_at` first, ties by completion cid). `prune` reads both (§19); no
+  other caller does.
   `successful` = `status == 'succeeded' AND possibly_incomplete = 0`
   and no current `delete` Claim names the RunCompletion, a conflicted
   deletion included; `latestSuccessfulRun` warns once per conflicted run it
   leaves out. Claims are ingested from `claim` Store Log entries into `claim`
   and `claim_supersedes`; `claim_current` is `ClaimState` (decision 5 of the
-  milestone 2 plan) per subject.
+  milestone 2 plan) per subject. *Since milestone 6:* `ClaimState` also groups
+  the `retain` attribute (`released` when its one current Claim is `set
+  retain "lineage"`, `conflicted` with more than one, `none` otherwise) and
+  the `pin` attribute (an `add pin "<note>"` group, exempt from the
+  one-current rule like `name`; a subject is pinned while any `add pin` on it
+  is current) — §19.
+- `Index.forget(Collection<Cid> cids)` removes every row keyed by these cids
+  as a run, collection, item, Selection or Claim, and their `claim_current`,
+  in one transaction; producer rows stay (a forgotten run's content still
+  shows who produced it). A sweep calls it with the cids it deleted, then
+  recomputes the writable member's Index Snapshot, so a cold reader is not
+  seeded with runs whose blocks are gone (plan decision 7, §19).
 - *Amended 2026-09-25:* the three load-bearing queries' SQL is held in public
   constants (`Index.SQL_PRODUCERS_OF`, `SQL_LATEST_SUCCESSFUL_RUN`,
   `SQL_ITEMS_BASE`, `SQL_ITEMS_PREDICATE`, `SQL_ITEMS_PREDICATE_NULL`,
@@ -1271,19 +1324,27 @@ snapshot moved aside too), with `XDG_CACHE_HOME` and the store under a fresh
 temp directory, then runs `gate/assert.py` (Python 3 standard library only:
 `hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and CID encoder
 of its own). Exit non-zero on any failed assertion. The Gate config overlay
-lives at `gate/gate.config`. Lineage tier: 15 PASS, 0 FAIL, 6 SKIP.
-Assertion 13, "a cold cache seeds from the Index Snapshot", takes its locked
+lives at `gate/gate.config`. Lineage tier: 16 PASS, 0 FAIL, 5 SKIP.
+Assertion 9, since milestone 6 (§19, ticket 21 answer 7): a dry-run sweep
+right after a run reports an empty dead set; after `set retain "lineage"` on
+one run, a real sweep trashes exactly its unshared content and none of its
+metadata, a pinned item in it and content it shares with another run
+survive; `del retain` before the deadline brings the content back as live
+with no `untrash`; a later sweep past the deadline deletes what is still
+released. Assertion 13, "a cold cache seeds from the Index Snapshot", takes its locked
 runs from the Store Log entries at or before the snapshot's watermark, and
 counts a permission failure when the seeded run's log says "could not be
 read" or "could not be decoded as <Kind>" together with a locked path (the
 plugin reports a locked RunCompletion as undecodable).
 
 *Tier two* (`make gate-tier2`, `gate/tier2/`, on demand): the scidev Batch
-queue, a throwaway S3 member, T1-T6 and T2b (`gate/tier2/README.md`); run
+queue, a throwaway S3 member, T1-T6, T2b and TS (`gate/tier2/README.md`); run
 before a milestone that touches the S3 store, the Fusion provider or the
-cloud publish path is accepted. It is the only part of the Gate that talks
-to AWS, from a person's SSO session; its own unit tests
-(`python3 -m unittest discover -s gate/tier2`) do not.
+cloud publish path is accepted. Since milestone 6, T7 exercises the
+retention sequence (sweep, the lock and the Trash ledger) on the S3 member,
+overlapping T6 and the background nf-core/sarek run TS (§19). It is the only
+part of the Gate that talks to AWS, from a person's SSO session; its own unit
+tests (`python3 -m unittest discover -s gate/tier2`) do not.
 
 ## 15. The block explorer (milestone 1)
 
@@ -1350,7 +1411,22 @@ nextflow [-c <config>] plugin nf-blocks:explore [--port <n>]
 nextflow [-c <config>] plugin nf-blocks:put <file|/dev/stdin> [--dry-run] [--name <name>]
 nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --run <ref>[,<ref>...]
                                               [--pipeline <id>] [--format csv|json|occurrences|selection]
+nextflow [-c <config>] plugin nf-blocks:sweep [--apply true] [--wait true] [--budget <size>] [--format text|json]
+nextflow [-c <config>] plugin nf-blocks:prune --keep-last <n> | --keep-newer <period> [--pipeline <id>] [--apply true]
+nextflow [-c <config>] plugin nf-blocks:untrash <cid> [<cid> ...] | --sweep <id>
 ```
+
+`sweep` and `prune` default to a dry run; `--apply true` acts. `sweep
+--apply` exits 0 only when it applied, 1 on a lost lock, a refused start (a
+fresh Live Writer, without `--wait`) or a delete failure; `--wait true`
+waits instead of refusing, polling and printing why. `--budget <size>` (a
+`MemoryUnit` string such as `'10 GB'`) caps the bytes newly trashed, in
+address order; what a budget-capped run deletes was capped when it was
+trashed, not when it is deleted. `prune --apply` exits 1 only on a Claim
+write failure, naming how many of the planned releases it wrote first.
+`untrash` always acts (there is no dry run) and exits 1 when nothing named
+is in any Trash ledger. §19 has the full contract and plan decisions 6 and
+8 to 13.
 
 *Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
 `1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
@@ -2428,6 +2504,22 @@ holds the reasoning, and the execution ledger is
 
 ## 19. Milestone 6: retention (2026-09-30)
 
+*Status: built on `feat/m6-retention` at `1a6c043` (which also carries
+main's 0.3.0-beta.2 patch release, §0, §1, §15). `./gradlew check`: 1,254
+unit tests and 4 `memoryBoundTest` features pass, `dependencyCheck` green.
+`web`, `node --test`: 205 of 205. Gate unit tests, `python3 -m unittest -v`
+under `gate`: 312 OK (1 skipped); under `gate/tier2`: 53 OK. `make gate` on
+a fresh `GATE_ROOT`: lineage 16 PASS, 0 FAIL, 5 SKIP; browser tier A 5/5;
+tier B 13/13, no flake this run. Tier two (T1 to T7, T2b, TS) not yet run:
+Rob runs `make gate-tier2` (`T2_TIMEOUT` can be raised by environment if T7
+makes a run tight).*
+
+Plan `docs/plans/2026-09-30-retention-milestone-6.md`; tickets
+[20](../.scratch/post-gate/issues/20-retention-on-s3.md) and
+[21](../.scratch/post-gate/issues/21-pins-as-content-roots.md) hold the
+reasoning (each `## Answer` numbered), and the execution ledger is
+`.superpowers/sdd/2026-09-30-retention-milestone-6/progress.md`.
+
 Every run registers as a Live Writer in its writable member's `live/`
 (ticket 20 answers 1 and 5): `CasObserver.onFlowCreate` calls
 `CasSession.startLiveWriter` right after `checkClock()`, which writes
@@ -2449,3 +2541,176 @@ script (`Session.groovy:606` at v26.04.6, confirmed with
 
         return this
     }
+
+1. A sweep never runs beside a Live Writer: it refuses to start (or, with
+   `--wait`, waits) while any `live/` registration is fresh, and re-checks
+   before every trash batch, every delete batch and before writing a ledger;
+   a registration with no heartbeat for 10 minutes counts as dead. A run
+   that cannot write its own registration warns and continues rather than
+   aborting (DESIGN §0 rule 3 covers provenance, not this) — the age floor
+   and grace still stand between a sweep and a block such a run dedups onto.
+   [20] answers 1, 6, 7; plan decision 11.
+2. Trash is a ledger, on both backends, never a tag, a copy or a rename:
+   `trash/<deadline>-<sweep id>` lists the addresses one sweep trashed and
+   their sizes; blocks stay in place and readable; a later sweep deletes
+   only ledgered blocks past their deadline that are still dead in its own
+   fresh mark, so a block that becomes reachable again is simply live, no
+   `untrash` needed (§5). [20] answer 2; plan decision 14.
+3. The age floor is judged against the store's own clock, stable per address
+   because writes are conditional (S3 `LastModified`, local mtime); a sweep
+   also clears `tmp/` staging keys and incomplete multipart uploads under
+   the member prefix past the age floor. [20] answer 3.
+4. The mark (`Mark.of`, ticket 20 answer 4, ticket 21 answers 1 to 4; plan
+   decisions 1 to 6) reads blocks level by level, in windows of about
+   `threads * 8` blocks, expanding and dropping each decoded map before the
+   next window (§0 rule 2). It reads, never trusts, the Index: deletion is
+   where correctness beats speed. A run's content root is every OutputItem
+   and OutputCollection Leaf address, every collection's `index` Leaf, and
+   everything under a Leaf that is a Directory Manifest; its metadata root
+   is the RunCompletion, its RunManifest and the RunManifest's `script`
+   block. `set retain "lineage"` on a RunCompletion releases its content and
+   keeps its metadata; `del retain` restores the content; a conflicted
+   `retain` group keeps everything, never consent to sweep.
+5. A pin (`add pin "<note>"`) keeps its subject's whole content closure — a
+   run's every Leaf, a collection's or item's Leaves, a Directory Manifest
+   and everything under it — plus, for a pinned run, collection or item, its
+   own metadata too, so the page can still explain pinned content that
+   `delete` hid. Several current `add pin` Claims on one subject are a set,
+   not a conflict (`add` groups are exempt from the one-current rule, like
+   `name`); `del pin` supersedes one. A pin beats `retain "lineage"` for what
+   it pins and beats `delete` for content (the run stays hidden; the
+   explorer warns "hidden but pinned"); pins cannot conflict with each
+   other. [21] answers 1 to 4; plan decisions 1 to 6.
+6. `prune` reads the Index (`pipelines()`, `runsOf(pipeline)`) and writes
+   `set retain "lineage"` per Pipeline Identity through the same `Put`
+   builder `put` uses, one `Put` per release, in one `--apply` call: with
+   both `--keep-last` and `--keep-newer`, a run is kept when either keeps
+   it; without `--pipeline`, every pipeline is pruned separately; a run
+   whose `retain` group is already conflicted is skipped and reported; a
+   pinned run releases as usual, since its pins hold regardless. [21] answer
+   5; plan decision 12.
+7. `sweep`, `prune` and `untrash` land in the CLI (§0 rule 5, §15): dry runs
+   by default, `--apply true` to act; `untrash` always acts. `put` stays the
+   only way to write a pin or a `retain` Claim by hand. [07], [20] and [21]
+   throughout.
+8. Gate assertion 9 (§14) and tier two's T7 (`gate/tier2/README.md`) exercise
+   the sequence above end to end, T7 on an S3 member, also exercising the
+   lock and the ledger. [21] answer 7.
+
+### Decisions made where the tickets are silent, as built
+
+Recorded here per the plan (`plan-decisions.md`, `.superpowers/sdd/2026-09-30-retention-milestone-6/`);
+a reviewer could reject any of them.
+
+1. A run's closure, for the mark: metadata is the RunCompletion, its
+   RunManifest, the RunManifest's `script` block, every OutputCollection and
+   every OutputItem; content is every Leaf address of every item and each
+   collection's `index` Leaf, and, for a Leaf that is a Directory Manifest,
+   the manifest and everything under it. A Directory Manifest is content,
+   not metadata: it goes when the run's content is released.
+2. A pinned run keeps its whole closure, metadata included, even hidden by
+   `delete` (ticket 21 answer 3 names "the subject's own metadata block");
+   a pinned collection keeps itself, its RunManifest, its items and their
+   content; a pinned item keeps itself and its content.
+3. A Selection with a clean `delete` is not a root, the same rule as a run.
+   A conflicted deletion keeps it. Its via collections are kept with their
+   RunManifest, metadata only (block explorer spec section 7.3).
+4. Claims are live exactly when their subject is live (glossary Store Log:
+   "a Claim is listed but kept only while its subject is"), superseded ones
+   included; they are small and are the history. A Claim is also live when
+   its subject is held by a read-only member (checked with `has()` on
+   members after the first): the sweep cannot remove that subject, so
+   removing its Claims would change its meaning (un-deleting it). A Claim
+   block this build cannot parse is kept live and reported
+   (`unreadableClaims`), never swept — wherever Claims disagree, content is
+   kept.
+5. Only `set retain "lineage"` releases. A `set retain` with any other value
+   keeps content, so a later value cannot be misread as consent by this
+   build.
+6. A mark that cannot read a metadata block it needs refuses `--apply` (exit
+   1, naming up to 20), because the blocks under it are unknown. A missing
+   content block (raw or Directory Manifest) is reported, not refused: it is
+   already gone, and what was under a gone manifest is protected only by
+   other roots. A Store Log entry whose own block is in no member is
+   dangling: not a root, reported, and deleted from the writable member's
+   log by `--apply`, but only once older than the age floor (a conservative
+   narrowing of the plan: a fresh dangling entry could be one a concurrent
+   writer has not finished with).
+7. After deleting a block the sweep deletes its Store Log entries in the
+   writable member, then removes the index rows keyed by it
+   (`Index.forget`) and rewrites the writable member's Index Snapshot.
+   Producer rows for released content stay: the lineage says who produced
+   the bytes that were released.
+8. Trash timing: one sweep writes at most one ledger, after its mark, so an
+   interrupted sweep before that write changed nothing. The age floor and
+   the grace period default to 14 days each. The age floor may not be under
+   the Live Writer stale threshold (10 minutes), because a run whose
+   heartbeat stopped counts as dead after that and may still reference what
+   it wrote; the grace may be 0. Either under a day warns. A block trashed
+   by two ledgers (in two members, or across a lock loss and a retry) goes
+   by the later deadline, not the earlier one — a conservative narrowing.
+9. `--budget <size>` caps the bytes a sweep newly trashes, in address order.
+   What it deletes was capped when it was trashed.
+10. Before each delete batch and before writing the ledger the sweep
+    re-checks: its own lock (a heartbeat that throws counts as lost, the
+    same as one that is refused — a transient store error must stop
+    deletion rather than continue unlocked), live registrations (a fresh
+    one stops it, releasing the lock so the run proceeds), and the Store Log
+    of every member (entries written since the mark are marked into the
+    live set, never out of it). After a lost lock the ledgers already on
+    disk are left untouched rather than rewritten — a conservative
+    narrowing that can leave a ledger listing a block another sweep has
+    since deleted, harmless since deletion is idempotent.
+11. A run that cannot write its registration warns and continues; a Claim or
+    Selection written during a sweep is caught by the Store Log re-check
+    unless it lands between the last re-check and a delete batch — that gap
+    is documented, not closed (see below). Heartbeat failures on the run
+    side (the Live Writer, not the sweep) warn once on the first failure and
+    once on recovery, never throw, matching "registration failure warns".
+12. `prune` reads the Index; with both `--keep-last` and `--keep-newer`, a
+    run is kept when either keeps it. Without `--pipeline`, every Pipeline
+    Identity is pruned separately. A run whose `retain` group is in conflict
+    is skipped and reported; a pinned run is released as usual (its pins
+    hold).
+13. `untrash` takes the sweep lock, removes the named addresses (or a whole
+    sweep with `--sweep <id>`) from the ledgers, and says that a block still
+    unreachable is trashed again by the next sweep, so the way to keep it is
+    a pin or `del retain`.
+14. Ledger format, not a block: JSON
+    `{"sweep": <id>, "trashed_at": <iso>, "deadline": <iso>, "blocks": [{"cid": <text>, "size": <int>}, ...]}`,
+    blocks sorted by cid, named `trash/<13-digit deadline epoch millis>-<sweep id>`
+    so a listing sorts by deadline. Sweep id `<yyyyMMdd'T'HHmmss'Z'>-<8 base32 chars>`.
+15. Lock body: JSON `{"sweep": <id>, "state": "held"|"released", "started_at": <iso>, "beat": <int>}`.
+    A registration body: JSON `{"session", "run_name", "pipeline", "started_at"}`.
+16. Task 8: `prune` counts every successful run toward `--keep-last N`
+    whatever its Claims (a released or pinned run still occupies a slot,
+    since the count is about how many runs exist, not how many still hold
+    content).
+17. Task 10: the Live Writer registration is written at `onFlowCreate`
+    (`Session.groovy:606`, above), not at first publish, so it covers every
+    `fromStore` read too, and a pipeline that only reads a member is still
+    unregistered there (below).
+18. `sweep --apply --format json` prints one JSON object on stdout, the
+    forget-and-snapshot outcome folded in as a `snapshot` field rather than
+    a second line, so a `--format json` reader never has to skip a trailing
+    text line; text mode keeps the separate `snapshot   ...` line. `--apply`
+    exits 0 only when it applied.
+19. The mark reads each level in windows of about `threads * 8` blocks
+    (`Mark.WINDOW_FACTOR`), expanding and dropping each decoded map before
+    the next window, rather than a whole level at once (§0 rule 2 outranks
+    the plan's level-at-once sketch).
+20. The Gate's browser tier-B check for this milestone is assertion 20, not
+    "B13" (13 was already taken by an earlier tier-B row); tier B is
+    reported as 13/13.
+21. Tier two's T7 runs its sweep steps after T6 and before `wait "$TS_PID"`,
+    overlapping the background nf-core/sarek run (TS), rather than after TS;
+    its retention closures are computed only at the after-runs checkpoint.
+    `T2_TIMEOUT` (ticket 11 decision 6) stays 2700 s, cheaper than raising
+    the watchdog; it can be raised by environment if T7 makes a run tight.
+
+**Not protected, documented rather than closed:** a pipeline that only
+reads a member (`fromStore`, no publish) cannot register as a Live Writer
+there, so a sweep does not wait for it and a mid-run input can vanish under
+it (ticket 20 answer 7); and a Claim or Selection written in the narrow gap
+between a sweep's last re-check and the delete batch it guards is not
+caught by that re-check (plan decision 10, decision 11).
