@@ -1,0 +1,83 @@
+package robsyme.cas.s3
+
+import java.nio.file.Path
+
+import robsyme.cas.core.Cid
+import robsyme.cas.core.RetentionStorage
+import robsyme.cas.core.RetentionStorageContract
+import robsyme.cas.core.Stamped
+import spock.lang.TempDir
+
+class S3RetentionStorageTest extends RetentionStorageContract {
+
+    MemoryS3Ops ops = new MemoryS3Ops('b')
+    @TempDir Path tmp
+
+    private S3BlockStore blocks() { new S3BlockStore(ops, 'm/', 'lab', true, tmp) }
+
+    @Override RetentionStorage storage() { new S3RetentionStorage(ops, 'm/') }
+
+    @Override Cid writeBlock(byte[] bytes) { blocks().putStreaming(new ByteArrayInputStream(bytes)) }
+
+    @Override void leaveScratch() { ops.createMultipart('m/tmp/x', S3PutOptions.create()) }
+
+    @Override void writeLogEntry(String name) { ops.putText('m/log/' + name, '') }
+
+    @Override boolean logEntryExists(String name) { ops.objects.containsKey('m/log/' + name) }
+
+    def 'a lock is taken with If-None-Match and replaced with If-Match'() {
+        when:
+        final String v = storage().createLock('x'.bytes)
+        storage().replaceLock(v, 'y'.bytes)
+
+        then:
+        ops.calls.findAll { it.startsWith('PUT m/sweep.lock') }.size() == 2
+    }
+
+    def 'scratch holds tmp keys and open uploads, and an upload is aborted, not deleted'() {
+        given:
+        ops.putText('m/tmp/stage-1', 'x')
+        final String id = ops.createMultipart('m/blocks/aa/y', S3PutOptions.create())
+
+        when:
+        final List<Stamped> scratch = storage().listScratch()
+        scratch.each { storage().deleteScratch(it) }
+
+        then:
+        scratch*.name.sort() == ['m/blocks/aa/y', 'm/tmp/stage-1']
+        scratch.find { it.token == id } != null
+        ops.calls.contains('ABORT m/blocks/aa/y')
+        ops.listUploads('m/') == []
+    }
+
+    def 'a member at the bucket root scratches only what it writes: tmp/ keys and uploads under blocks/ or tmp/'() {
+        given: 'a store with an empty prefix, beside another tool\'s objects and uploads in the same bucket'
+        final RetentionStorage root = new S3RetentionStorage(ops, '')
+        ops.putText('tmp/stage-1', 'x')
+        ops.putText('other/tmp/stage-2', 'x')
+        ops.createMultipart('blocks/aa/y', S3PutOptions.create())
+        ops.createMultipart('tmp/z', S3PutOptions.create())
+        ops.createMultipart('backups/2026.tar', S3PutOptions.create())
+        ops.createMultipart('other/blocks/aa/w', S3PutOptions.create())
+
+        when:
+        final List<Stamped> scratch = root.listScratch()
+
+        then:
+        scratch*.name.sort() == ['blocks/aa/y', 'tmp/stage-1', 'tmp/z']
+    }
+
+    def 'retention objects are written as STANDARD whatever class blocks are given'() {
+        given:
+        final RetentionStorage s = storage()
+
+        when:
+        final String v = s.createLock('x'.bytes)
+        s.replaceLock(v, 'y'.bytes)
+        s.putLive('sess', '{}'.bytes)
+        s.writeLedger('1790000000000-s', '{}'.bytes)
+
+        then:
+        ['m/sweep.lock', 'm/live/sess', 'm/trash/1790000000000-s'].every { ops.objects[it].storageClass == 'STANDARD' }
+    }
+}

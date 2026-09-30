@@ -227,7 +227,9 @@ export class Explorer {
       ? (await this.db.query(SQL.collectionsOf, [cid])).map(r => ({ output: r.output_name, cid: r.collection_cid }))
       : await Promise.all(completion.collections.map(async (c) =>
         ({ output: (await this.blocks.ofKind(text(c), 'OutputCollection')).value.name, cid: text(c) })))
-    return { row, completion, collections }
+    // Task 11 (ticket 21 answer 6): the run's own retain/pin state, for the explorer's release/restore/pin controls.
+    const state = (await this.claimStates([cid])).get(cid)
+    return { row, completion, collections, state }
   }
 
   /**
@@ -238,19 +240,21 @@ export class Explorer {
    * a snapshot row; a tail row reuses the block it already decoded for items.
    */
   async collection(cid, { limit = ITEMS_PAGE, offset = 0 } = {}) {
+    // Task 11: the collection's own retain/pin state, read once for either branch below.
+    const state = (await this.claimStates([cid])).get(cid)
     const [row] = await this.db.query(SQL.collectionByCid, [cid])
     if (row) {
       const items = (await this.db.query(SQL.collectionItems, [cid, limit, offset])).map(r => r.item_cid)
       const [{ n }] = await this.db.query(SQL.collectionItemCount, [cid])
       const block = (await this.blocks.ofKind(cid, 'OutputCollection')).value
-      return { cid, output: row.output_name, completion: row.completion_cid, items, index: block.index ?? null,
+      return { cid, output: row.output_name, completion: row.completion_cid, items, index: block.index ?? null, state,
         ...span({ offset, limit, shown: items.length, count: n }) }
     }
     const block = (await this.blocks.ofKind(cid, 'OutputCollection')).value
     const completion = this.stale.find(s => s.completion?.collections.some(c => text(c) === cid))?.cid ?? null
     const all = block.items.filter(Boolean).map(text)
     const items = all.slice(offset, offset + limit)
-    return { cid, output: block.name, completion, items, index: block.index ?? null,
+    return { cid, output: block.name, completion, items, index: block.index ?? null, state,
       ...span({ offset, limit, shown: items.length, count: all.length }) }
   }
 
@@ -258,7 +262,9 @@ export class Explorer {
   async item(collectionCid, itemCid) {
     const block = await this.blocks.ofKind(itemCid, 'OutputItem')
     const { value } = block.value
-    return { collection: collectionCid, cid: itemCid, value, view: metadataView(typedDecode(block.bytes).value), leaves: leavesOf(value) }
+    // Task 11: the item's own retain/pin state.
+    const state = (await this.claimStates([itemCid])).get(itemCid)
+    return { collection: collectionCid, cid: itemCid, value, view: metadataView(typedDecode(block.bytes).value), leaves: leavesOf(value), state }
   }
 
   /**

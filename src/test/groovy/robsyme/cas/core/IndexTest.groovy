@@ -607,6 +607,51 @@ class IndexTest extends Specification {
         count('run') == 1
     }
 
+    def 'runsOf lists every run of a pipeline newest first; pipelines lists them all'() {
+        given: 'three runs of p finished at t1 < t2 < t3, one failed, and one run of q'
+        final String t1 = '2026-09-03T09:00:00.000Z'
+        final String t2 = '2026-09-03T10:00:00.000Z'
+        final String t3 = '2026-09-03T11:00:00.000Z'
+        final Cid pRun1 = buildOtherRun([finished_at: t1], 'p1')
+        final Cid pRun2Failed = buildOtherRun([finished_at: t2, status: 'failed', exit_status: 1], 'p2')
+        final Cid pRun3 = buildOtherRun([finished_at: t3], 'p3')
+        final Cid qManifest = store.putDagCbor(Fixtures.runManifest(pipeline: 'q', run_name: 'q1', nf_run_hash: 'hash-q1'))
+        final Cid qCollection = store.putDagCbor(Fixtures.outputCollection(qManifest, 'aligned', []))
+        final Cid qRun = store.putDagCbor(Fixtures.runCompletion(qManifest, [qCollection], [finished_at: t1]))
+        [pRun1, pRun2Failed, pRun3, qRun].each { index.ingestRun(store, it, 'lab') }
+
+        expect:
+        index.pipelines() == ['p', 'q']
+        index.runsOf('p')*.finishedAt == [t3, t2, t1]
+        index.runsOf('p').find { it.status == 'failed' }.successful == false
+    }
+
+    def 'forget removes a deleted run and its Claims but keeps the producers of its content'() {
+        given: 'an ingested run with a delete Claim ingested too'
+        final Cid manifest = store.putDagCbor(Fixtures.runManifest(run_name: 'forgetme', nf_run_hash: 'hash-forgetme'))
+        final Cid content = Fixtures.contentCid('forget-content')
+        final Cid item = store.putDagCbor(Fixtures.outputItem([Fixtures.leaf('f.txt', content, 10L)]))
+        final Cid collection = store.putDagCbor(Fixtures.outputCollection(manifest, 'out', [[item, ['out/f.txt']]]))
+        final Cid completion = store.putDagCbor(Fixtures.runCompletion(manifest, [collection]))
+        index.ingestRun(store, completion, 'lab')
+        final Cid deleteClaim = store.putDagCbor(Fixtures.claim(completion, 'delete', null, null, []))
+        index.ingestClaim(store, deleteClaim, 'lab')
+
+        expect: 'the producer is there before forgetting'
+        index.producersOf(content).size() == 1
+
+        when:
+        index.forget([completion, collection, item, deleteClaim])
+
+        then:
+        index.countRows('run') == 0
+        index.countRows('collection') == 0
+        index.countRows('claim') == 0
+        index.countRows('claim_current') == 0
+        !index.runByManifest(manifest).present
+        index.producersOf(content).size() == 1
+    }
+
     /** Records which blocks the index actually reads. */
     def 'schema 3 carries the two query 3 indexes'() {
         expect:

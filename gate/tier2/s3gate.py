@@ -7,9 +7,13 @@
     s3gate.py snapshot <bucket> <member> <file>
                                          downloads <member>/index/v3.sqlite to <file>, prints
                                          {"meta_runs": x-amz-meta-runs, "count": count(*) of its run table}
+    s3gate.py live-put <bucket> <member> <session> <run name>
+    s3gate.py live-delete <bucket> <member> <session>
+                                         T7's fake Live Writer registration <member>/live/<session>; only
+                                         in a tier-two run's bucket
 Everything else is imported by tier2.sh's assertions.
 """
-import hashlib, json, os, re, sqlite3, sys
+import email.utils, hashlib, json, os, re, sqlite3, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import cas  # noqa: E402
 
@@ -17,6 +21,7 @@ REGION = "us-east-1"
 WORK_BUCKET = "scidev-playground-us-east-1"
 # A run id as tier2.sh makes it: t2-<UTC date>-<UTC time>-<$RANDOM>. Only such a run's bucket and prefix are ever emptied.
 RUN_ID = re.compile(r"^t2-[0-9]{8}-[0-9]{6}-[0-9]{1,5}$")
+RUN_BUCKET = re.compile(r"^nf-blocks-t2-t2-[0-9]{8}-[0-9]{6}-[0-9]{1,5}$")
 
 
 def client():
@@ -173,6 +178,35 @@ class Member(object):
                     out.append((k[len("nf/"):-len("/.data.json")], envelope.get("spec") or {}))
         return sorted(out, key=lambda pair: pair[0])
 
+    def store_log(self):
+        """[(reverse_ts, kind, cid)] of log/<rts>-<kind>-<cid>, as gate/cas.Store.store_log reads a local one."""
+        out = []
+        for name in sorted(self.log()):
+            parts = name.split("-", 2)
+            if len(parts) != 3 or len(parts[0]) != 13 or not parts[0].isdigit():
+                continue
+            rts, kind, cid = parts
+            if kind in cas.Store.STORE_LOG_KINDS and cas.is_cid(cid):
+                out.append((rts, kind, cid))
+        return out
+
+    def listing(self, under):
+        """([(key relative to the member, LastModified in epoch seconds)], S3's Date in epoch seconds or None).
+        The Date is the last page's response header: the member's clock, as the plugin reads it (ticket 20
+        answer 6)."""
+        out, date = [], None
+        for page in self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=self.prefix + under):
+            header = ((page.get("ResponseMetadata") or {}).get("HTTPHeaders") or {}).get("date")
+            if header:
+                date = email.utils.parsedate_to_datetime(header).timestamp()
+            for o in page.get("Contents", []):
+                modified = o.get("LastModified")
+                out.append((o["Key"][len(self.prefix):], modified.timestamp() if modified is not None else None))
+        return out, date
+
+    def body_or_none(self, rel):
+        return self.read(rel) if self.head(rel) is not None else None
+
     def head(self, rel):
         try:
             return self.s3.head_object(Bucket=self.bucket, Key=self.prefix + rel, ChecksumMode="ENABLED")
@@ -183,6 +217,46 @@ class Member(object):
         with open(path, "wb") as fh:
             fh.write(self.read(rel))
         return path
+
+
+class Blocks(object):
+    """A Member seen as gate/cas.Store is by the shared retention code: read(cid) gives verified bytes,
+    read_block(cid) a verified, decoded dag-cbor block, store_log() the Store Log. A missing block is a
+    cas.StoreError, as it is locally."""
+
+    def __init__(self, member):
+        self.member = member
+
+    def read(self, cid):
+        try:
+            return self.member.verified(cid)
+        except self.member.s3.exceptions.ClientError as exc:
+            raise cas.StoreError("no block %s in s3://%s/%s (%s)" % (cid, self.member.bucket, self.member.prefix, _code(exc)))
+
+    def read_block(self, cid):
+        if cas.cid_codec(cid) != cas.DAG_CBOR:
+            raise cas.StoreError("%s is not a dag-cbor block" % cid)
+        return cas.decode(self.read(cid))
+
+    def store_log(self):
+        return self.member.store_log()
+
+
+def _live_key(bucket, member, session):
+    if not RUN_BUCKET.match(bucket or "") or not re.match(r"^[A-Za-z0-9._-]+$", member or "") \
+            or not re.match(r"^[A-Za-z0-9._-]+$", session or ""):
+        raise ValueError("refusing live/ write: %r %r %r is not a tier-two bucket, member and session" % (bucket, member, session))
+    return "%s/live/%s" % (member, session)
+
+
+def live_put(s3, bucket, member, session, run_name):
+    """A Live Writer registration as a run writes one (ticket 20 answer 5); its LastModified is S3's."""
+    body = json.dumps({"session": session, "run_name": run_name, "pipeline": "x", "started_at": "x"}).encode()
+    s3.put_object(Bucket=bucket, Key=_live_key(bucket, member, session), Body=body)
+
+
+def live_delete(s3, bucket, member, session):
+    s3.delete_object(Bucket=bucket, Key=_live_key(bucket, member, session))
 
 
 def work_objects(s3, prefix):
@@ -248,6 +322,10 @@ if __name__ == "__main__":
         print(json.dumps(stale_if_match(client(), sys.argv[2])))
     elif sys.argv[1:2] == ["snapshot"]:
         print(json.dumps(snapshot(client(), sys.argv[2], sys.argv[3], sys.argv[4])))
+    elif sys.argv[1:2] == ["live-put"] and len(sys.argv) == 6:
+        live_put(client(), *sys.argv[2:6])
+    elif sys.argv[1:2] == ["live-delete"] and len(sys.argv) == 5:
+        live_delete(client(), *sys.argv[2:5])
     else:
         sys.stderr.write(__doc__)
         sys.exit(2)

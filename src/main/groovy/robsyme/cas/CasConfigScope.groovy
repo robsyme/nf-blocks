@@ -6,6 +6,7 @@ import nextflow.config.spec.ConfigScope
 import nextflow.config.spec.PlaceholderName
 import nextflow.config.spec.ScopeName
 import nextflow.script.dsl.Description
+import nextflow.util.Duration
 import nextflow.util.MemoryUnit
 
 /**
@@ -62,6 +63,23 @@ class CasConfigScope implements ConfigScope {
 
     @Description('The Index Snapshot a member carries for nf-blocks:explore.')
     CasSnapshotScope snapshot
+
+    @Description('What nf-blocks:sweep protects (DESIGN.md §19).')
+    CasSweepScope sweep
+
+    /** {@code cas.sweep}: the age floor and the Trash grace period (ticket 20; plan decision 8). */
+    @CompileStatic
+    static class CasSweepScope implements ConfigScope {
+        CasSweepScope() {}
+
+        @ConfigOption
+        @Description('A block younger than this is never trashed, whatever reaches it. At least 10m. Defaults to 14d.')
+        Duration ageFloor
+
+        @ConfigOption
+        @Description('How long a trashed block waits before a sweep may delete it. Defaults to 14d.')
+        Duration grace
+    }
 
     /** {@code cas.snapshot}: the Index Snapshot a member carries for the explorer (DESIGN.md §15). */
     @CompileStatic

@@ -6,12 +6,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { collection, compose, copyOutcome, copyText, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
+import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
+import { claimState } from '../src/claims.js'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 import { memberWithIndexedCollection, memberWithUnjoinedRun } from './fixture.mjs'
 
@@ -103,7 +104,9 @@ function rowModel({ allItems = null } = {}) {
 }
 
 function rowCtx(tray = new Tray(null)) {
-  const ctx = { tray, changed: [], write: { available: false, reason: 'read only' }, rerender: () => {} }
+  // hrefFor is defined even when writing is unavailable (app.js's own write object always has it): retentionPanel
+  // builds its unavailable-note href unconditionally, the way actions() already did.
+  const ctx = { tray, changed: [], write: { available: false, reason: 'read only', hrefFor: (h) => h }, rerender: () => {} }
   ctx.trayChanged = () => ctx.changed.push(tray.size)
   return ctx
 }
@@ -214,8 +217,9 @@ test('a run that published nothing says so under Outputs, with no snippet toggle
   installDom()
   const completion = { status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-27T02:26:05.935Z', error: null,
     anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 } }
-  const ex = { run: async () => ({ row: { run_name: 'extravagant_boltzmann', pipeline: 'custom.nf', nf_run_hash: 'abc' }, completion, collections: [] }) }
-  const node = await run(ex, 'bafyrun')
+  const ex = { run: async () => ({ row: { run_name: 'extravagant_boltzmann', pipeline: 'custom.nf', nf_run_hash: 'abc' }, completion, collections: [],
+    state: claimState([]) }) }
+  const node = await run(ex, 'bafyrun', ctx())
   const empty = node.querySelector('[data-no-outputs]')
   assert.ok(empty, 'an empty-state line')
   assert.equal(empty.textContent, 'This run published no outputs.')
@@ -245,6 +249,149 @@ test('a collection whose index was never written says so', async () => {
 
 test('the run page counts unjoined publishes', async () => {
   const { ex, ids } = await memberWithUnjoinedRun(2)
-  const page = await render(run(ex, ids.completion))
+  const page = await render(run(ex, ids.completion, ctx()))
   assert.match(page.textContent, /unjoined 2/)
+})
+
+// Task 11: release/restore on a run, pin/unpin on any subject (ticket 21
+// answer 6). The fake explorer's loaders return `state` (claimState of the
+// claims a test hands it), as model.js's real loaders now do; the fake
+// writer records each write as [method, subject, ...args], mirroring the
+// Selection-actions write path (ctx.write.run/writer, actions() at views.js).
+const RUN = 'bafyrun1'
+const COLLECTION = 'bafycoll1'
+const ITEM = 'bafyitem1'
+const CONTENT = 'bafycontent1'
+const C1 = 'bafyclaim1'
+const C2 = 'bafyclaim2'
+
+function fakeWriter(calls) {
+  return {
+    release: (subject, retainClaims) => { calls.push(['release', subject, retainClaims]); return Promise.resolve({}) },
+    restore: (subject, retainClaims) => { calls.push(['restore', subject, retainClaims]); return Promise.resolve({}) },
+    pin: (subject, note) => { calls.push(['pin', subject, note]); return Promise.resolve({}) },
+    unpin: (subject, pinClaim) => { calls.push(['unpin', subject, pinClaim]); return Promise.resolve({}) },
+  }
+}
+
+/**
+ * A fake explorer and ctx for the retention tests. `runClaims`,
+ * `collectionClaims`, `itemClaims` and `contentClaims` become each subject's
+ * `state` (claimState); `writable: false` puts the page outside the writable
+ * member, as the Selection view's `actions()` reads `ctx.write.here`.
+ */
+function fixture({ runClaims = [], collectionClaims = [], itemClaims = [], contentClaims = [], writable = true } = {}) {
+  const calls = []
+  const completion = { status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-01T00:00:00.000Z', error: null,
+    anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 } }
+  const ex = {
+    run: async () => ({ row: { run_name: 'cold', pipeline: 'demo', nf_run_hash: null }, completion, collections: [],
+      state: claimState(runClaims) }),
+    collection: async () => ({ cid: COLLECTION, output: 'aligned', completion: null, index: null, items: [], total: 0,
+      state: claimState(collectionClaims) }),
+    item: async () => ({ collection: COLLECTION, cid: ITEM, value: null, view: null, leaves: [], state: claimState(itemClaims) }),
+    selectionsHolding: async () => [],
+    runLabel: async () => null,
+    producersOf: async () => [],
+    claimStates: async (cids) => new Map(cids.map(c => [c, claimState(contentClaims)])),
+  }
+  const ctx = { tray: new Tray(null), rerender: () => {}, progress: () => {},
+    // hrefFor is not the identity, so a test can tell the note links through it (fix round 1: shared unavailableNote).
+    write: { available: true, here: writable, writable: 'lab', hrefFor: (h) => `http://h/m/lab${h}`, writer: fakeWriter(calls),
+      run: async (status, fn) => { await fn() } } }
+  ctx.trayChanged = () => {}
+  return { ex, ctx, calls }
+}
+
+/** Flushes the microtasks a write's onclick starts: the fake writer resolves with no real timer, so a macrotask tick is enough. */
+const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+
+test('a released run shows the badge and Restore content; restore supersedes the release', async () => {
+  installDom()
+  const { ex, ctx, calls } = fixture({ runClaims: [{ cid: C1, verb: 'set', attribute: 'retain', value: 'lineage', supersedes: [] }] })
+  const node = await run(ex, RUN, ctx)
+  assert.ok(node.querySelector('[data-badge="content-released"]'))
+  assert.equal(node.querySelector('#release'), null)
+  node.querySelector('#restore').click()
+  await settle()
+  assert.deepEqual(calls, [['restore', RUN, [C1]]])
+})
+
+test('a run not released offers Release content with its current retain claims', async () => {
+  installDom()
+  const { ex, ctx, calls } = fixture({ runClaims: [] })
+  const node = await run(ex, RUN, ctx)
+  node.querySelector('#release').click()
+  await settle()
+  assert.deepEqual(calls, [['release', RUN, []]])
+})
+
+test('a hidden run that is pinned says so', async () => {
+  installDom()
+  const { ex, ctx } = fixture({ runClaims: [
+    { cid: C1, verb: 'delete', attribute: null, value: null, supersedes: [] },
+    { cid: C2, verb: 'add', attribute: 'pin', value: 'paper', supersedes: [] }] })
+  const node = await run(ex, RUN, ctx)
+  assert.ok(node.querySelector('[data-badge="hidden-but-pinned"]'))
+  assert.equal(node.querySelector('[data-pin]').textContent.includes('paper'), true)
+})
+
+test('pin asks for a note, and each pin can be removed on its own', async () => {
+  installDom()
+  const { ex, ctx, calls } = fixture({ itemClaims: [{ cid: C2, verb: 'add', attribute: 'pin', value: 'paper', supersedes: [] }] })
+  const node = await item(ex, COLLECTION, ITEM, ctx)
+  const button = node.querySelector('#pin')
+  assert.equal(button.disabled, true)
+  const note = node.querySelector('#pin-note')
+  note.value = 'figure 3'; note.dispatchEvent(new Event('input'))
+  assert.equal(button.disabled, false)
+  button.click()
+  node.querySelector(`button[data-unpin="${C2}"]`).click()
+  await settle()
+  assert.deepEqual(calls, [['pin', ITEM, 'figure 3'], ['unpin', ITEM, C2]])
+})
+
+test('outside the writable member the badges show and no write is offered', async () => {
+  installDom()
+  const { ex, ctx } = fixture({ runClaims: [{ cid: C1, verb: 'set', attribute: 'retain', value: 'lineage', supersedes: [] }], writable: false })
+  const node = await run(ex, RUN, ctx)
+  assert.ok(node.querySelector('[data-badge="content-released"]'))
+  assert.equal(node.querySelector('#restore'), null)
+  assert.ok(node.querySelector('[data-unavailable]'))
+})
+
+// Fix round 1 (review): the run page's unavailable note is the same shared
+// helper the Selection view's actions() uses, so it names its own actions
+// and links to itself in the writable member, the way actions() always has.
+test('a run page outside the writable member shows the note with a link to the same route in the writable member', async () => {
+  installDom()
+  const { ex, ctx } = fixture({ writable: false })
+  const node = await run(ex, RUN, ctx)
+  const note = node.querySelector('[data-unavailable]')
+  assert.equal(note.textContent, 'Pin, release and restore write to the writable member, lab. Open this run there.')
+  const a = note.querySelector('a')
+  assert.equal(a.textContent, 'Open this run there')
+  assert.equal(a.getAttribute('href'), ctx.write.hrefFor(`#/run/${RUN}`))
+})
+
+test('a collection page pins the same way, below its heading', async () => {
+  installDom()
+  const { ex, ctx, calls } = fixture({ collectionClaims: [{ cid: C1, verb: 'add', attribute: 'pin', value: 'kept', supersedes: [] }] })
+  const node = await collection(ex, COLLECTION, 0, ctx)
+  assert.ok(node.querySelector('[data-badge="pinned"]'))
+  node.querySelector('#pin-note').value = 'why'
+  node.querySelector('#pin-note').dispatchEvent(new Event('input'))
+  node.querySelector('#pin').click()
+  await settle()
+  assert.deepEqual(calls, [['pin', COLLECTION, 'why']])
+})
+
+test('a content page shows a pin and can be unpinned', async () => {
+  installDom()
+  const { ex, ctx, calls } = fixture({ contentClaims: [{ cid: C1, verb: 'add', attribute: 'pin', value: 'figure 1', supersedes: [] }] })
+  const node = await content(ex, CONTENT, ctx)
+  assert.ok(node.querySelector('[data-badge="pinned"]'))
+  node.querySelector(`button[data-unpin="${C1}"]`).click()
+  await settle()
+  assert.deepEqual(calls, [['unpin', CONTENT, C1]])
 })

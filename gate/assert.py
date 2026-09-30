@@ -7,6 +7,10 @@
     python3 gate/assert.py <GATE_ROOT> --seeding-before     # seeding.json for assertion 13
     python3 gate/assert.py <GATE_ROOT> --delete-consumer-cache
     python3 gate/assert.py <GATE_ROOT> --seeding-lock       # blocks to lock for consumer-seeded
+    python3 gate/assert.py <GATE_ROOT> --retention-refs     # RET_* shell vars for assertion 9
+    python3 gate/assert.py <GATE_ROOT> --retention-age <days>
+    python3 gate/assert.py <GATE_ROOT> --retention-checkpoint <name>
+    python3 gate/assert.py <GATE_ROOT> --retention-untrash-pick
 
 Every address this file checks is derived here, with hashlib, from the bytes
 the pipeline actually produced in its work directory or from the bytes of a
@@ -15,7 +19,7 @@ assertion FAILs; SKIP never fails the Gate.
 
 Assertion numbers are the spec's (.scratch/content-addressed-lineage/spec.md
 section 1.2), plus assertion 0 for the preconditions every other assertion
-stands on. Numbers 8, 9, 11 and 12 are out of the Walking Skeleton and are
+stands on. Numbers 8, 11 and 12 are out of the Walking Skeleton and are
 reported as SKIP with the spec's own wording, so the list stays complete.
 """
 
@@ -1980,6 +1984,369 @@ def _strings(value):
 
 
 # --------------------------------------------------------------------------
+# Assertion 9 (milestone 6, ticket 21 answer 7): gate/retention's two runs in
+# their own store-retention, driven through the real sweep, prune, untrash and
+# put verbs by gate.sh, which checkpoints the store between steps with
+# --retention-checkpoint. Every expected set is computed here from blocks read
+# and re-hashed through cas.Store; of the plugin's own output only the dry
+# run's `applied` and `dead` and each verb's exit status are read (DESIGN §0
+# rule 6).
+# --------------------------------------------------------------------------
+
+RETENTION_STORE = "store-retention"
+RETENTION_IDENTITY = "cas-gate-retention"
+RETENTION_RUNS = ("retention-b", "retention-a")
+RETENTION_CHECKPOINTS = ("after-runs", "after-dry-1", "before-sweep", "after-sweep-1",
+                         "after-untrash", "after-sweep-2", "after-sweep-3", "after-sweep-4")
+
+
+def retention_store(gate):
+    return cas.Store(os.path.join(gate.root, RETENTION_STORE))
+
+
+def _retention_logs(gate):
+    return os.path.join(gate.root, "logs", "retention")
+
+
+def retention_runs(store):
+    """{'a': (cid, block), 'b': (cid, block)} from store-retention's Store Log, by
+    run name suffix: each `run` entry's RunCompletion, named by the run_name of
+    the RunManifest it links to."""
+    out = {}
+    for _rts, kind, cid in store.store_log():
+        if kind != "run":
+            continue
+        completion = store.read_block(cid)
+        if not isinstance(completion, dict) or completion.get("kind") != "RunCompletion":
+            raise cas.GateError("Store Log run entry %s is not a RunCompletion" % cid)
+        link = completion.get("run")
+        manifest = store.read_block(link.text) if isinstance(link, cas.Cid) else None
+        name = (manifest or {}).get("run_name") or ""
+        tag = name.rsplit("-", 1)[-1]
+        if name in RETENTION_RUNS:
+            if tag in out:
+                raise cas.GateError("two RunCompletions for run %s in %s" % (name, store.root))
+            out[tag] = (cid, completion)
+    missing = [n for n in RETENTION_RUNS if n.rsplit("-", 1)[-1] not in out]
+    if missing:
+        raise cas.GateError("no RunCompletion in %s's Store Log for %s"
+                            % (store.root, ", ".join(missing)))
+    return out
+
+
+def retention_closures(store):
+    """Everything assertion 9 expects, computed from the blocks themselves (the
+    closure and Claim code is gate/cas.py's, shared with tier two's T7)."""
+    return cas.retention_closures(store, retention_runs(store))
+
+
+def retention_refs(gate):
+    store = retention_store(gate)
+    return cas.retention_refs(store, retention_runs(store))
+
+
+def retention_age(gate, days):
+    """Backdates every block of store-retention by `days`: a local member's
+    clock is its mtimes, so this is what makes the blocks older than the age
+    floor without waiting 14 days."""
+    import time
+    when = time.time() - float(days) * 86400
+    count = 0
+    for _cid, path in retention_store(gate).blocks():
+        os.utime(path, (when, when))
+        count += 1
+    return count
+
+
+def _retention_ledgers(store):
+    out = {}
+    for name in sorted(_listdir(store.path("trash"))):
+        if name.startswith("."):
+            continue
+        with open(store.path("trash", name)) as fh:
+            try:
+                out[name] = json.load(fh)
+            except ValueError as exc:
+                out[name] = {"unparsable": str(exc)}
+    return out
+
+
+def retention_checkpoint(gate, name):
+    """logs/retention/<name>.json: every block address present, every ledger's
+    parsed JSON by name, the lock body, the live/ names, and the closures the
+    Gate computes from the blocks present now (or why it cannot)."""
+    store = retention_store(gate)
+    lock = None
+    if os.path.isfile(store.path("sweep.lock")):
+        with open(store.path("sweep.lock")) as fh:
+            lock = fh.read()
+    data = {"name": name,
+            "blocks": sorted(cid for cid, _p in store.blocks()),
+            "ledgers": _retention_ledgers(store),
+            "lock": lock,
+            "live": sorted(_listdir(store.path("live")))}
+    try:
+        data["closures"] = retention_closures(store)
+    except Exception as exc:
+        data["closures_error"] = "%s: %s" % (type(exc).__name__, exc)
+    os.makedirs(_retention_logs(gate), exist_ok=True)
+    with open(os.path.join(_retention_logs(gate), name + ".json"), "w") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True)
+    return data
+
+
+def retention_untrash_pick(gate):
+    """b's one.txt, which must sit in the one ledger."""
+    store = retention_store(gate)
+    one = retention_closures(store)["b_one"]
+    ledgers = _retention_ledgers(store)
+    holding = [n for n, body in ledgers.items()
+               if one in {b.get("cid") for b in body.get("blocks") or [] if isinstance(b, dict)}]
+    if len(ledgers) != 1 or holding != list(ledgers):
+        raise cas.GateError("b's one.txt %s is not in the one Trash ledger (ledgers: %s)"
+                            % (one, ", ".join(ledgers) or "none"))
+    return one
+
+
+def _ledger_cids(body):
+    return {b.get("cid") for b in (body or {}).get("blocks") or [] if isinstance(b, dict)}
+
+
+def _lock_released(lock):
+    if lock is None:
+        return True
+    try:
+        return json.loads(lock).get("state") == "released"
+    except (ValueError, AttributeError):
+        return False
+
+
+def _verb_exit(logs, step):
+    try:
+        with open(os.path.join(logs, step + ".exit")) as fh:
+            text = fh.read().strip()
+        return int(text)
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def _verb_text(logs, step):
+    text = ""
+    for suffix in (".out", ".err"):
+        path = os.path.join(logs, step + suffix)
+        if os.path.isfile(path):
+            with open(path) as fh:
+                text += fh.read()
+    return text
+
+
+def _verb_json(logs, step):
+    """The one JSON object a --format json verb prints on stdout."""
+    path = os.path.join(logs, step + ".out")
+    if not os.path.isfile(path):
+        return None
+    with open(path) as fh:
+        lines = [l for l in fh.read().splitlines() if l.startswith("{")]
+    try:
+        return json.loads(lines[-1]) if lines else None
+    except ValueError:
+        return None
+
+
+def load_retention_checkpoints(directory, hint):
+    """({name: checkpoint}, None), or (None, why) when one is missing."""
+    cp = {}
+    for name in RETENTION_CHECKPOINTS:
+        path = os.path.join(directory, name + ".json")
+        if not os.path.isfile(path):
+            return None, "no checkpoint %s (%s)" % (path, hint)
+        with open(path) as fh:
+            cp[name] = json.load(fh)
+    return cp, None
+
+
+def retention_problems(cp, logs, store, run_exits, refused_run):
+    """Assertion 9's eight steps over checkpoints `cp`, the verbs' <step>.exit,
+    .out and .err files in `logs`, the member `store` as it is now (for its
+    Store Log's Claims), {run name: exit code} of the two runs, and the run
+    name the refused sweep must name. Shared with tier two's T7.
+
+    (problems, summary): summary is None when the checkpoints give nothing to
+    judge, else {"unshared": n, "meta_b": n}."""
+    problems = []
+    first = cp["after-runs"]
+    if "closures" not in first:
+        return ["after-runs: the Gate could not resolve both runs from the member's blocks: %s"
+                % first.get("closures_error")], None
+    c = first["closures"]
+    b_cid, a_cid = c["runs"]["b"], c["runs"]["a"]
+    shared_with_a = set(c["a_content"])
+    pinned = set(c["pinned_content"])
+    unshared = set(c["b_content"]) - shared_with_a - pinned
+    meta_b, meta_a = set(c["b_meta"]), set(c["a_meta"])
+    if not unshared:
+        return ["run b has no content a does not share and the pin does not hold; nothing to test"], None
+
+    def kind_of(cid):
+        if cid in meta_b or cid in meta_a:
+            return "metadata"
+        if cid in shared_with_a:
+            return "content shared with run a"
+        if cid in pinned:
+            return "the pinned item's content"
+        return "a block outside run b's unshared content"
+
+    def judge_ledger(label, blocks):
+        wrong = sorted(blocks - unshared)
+        for cid in wrong:
+            problems.append("%s trashed %s %s" % (label, kind_of(cid), cid))
+        missing = sorted(unshared - blocks)
+        if missing:
+            problems.append("%s left %d of run b's unshared block(s) out of Trash: %s"
+                            % (label, len(missing), ", ".join(missing)))
+
+    def one_ledger(label, state):
+        ledgers = state["ledgers"]
+        if len(ledgers) != 1:
+            problems.append("%s: expected exactly one Trash ledger, found %d (%s)"
+                            % (label, len(ledgers), ", ".join(ledgers) or "none"))
+            return None, set()
+        name = next(iter(ledgers))
+        return name, _ledger_cids(ledgers[name])
+
+    def exit_is(step, want):
+        code = _verb_exit(logs, step)
+        if code != want:
+            problems.append("%s exited %s, expected %d (see %s/%s.err)" % (step, code, want, logs, step))
+
+    for run, code in sorted(run_exits.items()):
+        if code != 0:
+            problems.append("run %s exited %s" % (run, code))
+
+    # 1. The dry run straight after the runs: nothing dead, nothing written.
+    exit_is("dry-1", 0)
+    dry = _verb_json(logs, "dry-1")
+    if not isinstance(dry, dict):
+        problems.append("dry-1 printed no JSON object on stdout")
+    elif dry.get("applied") is not False or dry.get("dead") != 0:
+        problems.append("dry-1 reported applied=%r dead=%r straight after the runs; expected false and 0"
+                        % (dry.get("applied"), dry.get("dead")))
+    if first["ledgers"] or first["lock"] is not None or first["live"]:
+        problems.append("after-runs: expected no ledger, no sweep.lock and no live/ registration, found "
+                        "%d ledger(s), lock %r, live %s" % (len(first["ledgers"]), first["lock"], first["live"]))
+    for key in ("blocks", "ledgers", "lock", "live"):
+        if cp["after-dry-1"][key] != first[key]:
+            problems.append("the dry run changed the store's %s" % key)
+
+    # 2. prune released b and only b; the pin is on b's pin_b item.
+    exit_is("prune-dry", 0)
+    exit_is("prune", 0)
+    exit_is("pin", 0)
+    before = set(cp["before-sweep"]["blocks"])
+    releases = [cid for _r, cid, block in cas.retain_claims(store, b_cid)
+                if block.get("verb") == "set" and block.get("value") == "lineage"
+                and cid in before and cid not in first["blocks"]]
+    if not releases:
+        problems.append("no set retain \"lineage\" Claim on run b's RunCompletion %s in the Store Log "
+                        "before the first sweep (prune --keep-last 1 should have written one)" % b_cid)
+    if cas.retain_claims(store, a_cid):
+        problems.append("run a, the newest run, carries a retain Claim; prune --keep-last 1 keeps it")
+    if not cas.pin_claims(store, c["pinned_item"]):
+        problems.append("no add pin Claim on b's pin_b item %s in the Store Log" % c["pinned_item"])
+
+    # 3. A fresh registration refuses --apply and names the run.
+    exit_is("live-refused", 1)
+    if refused_run not in _verb_text(logs, "live-refused"):
+        problems.append("the refused sweep's output does not name the live run %s" % refused_run)
+    if "gate-fake" not in cp["before-sweep"]["live"]:
+        problems.append("before-sweep: the stale fake registration live/gate-fake is not there to clean up")
+
+    # 4. The first real sweep: exactly b's unshared content into one ledger, nothing deleted.
+    exit_is("sweep-1", 0)
+    s1 = cp["after-sweep-1"]
+    first_ledger, first_blocks = one_ledger("after-sweep-1", s1)
+    if first_ledger:
+        judge_ledger("sweep-1", first_blocks)
+    gone = sorted(before - set(s1["blocks"]))
+    if gone:
+        problems.append("sweep-1 deleted %d block(s) although nothing was past a deadline: %s"
+                        % (len(gone), ", ".join(gone[:5])))
+    if s1["live"]:
+        problems.append("after-sweep-1: live/ still holds %s; the stale registration should be gone" % s1["live"])
+    if not _lock_released(s1["lock"]):
+        problems.append("after-sweep-1: sweep.lock is not released: %r" % s1["lock"])
+
+    # 5. untrash takes exactly the picked block out of that ledger.
+    exit_is("untrash", 0)
+    u = cp["after-untrash"]
+    if first_ledger:
+        after = u["ledgers"].get(first_ledger)
+        if after is None or set(u["ledgers"]) != {first_ledger}:
+            problems.append("after-untrash: expected only ledger %s, found %s"
+                            % (first_ledger, ", ".join(u["ledgers"]) or "none"))
+        elif _ledger_cids(after) != first_blocks - {c["b_one"]}:
+            problems.append("after-untrash: the ledger should have lost exactly b's one.txt %s; it went from "
+                            "%d to %d block(s)" % (c["b_one"], len(first_blocks), len(_ledger_cids(after))))
+    if u["blocks"] != s1["blocks"]:
+        problems.append("untrash changed which blocks are present")
+
+    # 6. del retain before the deadline: the next sweep finds the content live and drops the ledger.
+    exit_is("restore", 0)
+    exit_is("sweep-2", 0)
+    s2 = cp["after-sweep-2"]
+    if s2["ledgers"]:
+        problems.append("after-sweep-2: restore made run b's content live, yet ledger(s) %s remain"
+                        % ", ".join(s2["ledgers"]))
+    missing = sorted(unshared - set(s2["blocks"]))
+    if missing:
+        problems.append("after-sweep-2: %d restored block(s) are missing: %s" % (len(missing), ", ".join(missing)))
+
+    # 7. Released again, grace 0: one ledger of exactly the unshared content.
+    exit_is("release-again", 0)
+    exit_is("sweep-3", 0)
+    s3 = cp["after-sweep-3"]
+    third_ledger, third_blocks = one_ledger("after-sweep-3", s3)
+    if third_ledger:
+        judge_ledger("sweep-3", third_blocks)
+
+    # 8. Past the deadline: the unshared content is deleted, everything else stays.
+    exit_is("sweep-4", 0)
+    s4 = cp["after-sweep-4"]
+    present = set(s4["blocks"])
+    for cid in sorted((before - unshared) - present):
+        problems.append("after-sweep-4: %s %s was deleted" % (kind_of(cid), cid))
+    survivors = sorted(unshared & present)
+    if survivors:
+        problems.append("after-sweep-4: %d released block(s) survived the sweep past the deadline: %s"
+                        % (len(survivors), ", ".join(survivors)))
+    if s4["ledgers"]:
+        problems.append("after-sweep-4: ledger(s) %s remain" % ", ".join(s4["ledgers"]))
+    if not _lock_released(s4["lock"]):
+        problems.append("after-sweep-4: sweep.lock is not released: %r" % s4["lock"])
+    if s4["live"]:
+        problems.append("after-sweep-4: live/ holds %s" % s4["live"])
+
+    return problems, {"unshared": len(unshared), "meta_b": len(meta_b)}
+
+
+RETENTION_SUMMARY = ("released run's %(unshared)d unshared blocks trashed, restored by del retain, then deleted "
+                     "past the deadline; its %(meta_b)d metadata blocks, the pinned item and shared content kept")
+
+
+@assertion(9, "sweep and trash")
+def assertion_9(gate):
+    logs = _retention_logs(gate)
+    cp, missing = load_retention_checkpoints(logs, "gate.sh writes it with --retention-checkpoint")
+    if missing:
+        return FAIL, missing
+    problems, summary = retention_problems(cp, logs, retention_store(gate),
+                                           {run: gate.exit_code(run) for run in RETENTION_RUNS}, "gate_fake_run")
+    if problems:
+        return FAIL, "; ".join(problems[:5])
+    return PASS, RETENTION_SUMMARY % summary
+
+
+# --------------------------------------------------------------------------
 # Out of the Walking Skeleton: reported, never run
 # --------------------------------------------------------------------------
 
@@ -1990,10 +2357,6 @@ NOT_IN_SKELETON = [
      "file, records an Input Set whose entries resolve to the first run's "
      "addresses, the copied file recovered by hashing; a typed process input "
      "appears in it."),
-    (9, "sweep and trash",
-     "A dry-run sweep immediately after a run reports an empty dead set; a real "
-     "sweep after deleting a default projection removes exactly that run's "
-     "unshared content and none of its metadata."),
     (11, "Fusion node-side addressing",
      "Under Fusion, each published file's address comes from the task node's "
      "`.command.cas` or from S3's SHA-256 of a server-side copy (`s3-copy`), "
@@ -2056,7 +2419,8 @@ def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     flags = {a for a in argv[1:] if a.startswith("--")}
     known = {"--offline", "--refs", "--snapshot", "--seeding-before",
-             "--delete-consumer-cache", "--seeding-lock"}
+             "--delete-consumer-cache", "--seeding-lock", "--retention-refs",
+             "--retention-age", "--retention-checkpoint", "--retention-untrash-pick"}
     if not args or flags - known:
         sys.stderr.write(__doc__)
         return 2
@@ -2085,6 +2449,35 @@ def main(argv):
     if "--seeding-lock" in flags:
         for path in seeding_lock(gate):
             print(path)
+        return 0
+    if "--retention-refs" in flags:
+        try:
+            refs = retention_refs(gate)
+        except Exception as exc:                  # every variable still set: gate.sh runs set -u
+            sys.stderr.write("retention-refs: %s: %s\n" % (type(exc).__name__, exc))
+            refs = {}
+        for key in ("RET_A", "RET_B", "RET_PIN_ITEM", "RET_RELEASE", "RET_RESTORE"):
+            print("%s=%s" % (key, _shquote(refs.get(key, ""))))
+        return 0
+    if "--retention-age" in flags or "--retention-checkpoint" in flags:
+        if len(args) != 2:
+            sys.stderr.write("--retention-age needs a number of days, --retention-checkpoint a name\n")
+            return 2
+        if "--retention-age" in flags:
+            print("    backdated %d block(s) of %s by %s days"
+                  % (retention_age(gate, float(args[1])), RETENTION_STORE, args[1]))
+        else:
+            data = retention_checkpoint(gate, args[1])
+            print("    checkpoint %s: %d block(s), %d ledger(s), live %s%s"
+                  % (args[1], len(data["blocks"]), len(data["ledgers"]), data["live"] or "empty",
+                     "; closures: " + data["closures_error"] if "closures_error" in data else ""))
+        return 0
+    if "--retention-untrash-pick" in flags:
+        try:
+            print(retention_untrash_pick(gate))
+        except cas.GateError as exc:
+            sys.stderr.write("retention-untrash-pick: %s\n" % exc)
+            return 1
         return 0
     if len(args) != 1:
         sys.stderr.write(__doc__)

@@ -7,6 +7,7 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import groovy.json.JsonSlurper
 import nextflow.Global
 import nextflow.Session
 import nextflow.dataflow.ChannelNamespace
@@ -24,9 +25,11 @@ import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
+import robsyme.cas.core.LocalRetentionStorage
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.core.StoreRef
+import robsyme.cas.core.SweepLock
 import robsyme.cas.nio.CasFileSystemProvider
 import robsyme.cas.s3.MemoryS3Ops
 import robsyme.cas.s3.S3Ops
@@ -48,6 +51,8 @@ class CasObserverTest extends Specification {
     CasSession cas
     CasObserver observer
     Path indexFile
+    /** The writable member's root, `tempDir/store` per {@link #config}. */
+    Path storeRoot
     private final CasFileSystemProvider provider = new CasFileSystemProvider()
 
     private Map config(String outputDir = 'cas://lab') {
@@ -89,6 +94,7 @@ class CasObserverTest extends Specification {
         Global.session = session
         cas = CasSession.of(session)
         observer = new CasObserver()
+        storeRoot = tempDir.resolve('store')
     }
 
     private final List<ListAppender<ILoggingEvent>> appenders = []
@@ -269,6 +275,75 @@ class CasObserverTest extends Specification {
         blocksOfKind('RunCompletion')[0].get('possibly_incomplete') == false
     }
 
+    def 'a run registers in live/ at flow create and deregisters when its completion is written'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        final Path live = storeRoot.resolve('live')
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        Files.list(live).count() == 1
+        new JsonSlurper().parse(live.resolve(session.uniqueId.toString())).session == session.uniqueId.toString()
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        Files.list(live).count() == 0
+    }
+
+    def 'a run waits while a fresh sweep lock is held, then proceeds'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        Files.createDirectories(storeRoot)
+        SweepLock sweep = new SweepLock(new LocalRetentionStorage(storeRoot), 'sweep-9', { -> System.currentTimeMillis() } as Closure<Long>)
+        sweep.take()
+        int slept = 0
+        CasSession.liveSleeper = { long ms -> if( ++slept == 1 ) sweep.release() } as Closure<Void>
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        slept == 1
+        Files.exists(storeRoot.resolve('live').resolve(session.uniqueId.toString()))
+
+        cleanup:
+        CasSession.liveSleeper = { long ms -> Thread.sleep(ms) } as Closure<Void>
+        observer.onFlowComplete()
+    }
+
+    def 'a run waiting on the sweep lock does not hold the CasSession monitor while it waits'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        Files.createDirectories(storeRoot)
+        SweepLock sweep = new SweepLock(new LocalRetentionStorage(storeRoot), 'sweep-9', { -> System.currentTimeMillis() } as Closure<Long>)
+        sweep.take()
+        boolean monitorFree = false
+        CasSession.liveSleeper = { long ms ->
+            // Another thread (a publish, a completion) must be able to take the session's monitor meanwhile.
+            final Thread other = new Thread({ -> synchronized( cas ) { monitorFree = true } } as Runnable)
+            other.daemon = true
+            other.start()
+            other.join(2000)
+            sweep.release()
+        } as Closure<Void>
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        monitorFree
+
+        cleanup:
+        CasSession.liveSleeper = { long ms -> Thread.sleep(ms) } as Closure<Void>
+        observer.onFlowComplete()
+    }
 
     def 'the notification that loses the completion latch waits for the winner to finish writing'() {
         // A failed run is notified twice: on the abort path (a finalizer thread)

@@ -25,12 +25,16 @@ class Put {
     static final long MAX_REQUEST_BYTES = 2L * 1024 * 1024
     static final long CLOCK_SKEW_MILLIS = 600_000L
     static final int MAX_NAME_CHARS = 256
+    static final int MAX_NOTE_CHARS = 256
 
     private static final Pattern TIMESTAMP = ~/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
     private static final Set<String> SELECTION_KEYS = ['kind', 'members', 'derived_from'] as Set
     private static final Set<String> CLAIM_KEYS = ['kind', 'subject', 'verb', 'attribute', 'value', 'supersedes', 'timestamp'] as Set
     private static final Set<String> ITEM_KEYS = ['address', 'via'] as Set
-    private static final Set<String> CLAIM_VERBS = [Claim.SET, Claim.DELETE, Claim.DEL] as Set
+    private static final Set<String> CLAIM_VERBS = [Claim.SET, Claim.ADD, Claim.DELETE, Claim.DEL] as Set
+    /** What a pin may name (ticket 21 answer 6); a raw block is any held raw address. */
+    private static final Set<String> PINNABLE = [Records.RUN_COMPLETION, Records.OUTPUT_COLLECTION,
+        Records.OUTPUT_ITEM, Records.DIRECTORY_MANIFEST] as Set
 
     /** A request turned into a block, and what to check before writing it. */
     @Canonical
@@ -113,12 +117,8 @@ class Put {
                 'split it into nested Selections', draft.sizeAt)
         final Cid address = DagCbor.cidOf(bytes)
         catchUp.call()
-        if( dryRun ) {
-            final ClaimState state = index.claimState(address)
-            return PutResult.dryRun(address, store.has(address), writable.has(address), state.names,
-                state.nameClaims.collect { String c -> Cid.parse(c) },
-                state.deletion, state.deletionClaims.collect { String c -> Cid.parse(c) })
-        }
+        if( dryRun )
+            return PutResult.dryRun(address, store.has(address), writable.has(address), index.claimState(address))
         if( !writable.isWritable() )
             throw new PutError(PutError.NOT_WRITABLE, "store member '${writable.alias()}' is not writable", '')
         if( writable.has(address) )
@@ -246,10 +246,8 @@ class Put {
         if( !(subject instanceof Cid) )
             throw invalid('subject is a link', '/subject')
         final Object verb = map.get('verb')
-        if( verb == Claim.ADD )
-            throw invalid("verb 'add' is not built yet (block explorer spec section 8: out of the Claims slice)", '/verb')
         if( !(verb instanceof String) || !CLAIM_VERBS.contains((String) verb) )
-            throw invalid('verb is one of set, delete, del', '/verb')
+            throw invalid('verb is one of set, add, delete, del', '/verb')
         final Object attribute = map.get('attribute')
         if( attribute != null && !(attribute instanceof String && ((String) attribute)) )
             throw invalid('attribute is a non-empty string or null', '/attribute')
@@ -274,6 +272,16 @@ class Put {
                 if( value == null ) throw invalid('set needs a value', '/value')
                 if( attribute == Claim.NAME && !(value instanceof String && ((String) value).trim() && ((String) value).length() <= MAX_NAME_CHARS) )
                     throw invalid("a name is a non-blank string of at most ${MAX_NAME_CHARS} characters", '/value')
+                if( attribute == Claim.PIN )
+                    throw invalid('a pin is add pin "<note>", never set', '/attribute')
+                if( attribute == Claim.RETAIN && value != Claim.LINEAGE )
+                    throw invalid('set retain takes the value "lineage" (keep the lineage, release the content)', '/value')
+                break
+            case Claim.ADD:
+                if( attribute != Claim.PIN ) throw invalid('add is for pins only: add pin "<note>"', '/attribute')
+                if( !(value instanceof String && ((String) value).trim() && ((String) value).length() <= MAX_NOTE_CHARS) )
+                    throw invalid("a pin's note is a non-blank string of at most ${MAX_NOTE_CHARS} characters", '/value')
+                if( !supersedes.isEmpty() ) throw invalid('add pin supersedes nothing; pins on one subject are a set', '/supersedes')
                 break
             case Claim.DELETE:
                 if( attribute != null ) throw invalid('delete names the subject itself, with no attribute', '/attribute')
@@ -294,6 +302,12 @@ class Put {
         final long now = clock.call()
         if( Math.abs(now - timestampMillis) > CLOCK_SKEW_MILLIS )
             throw new PutError(PutError.CLOCK_SKEW, "timestamp ${claim.timestamp} is more than 10 minutes from this server's clock (${Index.isoMillis(now)})", '/timestamp')
+        if( claim.attribute == Claim.RETAIN && kindAt(claim.subject, '/subject') != Records.RUN_COMPLETION )
+            throw new PutError(PutError.WRONG_KIND, "retain names a run's RunCompletion; ${claim.subject} is ${describe(kindAt(claim.subject, '/subject'))}", '/subject')
+        if( claim.attribute == Claim.PIN && !claim.subject.isRaw() && !(kindAt(claim.subject, '/subject') in PINNABLE) )
+            throw new PutError(PutError.WRONG_KIND, "a pin names a run, collection, item, directory or file; ${claim.subject} is ${describe(kindAt(claim.subject, '/subject'))}", '/subject')
+        if( claim.attribute == Claim.PIN && claim.subject.isRaw() && !store.has(claim.subject) )
+            throw new PutError(PutError.NOT_FOUND, "${claim.subject} is not in any member of this composition", '/subject')
         for( int j = 0; j < requested.size(); j++ ) {
             final Cid s = requested[j]
             final String at = "/supersedes/${j}".toString()
@@ -304,6 +318,12 @@ class Put {
                 throw new PutError(PutError.WRONG_KIND, "${s} is ${describe(Records.kindOf(block))}, not a Claim", at)
             if( block.get('subject') != claim.subject )
                 throw new PutError(PutError.WRONG_KIND, "claim ${s} is about ${block.get('subject')}, not ${claim.subject}", at)
+            if( claim.verb == Claim.DEL && claim.attribute in [Claim.RETAIN, Claim.PIN] ) {
+                final boolean fits = block.get('attribute') == claim.attribute &&
+                    (claim.attribute == Claim.RETAIN || block.get('verb') == Claim.ADD)
+                if( !fits )
+                    throw new PutError(PutError.WRONG_KIND, "claim ${s} is not ${claim.attribute == Claim.PIN ? 'an add pin' : 'a retain'} Claim", at)
+            }
             final List<Cid> by = index.supersedersOf(s, writable.alias())
             if( by )
                 throw new PutError(PutError.STALE_SUPERSEDES, "claim ${s} is already superseded by ${by.join(', ')}; reload and try again", at)

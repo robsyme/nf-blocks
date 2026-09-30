@@ -16,6 +16,7 @@ class MemoryS3Ops implements S3Ops {
         String sha256
         Map<String, String> metadata = [:]
         String cacheControl
+        String storageClass
         long lastModified
         String text() { new String(bytes, 'UTF-8') }
     }
@@ -31,8 +32,11 @@ class MemoryS3Ops implements S3Ops {
     boolean discard = false
     private long clock = 1_790_000_000_000L
     private int nextId = 0
+    private final Map<String, S3Upload> openUploads = new TreeMap<>()
 
     MemoryS3Ops(String bucket) { this.bucket = bucket }
+
+    void advance(long millis) { clock += millis }
 
     void putText(String key, String text) { store(key, text.getBytes('UTF-8'), S3PutOptions.create()) }
 
@@ -62,7 +66,7 @@ class MemoryS3Ops implements S3Ops {
         final byte[] d = digest ?: MessageDigest.getInstance('SHA-256').digest(bytes)
         final Obj obj = new Obj(bytes: bytes, etag: '"' + (++nextId) + '-' + key.hashCode() + '"',
             sha256: o.sha256 ? Base64.encoder.encodeToString(d) : null,
-            metadata: new LinkedHashMap<String, String>(o.metadata ?: [:]), cacheControl: o.cacheControl,
+            metadata: new LinkedHashMap<String, String>(o.metadata ?: [:]), cacheControl: o.cacheControl, storageClass: o.storageClass,
             lastModified: ++clock)
         objects[key] = obj
         return obj
@@ -106,6 +110,7 @@ class MemoryS3Ops implements S3Ops {
         final String id = "upload-${++nextId}".toString()
         uploads[id] = new TreeMap<Integer, byte[]>()
         mpuOptions[id] = o
+        openUploads[id] = new S3Upload(key, id, ++clock)
         return id
     }
     private final Map<String, S3PutOptions> mpuOptions = [:]
@@ -141,12 +146,14 @@ class MemoryS3Ops implements S3Ops {
             parts.each { S3Part p -> md.update(Base64.decoder.decode(p.sha256)) }
             composite = Base64.encoder.encodeToString(md.digest()) + '-' + parts.size()
         }
+        openUploads.remove(uploadId)
         return new S3Written(S3Written.Status.WRITTEN, obj.etag, composite)
     }
 
     @Override void abortMultipart(String key, String uploadId) {
         calls << "ABORT ${key}".toString()
         uploads.remove(uploadId)
+        openUploads.remove(uploadId)
     }
 
     @Override S3Written copy(String srcBucket, String srcKey, String key, S3PutOptions o) {
@@ -173,7 +180,7 @@ class MemoryS3Ops implements S3Ops {
     @Override List<S3Listed> list(String prefix, int maxKeys) {
         calls << "LIST ${prefix}".toString()
         final List<S3Listed> out = objects.findAll { k, v -> k.startsWith(prefix) }
-            .collect { k, v -> new S3Listed(k, (long) v.bytes.length) }
+            .collect { k, v -> new S3Listed(k, (long) v.bytes.length, v.lastModified) }
         return maxKeys > 0 ? out.take(maxKeys) : out
     }
 
@@ -183,6 +190,20 @@ class MemoryS3Ops implements S3Ops {
     }
 
     @Override Long firstServerDateMillis() { serverDateMillis }
+
+    @Override Long lastServerDateMillis() { serverDateMillis ?: clock }
+
+    @Override List<String> deleteMany(List<String> keys) {
+        if( keys.size() > 1000 ) throw new IllegalArgumentException("DeleteObjects takes at most 1,000 keys, got ${keys.size()}")
+        calls << "DELETEMANY ${keys.size()}".toString()
+        keys.each { objects.remove(it) }
+        return []
+    }
+
+    @Override List<S3Upload> listUploads(String prefix) {
+        calls << "LISTUPLOADS ${prefix}".toString()
+        return openUploads.values().findAll { it.key.startsWith(prefix) }.toList()
+    }
 
     @Override String describe() { "memory://${bucket}" }
 }

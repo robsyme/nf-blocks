@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 #
-# Gate browser tier B (block explorer spec section 1.3, assertions 8-19): the
+# Gate browser tier B (block explorer spec section 1.3, assertions 8-20): the
 # page composes, renames, deletes and undoes through nf-blocks:explore over a
 # copy of this Gate run's store; the Gate probes the write endpoint, fetches
 # the samplesheet, pipes nf-blocks:items into nf-blocks:put --name through the
 # real launcher, runs gate/selection and gate/selection-typed on the page's
-# own snippets, and checks it all with its own encoder.
+# own snippets, drives Pin, Release content and Restore content on the run
+# page, and checks it all with its own encoder.
 #
 #   gate/browser/tier_b.sh <GATE_ROOT>        # NEXTFLOW and NXF_PLUGINS_DIR from gate.sh
 #

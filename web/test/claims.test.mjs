@@ -13,5 +13,11 @@ for (const v of vectors) {
     assert.equal(s.nameConflicted, v.expect.nameConflicted)
     assert.equal(s.deletion, v.expect.deletion)
     assert.equal(s.hidden, v.expect.deletion === 'deleted')
+    if ('retain' in v.expect) {
+      assert.equal(s.retain, v.expect.retain)
+      assert.equal(s.released, v.expect.retain === 'released')
+    }
+    if ('pins' in v.expect) assert.deepEqual(s.pins.map(p => p.note), v.expect.pins)
+    if ('pinned' in v.expect) assert.equal(s.pinned, v.expect.pinned)
   })
 }

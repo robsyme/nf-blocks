@@ -9,6 +9,9 @@ import software.amazon.awssdk.core.interceptor.ExecutionInterceptor
 import software.amazon.awssdk.http.SdkHttpRequest
 import software.amazon.awssdk.regions.Region
 import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse
+import software.amazon.awssdk.services.s3.model.S3Error
 import software.amazon.awssdk.services.s3.model.S3Exception
 import spock.lang.Specification
 
@@ -66,6 +69,18 @@ class SdkS3OpsTest extends Specification {
         header('x-amz-server-side-encryption-aws-kms-key-id') == 'key-1'
         header('x-amz-request-payer') == 'requester'
         header('Cache-Control') == 'public, max-age=31536000, immutable'
+    }
+
+    def 'a PUT that names its own storage class overrides the aws scope class'() {
+        given:
+        final SdkS3Ops s3 = ops(new S3WriteOptions('STANDARD_IA', null, null, false))
+
+        when:
+        s3.put('cas/sweep.lock', S3Body.ofBytes('x'.bytes), S3PutOptions.create().ifNoneMatch().contentType('application/json').storageClass('STANDARD'))
+
+        then:
+        thrown(SdkClientException)
+        header('x-amz-storage-class') == 'STANDARD'
     }
 
     def 'a snapshot PUT is conditional on the ETag it replaces and records the run count'() {
@@ -133,5 +148,20 @@ class SdkS3OpsTest extends Specification {
         expect:
         SdkS3Ops.parseDate('Sun, 27 Sep 2026 10:00:00 GMT') == 1790503200000L
         SdkS3Ops.parseDate('garbage') == null
+    }
+
+    def 'deleteMany sends one quiet DeleteObjects and returns the keys that failed'() {
+        given:
+        final S3Client client = Mock()
+        final ops = new SdkS3Ops(client, 'b', S3WriteOptions.NONE)
+
+        when:
+        final List<String> failed = ops.deleteMany(['k1', 'k2'])
+
+        then:
+        1 * client.deleteObjects({ DeleteObjectsRequest r ->
+            r.bucket() == 'b' && r.delete().quiet() && r.delete().objects()*.key() == ['k1', 'k2'] }) >>
+            DeleteObjectsResponse.builder().errors(S3Error.builder().key('k2').code('AccessDenied').build()).build()
+        failed == ['k2']
     }
 }

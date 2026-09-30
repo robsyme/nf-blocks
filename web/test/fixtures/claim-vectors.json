@@ -53,5 +53,40 @@
   "expect": {"current": ["c2"], "names": [], "nameConflicted": false, "deletion": "none"}},
  {"name": "a supersedes naming a claim that is not in the set changes nothing", "claims": [
    {"cid": "c2", "verb": "set", "attribute": "name", "value": "only", "supersedes": ["c9"]}],
-  "expect": {"current": ["c2"], "names": ["only"], "nameConflicted": false, "deletion": "none"}}
+  "expect": {"current": ["c2"], "names": ["only"], "nameConflicted": false, "deletion": "none"}},
+ {"name": "set retain lineage releases a run's content", "claims": [
+   {"cid": "c1", "verb": "set", "attribute": "retain", "value": "lineage", "supersedes": []}],
+  "expect": {"current": ["c1"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "released", "pins": [], "pinned": false}},
+ {"name": "del retain superseding the release restores it", "claims": [
+   {"cid": "c1", "verb": "set", "attribute": "retain", "value": "lineage", "supersedes": []},
+   {"cid": "c2", "verb": "del", "attribute": "retain", "value": null, "supersedes": ["c1"]}],
+  "expect": {"current": ["c2"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "none", "pins": [], "pinned": false}},
+ {"name": "a release and a restore nothing orders conflict, and keep content", "claims": [
+   {"cid": "c1", "verb": "set", "attribute": "retain", "value": "lineage", "supersedes": []},
+   {"cid": "c2", "verb": "set", "attribute": "retain", "value": "lineage", "supersedes": []},
+   {"cid": "c3", "verb": "del", "attribute": "retain", "value": null, "supersedes": ["c1"]}],
+  "expect": {"current": ["c2", "c3"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "conflicted", "pins": [], "pinned": false}},
+ {"name": "set retain with another value does not release", "claims": [
+   {"cid": "c1", "verb": "set", "attribute": "retain", "value": "everything", "supersedes": []}],
+  "expect": {"current": ["c1"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "none", "pins": [], "pinned": false}},
+ {"name": "two pins are a set, not a conflict", "claims": [
+   {"cid": "c2", "verb": "add", "attribute": "pin", "value": "figure 3", "supersedes": []},
+   {"cid": "c1", "verb": "add", "attribute": "pin", "value": "paper", "supersedes": []}],
+  "expect": {"current": ["c1", "c2"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "none", "pins": ["paper", "figure 3"], "pinned": true}},
+ {"name": "del pin removes that one pin and the other stands", "claims": [
+   {"cid": "c1", "verb": "add", "attribute": "pin", "value": "paper", "supersedes": []},
+   {"cid": "c2", "verb": "add", "attribute": "pin", "value": "figure 3", "supersedes": []},
+   {"cid": "c3", "verb": "del", "attribute": "pin", "value": null, "supersedes": ["c1"]}],
+  "expect": {"current": ["c2", "c3"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "none", "pins": ["figure 3"], "pinned": true}},
+ {"name": "two del pins leave nothing pinned and no conflict", "claims": [
+   {"cid": "c1", "verb": "add", "attribute": "pin", "value": "paper", "supersedes": []},
+   {"cid": "c2", "verb": "add", "attribute": "pin", "value": "figure 3", "supersedes": []},
+   {"cid": "c3", "verb": "del", "attribute": "pin", "value": null, "supersedes": ["c1"]},
+   {"cid": "c4", "verb": "del", "attribute": "pin", "value": null, "supersedes": ["c2"]}],
+  "expect": {"current": ["c3", "c4"], "names": [], "nameConflicted": false, "deletion": "none", "retain": "none", "pins": [], "pinned": false}},
+ {"name": "a pin, a release and a delete are three separate groups", "claims": [
+   {"cid": "c1", "verb": "add", "attribute": "pin", "value": "keep", "supersedes": []},
+   {"cid": "c2", "verb": "set", "attribute": "retain", "value": "lineage", "supersedes": []},
+   {"cid": "c3", "verb": "delete", "attribute": null, "value": null, "supersedes": []}],
+  "expect": {"current": ["c1", "c2", "c3"], "names": [], "nameConflicted": false, "deletion": "deleted", "retain": "released", "pins": ["keep"], "pinned": true}}
 ]

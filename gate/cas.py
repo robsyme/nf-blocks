@@ -632,3 +632,175 @@ class Index(object):
 
     def close(self):
         self.con.close()
+
+
+# --------------------------------------------------------------------------
+# Retention closures, shared by Gate assertion 9 (a local member, cas.Store)
+# and tier two's T7 (an S3 member, gate/tier2/s3gate.Blocks). `store` is
+# anything with read(cid) (verified bytes), read_block(cid) (a verified,
+# decoded dag-cbor block) and store_log() ([(rts, kind, cid)], newest first).
+# --------------------------------------------------------------------------
+
+def leaves(value):
+    """Every Leaf map in an item value, depth first."""
+    if isinstance(value, dict):
+        if value.get("kind") == "Leaf":
+            yield value
+            return
+        for element in value.values():
+            for leaf in leaves(element):
+                yield leaf
+    elif isinstance(value, list):
+        for element in value:
+            for leaf in leaves(element):
+                yield leaf
+
+
+def run_items(store, completion_block):
+    """[(item cid, item block)] of every collection of a run."""
+    out = []
+    for link in completion_block.get("collections") or []:
+        collection = store.read_block(link.text)
+        for item in collection.get("items") or []:
+            if isinstance(item, Cid):
+                out.append((item.text, store.read_block(item.text)))
+    return out
+
+
+def _content_under(store, address, out):
+    """`address` and, for a DirectoryManifest, everything under it."""
+    if address in out:
+        return
+    out.add(address)
+    if cid_codec(address) != DAG_CBOR:
+        store.read(address)                       # re-hashes the bytes
+        return
+    block = store.read_block(address)
+    if isinstance(block, dict) and block.get("kind") == "DirectoryManifest":
+        for e in block.get("entries") or []:
+            if isinstance(e, dict) and isinstance(e.get("address"), Cid):
+                _content_under(store, e["address"].text, out)
+
+
+def content_closure(store, completion_block, only_items=None):
+    """Every content address under a run (or under only_items): each item's Leaf
+    addresses, and for a DirectoryManifest leaf, the manifest and everything
+    under it; with no only_items, each collection's index leaf too. Every
+    block is read through store.read, which re-hashes it."""
+    out = set()
+    for cid, item in run_items(store, completion_block):
+        if only_items is not None and cid not in only_items:
+            continue
+        for leaf in leaves(item.get("value")):
+            if isinstance(leaf.get("address"), Cid):
+                _content_under(store, leaf["address"].text, out)
+    if only_items is None:
+        for link in completion_block.get("collections") or []:
+            index = (store.read_block(link.text) or {}).get("index")
+            if isinstance(index, dict) and isinstance((index.get("leaf") or {}).get("address"), Cid):
+                _content_under(store, index["leaf"]["address"].text, out)
+    return out
+
+
+def metadata_closure(store, completion_cid):
+    """The RunCompletion, its RunManifest and script, its collections and items."""
+    completion = store.read_block(completion_cid)
+    out = {completion_cid}
+    run = completion.get("run")
+    if isinstance(run, Cid):
+        out.add(run.text)
+        script = store.read_block(run.text).get("script")
+        if isinstance(script, Cid):
+            store.read(script.text)
+            out.add(script.text)
+    for link in completion.get("collections") or []:
+        out.add(link.text)
+    out.update(cid for cid, _item in run_items(store, completion))
+    return out
+
+
+def item_by_leaf_name(store, completion_block, name):
+    found = [cid for cid, item in run_items(store, completion_block)
+             if any(leaf.get("name") == name for leaf in leaves(item.get("value")))]
+    if len(found) != 1:
+        raise GateError("expected one item with a Leaf named %s, found %d" % (name, len(found)))
+    return found[0]
+
+
+def retention_closures(store, runs):
+    """Everything assertion 9 and T7 expect of gate/retention's two runs,
+    computed from the blocks themselves. runs is {'a': (cid, block), 'b': (cid, block)}
+    (the --tag a and --tag b runs; b is the one prune releases)."""
+    (a_cid, a_block), (b_cid, b_block) = runs["a"], runs["b"]
+    pinned = item_by_leaf_name(store, b_block, "pin_b.txt")
+    dir_item = item_by_leaf_name(store, b_block, "dir_b")
+    dir_leaf = [leaf for leaf in leaves(store.read_block(dir_item).get("value"))
+                if leaf.get("name") == "dir_b"][0]
+    manifest = store.read_block(dir_leaf["address"].text)
+    ones = [e["address"].text for e in manifest.get("entries") or []
+            if e.get("name") == "one.txt" and isinstance(e.get("address"), Cid)]
+    if len(ones) != 1:
+        raise GateError("dir_b's DirectoryManifest has no one.txt entry")
+    return {
+        "runs": {"a": a_cid, "b": b_cid},
+        "a_content": sorted(content_closure(store, a_block)),
+        "b_content": sorted(content_closure(store, b_block)),
+        "pinned_item": pinned,
+        "pinned_content": sorted(content_closure(store, b_block, only_items={pinned})),
+        "a_meta": sorted(metadata_closure(store, a_cid)),
+        "b_meta": sorted(metadata_closure(store, b_cid)),
+        "b_one": ones[0],
+    }
+
+
+def parse_claim(store, cid):
+    """The Claim block at cid, or None when it is unreadable or not a Claim."""
+    try:
+        block = store.read_block(cid)
+    except GateError:
+        return None
+    if not isinstance(block, dict) or block.get("kind") != "Claim":
+        return None
+    return block
+
+
+def _link_text(value):
+    return value.text if isinstance(value, Cid) else value
+
+
+def retain_claims(store, subject):
+    """[(rts, cid, block)] of every retain Claim on `subject` in the Store Log,
+    oldest first."""
+    out = []
+    for rts, kind, cid in store.store_log():
+        if kind != "claim":
+            continue
+        block = parse_claim(store, cid)
+        if block and _link_text(block.get("subject")) == subject and block.get("attribute") == "retain":
+            out.append((rts, cid, block))
+    out.sort(key=lambda row: row[0], reverse=True)   # reverse timestamps: oldest first
+    return out
+
+
+def pin_claims(store, subject):
+    """[cid] of every `add pin` Claim on `subject` in the Store Log."""
+    return [cid for _rts, kind, cid in store.store_log() if kind == "claim"
+            for block in [parse_claim(store, cid)]
+            if block and _link_text(block.get("subject")) == subject
+            and block.get("verb") == "add" and block.get("attribute") == "pin"]
+
+
+def retention_refs(store, runs):
+    """RET_A, RET_B, RET_PIN_ITEM, RET_RELEASE (the newest current `set retain`
+    on b, what a restore supersedes) and RET_RESTORE (the newest `del retain`,
+    what a second release supersedes)."""
+    b_cid, b_block = runs["b"]
+    claims = retain_claims(store, b_cid)
+    superseded = {s.text for _r, _c, block in claims for s in block.get("supersedes") or []
+                  if isinstance(s, Cid)}
+    current_sets = [cid for _r, cid, block in claims
+                    if cid not in superseded and block.get("verb") == "set"]
+    dels = [cid for _r, cid, block in claims if block.get("verb") == "del"]
+    return {"RET_A": runs["a"][0], "RET_B": b_cid,
+            "RET_PIN_ITEM": item_by_leaf_name(store, b_block, "pin_b.txt"),
+            "RET_RELEASE": (current_sets or [""])[-1], "RET_RESTORE": (dels or [""])[-1]}

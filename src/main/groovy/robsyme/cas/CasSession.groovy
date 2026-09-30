@@ -7,6 +7,9 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -26,10 +29,12 @@ import robsyme.cas.core.LocalCoordinateTree
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.LiveWriter
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.Providers
 import robsyme.cas.core.Put
+import robsyme.cas.core.RetainedStore
 import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.SnapshotStorage
 import robsyme.cas.core.StoreLog
@@ -368,6 +373,48 @@ class CasSession {
                 break
             default:
                 break
+        }
+    }
+
+    /** How a waiting run sleeps between looks at sweep.lock; a test seam. */
+    static Closure<Void> liveSleeper = { long ms -> Thread.sleep(ms) } as Closure<Void>
+
+    private LiveWriter liveWriter
+    private ScheduledExecutorService liveBeats
+    private Thread liveHook
+
+    /**
+     * Ticket 20 answers 1 and 5: register as a Live Writer, then wait while a
+     * sweep holds the lock. The writer is built under this session's monitor
+     * and started outside it, so the (unbounded) wait on sweep.lock never
+     * holds up another thread that needs the session.
+     */
+    void startLiveWriter(String session, Map<String, String> info) {
+        LiveWriter writer = null
+        synchronized( this ) {
+            final BlockStore writable = members()[0]
+            if( liveWriter != null || !(writable instanceof RetainedStore) || !writable.isWritable() )
+                return
+            liveBeats = Executors.newSingleThreadScheduledExecutor({ Runnable r ->
+                final Thread t = new Thread(r, 'nf-blocks-live-heartbeat'); t.daemon = true; t } as ThreadFactory)
+            final LiveWriter built = new LiveWriter(((RetainedStore) writable).retentionStorage(), session, info,
+                { String m -> ConsoleLog.LOG.warn(m) } as Closure<Void>, liveSleeper, liveBeats)
+            writer = built
+            liveWriter = built
+            liveHook = new Thread({ -> built.close() } as Runnable, 'nf-blocks-live-deregister')
+            Runtime.runtime.addShutdownHook(liveHook)
+        }
+        writer.start()
+    }
+
+    synchronized void stopLiveWriter() {
+        liveWriter?.close()
+        liveWriter = null
+        liveBeats?.shutdownNow()
+        liveBeats = null
+        if( liveHook != null ) {
+            try { Runtime.runtime.removeShutdownHook(liveHook) } catch( IllegalStateException e ) { /* already shutting down */ }
+            liveHook = null
         }
     }
 

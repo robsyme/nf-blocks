@@ -67,6 +67,7 @@ block, not as a silently different value. Order violations raise
    | `elsewhere` | pipeline-b | a second launch directory into the same store |
    | `outputs` | gate/outputs | milestone 5: `tuples`/`records` with a JSON and a CSV index, and `LEGACY`'s `publishDir`; its own store, `GATE_STORE=$GATE_ROOT/store-outputs` |
    | `outputs-badindex` | gate/outputs-badindex | milestone 5: a CSV `index { header true }` on a tuple channel, which Nextflow fails to write while the run still exits 0; same `store-outputs` |
+   | `retention-b`, `retention-a` | gate/retention | milestone 6: `--tag b` then `--tag a`, sharing `shared.txt` and `dir_*/two.txt`, each with files of its own; its own store, `GATE_STORE=$GATE_ROOT/store-retention`. After them `gate.sh` drives assertion 9's steps through the real `sweep`, `prune`, `untrash` and `put` verbs (below) |
    | `consumer` | consumer | reads back through `lid://`, `cas://` and `fromStore` |
    | `consumer-seeded` | consumer | the consumer again with its cache deleted and the metadata blocks of the runs in `store/`'s snapshot at mode 000 (restored to 444 after) |
    | `consumer-scan` | consumer | the consumer again with its cache deleted and `store/`'s snapshot moved aside (put back after) |
@@ -81,8 +82,9 @@ block, not as a silently different value. Order violations raise
    (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
    both below. Exits non-zero when any tier fails.
 
-Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `store-outputs/`, `cache/`, `logs/`,
-`browser/`, `browser-b/`, `selection/`, `selection-typed/` and the snapshots first. Every one of them is evidence, and stale
+Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `store-outputs/`, `store-retention/`, `cache/`,
+`cache-retention/`, `logs/`, `browser/`, `browser-b/`, `selection/`, `selection-typed/`,
+`retention/`, `retention-repo/` and the snapshots first. Every one of them is evidence, and stale
 evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
 the zip just built on every run that builds.
 
@@ -306,6 +308,9 @@ cache/nf-blocks/*.sqlite the indexes; the producer's is selected by pipeline
 store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
 store-outputs/           milestone 5's `outputs`/`outputs-badindex` runs, seen by nothing else
+store-retention/         milestone 6's `retention-b`/`retention-a` runs, swept by assertion 9 and seen by nothing else
+retention/ retention-repo/  assertion 9's launch directory and the plugins.json its verbs start the plugin from
+logs/retention/          one <step>.out/.err/.exit per verb, <step>.request per put, <checkpoint>.json per checkpoint
 browser/ browser-b/      browser tiers A and B: inputs, observations, logs
 selection/               tier B's selection pipeline launch directory
 selection-typed/         tier B's typed consumer launch directory
@@ -342,7 +347,8 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 14 | run `outputs`'s `tuples` and `records` collections join with their Meta Maps, and each output's `index {}` file is linked by address | reads `store-outputs` (its own store) directly; every item's Meta Map (via `metadata_view`) must carry `id`; for each collection, hashes the bytes at its `index.path` coordinate itself and requires that hash to equal both the coords pointer's CID and the index leaf's own recorded address; `tuples/index.json` must parse as a 2-row JSON array, `records/index.csv` a header row and 2 data rows; each `records` item's `input` (the pipeline's own `main.nf`, a path outside the store and the work dir) must be a `never_published` Leaf named `main.nf`, with a null in its `paths` entry (patch 0.3.0-beta.2) |
 | 15 | run `outputs-badindex` exits 0 and is marked `succeeded` although its CSV index (`header true` on a tuple channel) was never written | requires the `tuples` collection to hold 2 items and its index leaf to carry `reason: never_published`, and `anomalies.never_published >= 1`; reads `store-outputs`'s own `coords/tuples/index.csv` (not just the leaf's recorded `address`) and requires either no such coordinate or, if one exists, the leaf still unaddressed |
 | 16 | run `outputs`'s `LEGACY` process (`publishDir`, no workflow output) warns once about the process and once about 3 unjoined files: LEGACY's 2 and the `collectFile(storeDir:)` file `collected/samples.txt`, which Nextflow stores with no publish event; `anomalies.unjoined == 3` | counts each warning text's occurrences in `logs/outputs/nextflow.log`; computes the expected count from `store-outputs` itself, as every `coords/` pointer that no collection of `outputs` or `outputs-badindex` names (an item path or an index path), requires that set to be exactly `collected/samples.txt`, `legacy/A.legacy` and `legacy/B.legacy` and `anomalies.unjoined` to equal its size; hashes each of the three from its own coords bytes and requires none to be an item or index Leaf address |
-| 8, 9, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
+| 9 | a dry-run sweep straight after a run reports an empty dead set; after `set retain "lineage"` on one run, a real sweep trashes exactly its unshared content and none of its metadata, while a pinned item in it and content it shares with another run survive; `del retain` before the deadline brings the content back as live without `untrash`; a later sweep past the deadline deletes what is still released | `gate.sh` runs `retention-b` then `retention-a`, then: a dry `sweep --format json`; `prune --keep-last 1` (dry, then `--apply true`), which releases `b`; `put` of `add pin "figure 3"` on `b`'s `pin_b` item; a `sweep --apply true` beside a fresh fake `live/gate-fake` registration, which must exit 1 naming `gate_fake_run`; the registration made stale (mtime 11 minutes back) and every block backdated 15 days past the 14-day age floor (`--retention-age`); sweep 1; `untrash` of `b`'s `one.txt`; `put` of `del retain` (restore); sweep 2; `put` of `set retain` again; backdating again; sweeps 3 and 4 under `gate/retention/grace0.config` (`cas.sweep.grace = '0s'`). `--retention-checkpoint` records, between steps, every block address present, every `trash/` ledger, `sweep.lock` and `live/`, and the closures the Gate computes itself from the blocks (each read and re-hashed through `cas.Store`): each run's content (item Leaves, Directory Manifests and everything under them), `b`'s metadata (RunCompletion, RunManifest and script, collections, items) and the pinned item's content. Expected: `b`'s content less `a`'s and the pin's. Of the plugin's own output only the dry run's `applied` and `dead` and each verb's exit status are read |
+| 8, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
 **Assertion 4c is inconclusive under `mode 'copy'`, and says so.** Measured on
 26.04.6: with the sources locked, the resumed run exits 1 because Nextflow's own

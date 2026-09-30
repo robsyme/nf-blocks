@@ -25,6 +25,7 @@ class SdkS3Ops implements S3Ops {
     final S3WriteOptions options
     private final S3Client client
     private final AtomicReference<Long> firstDate = new AtomicReference<>()
+    private final AtomicReference<Long> lastDate = new AtomicReference<>()
 
     SdkS3Ops(S3Client client, String bucket, S3WriteOptions options) {
         this.client = client
@@ -61,9 +62,11 @@ class SdkS3Ops implements S3Ops {
     }
 
     private void note(SdkHttpResponse http) {
-        if( http == null || firstDate.get() != null ) return
+        if( http == null ) return
         final Long date = parseDate(http.firstMatchingHeader('Date').orElse(null))
-        if( date != null ) firstDate.compareAndSet(null, date)
+        if( date == null ) return
+        firstDate.compareAndSet(null, date)
+        lastDate.set(date)
     }
 
     private void note(SdkResponse r) { note(r?.sdkHttpResponse()) }
@@ -123,7 +126,7 @@ class SdkS3Ops implements S3Ops {
     @Override
     S3Written put(String key, S3Body body, S3PutOptions o) {
         final PutObjectRequest.Builder b = PutObjectRequest.builder().bucket(bucket).key(key)
-            .storageClass(options.storageClass).serverSideEncryption(options.sse).ssekmsKeyId(options.kmsKeyId)
+            .storageClass(o.storageClass ?: options.storageClass).serverSideEncryption(options.sse).ssekmsKeyId(options.kmsKeyId)
             .requestPayer(payer()).cacheControl(o.cacheControl).contentType(o.contentType)
         if( o.metadata ) b.metadata(o.metadata)
         if( o.ifNoneMatch ) b.ifNoneMatch('*')
@@ -247,12 +250,12 @@ class SdkS3Ops implements S3Ops {
         if( maxKeys > 0 ) {
             final ListObjectsV2Response r = client.listObjectsV2(b.maxKeys(maxKeys).build())
             note(r)
-            for( S3Object o : r.contents() ) out.add(new S3Listed(o.key(), o.size()))
+            for( S3Object o : r.contents() ) out.add(new S3Listed(o.key(), o.size(), o.lastModified()?.toEpochMilli() ?: 0L))
             return out
         }
         for( ListObjectsV2Response page : client.listObjectsV2Paginator(b.build()) ) {
             note(page)
-            for( S3Object o : page.contents() ) out.add(new S3Listed(o.key(), o.size()))
+            for( S3Object o : page.contents() ) out.add(new S3Listed(o.key(), o.size(), o.lastModified()?.toEpochMilli() ?: 0L))
         }
         return out
     }
@@ -264,6 +267,34 @@ class SdkS3Ops implements S3Ops {
 
     @Override
     Long firstServerDateMillis() { firstDate.get() }
+
+    @Override
+    Long lastServerDateMillis() { lastDate.get() }
+
+    @Override
+    List<String> deleteMany(List<String> keys) {
+        if( keys.size() > 1000 )
+            throw new IllegalArgumentException("DeleteObjects takes at most 1,000 keys, got ${keys.size()}")
+        if( keys.isEmpty() )
+            return []
+        final DeleteObjectsResponse r = client.deleteObjects(DeleteObjectsRequest.builder().bucket(bucket).requestPayer(payer())
+            .delete(Delete.builder().quiet(true).objects(keys.collect { String k -> ObjectIdentifier.builder().key(k).build() }).build())
+            .build())
+        note(r)
+        return (r.errors() ?: Collections.<S3Error> emptyList()).collect { S3Error e -> e.key() }
+    }
+
+    @Override
+    List<S3Upload> listUploads(String prefix) {
+        final List<S3Upload> out = new ArrayList<S3Upload>()
+        for( ListMultipartUploadsResponse page : client.listMultipartUploadsPaginator(
+                ListMultipartUploadsRequest.builder().bucket(bucket).prefix(prefix).requestPayer(payer()).build()) ) {
+            note(page)
+            for( MultipartUpload u : page.uploads() )
+                out.add(new S3Upload(u.key(), u.uploadId(), u.initiated()?.toEpochMilli() ?: 0L))
+        }
+        return out
+    }
 
     @Override
     String describe() { "s3://${bucket}" }

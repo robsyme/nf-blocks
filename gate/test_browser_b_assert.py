@@ -100,6 +100,7 @@ class World(object):
         self.build_shared()
         self.build_picks()
         self.build_cli()
+        self.build_retain()
         self.untyped = "channel.fromStore(selection: '%s')" % self.s2
         self.typed = "nextflow.Channel.fromStore(selection: '%s', records: true)" % self.s2
         self.ran = {"selection": None, "selection-typed": None}   # None: main.nf runs the page's snippet
@@ -240,6 +241,23 @@ class World(object):
         self.cli_exit = "0 0"
         self.cli_out = self.response(self.cli_selection) + "\n" + self.response(self.cli_claim) + "\n"
         self.cli_err = ""
+
+    def build_retain(self):
+        """B.retain: Pin, Release content and Restore content from the run page (Task 11, ticket 21 answer 6).
+        The subject stands in for cold's RunCompletion; this fixture does not model a run block, only the
+        Claims the page's Pin/Release/Restore buttons write about one."""
+        self.run_completion = dcid("cold completion")
+        self.pin_note = "kept for later"
+        self.pin_claim = self.claim_post("B.retain", claim_request(self.run_completion, "add", "pin", self.pin_note,
+                                                                    second=self.tick()))
+        self.log(self.pin_claim)
+        self.release_claim = self.claim_post("B.retain", claim_request(self.run_completion, "set", "retain", "lineage",
+                                                                        second=self.tick()))
+        self.log(self.release_claim)
+        self.restore_claim = self.claim_post("B.retain", claim_request(
+            self.run_completion, "del", "retain", supersedes=[self.release_claim], second=self.tick()))
+        self.log(self.restore_claim)
+        self.expected["retain"] = {"run": self.run_completion, "pin_note": self.pin_note}
 
     # -- building ---------------------------------------------------------
     def tick(self):
@@ -397,7 +415,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), list(range(8, 20)))
+        self.assertEqual(sorted(results), list(range(8, 21)))
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -410,9 +428,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 20):
+        for n in range(8, 21):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 12 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 13 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -795,6 +813,42 @@ class CheckTest(unittest.TestCase):
         self.w.put_block(dagjson.expected_claim(dagjson.loads(json.dumps(
             claim_request(self.w.cli_selection, "set", "name", "other", second=self.w.tick()))), "gate"))
         self.assertFail(19, "other")
+
+    # -- B20 (Task 11, ticket 21 answer 6) ---------------------------------
+    def test_b20_the_whole_world_passes(self):
+        self.assertPass(20)
+
+    def test_b20_wrong_pin_note_fails(self):
+        # The Claim the page actually wrote is unchanged; only what the Gate's own fixture
+        # expected the typed note to be is wrong, so the check must read the Claim, not trust it.
+        self.w.expected["retain"]["pin_note"] = "a different note"
+        self.assertFail(20, "add pin")
+
+    def replace_retain_request(self, index, request):
+        """Rewrites B.retain's request `index` to `request`, with a freshly stored block and response at its own address."""
+        block = dagjson.expected_claim(dagjson.loads(json.dumps(request)), "gate")
+        cid = self.w.put_block(block)
+        self.w.log(cid)
+        self.w.steps["B.retain"]["requests"][index] = {"url": "http://127.0.0.1:1/api/put", "method": "POST", "status": 200,
+                                                        "page": 0, "body": json.dumps(request), "responseBody": self.w.response(cid)}
+        return cid
+
+    def test_b20_pin_about_another_subject_fails(self):
+        self.replace_retain_request(0, claim_request(dcid("someone else"), "add", "pin", self.w.pin_note, second=self.w.tick()))
+        self.assertFail(20, "RunCompletion")
+
+    def test_b20_release_not_lineage_fails(self):
+        self.replace_retain_request(1, claim_request(self.w.run_completion, "set", "retain", "not-lineage", second=self.w.tick()))
+        self.assertFail(20, "retain")
+
+    def test_b20_restore_not_superseding_the_release_fails(self):
+        self.replace_retain_request(2, claim_request(self.w.run_completion, "del", "retain", supersedes=[], second=self.w.tick()))
+        self.assertFail(20, "supersedes")
+
+    def test_b20_no_log_entry_for_the_pin_fails(self):
+        log_dir = os.path.join(self.w.store, "log")
+        os.remove(os.path.join(log_dir, [n for n in os.listdir(log_dir) if n.endswith(self.w.pin_claim)][0]))
+        self.assertFail(20, "log/")
 
 
 class SubstituteTest(unittest.TestCase):

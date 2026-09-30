@@ -79,6 +79,8 @@ class S3PutOptions {
     boolean sha256
     String cacheControl
     String contentType
+    /** This request's storage class, over the aws scope's; null keeps the scope's (blocks). */
+    String storageClass
     Map<String, String> metadata = [:]
 
     static S3PutOptions create() { new S3PutOptions() }
@@ -87,6 +89,7 @@ class S3PutOptions {
     S3PutOptions sha256() { this.sha256 = true; this }
     S3PutOptions cacheControl(String value) { this.cacheControl = value; this }
     S3PutOptions contentType(String value) { this.contentType = value; this }
+    S3PutOptions storageClass(String value) { this.storageClass = value; this }
     S3PutOptions meta(String key, String value) { this.metadata.put(key, value); this }
 }
 
@@ -113,6 +116,16 @@ class S3Part {
 class S3Listed {
     String key
     long size
+    long lastModifiedMillis
+}
+
+/** An incomplete multipart upload (ticket 20 answer 3: the sweep aborts those older than the age floor). */
+@Canonical
+@CompileStatic
+class S3Upload {
+    String key
+    String uploadId
+    long initiatedMillis
 }
 
 /** The per-request fields of the aws scope (ticket 01 Q1): nf-amazon's client carries none of them. */

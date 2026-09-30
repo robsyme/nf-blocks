@@ -61,6 +61,24 @@ test('a dry run decodes deletion_claims (DAG-JSON links) to CID strings', async 
   assert.deepEqual(r.deletion_claims, [N.toString()])
 })
 
+test('release, restore, pin and unpin send the Claims put accepts', async () => {
+  const RUN = S.toString()
+  const ITEM = N.toString()
+  const CLAIM = block({ c: 1 }).cid.toString()
+  const fetchFn = fakeFetch(() => ok({ address: S, written: true }))
+  const w = writer({ endpoint: 'http://h/api/put', token: 't', fetchFn, now: () => new Date('2026-09-30T10:00:00.000Z') })
+  await w.release(RUN, [])
+  await w.restore(RUN, [CLAIM])
+  await w.pin(ITEM, 'figure 3')
+  await w.unpin(ITEM, CLAIM)
+  assert.deepEqual(fetchFn.calls.map(c => [c.body.verb, c.body.attribute, c.body.value, c.body.supersedes.map(String)]), [
+    ['set', 'retain', 'lineage', []],
+    ['del', 'retain', null, [CLAIM]],
+    ['add', 'pin', 'figure 3', []],
+    ['del', 'pin', null, [CLAIM]],
+  ])
+})
+
 test('a refusal becomes a WriteError with its code and where; a plain-text refusal keeps its status', async () => {
   const w = writer({ endpoint: 'http://h/api/put', token: 't', fetchFn: fakeFetch(() => new Response(
     dagJson.encode({ error: 'stale_supersedes', message: 'claim is already superseded', at: '/supersedes/0' }),

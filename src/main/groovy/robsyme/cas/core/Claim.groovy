@@ -21,6 +21,10 @@ class Claim {
     static final String DELETE = 'delete'
     static final Set<String> VERBS = [SET, ADD, DEL, DELETE] as Set
     static final String NAME = 'name'
+    static final String RETAIN = 'retain'
+    static final String PIN = 'pin'
+    /** The one `set retain` value that releases a run's content (ticket 21 answer 1). */
+    static final String LINEAGE = 'lineage'
 
     final String assertedBy
     final Cid subject

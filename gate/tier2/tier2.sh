@@ -39,6 +39,7 @@ plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$T2")"
 # teardown it starts, so a second Ctrl-C cannot cut the teardown short. A
 # teardown that fails is loud and fails the harness (cloud.sh's rule).
 WATCHDOG=''
+T7_SLEEP=''                          # T7's wait for its blocks to age (a plain sleep, not a nextflow)
 PIDS="$T2/pids"; : > "$PIDS"          # every nextflow the harness started
 DONE="$T2/pids.done"; : > "$DONE"     # those already reaped by run_nf's wait, whose PIDs the OS may reuse
 
@@ -56,6 +57,7 @@ cleanup() {
         pkill -P "$WATCHDOG" 2> /dev/null || true
         kill "$WATCHDOG" 2> /dev/null || true
     fi
+    if [[ -n "$T7_SLEEP" ]]; then kill "$T7_SLEEP" 2> /dev/null || true; fi
     while read -r pid; do
         if [[ -n "$pid" ]] && ours "$pid"; then live+=("$pid"); fi
     done < "$PIDS"
@@ -90,9 +92,17 @@ exec 3>&2
 ( sleep "$T2_TIMEOUT"; echo "tier two: timeout after ${T2_TIMEOUT} s (ticket 11 decision 6)" >&3; kill -TERM $$ ) 2> /dev/null & WATCHDOG=$!
 
 run_nf() {   # <log> <dir> <env args and command...>: runs it in <dir>, backgrounded and recorded; returns its status
-    local log="$1" dir="$2"; shift 2
+    local log="$1"; shift
+    run_nf_split "$log" "$log" "$@"
+}
+run_nf_split() {   # <stdout file> <stderr file> <dir> <env args and command...>: run_nf with stdout and stderr apart
+    local out="$1" err="$2" dir="$3"; shift 3
     local status=0 pid
-    ( cd "$dir" && exec env "$@" ) > "$log" 2>&1 &
+    if [[ "$out" == "$err" ]]; then
+        ( cd "$dir" && exec env "$@" ) > "$out" 2>&1 &
+    else
+        ( cd "$dir" && exec env "$@" ) > "$out" 2> "$err" &
+    fi
     pid=$!
     echo "$pid" >> "$PIDS"
     wait "$pid" || status=$?
@@ -133,6 +143,36 @@ consume() {   # <run> <cache dir>
     echo "--- $run exit $status"
 }
 
+# T7 (ticket 21 answer 7): Gate assertion 9's sequence against the fresh member cas-t7. Its verbs run like
+# gate.sh's (stdout, stderr and exit apart, never the end of the harness), each with the AWS SDK's request
+# log in logs/t7/<step>.nextflow.log, which is how T7 sees conditional writes and DeleteObjects.
+T7="$T2/logs/t7"; mkdir -p "$T7" "$T2/evidence/t7"
+t7verb() {   # <step> [-c extra.config] <verb and args...>
+    local step="$1"; shift
+    local extra=() status=0
+    if [[ "${1:-}" == "-c" ]]; then extra=(-c "$2"); shift 2; fi
+    run_nf_split "$T7/$step.out" "$T7/$step.err" "$T2/t7a" -u NXF_OFFLINE T2_MEMBER=cas-t7 XDG_CACHE_HOME="$T2/cache-t7" \
+      NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" \
+      "$NEXTFLOW" -q -log "$T7/$step.nextflow.log" -trace software.amazon.awssdk.request \
+        -c "$REPO/gate/gate.config" -c "$REPO/gate/tier2/member.config" -c "$REPO/gate/retention/overlay.config" \
+        -c "$REPO/gate/tier2/t7.config" "${extra[@]+"${extra[@]}"}" plugin "nf-blocks:$1" "${@:2}" || status=$?
+    echo "$status" > "$T7/$step.exit"
+    echo "    nf-blocks:$1 (t7 $step) exit $status"
+}
+t7checkpoint() { "$PY" "$REPO/gate/tier2/assert_tier2.py" t7-checkpoint "$T2" "$1" || echo "    t7 checkpoint $1 failed; T7 will say so"; }
+t7claim() {   # <step> <subject> <verb> <attribute|null> <value json|null> <supersedes cid|->
+    local sup='[]'; [[ "$6" != "-" ]] && sup="[{\"/\":\"$6\"}]"
+    local attr='null'; [[ "$4" != "null" ]] && attr="\"$4\""
+    printf '{"kind":"Claim","subject":{"/":"%s"},"verb":"%s","attribute":%s,"value":%s,"supersedes":%s,"timestamp":"%s"}\n' \
+        "$2" "$3" "$attr" "$5" "$sup" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$T7/$1.request"
+    t7verb "$1" put "$T7/$1.request"
+}
+T7_A='' T7_B='' T7_PIN_ITEM='' T7_RELEASE='' T7_RESTORE=''
+t7refs() { eval "$("$PY" "$REPO/gate/tier2/assert_tier2.py" t7-refs "$T2" || true)"; }
+t7live() {   # put|delete <session> [run name]: a fake Live Writer registration in cas-t7
+    "$PY" "$REPO/gate/tier2/s3gate.py" "live-$1" "$T2_BUCKET" cas-t7 "${@:2}" || echo "    t7: live-$1 $2 failed; T7 will say so"
+}
+
 # Ticket 18: nf-core/sarek 3.10.0's test profile, started first because it is the longest run
 # (about 15 min), into its own member. Not produce(): sarek is fetched, not copied, and takes neither
 # gate.config nor batch.config.
@@ -141,6 +181,16 @@ run_nf "$T2/logs/ts/stdout.log" "$T2/ts" T2_TRACE="$T2/trace/ts.txt" XDG_CACHE_H
     "$NEXTFLOW" -log "$T2/logs/ts/nextflow.log" run nf-core/sarek -r 3.10.0 -profile test,docker -name ts \
     -c "$REPO/gate/tier2/sarek.config" -c "$REPO/gate/tier2/gatk4-quay.config" &
 TS_PID=$!
+
+# T7's two runs, local and short, before T1: by the sweep steps after T6 their blocks are well past the
+# 10-minute age floor by S3's clock. Then the dry run straight after them, and the stale registration's
+# write (it is 11 minutes old by the first real sweep).
+produce t7b cas-t7 "$REPO/gate/retention" -c "$REPO/gate/retention/overlay.config" -c "$REPO/gate/tier2/t7.config" --tag b
+produce t7a cas-t7 "$REPO/gate/retention" -c "$REPO/gate/retention/overlay.config" -c "$REPO/gate/tier2/t7.config" --tag a
+t7checkpoint after-runs
+t7verb dry-1 sweep --format json
+t7checkpoint after-dry-1
+t7live put gate-fake gate_fake_run
 
 TP="${PIPELINE_SRC:-$REPO/../.scratch/content-addressed-lineage/test-pipeline}"
 produce t1  cas    "$TP"
@@ -177,6 +227,42 @@ done
 # The deterministic half of ticket 03 decision 6 on AWS itself: a PutObject whose If-Match names a replaced
 # ETag is refused with 412 (the plugin's skip on that 412 is pinned by S3SnapshotStorageTest, Task 7).
 "$PY" "$REPO/gate/tier2/s3gate.py" if-match "$T2_BUCKET" > "$T2/evidence/if-match.json" || true
+
+# T7's sweep steps: gate.sh's retention sequence, with every checkpoint read from S3. There is no
+# --retention-age: S3's LastModified cannot be backdated, so t7.config's age floor is 10 minutes and the
+# harness waits here, if T1 to T6 took under 11 minutes, until T7's blocks and live/gate-fake are that old.
+# It runs beside the background sarek run, before the harness waits for ts, so it adds nothing when ts is
+# the longest path.
+t7verb prune-dry prune --keep-last 1
+t7verb prune prune --keep-last 1 --apply true
+t7refs
+t7claim pin "$T7_PIN_ITEM" add pin '"figure 3"' -
+# A fresh registration refuses --apply; the stale one written before T1 is ignored, then deleted by sweep-1.
+t7live put gate-fresh gate_fresh_run
+t7verb live-refused sweep --apply true
+t7live delete gate-fresh
+t7_wait="$("$PY" "$REPO/gate/tier2/assert_tier2.py" t7-wait "$T2" || echo "0 t7-wait failed; not waiting")"
+if [[ "${t7_wait%% *}" =~ ^[0-9]+$ && "${t7_wait%% *}" -gt 0 ]]; then
+    echo "tier two: ${t7_wait#* }"
+    sleep "${t7_wait%% *}" & T7_SLEEP=$!
+    wait "$T7_SLEEP" || true
+    T7_SLEEP=''
+fi
+t7checkpoint before-sweep
+t7verb sweep-1 sweep --apply true --format json
+t7checkpoint after-sweep-1
+t7verb untrash untrash "$("$PY" "$REPO/gate/tier2/assert_tier2.py" t7-untrash-pick "$T2" 2> "$T7/untrash-pick.err" || true)"
+t7checkpoint after-untrash
+t7refs
+t7claim restore "$T7_B" del retain null "$T7_RELEASE"
+t7verb sweep-2 sweep --apply true --format json
+t7checkpoint after-sweep-2
+t7refs
+t7claim release-again "$T7_B" set retain '"lineage"' "$T7_RESTORE"
+t7verb sweep-3 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+t7checkpoint after-sweep-3
+t7verb sweep-4 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+t7checkpoint after-sweep-4
 
 # ts (ticket 18): wait for the background sarek run before the checks, the same way produce() records an exit.
 ts_status=0

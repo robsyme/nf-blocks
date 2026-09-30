@@ -1072,6 +1072,63 @@ class Index implements Closeable {
         return collections
     }
 
+    /** Distinct pipelines any run names, sorted. */
+    List<String> pipelines() {
+        final List<String> out = []
+        query('SELECT DISTINCT pipeline FROM run WHERE pipeline IS NOT NULL ORDER BY pipeline', []) { ResultSet rs -> out.add(rs.getString(1)) }
+        return out
+    }
+
+    /** Every run of the pipeline, newest finished_at first, ties by completion cid. */
+    List<IndexedRun> runsOf(String pipeline) {
+        final List<IndexedRun> out = []
+        query('SELECT completion_cid, pipeline, run_name, status, possibly_incomplete, finished_at FROM run ' +
+              'WHERE pipeline = ? ORDER BY finished_at DESC, completion_cid', [pipeline]) { ResultSet rs ->
+            out.add(new IndexedRun(Cid.parse(rs.getString(1)), rs.getString(2), rs.getString(3), rs.getString(4),
+                rs.getInt(5) != 0, rs.getString(6)))
+        }
+        return out
+    }
+
+    /**
+     * Removes every row keyed by these cids as a run, collection, item,
+     * Selection or Claim, and their claim_current, in one transaction.
+     * Producer rows are kept (plan decision 7): after a sweep deletes
+     * blocks, their rows go too, so a snapshot seeds nothing whose blocks
+     * are gone, but `producersOf` still answers for content a forgotten run
+     * once produced.
+     */
+    void forget(Collection<Cid> cids) {
+        if( !cids )
+            return
+        withTransaction {
+            for( Cid c : cids ) {
+                final String t = c.toString()
+                for( String sql : [
+                        'DELETE FROM run WHERE completion_cid = ?',
+                        'DELETE FROM collection WHERE collection_cid = ?',
+                        'DELETE FROM collection_item WHERE collection_cid = ?',
+                        'DELETE FROM collection_item WHERE item_cid = ?',
+                        'DELETE FROM item WHERE item_cid = ?',
+                        'DELETE FROM item_attr WHERE item_cid = ?',
+                        'DELETE FROM selection_child WHERE parent_cid = ?',
+                        'DELETE FROM selection_derived WHERE selection_cid = ?',
+                        'DELETE FROM claim_supersedes WHERE claim_cid = ?',
+                        'DELETE FROM claim_current WHERE claim_cid = ?',
+                        'DELETE FROM claim_current WHERE subject_cid = ?',
+                        'DELETE FROM claim WHERE claim_cid = ?',
+                        'DELETE FROM log_entry WHERE cid = ?',
+                        'DELETE FROM missing WHERE have_cid = ? OR needed_cid = ?'] )
+                    update(sql, sql.count('?') == 2 ? [t, t] as List<Object> : [t] as List<Object>)
+            }
+            // A subject some of whose Claims went keeps the rest: recompute its current state.
+            final Set<String> subjects = new LinkedHashSet<String>()
+            query('SELECT DISTINCT subject_cid FROM claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
+            for( String s : subjects )
+                ClaimCurrent.rewrite(connection, s)
+        }
+    }
+
     /** Marks the index as out of step with the store, so a rebuild is owed. */
     void markStale() { setMeta(META_STALE, '1') }
 
