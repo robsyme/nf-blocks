@@ -231,7 +231,8 @@ test('a collection with an Output Index File offers it as a download', async () 
   assert.equal(p.getAttribute('data-output-index'), ids.indexFile)
   const a = p.querySelector('a[download]')
   assert.equal(a.getAttribute('download'), 'index.json')
-  assert.match(a.getAttribute('href'), new RegExp(`blocks/${ids.indexFile.slice(-2)}/${ids.indexFile}$`))
+  // The member base, not the page: under nf-blocks:explore the member is at m/<alias>/ (final review I3).
+  assert.equal(a.getAttribute('href'), `http://h/m/lab/blocks/${ids.indexFile.slice(-2)}/${ids.indexFile}`)
   assert.match(p.textContent, /Nextflow's index/)
 })
 

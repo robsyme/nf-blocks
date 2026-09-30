@@ -2,7 +2,6 @@
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
 import { h, link, cid, copyOutcome } from './html.js'
-import { blockHref } from './blocks.js'
 import { saveChoice } from './save-choice.js'
 import { saveSequence, retryRestore } from './save-flow.js'
 import { Previews } from './previews.js'
@@ -125,12 +124,12 @@ export async function run(ex, completionCid) {
 
 /** The collection's Output Index File line (Task 4, DESIGN.md §15): a download
  * link when it was published, or a note naming its publish path when it was not. */
-function indexLine(idx) {
+function indexLine(ex, idx) {
   if (!idx) return null
   return idx.leaf.address
     ? h('p', { 'data-output-index': String(idx.leaf.address) },
         "Nextflow's index file for this output: ",
-        h('a', { href: blockHref(String(idx.leaf.address)), download: idx.leaf.name }, idx.leaf.name),
+        h('a', { href: ex.blocks.urlFor(String(idx.leaf.address)), download: idx.leaf.name }, idx.leaf.name),
         ` (published at ${idx.path})`)
     : h('p', { 'data-output-index-missing': idx.path },
         `Nextflow's index file for this output (${idx.path}) was never written.`)
@@ -141,7 +140,7 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
   return h('section', {},
     h('h1', {}, c.output), cid(collectionCid),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
-    indexLine(c.index),
+    indexLine(ex, c.index),
     pager(`#/collection/${collectionCid}`, c, 'items'),
     c.total === 0 ? h('p', { class: 'muted' }, 'This collection has no items.')
       : itemRows(ex, ctx, { items: c.items, total: c.total, collectionCid, completion: c.completion, output: c.output, where: [],
