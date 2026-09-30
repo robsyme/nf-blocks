@@ -79,6 +79,8 @@ class S3PutOptions {
     boolean sha256
     String cacheControl
     String contentType
+    /** This request's storage class, over the aws scope's; null keeps the scope's (blocks). */
+    String storageClass
     Map<String, String> metadata = [:]
 
     static S3PutOptions create() { new S3PutOptions() }
@@ -87,6 +89,7 @@ class S3PutOptions {
     S3PutOptions sha256() { this.sha256 = true; this }
     S3PutOptions cacheControl(String value) { this.cacheControl = value; this }
     S3PutOptions contentType(String value) { this.contentType = value; this }
+    S3PutOptions storageClass(String value) { this.storageClass = value; this }
     S3PutOptions meta(String key, String value) { this.metadata.put(key, value); this }
 }
 

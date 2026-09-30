@@ -126,7 +126,7 @@ class SdkS3Ops implements S3Ops {
     @Override
     S3Written put(String key, S3Body body, S3PutOptions o) {
         final PutObjectRequest.Builder b = PutObjectRequest.builder().bucket(bucket).key(key)
-            .storageClass(options.storageClass).serverSideEncryption(options.sse).ssekmsKeyId(options.kmsKeyId)
+            .storageClass(o.storageClass ?: options.storageClass).serverSideEncryption(options.sse).ssekmsKeyId(options.kmsKeyId)
             .requestPayer(payer()).cacheControl(o.cacheControl).contentType(o.contentType)
         if( o.metadata ) b.metadata(o.metadata)
         if( o.ifNoneMatch ) b.ifNoneMatch('*')

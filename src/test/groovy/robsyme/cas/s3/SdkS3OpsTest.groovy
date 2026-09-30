@@ -71,6 +71,18 @@ class SdkS3OpsTest extends Specification {
         header('Cache-Control') == 'public, max-age=31536000, immutable'
     }
 
+    def 'a PUT that names its own storage class overrides the aws scope class'() {
+        given:
+        final SdkS3Ops s3 = ops(new S3WriteOptions('STANDARD_IA', null, null, false))
+
+        when:
+        s3.put('cas/sweep.lock', S3Body.ofBytes('x'.bytes), S3PutOptions.create().ifNoneMatch().contentType('application/json').storageClass('STANDARD'))
+
+        then:
+        thrown(SdkClientException)
+        header('x-amz-storage-class') == 'STANDARD'
+    }
+
     def 'a snapshot PUT is conditional on the ETag it replaces and records the run count'() {
         when:
         ops().put('cas/index/v3.sqlite', S3Body.ofBytes('s'.bytes),

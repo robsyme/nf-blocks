@@ -11,12 +11,14 @@ import robsyme.cas.core.Versioned
  * Retention objects in an S3 member (ticket 20 answer 5): the lock by
  * conditional PUTs (If-None-Match to take, If-Match to heartbeat and take
  * over), registrations by plain PUT, ledgers as objects. The clock is S3's
- * Date header of the latest response (answer 6).
+ * Date header of the latest response (answer 6). These small, rewritten
+ * objects are always STANDARD, whatever `aws.client.storageClass` gives blocks.
  */
 @CompileStatic
 class S3RetentionStorage implements RetentionStorage {
 
     static final String JSON = 'application/json'
+    static final String RETENTION_CLASS = 'STANDARD'
 
     private final S3Ops ops
     private final String prefix
@@ -58,19 +60,19 @@ class S3RetentionStorage implements RetentionStorage {
 
     @Override
     String createLock(byte[] body) {
-        final S3Written w = ops.put(prefix + 'sweep.lock', S3Body.ofBytes(body), S3PutOptions.create().ifNoneMatch().contentType(JSON))
+        final S3Written w = ops.put(prefix + 'sweep.lock', S3Body.ofBytes(body), retention().ifNoneMatch())
         return w.status == S3Written.Status.WRITTEN ? w.etag : null
     }
 
     @Override
     String replaceLock(String version, byte[] body) {
-        final S3Written w = ops.put(prefix + 'sweep.lock', S3Body.ofBytes(body), S3PutOptions.create().ifMatch(version).contentType(JSON))
+        final S3Written w = ops.put(prefix + 'sweep.lock', S3Body.ofBytes(body), retention().ifMatch(version))
         return w.status == S3Written.Status.WRITTEN ? w.etag : null
     }
 
     @Override
     void putLive(String session, byte[] body) {
-        ops.put(prefix + 'live/' + session, S3Body.ofBytes(body), S3PutOptions.create().contentType(JSON))
+        ops.put(prefix + 'live/' + session, S3Body.ofBytes(body), retention())
     }
 
     @Override void deleteLive(String session) { ops.delete(prefix + 'live/' + session) }
@@ -101,7 +103,7 @@ class S3RetentionStorage implements RetentionStorage {
 
     @Override
     void writeLedger(String name, byte[] body) {
-        ops.put(prefix + 'trash/' + name, S3Body.ofBytes(body), S3PutOptions.create().contentType(JSON))
+        ops.put(prefix + 'trash/' + name, S3Body.ofBytes(body), retention())
     }
 
     @Override void deleteLedger(String name) { ops.delete(prefix + 'trash/' + name) }
@@ -130,13 +132,24 @@ class S3RetentionStorage implements RetentionStorage {
         return failed
     }
 
+    /** JSON, STANDARD: sweep.lock, live/ and trash/ objects are small and rewritten, never archived with the blocks. */
+    private static S3PutOptions retention() {
+        return S3PutOptions.create().contentType(JSON).storageClass(RETENTION_CLASS)
+    }
+
+    /**
+     * Only scratch this store writes: tmp/ staging keys, and multipart uploads
+     * to a key under blocks/ or tmp/. With an empty prefix the member is the
+     * whole bucket, and another tool's uploads must not be aborted.
+     */
     @Override
     List<Stamped> listScratch() {
         final List<Stamped> out = new ArrayList<Stamped>()
         for( S3Listed o : ops.list(prefix + 'tmp/', 0) )
             out.add(new Stamped(o.key, o.lastModifiedMillis, null))
-        for( S3Upload u : ops.listUploads(prefix) )
-            out.add(new Stamped(u.key, u.initiatedMillis, u.uploadId))
+        for( String under : [prefix + 'blocks/', prefix + 'tmp/'] )
+            for( S3Upload u : ops.listUploads(under) )
+                out.add(new Stamped(u.key, u.initiatedMillis, u.uploadId))
         return out
     }
 

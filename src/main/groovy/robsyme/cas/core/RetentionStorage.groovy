@@ -41,7 +41,7 @@ interface RetentionStorage {
     /** Deletes the blocks; returns those that could not be deleted. A block already gone is not a failure. */
     List<Cid> deleteBlocks(Collection<Cid> cids)
 
-    /** Upload scratch: S3 tmp/ keys and open multipart uploads under the prefix; local blocks/.tmp-* and blocks/<xx>/.tmp-*. */
+    /** Upload scratch: S3 tmp/ keys and open multipart uploads to keys under blocks/ or tmp/; local blocks/.tmp-* and blocks/<xx>/.tmp-*. */
     List<Stamped> listScratch()
     void deleteScratch(Stamped scratch)
 

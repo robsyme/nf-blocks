@@ -16,6 +16,7 @@ class MemoryS3Ops implements S3Ops {
         String sha256
         Map<String, String> metadata = [:]
         String cacheControl
+        String storageClass
         long lastModified
         String text() { new String(bytes, 'UTF-8') }
     }
@@ -65,7 +66,7 @@ class MemoryS3Ops implements S3Ops {
         final byte[] d = digest ?: MessageDigest.getInstance('SHA-256').digest(bytes)
         final Obj obj = new Obj(bytes: bytes, etag: '"' + (++nextId) + '-' + key.hashCode() + '"',
             sha256: o.sha256 ? Base64.encoder.encodeToString(d) : null,
-            metadata: new LinkedHashMap<String, String>(o.metadata ?: [:]), cacheControl: o.cacheControl,
+            metadata: new LinkedHashMap<String, String>(o.metadata ?: [:]), cacheControl: o.cacheControl, storageClass: o.storageClass,
             lastModified: ++clock)
         objects[key] = obj
         return obj

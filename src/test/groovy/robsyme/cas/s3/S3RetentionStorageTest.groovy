@@ -49,4 +49,35 @@ class S3RetentionStorageTest extends RetentionStorageContract {
         ops.calls.contains('ABORT m/blocks/aa/y')
         ops.listUploads('m/') == []
     }
+
+    def 'a member at the bucket root scratches only what it writes: tmp/ keys and uploads under blocks/ or tmp/'() {
+        given: 'a store with an empty prefix, beside another tool\'s objects and uploads in the same bucket'
+        final RetentionStorage root = new S3RetentionStorage(ops, '')
+        ops.putText('tmp/stage-1', 'x')
+        ops.putText('other/tmp/stage-2', 'x')
+        ops.createMultipart('blocks/aa/y', S3PutOptions.create())
+        ops.createMultipart('tmp/z', S3PutOptions.create())
+        ops.createMultipart('backups/2026.tar', S3PutOptions.create())
+        ops.createMultipart('other/blocks/aa/w', S3PutOptions.create())
+
+        when:
+        final List<Stamped> scratch = root.listScratch()
+
+        then:
+        scratch*.name.sort() == ['blocks/aa/y', 'tmp/stage-1', 'tmp/z']
+    }
+
+    def 'retention objects are written as STANDARD whatever class blocks are given'() {
+        given:
+        final RetentionStorage s = storage()
+
+        when:
+        final String v = s.createLock('x'.bytes)
+        s.replaceLock(v, 'y'.bytes)
+        s.putLive('sess', '{}'.bytes)
+        s.writeLedger('1790000000000-s', '{}'.bytes)
+
+        then:
+        ['m/sweep.lock', 'm/live/sess', 'm/trash/1790000000000-s'].every { ops.objects[it].storageClass == 'STANDARD' }
+    }
 }
