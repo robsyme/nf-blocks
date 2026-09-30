@@ -949,7 +949,8 @@ is built on first publish over the composite and the writable member, with
   labels. *Amended 2026-09-29 (milestone 5, ticket 19):* every `cas://` key
   an event names is also recorded in `publishedKeys`, whether or not a
   workflow output ever joins it. `onFlowComplete` subtracts `Join`'s
-  `joinedKeys` from `publishedKeys` to count `unjoined`.
+  `joinedKeys` from `publishedKeys` and every key in `publishes` to count
+  `unjoined` (below).
 - `onWorkflowOutput(event)`: store the event (name, value) for the join. If
   `value` is null because an `index {}` block exists, record the anomaly.
   *Amended 2026-09-29 (milestone 5, ticket 26):* that premise is wrong. At
@@ -996,7 +997,13 @@ is built on first publish over the composite and the writable member, with
   an `onFilePublish` event named that no item or `index` Leaf claimed),
   counted and, when non-empty, warned once with the count, the first three
   coordinates and a pointer to the output DSL. The run's status is
-  unchanged.
+  unchanged. *Amended 2026-09-30 (final review C1):* the count is
+  `(publishedKeys ∪ publishes.keySet()) - joinedKeys`, so a file stored in
+  `cas://` with no publish event (sarek's `collectFile(storeDir:)` into
+  `csv/` and `pipeline_info/`, a stream written by a script or observer) is
+  counted too; `publishedKeys` still covers a resumed publish known only by
+  its Pointer File. The warning reads "N file(s) stored this run are in no
+  workflow output".
 - `onFlowError(event)` (2026-09-27): when `session.error`, or a cause of it,
   is a `MissingMethodException` whose method is `Channel.fromStore` (untyped),
   or `fromStore` on a receiver of type `nextflow.dataflow.ChannelNamespace` or
@@ -2260,7 +2267,8 @@ holds the reasoning, and the execution ledger is
    [19](../.scratch/post-gate/issues/19-publishdir-publishes-in-the-closure.md).
 2. This is loud, not silent: `onProcessCreate` warns once per process whose
    config declares `publishDir` while `outputDir` is `cas://`, and
-   `onFlowComplete` counts every publish that joined no item or index Leaf
+   `onFlowComplete` counts every file stored in `cas://` this run, with or
+   without a publish event, that joined no item or index Leaf
    in a new `RunCompletion.anomalies.unjoined`, warning once with the count,
    the first few coordinates and a pointer to the output DSL (§11, §6).
    [19](../.scratch/post-gate/issues/19-publishdir-publishes-in-the-closure.md).

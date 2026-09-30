@@ -750,7 +750,8 @@ class OutputsAssertionsTest(TempTree):
     """gate/outputs and gate/outputs-badindex (milestone 5, plan 2026-09-29): a fake
     store-outputs shaped like the real runs, so assertions 14 to 16 run against it
     without the Gate. run "outputs" carries tuples (index.json), records (index.csv,
-    header true) and LEGACY's two unjoined publishDir files; run "outputs-badindex"
+    header true), LEGACY's two unjoined publishDir files and one collectFile(storeDir:)
+    file stored with no publish event; run "outputs-badindex"
     carries a tuples collection whose CSV index write failed (never_published)."""
 
     def setUp(self):
@@ -806,14 +807,16 @@ class OutputsAssertionsTest(TempTree):
         with open(os.path.join(d, "nextflow.log"), "w") as fh:
             fh.write(text)
 
-    def _build_outputs_run(self, tuples_leaf_address=None, unjoined=2):
+    def _build_outputs_run(self, tuples_leaf_address=None, unjoined=3, collected=True):
         """Run "outputs": tuples/records join with a Meta Map carrying "id",
-        each with an index Nextflow wrote; LEGACY's two publishDir files are
-        addressed coordinates no item or index leaf names.
+        each with an index Nextflow wrote; LEGACY's two publishDir files and
+        the collectFile(storeDir:) file are addressed coordinates no item or
+        index leaf names.
 
         `tuples_leaf_address` overrides the tuples index leaf's recorded
         address (assertion 14's FAIL case); `unjoined` overrides
-        RunCompletion.anomalies.unjoined (assertion 16's FAIL case).
+        RunCompletion.anomalies.unjoined (assertion 16's FAIL case);
+        `collected=False` leaves the collectFile coordinate out.
         """
         run_link = self._manifest("outputs")
         a_leaf, _a_cid = self._addressed_leaf("A.txt", b"sample A\n")
@@ -854,12 +857,15 @@ class OutputsAssertionsTest(TempTree):
         legacy_b = self.b.raw(b"legacy B\n")
         self.b.coord("legacy/A.legacy", legacy_a)
         self.b.coord("legacy/B.legacy", legacy_b)
+        if collected:
+            self.b.coord("collected/samples.txt", self.b.raw(b"A\nB\n"))
 
         self._completion(run_link, [tuples_cid, records_cid], unjoined=unjoined)
         self._exit("outputs", 0)
         self._log("outputs", "%s\n%s%s\n" % (
             gate_assert.LEGACY_PUBLISHDIR_WARNING,
-            gate_assert.LEGACY_UNJOINED_WARNING, "legacy/A.legacy, legacy/B.legacy"))
+            gate_assert.LEGACY_UNJOINED_WARNING,
+            "cas://lab/collected/samples.txt, cas://lab/legacy/A.legacy, cas://lab/legacy/B.legacy"))
 
     def _build_badindex_run(self, index_leaf=None, write_coord=False):
         """Run "outputs-badindex": tuples joins with a Meta Map carrying "id";
@@ -944,6 +950,35 @@ class OutputsAssertionsTest(TempTree):
         status, message = gate_assert.assert_sixteen(self.gate)
         self.assertEqual(status, gate_assert.FAIL)
         self.assertIn("unjoined", message)
+
+    def test_sixteen_fails_when_the_file_stored_with_no_publish_event_is_not_counted(self):
+        """Final review C1: the plugin once counted only publish events, so
+        the collectFile(storeDir:) coordinate went uncounted."""
+        self._build_outputs_run(unjoined=2)
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("anomalies.unjoined is 2, but 3", message)
+
+    def test_sixteen_fails_when_the_collected_file_is_missing(self):
+        self._build_outputs_run(unjoined=2, collected=False)
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("collected/samples.txt", message)
+
+    def test_sixteen_fails_on_a_stray_coordinate_no_collection_names(self):
+        self._build_outputs_run()
+        self.b.coord("stray/x.txt", self.b.raw(b"x\n"))
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("stray/x.txt", message)
+
+    def test_sixteen_passes_beside_the_badindex_run_and_its_own_coordinates(self):
+        """outputs-badindex shares store-outputs: a coordinate its collection
+        names is claimed, not counted against run outputs."""
+        self._build_outputs_run()
+        self._build_badindex_run(write_coord=True)
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.PASS, message)
 
 
 if __name__ == "__main__":

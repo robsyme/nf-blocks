@@ -129,12 +129,14 @@ This is loud, not silent. A process that declares `publishDir` while
 nf-blocks: process 'NAME' uses publishDir; the files it publishes are stored but no run records them. Declare them as workflow outputs (output { }) to keep their lineage
 ```
 
-and at the end of a run, every published file that no workflow output
-claimed is counted in `RunCompletion.anomalies.unjoined` and warned once
-with the count and the first few coordinates:
+and at the end of a run, every file the run stored in `cas://` that no
+workflow output claimed (a `publishDir` copy, a `collectFile(storeDir:)`
+file, any other write into the store) is counted in
+`RunCompletion.anomalies.unjoined` and warned once with the count and the
+first few coordinates:
 
 ```
-nf-blocks: N published file(s) are in no workflow output, so no run records them: cas://lab/..., cas://lab/..., cas://lab/..., .... Declare them as workflow outputs (output { }) to keep their lineage
+nf-blocks: N file(s) stored this run are in no workflow output, so no run records them: cas://lab/..., cas://lab/..., cas://lab/..., .... Declare them as workflow outputs (output { }) to keep their lineage
 ```
 
 To keep a pipeline's lineage, migrate its publishes to the [workflow output
@@ -146,10 +148,10 @@ from the explorer's collection page.
 Adding nf-blocks to a pipeline you don't own, such as an nf-core one, with a
 `-c` config file needs care too: see the plugin-pins note in "Get Started"
 above. Measured against nf-core/sarek 3.10.0: only its `multiqc` output uses
-`output { }`, so a default run records lineage for `multiqc` and counts
-everything else (`reports/`, `preprocessing/`, `csv/`, `variant_calling/`,
-`pipeline_info/`, and the `multiqc/index.json` Output Index File itself) as
-`unjoined`.
+`output { }`, so a default run records lineage for `multiqc` (its
+`multiqc/index.json` Output Index File is linked from the collection) and
+counts everything else (`reports/`, `preprocessing/`, `csv/`,
+`variant_calling/`, `pipeline_info/`) as `unjoined`.
 
 ## Publishing into S3
 

@@ -767,8 +767,28 @@ class CasObserverTest extends Specification {
         then:
         final completion = readBlock(latestCompletion())
         completion.anomalies.unjoined == 2L
-        warnings(console, '2 published file(s) are in no workflow output') == 1
-        console.list.find { it.formattedMessage.contains('published file(s)') }.formattedMessage.contains('cas://lab/legacy/A.txt')
+        warnings(console, '2 file(s) stored this run are in no workflow output') == 1
+        console.list.find { it.formattedMessage.contains('stored this run') }.formattedMessage.contains('cas://lab/legacy/A.txt')
+    }
+
+    def 'a file stored with no publish event counts as unjoined (final review C1)'() {
+        given: 'collectFile(storeDir:) uploads with no FilePublishEvent; an observer or script writes a stream'
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final Path source = Files.createTempFile(tempDir, 'collected', '.tmp')
+        Files.writeString(source, 'A\nB\n')
+        provider.upload(source, coord('cas://lab/collected/samples.txt'))
+        coord('cas://lab/pipeline_info/versions.yml').text = 'v: 1\n'
+        publish('cas://lab/legacy/A.txt', 'A\n')
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        readBlock(latestCompletion()).anomalies.unjoined == 3L
+        warnings(console, '3 file(s) stored this run are in no workflow output') == 1
+        console.list.find { it.formattedMessage.contains('stored this run') }.formattedMessage.contains('cas://lab/collected/samples.txt')
     }
 
     def 'a coordinate published by a workflow output is not unjoined even when publishDir also wrote it'() {

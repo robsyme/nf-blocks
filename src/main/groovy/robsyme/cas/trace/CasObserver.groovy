@@ -308,12 +308,15 @@ class CasObserver implements TraceObserverV2 {
                 "${unclosed.take(3).join(', ')}${unclosed.size() > 3 ? ', ...' : ''}")
         final Join.Result joined = Join.join(capturedOutputs, capturedIndexes, cas)
 
-        final List<String> unjoined = new ArrayList<String>(publishedKeys)
-        unjoined.removeAll(joined.joinedKeys)
-        Collections.sort(unjoined)
+        // Every coordinate this run stored (an upload, a stream, a collectFile storeDir)
+        // or a publish event named (a resumed publish known only by its pointer).
+        final Set<String> stored = new TreeSet<String>(publishedKeys)
+        stored.addAll(cas.publishes.keySet())
+        stored.removeAll(joined.joinedKeys)
+        final List<String> unjoined = new ArrayList<String>(stored)
         final Anomalies anomalies = (joined.anomalies ?: Anomalies.NONE).plus(Anomalies.unjoined(unjoined.size()))
         if( !unjoined.isEmpty() )
-            ConsoleLog.LOG.warn("nf-blocks: ${unjoined.size()} published file(s) are in no workflow output, so no run records them: " +
+            ConsoleLog.LOG.warn("nf-blocks: ${unjoined.size()} file(s) stored this run are in no workflow output, so no run records them: " +
                 "${unjoined.take(3).join(', ')}${unjoined.size() > 3 ? ', ...' : ''}. Declare them as workflow outputs (output { }) to keep their lineage")
 
         final List<Cid> collections = new ArrayList<Cid>()

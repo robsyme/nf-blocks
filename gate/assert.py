@@ -1724,8 +1724,12 @@ LEGACY_PUBLISHDIR_WARNING = (
     "stored but no run records them. Declare them as workflow outputs "
     "(output { }) to keep their lineage")
 LEGACY_UNJOINED_WARNING = (
-    "nf-blocks: 2 published file(s) are in no workflow output, so no run "
+    "nf-blocks: 3 file(s) stored this run are in no workflow output, so no run "
     "records them: ")
+# The files run "outputs" stores that no workflow output claims: LEGACY's two
+# publishDir files (a publish event each) and the collectFile(storeDir:) file
+# (no publish event at all, final review C1).
+OUTPUTS_UNJOINED = ("collected/samples.txt", "legacy/A.legacy", "legacy/B.legacy")
 
 
 @assertion(14, "workflow outputs with an index join, and each index file is linked by address")
@@ -1862,13 +1866,17 @@ def assert_fifteen(gate):
                   % (leaf.get("reason"), leaf.get("address"), never_published))
 
 
-@assertion(16, "a publishDir process warns, and its files count as unjoined")
+@assertion(16, "a publishDir process warns, and every file no output claims counts as unjoined")
 def assert_sixteen(gate):
     """Ticket 19 answer 2: run "outputs" logs "process 'LEGACY' uses
-    publishDir" once and "2 published file(s) are in no workflow output";
-    anomalies.unjoined == 2; the coords legacy/A.legacy and legacy/B.legacy
-    exist and neither's CID is any item leaf's or index leaf's address.
-    Computed from the store, not from the plugin's count alone."""
+    publishDir" once and "3 file(s) stored this run are in no workflow
+    output" once. The expected unjoined count is computed from the store:
+    every coords/ pointer in store-outputs whose path no collection of
+    either run names (an item's publish path or an index path). That set
+    must be exactly LEGACY's two publishDir files and the collectFile
+    (storeDir:) file, which Nextflow writes with no publish event; each is
+    an addressed coordinate no item or index leaf's address names; and
+    anomalies.unjoined must equal its size."""
     store = outputs_store(gate)
     run, lookup = _run_of(store, "outputs")
     if not run.completion:
@@ -1885,27 +1893,45 @@ def assert_sixteen(gate):
         problems.append("logs/outputs/nextflow.log has the unjoined-files warning %d "
                         "time(s), expected 1" % unjoined_hits)
 
-    anomalies = run.completion.get("anomalies") or {}
-    if anomalies.get("unjoined") != 2:
-        problems.append("anomalies.unjoined is %r, expected 2" % anomalies.get("unjoined"))
-
     addressed = set()
-    collections = run.collections(lookup)
-    for out_name, (_cid, block) in collections.items():
-        for _item_cid, item in run.items(lookup, out_name):
-            if not item:
+    claimed = set()
+    runs = [(run, lookup)]
+    try:
+        runs.append(_run_of(store, "outputs-badindex"))
+    except cas.GateError:
+        pass                                        # assertion 15 reports a missing run
+    for each, each_lookup in runs:
+        for out_name, (_cid, block) in each.collections(each_lookup).items():
+            claimed.update(_strings(block.get("paths")))
+            index = block.get("index")
+            if isinstance(index, dict):
+                if index.get("path"):
+                    claimed.add(index["path"])
+                if each is run:
+                    address = _address_text((index.get("leaf") or {}).get("address"))
+                    if address:
+                        addressed.add(address)
+            if each is not run:
                 continue
-            for leaf in _leaves(item.get("value")):
-                address = _address_text(leaf.get("address"))
-                if address:
-                    addressed.add(address)
-        index = block.get("index")
-        if isinstance(index, dict):
-            address = _address_text((index.get("leaf") or {}).get("address"))
-            if address:
-                addressed.add(address)
+            for _item_cid, item in each.items(each_lookup, out_name):
+                if not item:
+                    continue
+                for leaf in _leaves(item.get("value")):
+                    address = _address_text(leaf.get("address"))
+                    if address:
+                        addressed.add(address)
 
-    for rel in ("legacy/A.legacy", "legacy/B.legacy"):
+    unclaimed = [rel for rel in store.coords_paths() if rel not in claimed]
+    if tuple(unclaimed) != OUTPUTS_UNJOINED:
+        problems.append("the coords/ pointers no collection names are %r, expected %r"
+                        % (unclaimed, list(OUTPUTS_UNJOINED)))
+    anomalies = run.completion.get("anomalies") or {}
+    if anomalies.get("unjoined") != len(unclaimed):
+        problems.append("anomalies.unjoined is %r, but %d coords/ pointer(s) no collection "
+                        "names: %s" % (anomalies.get("unjoined"), len(unclaimed),
+                                       ", ".join(unclaimed) or "none"))
+
+    for rel in OUTPUTS_UNJOINED:
         raw_cid = _coords_raw_cid(store, rel)
         if raw_cid is None:
             problems.append("no coords/%s in %s" % (rel, store.root))
@@ -1915,14 +1941,24 @@ def assert_sixteen(gate):
             problems.append("coords/%s: the bytes there do not hash to %s" % (rel, raw_cid))
         if raw_cid in addressed:
             problems.append("coords/%s (%s) is also an item or index leaf's address; "
-                            "LEGACY's publish should be unjoined" % (rel, raw_cid))
+                            "it should be unjoined" % (rel, raw_cid))
 
     if problems:
         return FAIL, "; ".join(problems)
     return PASS, ("logs/outputs/nextflow.log warns once about LEGACY's publishDir and "
-                  "once about 2 unjoined files; anomalies.unjoined == 2; "
-                  "legacy/A.legacy and legacy/B.legacy are addressed coordinates that "
-                  "no item or index leaf names")
+                  "once about 3 unjoined files; anomalies.unjoined == %d, the coords/ "
+                  "pointers no collection names (%s), each addressed and named by no "
+                  "item or index leaf" % (len(unclaimed), ", ".join(unclaimed)))
+
+
+def _strings(value):
+    """Every string in a nested list (an OutputCollection's paths)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for element in value:
+            for text in _strings(element):
+                yield text
 
 
 # --------------------------------------------------------------------------
