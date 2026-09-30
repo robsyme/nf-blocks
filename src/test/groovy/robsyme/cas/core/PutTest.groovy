@@ -12,6 +12,21 @@ class PutTest extends Specification {
     static final long NOW = 1_758_000_000_000L                // 2025-09-16T05:20:00.000Z
     static final String TS = '2025-09-16T05:20:00.000Z'
 
+    // Deterministic (content-addressed) so a `where:` table may reference them
+    // (Spock allows only @Shared and static fields there); setup() writes the
+    // matching blocks into each iteration's fresh store.
+    private static final Cid FIXTURE_MANIFEST = Fixtures.cidOf(Fixtures.runManifest())
+    private static final Cid FIXTURE_ITEM_A = Fixtures.cidOf(Fixtures.outputItem([[sample: 'A'], Fixtures.leaf('A.bam', Fixtures.contentCid('A'), 1L)]))
+    private static final Cid FIXTURE_ITEM_B = Fixtures.cidOf(Fixtures.outputItem([[sample: 'B'], Fixtures.leaf('B.bam', Fixtures.contentCid('B'), 1L)]))
+    private static final Cid FIXTURE_COLL_A = Fixtures.cidOf(Fixtures.outputCollection(FIXTURE_MANIFEST, 'aligned',
+        [[FIXTURE_ITEM_A, ['aligned/A.bam']], [FIXTURE_ITEM_B, ['aligned/B.bam']]]))
+    static final Cid run = Fixtures.cidOf(Fixtures.runCompletion(FIXTURE_MANIFEST, [FIXTURE_COLL_A]))
+    static final Cid item = FIXTURE_ITEM_A
+    static final Cid leaf = Fixtures.contentCid('leaf content')
+    // derived_from: [leaf] makes this a distinct block from the plain
+    // item(itemA, [collA]) selection every other test in this file writes.
+    static final Cid selection = Fixtures.cidOf(new Selection('ada', [Selection.item(FIXTURE_ITEM_A, [FIXTURE_COLL_A])], [leaf]).toCbor())
+
     @TempDir
     Path tempDir
 
@@ -31,6 +46,11 @@ class PutTest extends Specification {
         collA = store.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', [[itemA, ['aligned/A.bam']], [itemB, ['aligned/B.bam']]]))
         final Cid other = store.putDagCbor(Fixtures.runManifest(run_name: 'other', nf_run_hash: 'other'))
         collB = store.putDagCbor(Fixtures.outputCollection(other, 'aligned', [[itemA, ['x/A.bam']]]))
+        assert itemA == item && collA == FIXTURE_COLL_A : 'fixture blocks must match the static, content-addressed CIDs used in where: tables'
+        store.putDagCbor(Fixtures.runCompletion(manifest, [collA]))   // == run
+        final byte[] leafBytes = 'leaf content'.getBytes('UTF-8')
+        store.put(leaf, new ByteArrayInputStream(leafBytes), (long) leafBytes.length)
+        store.putDagCbor(new Selection('ada', [Selection.item(itemA, [collA])], [leaf]).toCbor())   // == selection
     }
 
     def cleanup() {
@@ -80,6 +100,13 @@ class PutTest extends Specification {
     }
 
     private PutResult send(String json, boolean dry = false) { put.put(json.getBytes('UTF-8'), dry) }
+
+    // Static (not the mutable `now` field): a `where:` table's data pipes run on an
+    // instance whose fields are not yet initialised, so claimRequest must not depend on one.
+    private static Map claimRequest(Cid subject, String verb, String attribute, Object value, List<Cid> supersedes) {
+        return [kind: 'Claim', subject: subject, verb: verb, attribute: attribute, value: value,
+                supersedes: supersedes, timestamp: TS]
+    }
 
     private PutError refused(String json) {
         try {
@@ -189,7 +216,8 @@ class PutTest extends Specification {
         again.names == ['first']
         again.nameClaims == [named]
         ((Map) DagJson.decode(again.body())) == [address: written, exists: true, here: true, names: ['first'], name_claims: [named],
-                                                  deletion: 'none', deletion_claims: []]
+                                                  deletion: 'none', deletion_claims: [], retain: 'none', retain_claims: [],
+                                                  pin_claims: [], pins: []]
     }
 
     def 'a dry run says whether the writable member holds the block, and which Claims name it (ticket 09)'() {
@@ -209,7 +237,8 @@ class PutTest extends Specification {
         dry.names == ['from-shared']
         dry.nameClaims == [named]
         ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'], name_claims: [named],
-                                               deletion: 'none', deletion_claims: []]
+                                               deletion: 'none', deletion_claims: [], retain: 'none', retain_claims: [],
+                                               pin_claims: [], pins: []]
 
         when: 'the real write copies the block into the writable member'
         final PutResult copied = sendTo(both, json)
@@ -239,7 +268,8 @@ class PutTest extends Specification {
         dry.deletion == 'deleted'
         dry.deletionClaims == [deleted]
         ((Map) DagJson.decode(dry.body())) == [address: s, exists: true, here: false, names: ['from-shared'],
-                                               name_claims: [named], deletion: 'deleted', deletion_claims: [deleted]]
+                                               name_claims: [named], deletion: 'deleted', deletion_claims: [deleted],
+                                               retain: 'none', retain_claims: [], pin_claims: [], pins: []]
 
         when: 'restored from lab: the copy, then a del superseding the deletion'
         sendTo(both, json)
@@ -353,7 +383,7 @@ class PutTest extends Specification {
             ['[1]', 'invalid', ''],
             ['{"kind":"Selection","members":[{"/":5}]}', 'invalid', '/members/0'],
             ['{"kind":', 'invalid', '/kind'],
-            [claim(itemA, 'add', 'tag', '"x"', []), 'invalid', '/verb'],
+            [claim(itemA, 'add', 'tag', '"x"', []), 'invalid', '/attribute'],
             [claim(itemA, 'rename', 'name', '"x"', []), 'invalid', '/verb'],
             [claim(itemA, 'set', null, '"x"', []), 'invalid', '/attribute'],
             [claim(itemA, 'set', 'name', '""', []), 'invalid', '/value'],
@@ -445,5 +475,136 @@ class PutTest extends Specification {
 
         expect:
         send(asLink, true).address == send(asBytes, true).address
+    }
+
+    def 'set retain lineage on a run is written and releases it'() {
+        when:
+        final PutResult r = put.put(claimRequest(run, 'set', 'retain', 'lineage', []), false)
+
+        then:
+        r.written
+        index.claimState(run).released
+    }
+
+    def 'del retain restores, superseding the release'() {
+        given:
+        final Cid release = put.put(claimRequest(run, 'set', 'retain', 'lineage', []), false).address
+
+        when:
+        put.put(claimRequest(run, 'del', 'retain', null, [release]), false)
+
+        then:
+        index.claimState(run).retain == ClaimState.NONE
+    }
+
+    def 'retain is refused on anything but a RunCompletion'() {
+        when:
+        put.put(claimRequest(item, 'set', 'retain', 'lineage', []), false)
+
+        then:
+        final PutError e = thrown()
+        e.code == PutError.WRONG_KIND
+        e.at == '/subject'
+    }
+
+    def 'set retain takes only the value lineage'() {
+        when:
+        put.put(claimRequest(run, 'set', 'retain', 'all', []), false)
+
+        then:
+        final PutError e = thrown()
+        e.code == PutError.INVALID
+        e.at == '/value'
+    }
+
+    def 'add pin with a note is written on #what, and pins it'() {
+        when:
+        put.put(claimRequest(subject, 'add', 'pin', 'figure 3', []), false)
+
+        then:
+        index.claimState(subject).pinNotes == ['figure 3']
+
+        where:
+        what         | subject
+        'a run'      | run
+        'an item'    | item
+        'a raw leaf' | leaf
+    }
+
+    def 'two pins on one subject are a set'() {
+        when:
+        put.put(claimRequest(item, 'add', 'pin', 'paper', []), false)
+        put.put(claimRequest(item, 'add', 'pin', 'figure 3', []), false)
+
+        then:
+        index.claimState(item).pinNotes.toSorted() == ['figure 3', 'paper']
+        !index.claimState(item).currentRows().any { it.conflicted }
+    }
+
+    def 'del pin removes one pin'() {
+        given:
+        final Cid one = put.put(claimRequest(item, 'add', 'pin', 'paper', []), false).address
+        put.put(claimRequest(item, 'add', 'pin', 'figure 3', []), false)
+
+        when:
+        put.put(claimRequest(item, 'del', 'pin', null, [one]), false)
+
+        then:
+        index.claimState(item).pinNotes == ['figure 3']
+    }
+
+    def '#shape is refused as #code at #at'() {
+        when:
+        put.put(request, false)
+
+        then:
+        final PutError e = thrown()
+        e.code == code
+        e.at == at
+
+        where:
+        shape                         | request                                                  | code               | at
+        'add of another attribute'    | claimRequest(item, 'add', 'name', 'x', [])               | PutError.INVALID   | '/attribute'
+        'set pin'                     | claimRequest(item, 'set', 'pin', 'x', [])                | PutError.INVALID   | '/attribute'
+        'a blank note'                | claimRequest(item, 'add', 'pin', '  ', [])               | PutError.INVALID   | '/value'
+        'a note that is not a string' | claimRequest(item, 'add', 'pin', 3L, [])                 | PutError.INVALID   | '/value'
+        'a 257-character note'        | claimRequest(item, 'add', 'pin', 'x' * 257, [])          | PutError.INVALID   | '/value'
+        'add pin with supersedes'     | claimRequest(item, 'add', 'pin', 'x', [run])             | PutError.INVALID   | '/supersedes'
+        'a pin on a Selection'        | claimRequest(selection, 'add', 'pin', 'x', [])           | PutError.WRONG_KIND | '/subject'
+    }
+
+    def 'del pin superseding a name Claim is refused'() {
+        given:
+        final Cid name = put.put(claimRequest(item, 'set', 'name', 'n', []), false).address
+
+        when:
+        put.put(claimRequest(item, 'del', 'pin', null, [name]), false)
+
+        then:
+        final PutError e = thrown()
+        e.code == PutError.WRONG_KIND
+        e.at == '/supersedes/0'
+    }
+
+    def 'a dry run reports the retain and pin groups'() {
+        given:
+        final Cid release = put.put(claimRequest(run, 'set', 'retain', 'lineage', []), false).address
+        final Cid pin = put.put(claimRequest(run, 'add', 'pin', 'paper', []), false).address
+
+        when:
+        final Map body = (Map) DagJson.decode(put.put(claimRequest(run, 'del', 'retain', null, [release]), true).body())
+
+        then: 'the dry run is about the would-be Claim, so its own state is empty; ask about the run instead'
+        body.retain == 'none'
+
+        when:
+        final PutResult about = PutResult.dryRun(run, true, true, index.claimState(run))
+        final Map b = (Map) DagJson.decode(about.body())
+
+        then:
+        b.retain == 'released'
+        b.retain_claims == [release]
+        b.pin_claims == [pin]
+        b.pins == ['paper']
     }
 }

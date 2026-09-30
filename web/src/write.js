@@ -29,7 +29,9 @@ export function writer({ endpoint, token, fetchFn = (...a) => fetch(...a), now =
       if (!res.ok) throw new WriteError(body.error, body.message, body.at, res.status)
       return { ...body, address: body.address.toString(),
         ...(body.name_claims ? { name_claims: body.name_claims.map(String) } : {}),
-        ...(body.deletion_claims ? { deletion_claims: body.deletion_claims.map(String) } : {}) }
+        ...(body.deletion_claims ? { deletion_claims: body.deletion_claims.map(String) } : {}),
+        ...(body.retain_claims ? { retain_claims: body.retain_claims.map(String) } : {}),
+        ...(body.pin_claims ? { pin_claims: body.pin_claims.map(String) } : {}) }
     }
     throw new WriteError(TRANSPORT[res.status] ?? 'write_failed', (await res.text()).trim() || `HTTP ${res.status}`, '', res.status)
   }
@@ -40,5 +42,9 @@ export function writer({ endpoint, token, fetchFn = (...a) => fetch(...a), now =
     rename: (subject, name, supersedes) => claim(subject, 'set', 'name', name, supersedes),
     remove: (subject, supersedes) => claim(subject, 'delete', null, null, supersedes),
     undo: (subject, supersedes) => claim(subject, 'del', null, null, supersedes),
+    release: (subject, retainClaims) => claim(subject, 'set', 'retain', 'lineage', retainClaims),
+    restore: (subject, retainClaims) => claim(subject, 'del', 'retain', null, retainClaims),
+    pin: (subject, note) => claim(subject, 'add', 'pin', note, []),
+    unpin: (subject, pinClaim) => claim(subject, 'del', 'pin', null, [pinClaim]),
   }
 }
