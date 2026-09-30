@@ -33,15 +33,21 @@ class RetentionFixture {
         return store.putDagCbor(new DirectoryManifest(entries).toCbor())
     }
 
-    /** A run with one output `out` whose items each hold the given leaves; returns [completion, collection, items]. */
-    Map run(String name, List<Map<String, Cid>> items) {
+    /**
+     * A run with one output `out` whose items each hold the given leaves;
+     * returns [completion, collection, items]. {@code options} (finishedAt,
+     * status, pipeline, possiblyIncomplete) are passed through to the
+     * completion and manifest builders; a caller that omits them gets the
+     * same run as before.
+     */
+    Map run(String name, List<Map<String, Cid>> items, Map options = [:]) {
         final Cid script = raw("script of ${name}")
-        final Cid manifest = store.putDagCbor(RetentionFixture.manifest(name, script))
+        final Cid manifest = store.putDagCbor(RetentionFixture.manifest(name, script, options))
         final List<Cid> itemCids = items.collect { Map<String, Cid> leaves ->
             store.putDagCbor(OutputItem.of(leaves.collectEntries { String n, Cid c -> [(n): Leaf.of(n, c, 1L)] }).toCbor())
         }.sort { it.toString() }
         final Cid collection = store.putDagCbor(new OutputCollection('test', manifest, 'out', itemCids, itemCids.collect { [] as List<String> }).toCbor())
-        final Cid completion = store.putDagCbor(RetentionFixture.completion(manifest, [collection]))
+        final Cid completion = store.putDagCbor(RetentionFixture.completion(manifest, [collection], options))
         StoreLog.append(store, StoreLogKind.RUN, completion, ++clock)
         return [completion: completion, collection: collection, items: itemCids, manifest: manifest, script: script]
     }
@@ -72,14 +78,19 @@ class RetentionFixture {
 
     List<MemberLog> logs() { [new MemberLog(store.alias(), true, StoreLog.read(store))] }
 
-    static Map manifest(String name, Cid script) {
-        return new RunManifest(RecordsTest.manifestArgs() + [runName: name, nfRunHash: "hash-${name}".toString(), script: script]).toCbor()
+    static Map manifest(String name, Cid script, Map options = [:]) {
+        final Map args = RecordsTest.manifestArgs() + [runName: name, nfRunHash: "hash-${name}".toString(), script: script]
+        if( options.pipeline )
+            args.pipeline = options.pipeline
+        return new RunManifest(args).toCbor()
     }
 
-    static Map completion(Cid manifest, List<Cid> collections) {
+    static Map completion(Cid manifest, List<Cid> collections, Map options = [:]) {
+        final String status = (options.status ?: 'succeeded') as String
         return new RunCompletion([assertedBy: 'test', run: manifest, collections: collections, inputSet: null,
-            status: 'succeeded', exitStatus: 0, possiblyIncomplete: false,
-            startedAt: '2026-09-28T10:00:00.000Z', finishedAt: '2026-09-28T10:05:00.000Z',
+            status: status, exitStatus: status == 'succeeded' ? 0 : 1,
+            possiblyIncomplete: options.possiblyIncomplete ?: false,
+            startedAt: '2026-09-28T10:00:00.000Z', finishedAt: (options.finishedAt ?: '2026-09-28T10:05:00.000Z') as String,
             anomalies: Anomalies.NONE, error: null]).toCbor()
     }
 }
