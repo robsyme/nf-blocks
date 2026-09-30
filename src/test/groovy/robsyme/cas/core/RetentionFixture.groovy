@@ -49,6 +49,18 @@ class RetentionFixture {
         return s
     }
 
+    /** A Selection block like {@link #selection}, but not logged as its own Store Log root: for nesting under another Selection. */
+    Cid selectionBlock(Cid item, Cid via) {
+        return store.putDagCbor(new Selection('test', [Selection.item(item, [via])], []).toCbor())
+    }
+
+    /** A Selection whose one member nests another Selection (not an item), logged as a Store Log root. */
+    Cid nestedSelection(Cid inner) {
+        final Cid s = store.putDagCbor(new Selection('test', [Selection.selection(inner)], []).toCbor())
+        StoreLog.append(store, StoreLogKind.SELECTION, s, ++clock)
+        return s
+    }
+
     List<MemberLog> logs() { [new MemberLog('lab', true, StoreLog.read(store))] }
 
     static Map manifest(String name, Cid script) {

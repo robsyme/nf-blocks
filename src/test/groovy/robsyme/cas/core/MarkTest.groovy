@@ -1,6 +1,8 @@
 package robsyme.cas.core
 
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.PosixFilePermissions
 
 import spock.lang.Specification
 import spock.lang.TempDir
@@ -228,6 +230,182 @@ class MarkTest extends Specification {
 
         then:
         m.isLive(x)
+    }
+
+    // ---- fix round 1 ----
+
+    def 'the same delete Claim entry logged twice within one extend call still hides the run'() {
+        given:
+        final Map r = f.run('a', [[x: f.raw('x')]])
+        f.claim(r.completion, 'delete', null, null)
+        final MemberLog log = f.logs()[0]
+
+        when:
+        final Mark m = Mark.of(f.store, [log, log], 4)
+
+        then:
+        m.roots.hidden == 1
+        !m.isLive((Cid) r.completion)
+    }
+
+    def 'a delete Claim held in the writable member on a run held only in a read-only member stays live'() {
+        given:
+        final Cid x = f.raw('x')
+        final RetentionFixture other = new RetentionFixture(root.resolve('other'))
+        other.store.put(x, new ByteArrayInputStream('x'.bytes), 1L)
+        final Map r = other.run('b', [[x: x]])
+        final CompositeStore both = new CompositeStore([f.store, new LocalBlockStore(root.resolve('other'), 'shared', false)])
+        final Cid del = f.claim((Cid) r.completion, 'delete', null, null)
+
+        when:
+        final Mark m = Mark.of(both, [f.logs()[0], new MemberLog('shared', false, StoreLog.read(other.store))], 4)
+
+        then:
+        m.isLive(del)
+        !m.isLive((Cid) r.completion)
+    }
+
+    def 'a Claim block that will not parse is kept live, unexpanded, and listed as unreadable'() {
+        given:
+        final Map r = f.run('a', [[x: f.raw('x')]])
+        final Map bad = Records.head(Records.CLAIM)
+        bad.put('asserted_by', 'test')
+        bad.put('subject', r.completion)
+        bad.put('verb', 'nope')
+        bad.put('attribute', null)
+        bad.put('value', null)
+        bad.put('supersedes', [])
+        bad.put('timestamp', Index.isoMillis(++f.clock))
+        final Cid badClaim = f.store.putDagCbor(bad)
+        StoreLog.append(f.store, StoreLogKind.CLAIM, badClaim, ++f.clock)
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(badClaim)
+        m.unreadableClaims == [badClaim]
+    }
+
+    def 'a corrupt dag-cbor block reachable from a run makes Mark.of throw, not read as missing'() {
+        given:
+        final Map r = f.run('a', [[x: f.raw('x')]])
+        final Path itemPath = f.store.blockPath((Cid) r.items[0])
+        Files.setPosixFilePermissions(itemPath, PosixFilePermissions.fromString('rw-r--r--'))
+        Files.write(itemPath, [0x81] as byte[])
+
+        when:
+        mark()
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'a root block that decodes to a non-map is live and unexpanded, not dangling or missing'() {
+        given:
+        final Cid weird = f.store.putDagCbor(['just', 'a', 'list'])
+        StoreLog.append(f.store, StoreLogKind.RUN, weird, ++f.clock)
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(weird)
+        m.danglingEntries == []
+        m.missingMetadata == []
+    }
+
+    def 'a pinned collection in a released run keeps its items content and its RunManifest'() {
+        given:
+        final Cid keep = f.raw('keep')
+        final Map r = f.run('a', [[k: keep]])
+        f.claim(r.completion, 'set', 'retain', 'lineage')
+        f.claim((Cid) r.collection, 'add', 'pin', 'figure 1')
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(keep)
+        m.isLive((Cid) r.manifest)
+        m.roots.pinnedSubjects == 1
+    }
+
+    def 'a nested Selection roots its inner Selections items content'() {
+        given:
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim(r.completion, 'delete', null, null)
+        final Cid item = r.items.find { Cid i -> leavesOf(i).contains(picked) }
+        final Cid inner = f.selectionBlock(item, (Cid) r.collection)
+        final Cid outer = f.nestedSelection(inner)
+
+        when:
+        final Mark m = mark()
+
+        then:
+        !m.isLive((Cid) r.completion)
+        m.isLive(inner)
+        m.isLive(picked)
+        m.roots.selections == 1
+    }
+
+    def 'a Selection with a clean delete is not a root, and a pin overrides the delete'() {
+        given:
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim(r.completion, 'delete', null, null)
+        final Cid item = r.items.find { Cid i -> leavesOf(i).contains(picked) }
+        final Cid sel = f.selection(item, (Cid) r.collection)
+        f.claim(sel, 'delete', null, null)
+
+        when:
+        final Mark m1 = mark()
+
+        then:
+        !m1.isLive(sel)
+        !m1.isLive(picked)
+
+        when:
+        f.claim(sel, 'add', 'pin', 'keep')
+        final Mark m2 = mark()
+
+        then:
+        m2.isLive(sel)
+        m2.isLive(picked)
+    }
+
+    def 'extend with a later del retain superseding the release makes the run content live again'() {
+        given:
+        final Cid x = f.raw('x')
+        final Map r = f.run('a', [[x: x]])
+        final Cid release = f.claim(r.completion, 'set', 'retain', 'lineage')
+        final Mark m = mark()
+        final List<StoreLogEntry> before = StoreLog.read(f.store)
+
+        expect:
+        !m.isLive(x)
+
+        when:
+        f.claim(r.completion, 'del', 'retain', null, [release])
+        final List<StoreLogEntry> added = StoreLog.read(f.store).findAll { !(it in before) }
+        m.extend([new MemberLog('lab', true, added)])
+
+        then:
+        m.isLive(x)
+    }
+
+    def 'a level wider than one window is still fully processed across multiple windows'() {
+        given: 'threads=1 makes the window 8 wide, and this run has 10 items in one collection level'
+        final List<Cid> contents = (1..10).collect { int i -> f.raw("content ${i}") }
+        final Map r = f.run('a', contents.collect { Cid c -> [f: c] })
+
+        when:
+        final Mark m = Mark.of(f.store, f.logs(), 1)
+
+        then:
+        contents.every { Cid c -> m.isLive(c) }
+        ((List<Cid>) r.items).every { Cid i -> m.isLive(i) }
     }
 
     private Set<Cid> leavesOf(Cid item) {
