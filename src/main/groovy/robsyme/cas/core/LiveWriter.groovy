@@ -27,6 +27,7 @@ class LiveWriter implements Closeable {
     private final ScheduledExecutorService heartbeats
     private volatile ScheduledFuture<?> beating
     private volatile boolean registered
+    private boolean beatFailing
 
     LiveWriter(RetentionStorage storage, String session, Map<String, String> info, Closure<Void> say,
                Closure<Void> sleeper, ScheduledExecutorService heartbeats) {
@@ -43,14 +44,19 @@ class LiveWriter implements Closeable {
     void start() {
         try {
             storage.putLive(session, body)
-            registered = true
         }
         catch( Exception e ) {
             say.call("nf-blocks could not register this run in ${storage.describe()}/live/ (${unwrap(e).message}); a sweep started now would not wait for it".toString())
             return
         }
-        beating = heartbeats.scheduleAtFixedRate({ -> beat() } as Runnable,
-            SweepLock.HEARTBEAT_MILLIS, SweepLock.HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
+        synchronized( this ) {
+            // Registering and scheduling under the same lock close() uses closes the
+            // window where a close() landing between the two would leave the
+            // heartbeat scheduled (and so able to write live/ again) after close.
+            registered = true
+            beating = heartbeats.scheduleAtFixedRate({ -> beat() } as Runnable,
+                SweepLock.HEARTBEAT_MILLIS, SweepLock.HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
+        }
         boolean told = false
         while( true ) {
             final SweepLock.Holder h
@@ -71,12 +77,27 @@ class LiveWriter implements Closeable {
         }
     }
 
-    private void beat() {
+    /**
+     * Package-visible so a test can drive it directly rather than waiting on the
+     * scheduler. Synchronized with close(): a beat that lands after close() sees
+     * registered false and writes nothing, so a closed run's registration cannot
+     * come back to life for the ten minutes before it would go stale.
+     */
+    synchronized void beat() {
+        if( !registered )
+            return
         try {
             storage.putLive(session, body)
+            if( beatFailing ) {
+                beatFailing = false
+                say.call("nf-blocks can write ${storage.describe()}/live/${session} again; this run's heartbeat has recovered".toString())
+            }
         }
         catch( Exception e ) {
-            // The next beat tries again; ten minutes of failures make this run look dead to a sweep.
+            if( !beatFailing ) {
+                beatFailing = true
+                say.call("nf-blocks could not update this run's heartbeat at ${storage.describe()}/live/${session} (${unwrap(e).message}); a sweep may treat this run as ended 10 minutes after its last heartbeat".toString())
+            }
         }
     }
 

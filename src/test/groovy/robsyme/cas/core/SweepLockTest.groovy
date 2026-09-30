@@ -94,4 +94,17 @@ class SweepLockTest extends Specification {
         SweepLock.newSweepId(1_790_000_000_000L) ==~ /20260921T\d{6}Z-[a-z2-7]{8}/
         SweepLock.newSweepId(1L) != SweepLock.newSweepId(1L)
     }
+
+    def 'take gives up after three attempts, without recursing without bound, when the lock keeps looking deleted'() {
+        given:
+        final RetentionStorage flaky = Mock(RetentionStorage)
+
+        when:
+        final SweepLock.Holder h = new SweepLock(flaky, 'x', clock).take()
+
+        then:
+        3 * flaky.createLock(_) >> null
+        3 * flaky.readLock() >> null
+        h == new SweepLock.Holder('unknown', null, 0L)
+    }
 }

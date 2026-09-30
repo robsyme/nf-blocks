@@ -53,25 +53,33 @@ class SweepLock {
 
     synchronized boolean isHeld() { version != null }
 
+    /**
+     * Bounded at 3 attempts: a lock that keeps looking created-then-deleted (a
+     * hand-deleted file, or a takeover racing us every time) must not recurse
+     * without limit. Giving up returns an 'unknown' holder rather than the
+     * lock itself, since after 3 straight losses the true state is unclear.
+     */
     synchronized Holder take() {
         startedAt = Index.isoMillis(localClock.call())
         beat = 0
-        final String created = storage.createLock(body('held'))
-        if( created != null ) {
-            version = created
-            return null
+        for( int attempt = 0; attempt < 3; attempt++ ) {
+            final String created = storage.createLock(body('held'))
+            if( created != null ) {
+                version = created
+                return null
+            }
+            final Versioned current = storage.readLock()
+            if( current == null )
+                continue          // released and deleted by hand between the two calls: try again
+            final Holder h = holderOf(current, storage.nowMillis())
+            if( h != null )
+                return h
+            version = storage.replaceLock(current.version, body('held'))
+            if( version != null )
+                return null
+            // lost the race to replace it: loop and try again
         }
-        final Versioned current = storage.readLock()
-        if( current == null )
-            return take()            // released and deleted by hand between the two calls
-        final Holder h = holderOf(current, storage.nowMillis())
-        if( h != null )
-            return h
-        version = storage.replaceLock(current.version, body('held'))
-        if( version != null )
-            return null
-        final Versioned now = storage.readLock()
-        return now == null ? new Holder('unknown', null, 0L) : (holderOf(now, storage.nowMillis()) ?: new Holder('unknown', null, 0L))
+        return new Holder('unknown', null, 0L)
     }
 
     synchronized boolean heartbeat() {
