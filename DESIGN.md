@@ -79,6 +79,10 @@ artifacts only.
   `robsyme/cas/explorer/index.html` (block explorer spec section 2). Its output is not committed.
 - Tests: Spock, under `src/test/groovy`, same packages. Groovy `@CompileStatic`
   on all main classes.
+- What is built next, and in what order: `../.scratch/post-gate/roadmap.md`
+  (2026-09-29). Milestone 4 (cloud) is this contract's §17; milestones 5 to 8
+  (nf-core pipelines in the store, retention, input-side lineage, portability)
+  are decided there, each gap linked to its ticket; projections are parked.
 
 ## 2. Configuration
 
