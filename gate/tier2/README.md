@@ -92,16 +92,17 @@ T7's two runs go next, before t1: `gate/retention`, the pipeline of tier
 one's assertion 9, on the local executor with `gate/tier2/t7.config` applied
 last (T7 is about the S3 member, not Batch). Straight after them come the
 dry-run sweep and a fake registration `live/gate-fake`. The rest of T7 runs
-after ts: gate.sh's retention sequence (prune, pin, a refused sweep, four real
+after t6 and before the harness waits for ts, so it overlaps the background
+sarek run: gate.sh's retention sequence (prune, pin, a refused sweep, four real
 sweeps, untrash, restore, release again), with `verb` pointed at `cas-t7` and
 each checkpoint read from S3 by `assert_tier2.py t7-checkpoint <name>`.
 
 S3's `LastModified` cannot be backdated the way tier one backdates a local
 store's mtimes. So `t7.config` sets `cas.sweep.ageFloor = '10m'`, the minimum
-(plan decision 8), and T7's sweeps come about 40 minutes after its runs. By
-then its blocks are well past the floor, and `live/gate-fake` is well past the
-10 minutes after which a registration is stale. If T1 to TS ever finish
-sooner, the harness waits until the youngest of those objects is 11 minutes
+(plan decision 8). T7's sweeps come after T1 to T6, typically more than 11
+minutes after its runs, when its blocks are past the floor and
+`live/gate-fake` is past the 10 minutes after which a registration is stale.
+If T1 to T6 ever finish sooner, the harness waits until the youngest of those objects is 11 minutes
 old by S3's clock (`LastModified` against the `Date` of the same listing) and
 prints how long it waits and why. Since the stale registration cannot refuse
 a sweep, the refusal check writes a second, fresh one (`live/gate-fresh`, run
@@ -113,8 +114,9 @@ path, header names and query parameter names there. That log is the only
 place tier two can see which writes were conditional and how blocks were
 deleted.
 
-T7 adds about 2 minutes before t1 and about 5 minutes after ts, which brings a
-typical tier two close to the 45-minute watchdog.
+T7 adds about 2 minutes before t1 (two local runs and the dry run). Its
+roughly 5 minutes of verbs after t6 run while sarek is still running, so they
+lengthen tier two only when T1 to T6 plus T7 outlast ts.
 
 `gate/tier2/small` is ALIGN and QC_DIR of the Test Pipeline, verbatim, for
 sample A, under the Pipeline Identity `cas-tier2-small`. It must stay in step

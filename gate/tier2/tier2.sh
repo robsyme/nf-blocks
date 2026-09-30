@@ -182,7 +182,7 @@ run_nf "$T2/logs/ts/stdout.log" "$T2/ts" T2_TRACE="$T2/trace/ts.txt" XDG_CACHE_H
     -c "$REPO/gate/tier2/sarek.config" -c "$REPO/gate/tier2/gatk4-quay.config" &
 TS_PID=$!
 
-# T7's two runs, local and short, before T1: by the sweep steps after TS their blocks are well past the
+# T7's two runs, local and short, before T1: by the sweep steps after T6 their blocks are well past the
 # 10-minute age floor by S3's clock. Then the dry run straight after them, and the stale registration's
 # write (it is 11 minutes old by the first real sweep).
 produce t7b cas-t7 "$REPO/gate/retention" -c "$REPO/gate/retention/overlay.config" -c "$REPO/gate/tier2/t7.config" --tag b
@@ -228,15 +228,11 @@ done
 # ETag is refused with 412 (the plugin's skip on that 412 is pinned by S3SnapshotStorageTest, Task 7).
 "$PY" "$REPO/gate/tier2/s3gate.py" if-match "$T2_BUCKET" > "$T2/evidence/if-match.json" || true
 
-# ts (ticket 18): wait for the background sarek run before the checks, the same way produce() records an exit.
-ts_status=0
-wait "$TS_PID" || ts_status=$?
-echo "$ts_status" > "$T2/logs/ts/exit"
-echo "--- ts exit $ts_status"
-
 # T7's sweep steps: gate.sh's retention sequence, with every checkpoint read from S3. There is no
 # --retention-age: S3's LastModified cannot be backdated, so t7.config's age floor is 10 minutes and the
-# harness waits here, if T1 to TS took under 11 minutes, until T7's blocks and live/gate-fake are that old.
+# harness waits here, if T1 to T6 took under 11 minutes, until T7's blocks and live/gate-fake are that old.
+# It runs beside the background sarek run, before the harness waits for ts, so it adds nothing when ts is
+# the longest path.
 t7verb prune-dry prune --keep-last 1
 t7verb prune prune --keep-last 1 --apply true
 t7refs
@@ -267,6 +263,12 @@ t7verb sweep-3 -c "$REPO/gate/retention/grace0.config" sweep --apply true --form
 t7checkpoint after-sweep-3
 t7verb sweep-4 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
 t7checkpoint after-sweep-4
+
+# ts (ticket 18): wait for the background sarek run before the checks, the same way produce() records an exit.
+ts_status=0
+wait "$TS_PID" || ts_status=$?
+echo "$ts_status" > "$T2/logs/ts/exit"
+echo "--- ts exit $ts_status"
 
 echo
 status=0

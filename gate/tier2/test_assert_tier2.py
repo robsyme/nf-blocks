@@ -935,6 +935,10 @@ class FailPathTest(WorldTest):
         self.assertIn("coords/multiqc/multiqc_report.html names", message)
 
 
+def t1_checkpoints():
+    return t._tier_one().RETENTION_CHECKPOINTS
+
+
 class T7Test(unittest.TestCase):
     """T7 over a fake cas-t7: one honest member, then one fault at a time (each a fresh World)."""
 
@@ -999,6 +1003,13 @@ class T7Test(unittest.TestCase):
         w.s3.put(BUCKET, "%s/trash/1759236300000-x" % T7, json.dumps(
             {"sweep": "x", "blocks": [{"cid": w.blocks["b_one"], "size": 1}]}).encode())
         self.assertEqual(t.t7_untrash_pick(w.ctx()), w.blocks["b_one"])
+
+    def test_only_after_runs_records_the_closures(self):
+        w = self.world()
+        for name in t1_checkpoints():
+            data = t._json(os.path.join(w.root, "evidence", "t7", name + ".json"))
+            self.assertEqual("closures" in data, name == "after-runs", name)
+            self.assertNotIn("closures_error", data, name)
 
     def test_parses_the_sdks_request_line(self):
         [(method, path, headers, query)] = t.parse_sdk_requests(

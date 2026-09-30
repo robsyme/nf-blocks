@@ -864,6 +864,7 @@ T7_RUNS = {"a": "t7a", "b": "t7b"}
 T7_STALE = "gate-fake"            # written before T1, stale (over 10 minutes by S3's clock) by sweep-1
 T7_FRESH = "gate-fresh"           # written just before live-refused, deleted just after it
 T7_FRESH_RUN = "gate_fresh_run"
+T7_CLOSURES_AT = "after-runs"     # the one checkpoint that records the closures
 T7_AGE = 660                      # seconds: 11 minutes, a minute past the age floor and the 10-minute staleness
 T7_LOCKING_STEPS = ("live-refused", "sweep-1", "untrash", "sweep-2", "sweep-3", "sweep-4")   # each takes sweep.lock
 
@@ -886,8 +887,9 @@ def t7_blocks(ctx):
 def t7_checkpoint(ctx, name):
     """evidence/t7/<name>.json, the shape gate/assert.py retention_checkpoint writes for a local member, read
     from S3: every block address present, every ledger under trash/ parsed, the sweep.lock body, the live/
-    names, the closures computed now from verified blocks (or why not); plus live/ ages and the clock (S3's
-    Date) they were judged by, and the Store Log's names."""
+    names; plus live/ ages and the clock (S3's Date) they were judged by, and the Store Log's names. Only
+    after-runs also records the closures, computed from verified blocks (or why not): T7 takes every
+    expected set from there, before anything is swept."""
     m = ctx.member(T7_MEMBER)
     blocks, _date = m.listing("blocks/")
     ledgers = {}
@@ -908,10 +910,11 @@ def t7_checkpoint(ctx, name):
                           for rel, t in live},
             "clock": clock,
             "log": sorted(m.log())}
-    try:
-        data["closures"] = cas.retention_closures(t7_blocks(ctx), t7_runs(ctx))
-    except Exception as exc:
-        data["closures_error"] = "%s: %s" % (type(exc).__name__, exc)
+    if name == T7_CLOSURES_AT:
+        try:
+            data["closures"] = cas.retention_closures(t7_blocks(ctx), t7_runs(ctx))
+        except Exception as exc:
+            data["closures_error"] = "%s: %s" % (type(exc).__name__, exc)
     with open(ctx.evidence("t7", name + ".json"), "w") as fh:
         json.dump(data, fh, indent=1, sort_keys=True)
     return data
@@ -926,7 +929,7 @@ def t7_refs(ctx):
 def t7_untrash_pick(ctx):
     """b's one.txt, which must sit in cas-t7's one Trash ledger: from the after-runs checkpoint's closures,
     which the Gate computed from verified blocks, else from the blocks now."""
-    recorded = (_json(os.path.join(ctx.root, "evidence", "t7", "after-runs.json")) or {}).get("closures")
+    recorded = (_json(os.path.join(ctx.root, "evidence", "t7", T7_CLOSURES_AT + ".json")) or {}).get("closures")
     one = (recorded or cas.retention_closures(t7_blocks(ctx), t7_runs(ctx)))["b_one"]
     m = ctx.member(T7_MEMBER)
     names = [rel[len("trash/"):] for rel, _t in m.listing("trash/")[0]]
@@ -1213,7 +1216,7 @@ def main(argv):
         data = t7_checkpoint(Ctx(s3gate.client(), ids["BUCKET"], ids["WORK"], argv[2]), argv[3])
         print("    t7 checkpoint %s: %d blocks, %d ledger(s), live %s%s" % (
             argv[3], len(data["blocks"]), len(data["ledgers"]), data["live"] or "empty",
-            "" if "closures" in data else "; " + data.get("closures_error", "")))
+            "; " + data["closures_error"] if "closures_error" in data else ""))
         return 0
     if len(argv) == 3 and argv[1] == "t7-untrash-pick":
         ids = read_ids(argv[2])
