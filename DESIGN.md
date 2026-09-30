@@ -1233,7 +1233,7 @@ snapshot moved aside too), with `XDG_CACHE_HOME` and the store under a fresh
 temp directory, then runs `gate/assert.py` (Python 3 standard library only:
 `hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and CID encoder
 of its own). Exit non-zero on any failed assertion. The Gate config overlay
-lives at `gate/gate.config`. Lineage tier: 12 PASS, 0 FAIL, 6 SKIP.
+lives at `gate/gate.config`. Lineage tier: 15 PASS, 0 FAIL, 6 SKIP.
 Assertion 13, "a cold cache seeds from the Index Snapshot", takes its locked
 runs from the Store Log entries at or before the snapshot's watermark, and
 counts a permission failure when the seeded run's log says "could not be
@@ -2306,7 +2306,8 @@ holds the reasoning, and the execution ledger is
    background into its own member. Its check (TS) verifies the run
    succeeded, `multiqc`'s items carry a Meta Map and independently
    re-hashed, addressed Leaves, the `index` Leaf hashes independently to
-   the work bucket's `index.json` object, and `anomalies.unjoined` matches
+   the member's block that `coords/multiqc/index.json` names, and
+   `anomalies.unjoined` matches
    the `coords/` pointers no item or index Leaf claims; the log names the
    `publishDir` warning (`gate/tier2/README.md`).
    [18](../.scratch/post-gate/issues/18-measure-sarek-on-the-queue.md).

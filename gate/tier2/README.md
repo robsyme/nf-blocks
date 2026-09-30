@@ -155,8 +155,9 @@ rather than debug a SKIP.
 TS (ticket 18). ts exited 0 and its RunCompletion succeeded. Its `multiqc`
 `OutputCollection` has at least one item, each carrying a Meta Map with `id`
 and an addressed file `Leaf`; its `index` (`index { path "multiqc/index.json"
-}`) has a `Leaf` whose address equals the SHA-256 of the work bucket's own
-`index.json` object, hashed by the Gate. `anomalies.unjoined` equals the
+}`) has a `Leaf` whose address equals the SHA-256 of the member's own
+block at that address, fetched and hashed by the Gate, and matches the block
+`coords/multiqc/index.json` names. `anomalies.unjoined` equals the
 number of `cas-sarek`'s `coords/` pointers that name a block neither an item
 `Leaf` nor the index `Leaf` references (sarek publishes report files outside
 the declared workflow output), and is greater than zero. `logs/ts/` names at
