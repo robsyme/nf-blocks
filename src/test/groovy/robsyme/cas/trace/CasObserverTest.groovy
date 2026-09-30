@@ -317,6 +317,34 @@ class CasObserverTest extends Specification {
         observer.onFlowComplete()
     }
 
+    def 'a run waiting on the sweep lock does not hold the CasSession monitor while it waits'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        Files.createDirectories(storeRoot)
+        SweepLock sweep = new SweepLock(new LocalRetentionStorage(storeRoot), 'sweep-9', { -> System.currentTimeMillis() } as Closure<Long>)
+        sweep.take()
+        boolean monitorFree = false
+        CasSession.liveSleeper = { long ms ->
+            // Another thread (a publish, a completion) must be able to take the session's monitor meanwhile.
+            final Thread other = new Thread({ -> synchronized( cas ) { monitorFree = true } } as Runnable)
+            other.daemon = true
+            other.start()
+            other.join(2000)
+            sweep.release()
+        } as Closure<Void>
+
+        when:
+        observer.onFlowCreate(session)
+
+        then:
+        monitorFree
+
+        cleanup:
+        CasSession.liveSleeper = { long ms -> Thread.sleep(ms) } as Closure<Void>
+        observer.onFlowComplete()
+    }
+
     def 'the notification that loses the completion latch waits for the winner to finish writing'() {
         // A failed run is notified twice: on the abort path (a finalizer thread)
         // and from Session.destroy on main, which reaches System.exit next. The

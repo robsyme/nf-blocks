@@ -12,7 +12,9 @@ import groovy.transform.CompileStatic
  * A run as a Live Writer (ticket 20 answers 1 and 5): live/<session> is written
  * first, then sweep.lock is read, waiting while a fresh one is held, so a sweep
  * and a run always see each other. Heartbeat every 60 s by plain PUT; deleted
- * at the end. Never fails the run (plan decision 11).
+ * at the end. Never fails the run (plan decision 11). A run whose registration
+ * cannot be written still reads the lock and waits (final review item 3): a
+ * sweep that starts later cannot see it, but one already running is waited out.
  */
 @CompileStatic
 class LiveWriter implements Closeable {
@@ -27,6 +29,7 @@ class LiveWriter implements Closeable {
     private final ScheduledExecutorService heartbeats
     private volatile ScheduledFuture<?> beating
     private volatile boolean registered
+    private volatile boolean closed
     private boolean beatFailing
 
     LiveWriter(RetentionStorage storage, String session, Map<String, String> info, Closure<Void> say,
@@ -42,23 +45,29 @@ class LiveWriter implements Closeable {
     }
 
     void start() {
+        boolean written = false
         try {
             storage.putLive(session, body)
+            written = true
         }
         catch( Exception e ) {
-            say.call("nf-blocks could not register this run in ${storage.describe()}/live/ (${unwrap(e).message}); a sweep started now would not wait for it".toString())
-            return
+            say.call("nf-blocks could not register this run in ${storage.describe()}/live/ (${unwrap(e).message}); a sweep that starts while it runs would not wait for it. Checking ${storage.describe()}/sweep.lock anyway".toString())
         }
-        synchronized( this ) {
+        if( written ) synchronized( this ) {
             // Registering and scheduling under the same lock close() uses closes the
             // window where a close() landing between the two would leave the
             // heartbeat scheduled (and so able to write live/ again) after close.
+            if( closed ) {
+                // close() came first (the run ended while registering): take the registration back.
+                deleteQuietly()
+                return
+            }
             registered = true
             beating = heartbeats.scheduleAtFixedRate({ -> beat() } as Runnable,
                 SweepLock.HEARTBEAT_MILLIS, SweepLock.HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
         }
         boolean told = false
-        while( true ) {
+        while( !closed ) {
             final SweepLock.Holder h
             try {
                 h = SweepLock.holder(storage)
@@ -70,7 +79,8 @@ class LiveWriter implements Closeable {
             if( h == null )
                 return
             if( !told ) {
-                say.call("sweep ${h.sweepId} holds ${storage.describe()}/sweep.lock (started ${h.startedAt}); this run is registered and waiting, checking every 30 s. The sweep stops at its next batch, or its lock goes stale 10 minutes after its last heartbeat.".toString())
+                final String state = written ? 'registered and waiting' : 'not registered, but waiting'
+                say.call("sweep ${h.sweepId} holds ${storage.describe()}/sweep.lock (started ${h.startedAt}); this run is ${state}, checking every 30 s. The sweep stops at its next batch, or its lock goes stale 10 minutes after its last heartbeat.".toString())
                 told = true
             }
             sleeper.call(POLL_MILLIS)
@@ -102,11 +112,16 @@ class LiveWriter implements Closeable {
     }
 
     synchronized void close() {
+        closed = true
         beating?.cancel(false)
         beating = null
         if( !registered )
             return
         registered = false
+        deleteQuietly()
+    }
+
+    private void deleteQuietly() {
         try {
             storage.deleteLive(session)
         }

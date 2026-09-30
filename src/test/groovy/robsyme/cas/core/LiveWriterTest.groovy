@@ -74,7 +74,10 @@ class LiveWriterTest extends Specification {
 
     def 'a registration that cannot be written warns and the run goes on'() {
         given:
-        final RetentionStorage broken = Stub(RetentionStorage) { putLive(_, _) >> { throw new IOException('denied') } }
+        final RetentionStorage broken = Stub(RetentionStorage) {
+            putLive(_, _) >> { throw new IOException('denied') }
+            readLock() >> null   // no sweep lock: a Stub would otherwise answer a dummy lock, fresh and held
+        }
         final List<String> said = []
 
         when:
@@ -83,6 +86,39 @@ class LiveWriterTest extends Specification {
         then:
         notThrown(Exception)
         said.any { it.contains('could not register') && it.contains('denied') }
+    }
+
+    /** Local retention storage whose registration writes fail. */
+    static class RefusedRegistration implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['putLive', 'deleteLive']) final RetentionStorage inner
+        int puts = 0
+        int deletes = 0
+        RefusedRegistration(RetentionStorage inner) { this.inner = inner }
+        void putLive(String session, byte[] body) { puts++; throw new IOException('denied') }
+        void deleteLive(String session) { deletes++ }
+    }
+
+    def 'a run that cannot register still waits while a fresh lock is held, without heartbeating'() {
+        given:
+        final sweep = new SweepLock(storage, 'sweep-2', clock)
+        sweep.take()
+        final RefusedRegistration refused = new RefusedRegistration(storage)
+        final List<String> said = []
+        int sleeps = 0
+        final writer = new LiveWriter(refused, 'sess', [:], { String m -> said << m },
+            { long ms -> if( ++sleeps == 2 ) sweep.release() }, executor)
+
+        when:
+        writer.start()
+        writer.beat()
+        writer.close()
+
+        then:
+        sleeps == 2
+        said.any { it.contains('could not register') && it.contains('denied') }
+        said.any { it.contains('sweep-2') && it.contains('waiting') }
+        refused.puts == 1
+        refused.deletes == 0
     }
 
     def 'a heartbeat failure streak warns once, and a later success reports recovery once'() {

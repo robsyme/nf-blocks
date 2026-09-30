@@ -383,18 +383,28 @@ class CasSession {
     private ScheduledExecutorService liveBeats
     private Thread liveHook
 
-    /** Ticket 20 answers 1 and 5: register as a Live Writer, then wait while a sweep holds the lock. */
-    synchronized void startLiveWriter(String session, Map<String, String> info) {
-        final BlockStore writable = members()[0]
-        if( liveWriter != null || !(writable instanceof RetainedStore) || !writable.isWritable() )
-            return
-        liveBeats = Executors.newSingleThreadScheduledExecutor({ Runnable r ->
-            final Thread t = new Thread(r, 'nf-blocks-live-heartbeat'); t.daemon = true; t } as ThreadFactory)
-        liveWriter = new LiveWriter(((RetainedStore) writable).retentionStorage(), session, info,
-            { String m -> ConsoleLog.LOG.warn(m) } as Closure<Void>, liveSleeper, liveBeats)
-        liveHook = new Thread({ -> liveWriter?.close() } as Runnable, 'nf-blocks-live-deregister')
-        Runtime.runtime.addShutdownHook(liveHook)
-        liveWriter.start()
+    /**
+     * Ticket 20 answers 1 and 5: register as a Live Writer, then wait while a
+     * sweep holds the lock. The writer is built under this session's monitor
+     * and started outside it, so the (unbounded) wait on sweep.lock never
+     * holds up another thread that needs the session.
+     */
+    void startLiveWriter(String session, Map<String, String> info) {
+        LiveWriter writer = null
+        synchronized( this ) {
+            final BlockStore writable = members()[0]
+            if( liveWriter != null || !(writable instanceof RetainedStore) || !writable.isWritable() )
+                return
+            liveBeats = Executors.newSingleThreadScheduledExecutor({ Runnable r ->
+                final Thread t = new Thread(r, 'nf-blocks-live-heartbeat'); t.daemon = true; t } as ThreadFactory)
+            final LiveWriter built = new LiveWriter(((RetainedStore) writable).retentionStorage(), session, info,
+                { String m -> ConsoleLog.LOG.warn(m) } as Closure<Void>, liveSleeper, liveBeats)
+            writer = built
+            liveWriter = built
+            liveHook = new Thread({ -> built.close() } as Runnable, 'nf-blocks-live-deregister')
+            Runtime.runtime.addShutdownHook(liveHook)
+        }
+        writer.start()
     }
 
     synchronized void stopLiveWriter() {
