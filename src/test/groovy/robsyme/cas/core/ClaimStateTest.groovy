@@ -28,9 +28,29 @@ class ClaimStateTest extends Specification {
         state.nameConflicted == expect.nameConflicted
         state.deletion == expect.deletion
         state.hidden == (expect.deletion == 'deleted')
+        !expect.containsKey('retain') || state.retain == expect.retain
+        !expect.containsKey('pins') || state.pinNotes == expect.pins
+        !expect.containsKey('pinned') || state.pinned == expect.pinned
+        !expect.containsKey('retain') || state.released == (expect.retain == 'released')
 
         where:
         v << vectors()
+    }
+
+    def 'a pin group is never flagged conflicted in claim_current'() {
+        given:
+        final ClaimState state = ClaimState.of([
+            new ClaimState.Row('c1', 'add', 'pin', 'a', []),
+            new ClaimState.Row('c2', 'add', 'pin', 'b', []),
+            new ClaimState.Row('c3', 'set', 'retain', 'lineage', []),
+            new ClaimState.Row('c4', 'set', 'retain', 'lineage', []),
+        ])
+
+        expect:
+        state.currentRows()*.conflicted == [false, false, true, true]
+        state.pinClaims == ['c1', 'c2']
+        state.retainClaims == ['c3', 'c4']
+        state.retain == ClaimState.CONFLICTED
     }
 
     def 'currentRows flags every row of a conflicted group'() {
