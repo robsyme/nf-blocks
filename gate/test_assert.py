@@ -981,5 +981,228 @@ class OutputsAssertionsTest(TempTree):
         self.assertEqual(status, gate_assert.PASS, message)
 
 
+
+# --------------------------------------------------------------------------
+# Assertion 9 (milestone 6): a hand-built GATE_ROOT, stepped the way gate.sh
+# steps the real one, with gate_assert's own checkpoint writer at each step
+# --------------------------------------------------------------------------
+
+def _retention_write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(text)
+
+
+def build_retention_root(test, trash_extra=None, dry_dead=0, keep_ledger_after_restore=False,
+                         survivor=None, live_refused_exit=1):
+    """A GATE_ROOT whose store-retention, logs/retention/*.exit, *.out and
+    checkpoint JSON files are what an honest assertion-9 run leaves, then with
+    one named fault applied the way a buggy plugin would apply it.
+
+    trash_extra: "shared_two" (b's two.txt, which a shares) or "b_item" (one of
+    b's OutputItems, metadata) is trashed by sweeps 1 and 3 and deleted by
+    sweep 4. dry_dead: the dry run's reported dead count. keep_ledger_after_restore:
+    sweep 2 leaves the ledger although restore made its blocks live. survivor:
+    "only_b" survives sweep 4. live_refused_exit: the exit status of the sweep
+    run beside a fresh registration.
+    """
+    root = tempfile.mkdtemp(prefix="gate-retention-")
+    test.addCleanup(shutil.rmtree, root, True)
+    b = StoreBuilder(os.path.join(root, "store-retention"))
+    gate = gate_assert.Gate(root)
+    logs = os.path.join(root, "logs", "retention")
+    clock = [1759200000000]
+
+    def step(name, code, out=""):
+        _retention_write(os.path.join(logs, name + ".exit"), "%d\n" % code)
+        _retention_write(os.path.join(logs, name + ".out"), out)
+        _retention_write(os.path.join(logs, name + ".err"), "")
+
+    def checkpoint(name):
+        gate_assert.retention_checkpoint(gate, name)
+
+    def log(kind, cid):
+        clock[0] += 1000
+        b.store_log(clock[0], kind, cid)
+
+    def claim(subject, verb, attribute, value, supersedes=()):
+        clock[0] += 1000
+        cid = b.block({"kind": "Claim", "schema": 1, "asserted_by": "gate",
+                       "subject": cas.Cid(subject), "verb": verb, "attribute": attribute,
+                       "value": value, "supersedes": [cas.Cid(s) for s in supersedes],
+                       "timestamp": "2026-09-30T00:00:%02d.000Z" % (clock[0] // 1000 % 60)})
+        log("claim", cid)
+        return cid
+
+    script = b.raw(b"params.tag = 'a'\n")
+    blocks = {}
+
+    def leaf(name, cid, size):
+        return {"kind": "Leaf", "name": name, "address": cas.Cid(cid), "size": size, "reason": None}
+
+    def run(tag):
+        manifest = b.block({"kind": "RunManifest", "schema": 1, "asserted_by": "gate",
+                            "pipeline": gate_assert.RETENTION_IDENTITY, "run_name": "retention-" + tag,
+                            "script": cas.Cid(script), "params": {"tag": tag}})
+        file_items = []
+        for name in ("shared", "only_" + tag, "pin_" + tag):
+            data = ("%s\n" % name).encode()
+            raw = b.raw(data)
+            blocks["%s_%s" % (tag, name)] = raw
+            item = b.block({"kind": "OutputItem", "schema": 2,
+                            "value": [{"id": name}, leaf(name + ".txt", raw, len(data))]})
+            blocks["%s_item_%s" % (tag, name)] = item
+            file_items.append(item)
+        one = ("%s one\n" % tag).encode()
+        one_cid = b.raw(one)
+        two_cid = b.raw(b"shared two\n")
+        blocks[tag + "_one"], blocks["shared_two"] = one_cid, two_cid
+        directory = b.manifest([entry("one.txt", "regular", len(one), one_cid),
+                                entry("two.txt", "regular", 11, two_cid)])
+        blocks[tag + "_dir"] = directory
+        dir_item = b.block({"kind": "OutputItem", "schema": 2,
+                            "value": [{"id": "dir_" + tag}, leaf("dir_" + tag, directory, 0)]})
+        files = b.block({"kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
+                         "run": cas.Cid(manifest), "name": "files",
+                         "items": [cas.Cid(i) for i in file_items], "paths": [], "index": None})
+        dirs = b.block({"kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
+                        "run": cas.Cid(manifest), "name": "dirs",
+                        "items": [cas.Cid(dir_item)], "paths": [], "index": None})
+        completion = b.block({"kind": "RunCompletion", "schema": 2, "asserted_by": "gate",
+                              "run": cas.Cid(manifest), "collections": [cas.Cid(files), cas.Cid(dirs)],
+                              "status": "succeeded", "exit_status": 0,
+                              "finished_at": "2026-09-30T00:00:00.000Z"})
+        log("run", completion)
+        d = os.path.join(root, "logs", "retention-" + tag)
+        _retention_write(os.path.join(d, "exit"), "0\n")
+        return completion
+
+    run_b = run("b")
+    run_a = run("a")
+    unshared = [blocks["b_only_b"], blocks["b_dir"], blocks["b_one"]]
+    extra = {"shared_two": blocks["shared_two"], "b_item": blocks.get("b_item_only_b"), None: None}[trash_extra]
+    trashed = unshared + ([extra] if extra else [])
+    store = b.root
+    checkpoint("after-runs")
+
+    step("dry-1", 0, json.dumps({"applied": False, "dead": dry_dead, "trashed": dry_dead}) + "\n")
+    checkpoint("after-dry-1")
+    step("prune-dry", 0)
+    step("prune", 0)
+    release = claim(run_b, "set", "retain", "lineage")
+    step("pin", 0)
+    claim(blocks["b_item_pin_b"], "add", "pin", "figure 3")
+    _retention_write(os.path.join(store, "live", "gate-fake"), "{}")
+    step("live-refused", live_refused_exit,
+         "live       1 run registered: gate_fake_run (session gate-fake), heartbeat 0 s ago\n"
+         if live_refused_exit else "applied\n")
+    checkpoint("before-sweep")
+
+    def ledger(name, cids):
+        body = {"sweep": name.split("-", 1)[1], "trashed_at": "2026-09-30T00:00:00.000Z",
+                "deadline": "2026-10-14T00:00:00.000Z",
+                "blocks": [{"cid": c, "size": 1} for c in sorted(cids)]}
+        _retention_write(os.path.join(store, "trash", name), json.dumps(body))
+
+    def released_lock():
+        _retention_write(os.path.join(store, "sweep.lock"),
+                         json.dumps({"sweep": "x", "state": "released", "started_at": "x", "beat": 1}))
+
+    first = "1760400000000-20260930T000000Z-aaaaaaaa"
+    step("sweep-1", 0, json.dumps({"applied": True, "ledger": first}) + "\n")
+    ledger(first, trashed)
+    os.remove(os.path.join(store, "live", "gate-fake"))
+    released_lock()
+    checkpoint("after-sweep-1")
+
+    step("untrash", 0)
+    ledger(first, [c for c in trashed if c != blocks["b_one"]])
+    checkpoint("after-untrash")
+
+    step("restore", 0)
+    restore = claim(run_b, "del", "retain", None, [release])
+    step("sweep-2", 0, json.dumps({"applied": True}) + "\n")
+    if not keep_ledger_after_restore:
+        os.remove(os.path.join(store, "trash", first))
+    checkpoint("after-sweep-2")
+
+    step("release-again", 0)
+    claim(run_b, "set", "retain", "lineage", [restore])
+    second = "1759200100000-20260930T000100Z-bbbbbbbb"
+    step("sweep-3", 0, json.dumps({"applied": True, "ledger": second}) + "\n")
+    ledger(second, trashed)
+    checkpoint("after-sweep-3")
+
+    step("sweep-4", 0, json.dumps({"applied": True}) + "\n")
+    for c in trashed:
+        if survivor and c == blocks["b_" + survivor]:
+            continue
+        path = b.store.block_path(c)
+        if os.path.exists(path):
+            os.remove(path)
+    os.remove(os.path.join(store, "trash", second))
+    if keep_ledger_after_restore:
+        os.remove(os.path.join(store, "trash", first))
+    checkpoint("after-sweep-4")
+    return root
+
+
+class RetentionAssertionTest(unittest.TestCase):
+    """Assertion 9 over a hand-built GATE_ROOT: checkpoints, ledgers and a store."""
+
+    def test_passes_when_every_checkpoint_matches(self):
+        root = build_retention_root(self)
+        status, message = gate_assert.assertion_9(gate_assert.Gate(root))
+        self.assertEqual(status, gate_assert.PASS, message)
+
+    def test_fails_when_a_shared_block_was_trashed(self):
+        root = build_retention_root(self, trash_extra="shared_two")
+        status, message = gate_assert.assertion_9(gate_assert.Gate(root))
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("shared", message)
+
+    def test_fails_when_metadata_was_trashed(self):
+        root = build_retention_root(self, trash_extra="b_item")
+        status, message = gate_assert.assertion_9(gate_assert.Gate(root))
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("metadata", message)
+
+    def test_fails_when_the_dry_run_found_dead_blocks(self):
+        root = build_retention_root(self, dry_dead=3)
+        self.assertEqual(gate_assert.assertion_9(gate_assert.Gate(root))[0], gate_assert.FAIL)
+
+    def test_fails_when_restored_content_stayed_in_a_ledger(self):
+        root = build_retention_root(self, keep_ledger_after_restore=True)
+        self.assertEqual(gate_assert.assertion_9(gate_assert.Gate(root))[0], gate_assert.FAIL)
+
+    def test_fails_when_the_last_sweep_left_released_content(self):
+        root = build_retention_root(self, survivor="only_b")
+        self.assertEqual(gate_assert.assertion_9(gate_assert.Gate(root))[0], gate_assert.FAIL)
+
+    def test_fails_when_the_live_refusal_did_not_refuse(self):
+        root = build_retention_root(self, live_refused_exit=0)
+        self.assertEqual(gate_assert.assertion_9(gate_assert.Gate(root))[0], gate_assert.FAIL)
+
+    def test_refs_name_both_runs_the_pinned_item_and_the_current_retain_claims(self):
+        root = build_retention_root(self)
+        refs = gate_assert.retention_refs(gate_assert.Gate(root))
+        self.assertTrue(cas.is_cid(refs["RET_A"]) and cas.is_cid(refs["RET_B"]))
+        self.assertNotEqual(refs["RET_A"], refs["RET_B"])
+        store = cas.Store(os.path.join(root, "store-retention"))
+        item = store.read_block(refs["RET_PIN_ITEM"])
+        self.assertEqual(item["value"][1]["name"], "pin_b.txt")
+        again = store.read_block(refs["RET_RELEASE"])
+        self.assertEqual((again["verb"], again["attribute"], again["value"]), ("set", "retain", "lineage"))
+        self.assertEqual(refs["RET_RESTORE"], again["supersedes"][0].text)
+
+    def test_age_backdates_every_block(self):
+        root = build_retention_root(self)
+        gate_assert.retention_age(gate_assert.Gate(root), 15)
+        store = cas.Store(os.path.join(root, "store-retention"))
+        import time
+        for _cid, path in store.blocks():
+            self.assertLess(os.stat(path).st_mtime, time.time() - 14 * 86400)
+
+
 if __name__ == "__main__":
     unittest.main()

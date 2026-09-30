@@ -40,9 +40,12 @@ rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/store-o
        "${GATE_ROOT:?}/logs" "${GATE_ROOT:?}"/blocks-after-*.txt \
        "${GATE_ROOT:?}/browser" "${GATE_ROOT:?}/snapshot-after-fail.sqlite" \
        "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection" "${GATE_ROOT:?}/selection-typed" \
-       "${GATE_ROOT:?}/seeding.json" "${GATE_ROOT:?}/snapshot-aside.sqlite"
+       "${GATE_ROOT:?}/seeding.json" "${GATE_ROOT:?}/snapshot-aside.sqlite" \
+       "${GATE_ROOT:?}/store-retention" "${GATE_ROOT:?}/retention" "${GATE_ROOT:?}/retention-repo" \
+       "${GATE_ROOT:?}/cache-retention"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
-         "$GATE_ROOT/store-outputs" "$GATE_ROOT/logs"
+         "$GATE_ROOT/store-outputs" "$GATE_ROOT/logs" \
+         "$GATE_ROOT/store-retention" "$GATE_ROOT/retention" "$GATE_ROOT/retention-repo"
 
 # --------------------------------------------------------------------------
 # Preconditions
@@ -212,6 +215,70 @@ for p in outputs outputs-badindex; do
 done
 GATE_STORE="$GATE_ROOT/store-outputs" run "$GATE_ROOT/outputs" outputs -c "$REPO/gate/outputs/overlay.config"
 GATE_STORE="$GATE_ROOT/store-outputs" run "$GATE_ROOT/outputs-badindex" outputs-badindex -c "$REPO/gate/outputs/overlay.config"
+
+# --------------------------------------------------------------------------
+# Assertion 9 (milestone 6): release, pin, sweep, restore, delete past the deadline
+# --------------------------------------------------------------------------
+
+RET="$GATE_ROOT/retention"; rm -rf "$RET"; mkdir -p "$RET" "$GATE_ROOT/logs/retention"
+cp "$REPO/gate/retention/main.nf" "$REPO/gate/retention/nextflow.config" "$RET/"
+GATE_STORE="$GATE_ROOT/store-retention" run "$RET" retention-b --tag b -c "$REPO/gate/retention/overlay.config"
+GATE_STORE="$GATE_ROOT/store-retention" run "$RET" retention-a --tag a -c "$REPO/gate/retention/overlay.config"
+
+ret_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$GATE_ROOT/retention-repo")"
+verb() {   # <step name> [-c extra.config] <verb and args...>: never aborts; exit code in logs/retention/<step>.exit
+    local step="$1"; shift
+    local extra=()
+    if [[ "${1:-}" == "-c" ]]; then extra=(-c "$2"); shift 2; fi
+    local log="$GATE_ROOT/logs/retention/$step" status=0
+    ( cd "$RET" && unset NXF_OFFLINE && export GATE_STORE="$GATE_ROOT/store-retention" \
+        NXF_PLUGINS_TEST_REPOSITORY="file://$ret_json" XDG_CACHE_HOME="$GATE_ROOT/cache-retention" \
+      && "$NEXTFLOW" -q -c "$REPO/gate/gate.config" -c "$REPO/gate/retention/overlay.config" "${extra[@]+"${extra[@]}"}" \
+           plugin "nf-blocks:$1" "${@:2}" ) > "$log.out" 2> "$log.err" || status=$?
+    echo "$status" > "$log.exit"
+    echo "    nf-blocks:$1 ($step) exit $status"
+}
+# A failing helper never aborts the Gate: assertion 9 then fails on the checkpoint it lacks.
+checkpoint() { python3 "$REPO/gate/assert.py" "$GATE_ROOT" --retention-checkpoint "$1" || echo "    checkpoint $1 failed"; }
+claim() {   # <step name> <subject> <verb> <attribute|null> <value json|null> <supersedes cid|->
+    local sup='[]'; [[ "$6" != "-" ]] && sup="[{\"/\":\"$6\"}]"
+    local attr='null'; [[ "$4" != "null" ]] && attr="\"$4\""
+    printf '{"kind":"Claim","subject":{"/":"%s"},"verb":"%s","attribute":%s,"value":%s,"supersedes":%s,"timestamp":"%s"}\n' \
+        "$2" "$3" "$attr" "$5" "$sup" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$GATE_ROOT/logs/retention/$1.request"
+    verb "$1" put "$GATE_ROOT/logs/retention/$1.request"
+}
+refs() { eval "$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --retention-refs)"; }
+age() { python3 "$REPO/gate/assert.py" "$GATE_ROOT" --retention-age "$1" || echo "    backdating failed"; }
+
+checkpoint after-runs
+verb dry-1 sweep --format json
+checkpoint after-dry-1
+verb prune-dry prune --keep-last 1
+verb prune prune --keep-last 1 --apply true
+refs
+claim pin "$RET_PIN_ITEM" add pin '"figure 3"' -
+# A fresh registration refuses --apply; once stale (11 minutes by its mtime) it is ignored and deleted.
+mkdir -p "$GATE_ROOT/store-retention/live"
+printf '{"session":"gate-fake","run_name":"gate_fake_run","pipeline":"x","started_at":"x"}' > "$GATE_ROOT/store-retention/live/gate-fake"
+verb live-refused sweep --apply true
+touch -t "$(date -v-11M +%Y%m%d%H%M.%S 2> /dev/null || date -d '-11 minutes' +%Y%m%d%H%M.%S)" "$GATE_ROOT/store-retention/live/gate-fake"
+age 15
+checkpoint before-sweep
+verb sweep-1 sweep --apply true --format json
+checkpoint after-sweep-1
+verb untrash untrash "$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --retention-untrash-pick)"
+checkpoint after-untrash
+refs
+claim restore "$RET_B" del retain null "$RET_RELEASE"
+verb sweep-2 sweep --apply true --format json
+checkpoint after-sweep-2
+refs
+claim release-again "$RET_B" set retain '"lineage"' "$RET_RESTORE"
+age 15
+verb sweep-3 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+checkpoint after-sweep-3
+verb sweep-4 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+checkpoint after-sweep-4
 
 # --------------------------------------------------------------------------
 # The consumer, reading back four ways
