@@ -82,3 +82,14 @@ test('a schema-2 manifest has no executable entry; schema 1 may (ticket 15 adden
   assert.equal((await fetcher.get(cids[1])).value.schema, 1)
   await assert.rejects(fetcher.get(cids[2]), e => e.code === 'schema_invalid')
 })
+
+test('urlFor is the URL load fetches: the member base, not the page (final review I3)', async () => {
+  const { blocks, runs } = await buildMember()
+  const urls = []
+  const inner = blockFetch(blocks)
+  const fetcher = new BlockFetcher('http://h/m/lab/', { fetchFn: async (url) => { urls.push(String(url)); return inner(url) } })
+  const cid = runs.R1.completion
+  assert.equal(fetcher.urlFor(cid), `http://h/m/lab/blocks/${cid.slice(-2)}/${cid}`)
+  await fetcher.get(cid)
+  assert.deepEqual(urls, [fetcher.urlFor(cid)])
+})

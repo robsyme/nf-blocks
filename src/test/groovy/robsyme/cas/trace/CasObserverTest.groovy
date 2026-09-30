@@ -16,7 +16,9 @@ import nextflow.processor.TaskProcessor
 import nextflow.script.ProcessConfig
 import nextflow.script.ScriptMeta
 import nextflow.script.WorkflowMetadata
+import nextflow.trace.event.FilePublishEvent
 import nextflow.trace.event.TaskEvent
+import nextflow.trace.event.WorkflowOutputEvent
 import org.slf4j.LoggerFactory
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
@@ -24,6 +26,8 @@ import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
+import robsyme.cas.core.StoreRef
+import robsyme.cas.nio.CasFileSystemProvider
 import robsyme.cas.s3.MemoryS3Ops
 import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
@@ -44,6 +48,7 @@ class CasObserverTest extends Specification {
     CasSession cas
     CasObserver observer
     Path indexFile
+    private final CasFileSystemProvider provider = new CasFileSystemProvider()
 
     private Map config(String outputDir = 'cas://lab') {
         indexFile = tempDir.resolve('index.sqlite')
@@ -155,6 +160,51 @@ class CasObserverTest extends Specification {
             stream.close()
         }
         return found
+    }
+
+    /** The {@code cas://} coordinate path for a URI, as the provider hands it to the observer. */
+    private Path coord(String uri) {
+        return provider.getPath(URI.create(uri))
+    }
+
+    /**
+     * Publishes a file the way a {@code publishDir} or a workflow output
+     * would: writes the bytes through the provider (hashing a block, writing
+     * a Pointer File and recording the publish in {@code cas}), then fires the
+     * {@link FilePublishEvent} the observer would receive. A second publish to
+     * the same coordinate this run is tolerated (the pointer already exists);
+     * either way the event fires so {@code publishedKeys} sees it.
+     */
+    private Path publish(String uri, String text) {
+        final Path target = coord(uri)
+        final Path source = Files.createTempFile(tempDir, 'publish', '.tmp')
+        Files.writeString(source, text)
+        try {
+            provider.upload(source, target)
+        }
+        catch( java.nio.file.FileAlreadyExistsException ignored ) {
+            // a second publish event for the same coordinate this run
+        }
+        observer.onFilePublish(new FilePublishEvent(null, target, null))
+        return target
+    }
+
+    /**
+     * Simulates a resumed run: the Pointer File exists from an earlier run
+     * (written straight to the coordinate tree, bypassing {@code recordPublish})
+     * so this run's {@code cas.publishes} names nothing for it.
+     */
+    private void writePointerOnly(String relPath, String text) {
+        final byte[] bytes = text.getBytes('UTF-8')
+        final Cid cid = cas.store.putStreaming(new ByteArrayInputStream(bytes))
+        final int slash = relPath.lastIndexOf('/')
+        final String name = slash < 0 ? relPath : relPath.substring(slash + 1)
+        cas.coordinates.write(relPath, new StoreRef(cid, name))
+    }
+
+    /** The newest Store Log entry of kind RUN: the RunCompletion just written. */
+    private Cid latestCompletion() {
+        return StoreLog.read(cas.store).find { it.kind == StoreLogKind.RUN }.cid
     }
 
     def 'onFlowBegin writes a RunManifest with the nextflow run hash from the session'() {
@@ -592,7 +642,7 @@ class CasObserverTest extends Specification {
         final ListAppender<ILoggingEvent> logged = capture()
         ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = Level.INFO
         Index failing = Spy(cas.openIndex()) {
-            catchUp(_, _, 'lab', _, _) >> { throw new IOException('the Store Log cannot be listed') }
+            catchUp(_, _, 'lab', _, _, _) >> { throw new IOException('the Store Log cannot be listed') }
         }
         observer = new CasObserver() {
             @Override
@@ -701,5 +751,221 @@ class CasObserverTest extends Specification {
 
         cleanup:
         dirs.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+
+    def 'a publish that joins to no workflow output counts as unjoined and is warned once'() {
+        given:
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        publish('cas://lab/legacy/A.txt', 'A\n')        // recordPublish + onFilePublish, as a publishDir would
+        publish('cas://lab/legacy/B.txt', 'B\n')
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final completion = readBlock(latestCompletion())
+        completion.anomalies.unjoined == 2L
+        warnings(console, '2 file(s) stored this run are in no workflow output') == 1
+        console.list.find { it.formattedMessage.contains('stored this run') }.formattedMessage.contains('cas://lab/legacy/A.txt')
+    }
+
+    def 'a file stored with no publish event counts as unjoined (final review C1)'() {
+        given: 'collectFile(storeDir:) uploads with no FilePublishEvent; an observer or script writes a stream'
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final Path source = Files.createTempFile(tempDir, 'collected', '.tmp')
+        Files.writeString(source, 'A\nB\n')
+        provider.upload(source, coord('cas://lab/collected/samples.txt'))
+        coord('cas://lab/pipeline_info/versions.yml').text = 'v: 1\n'
+        publish('cas://lab/legacy/A.txt', 'A\n')
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        readBlock(latestCompletion()).anomalies.unjoined == 3L
+        warnings(console, '3 file(s) stored this run are in no workflow output') == 1
+        console.list.find { it.formattedMessage.contains('stored this run') }.formattedMessage.contains('cas://lab/collected/samples.txt')
+    }
+
+    def 'a coordinate published by a workflow output is not unjoined even when publishDir also wrote it'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/aligned/A/A.bam', 'bam\n')
+        publish('cas://lab/aligned/A/A.bam', 'bam\n')   // a second publish event for the same coordinate
+        observer.onWorkflowOutput(new WorkflowOutputEvent('aligned', [[[id: 'A'], a]], null))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        readBlock(latestCompletion()).anomalies.unjoined == 0L
+    }
+
+    def 'a publish known only by its pointer file still counts as unjoined'() {
+        given: 'a resumed publishDir task: the pointer exists from an earlier run, and this run made no upload'
+        bind(config())
+        observer.onFlowCreate(session)
+        writePointerOnly('legacy/C.txt', 'C\n')            // coordinates tree holds cas://<cid>/C.txt, no recordPublish
+        observer.onFilePublish(new FilePublishEvent(null, coord('cas://lab/legacy/C.txt'), null))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        readBlock(latestCompletion()).anomalies.unjoined == 1L
+    }
+
+    def 'an output with an index is recorded with its index leaf, and the index is not unjoined'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/tuples/A/A.txt', 'A\n')
+        final Path idx = publish('cas://lab/tuples/index.json', '[]\n')
+        observer.onWorkflowOutput(new WorkflowOutputEvent('tuples', [[[id: 'A'], a]], idx))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final completion = readBlock(latestCompletion())
+        completion.anomalies.unjoined == 0L
+        final collection = readBlock((Cid) (completion.collections as List)[0])
+        (collection.index as Map).path == 'tuples/index.json'
+    }
+
+    def 'a CSV index written by appends is recorded as one leaf of its full bytes (Task 6a)'() {
+        given: 'CsvWriter.apply at Nextflow 26.04.6: a delete, then one append per piece'
+        bind(config())
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/records/A/A.txt', 'A\n')
+        final Path idx = coord('cas://lab/records/index.csv')
+        idx.delete()
+        idx << '"id","file"' << '\n'
+        idx << '"A","A.txt"' << '\n'
+        observer.onFilePublish(new FilePublishEvent(null, idx, null))
+        observer.onWorkflowOutput(new WorkflowOutputEvent('records', [[[id: 'A'], a]], idx))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final byte[] full = '"id","file"\n"A","A.txt"\n'.getBytes('UTF-8')
+        final Cid expected = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest(full))
+        final completion = readBlock(latestCompletion())
+        completion.anomalies.unjoined == 0L
+        final collection = readBlock((Cid) (completion.collections as List)[0])
+        (collection.index as Map).path == 'records/index.csv'
+        ((collection.index as Map).leaf as Map).address == expected
+        cas.store.open(expected).withStream { it.bytes } == full
+    }
+
+    def 'an appended file with no publish event is still recorded when the run completes'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+        coord('cas://lab/notes.txt') << 'one\n' << 'two\n'
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final Cid expected = Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest('one\ntwo\n'.getBytes('UTF-8')))
+        cas.publishFor('cas://lab/notes.txt').ref.cid == expected
+        cas.coordinates.read('notes.txt').get().cid == expected
+    }
+
+    def 'a file written after the run completes is stored at close (final review I2)'() {
+        given: 'an observer after nf-blocks (nf-prov) writing into outputDir at onFlowComplete'
+        bind(config())
+        observer.onFlowCreate(session)
+        observer.onFlowComplete()
+
+        when:
+        coord('cas://lab/pipeline_info/manifest.json').text = '{}\n'
+        coord('cas://lab/pipeline_info/late.log') << 'one\n' << 'two\n'
+
+        then:
+        cas.coordinates.read('pipeline_info/manifest.json').get().cid == rawCidOf('{}\n')
+        cas.coordinates.read('pipeline_info/late.log').get().cid == rawCidOf('one\ntwo\n')
+        cas.publishFor('cas://lab/pipeline_info/late.log').size == 8
+    }
+
+    private static Cid rawCidOf(String text) {
+        return Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest(text.getBytes('UTF-8')))
+    }
+
+    def 'a file still being written when the run completes is left out of the run with a warning, and stored when it closes'() {
+        given: 'a failed run whose completion races a publish thread mid-append'
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final Path a = publish('cas://lab/records/A/A.txt', 'A\n')
+        final Path idx = coord('cas://lab/records/index.csv')
+        final OutputStream open = provider.newOutputStream(idx, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+        open.write('"id"'.getBytes('UTF-8'))
+        observer.onWorkflowOutput(new WorkflowOutputEvent('records', [[[id: 'A'], a]], idx))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final completion = readBlock(latestCompletion())
+        (completion.collections as List).size() == 1
+        cas.publishFor('cas://lab/records/index.csv') == null
+        warnings(console, 'still open when the run completed') == 1
+        console.list.find { it.formattedMessage.contains('still open') }.formattedMessage.contains('cas://lab/records/index.csv')
+
+        when: 'the publish thread finishes after the join'
+        open.write(',"file"\n'.getBytes('UTF-8'))
+        open.close()
+
+        then:
+        cas.coordinates.read('records/index.csv').get().cid == rawCidOf('"id","file"\n')
+
+        cleanup:
+        open?.close()
+    }
+
+    def 'a process that declares publishDir is warned about once'() {
+        given:
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final TaskProcessor p = Stub(TaskProcessor) {
+            getName() >> 'LEGACY'
+            getConfig() >> Stub(ProcessConfig) { get('publishDir') >> [[path: 'cas://lab/legacy']] }
+        }
+
+        when:
+        observer.onProcessCreate(p)
+        observer.onProcessCreate(p)
+
+        then:
+        warnings(console, "process 'LEGACY' uses publishDir") == 1
+    }
+
+    def 'a publishDir to a local path warns but counts nothing'() {
+        given:
+        bind(config())
+        final console = capture('nextflow.cas')
+        observer.onFlowCreate(session)
+        final TaskProcessor p = Stub(TaskProcessor) {
+            getName() >> 'LOCAL'
+            getConfig() >> Stub(ProcessConfig) { get('publishDir') >> [[path: 'local_results']] }
+        }
+        observer.onProcessCreate(p)
+        observer.onFilePublish(new FilePublishEvent(null, tempDir.resolve('local_results/x.txt'), null))
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        warnings(console, "process 'LOCAL' uses publishDir") == 1
+        readBlock(latestCompletion()).anomalies.unjoined == 0L
     }
 }

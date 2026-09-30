@@ -49,6 +49,11 @@ PRODUCER_RUNS = ["cold", "again", "fail", "resumed", "elsewhere"]
 FAILING_RUN = "fail"
 FAILING_SAMPLE = "B"          # MAYBE_FAIL exits 7 for sample B under --fail
 
+# Milestone 5 (plan 2026-09-29): gate/outputs and gate/outputs-badindex, run into their
+# own store-outputs and never touched by PRODUCER_RUNS, OUTPUTS or PIPELINE_IDENTITY
+# above (assertions 14 to 16 only).
+OUTPUTS_RUNS = ["outputs", "outputs-badindex"]
+
 REGISTRY = []
 
 
@@ -173,34 +178,11 @@ class Gate(object):
     # -- runs -----------------------------------------------------------
     @property
     def runs(self):
-        """{run_name: Run}, assembled from the blocks alone."""
+        """{run_name: Run}, assembled from the blocks alone. Delegates to
+        _assemble_runs, the same run-name/RunCompletion assembly store-outputs'
+        _run_of uses, so gate.store and store-outputs can never drift apart."""
         if self._runs is None:
-            runs = {}
-            by_manifest = {}
-            seen = {}
-            for cid, block in sorted(self.of_kind("RunManifest").items()):
-                name = block.get("run_name")
-                seen.setdefault(name, []).append(cid)
-                run = runs.setdefault(name, Run(name))
-                run.manifest_cid, run.manifest = cid, block
-                by_manifest[cid] = run
-            collisions = {n: c for n, c in seen.items() if len(c) > 1}
-            if collisions:
-                raise cas.GateError(
-                    "run_name is not unique in %s: %s. A run name identifies one "
-                    "run; two RunManifests under one name means the wrong run is "
-                    "being asserted about."
-                    % (self.store.root,
-                       "; ".join("%r has %d manifests (%s)"
-                                 % (n, len(c), ", ".join(x[:16] + "..." for x in c))
-                                 for n, c in sorted(collisions.items()))))
-            for cid, block in sorted(self.of_kind("RunCompletion").items()):
-                link = block.get("run")
-                run = by_manifest.get(link.text) if isinstance(link, cas.Cid) else None
-                if run is None:
-                    run = runs.setdefault("<orphan:%s>" % cid[:12], Run(None))
-                run.completion_cid, run.completion = cid, block
-            self._runs = runs
+            self._runs = _assemble_runs(self.blocks, self.store.root)
         return self._runs
 
     def run(self, name):
@@ -385,7 +367,7 @@ def assert_blocks_sound(gate):
 def assert_runs_exited(gate):
     problems = []
     notes = []
-    for name in PRODUCER_RUNS + ["consumer"]:
+    for name in PRODUCER_RUNS + OUTPUTS_RUNS + ["consumer"]:
         code = gate.exit_code(name)
         if code is None:
             problems.append("no exit status recorded at %s/logs/%s/exit"
@@ -409,7 +391,7 @@ def assert_runs_exited(gate):
                             % (name, code, gate.root, name))
     if problems:
         return FAIL, "; ".join(problems)
-    expected_zero = [n for n in PRODUCER_RUNS + ["consumer"] if n != FAILING_RUN]
+    expected_zero = [n for n in PRODUCER_RUNS + OUTPUTS_RUNS + ["consumer"] if n != FAILING_RUN]
     return PASS, ("%s exited 0, %s exited non-zero as intended%s"
                   % (", ".join(expected_zero), FAILING_RUN,
                      ". " + "; ".join(notes) if notes else ""))
@@ -1639,6 +1621,344 @@ def seeding_lock(gate):
     lab = os.path.join(gate.store.root, "index", "v3.sqlite")
     watermark = _snapshot_meta(lab).get("store_log_watermark")
     return gate.store.metadata_blocks_of_runs(_store_log_runs_through(gate.store, watermark))
+
+
+# --------------------------------------------------------------------------
+# Assertions 14 to 16: milestone 5's outputs store (plan 2026-09-29)
+#
+# gate/outputs and gate/outputs-badindex run into store-outputs, a store of
+# their own that gate.store never sees, so none of the above (Gate.blocks,
+# Gate.runs, Gate.run) resolves a run in it. outputs_store and _run_of do for
+# store-outputs what Gate.block/Gate.runs/Gate.run do for gate.store.
+# --------------------------------------------------------------------------
+
+def outputs_store(gate):
+    """cas.Store for store-outputs: the outputs and outputs-badindex runs'
+    own store, entirely separate from gate.store, so no existing assertion or
+    browser tier ever sees them."""
+    return cas.Store(os.path.join(gate.root, "store-outputs"))
+
+
+def _assemble_runs(blocks, store_root):
+    """{run_name: Run}, linking each RunCompletion to its RunManifest by
+    run_name. Shared by Gate.runs (over gate.blocks) and store-outputs' own
+    _run_of (over any {cid: block} dict), so the two can never drift apart."""
+    runs = {}
+    by_manifest = {}
+    seen = {}
+    for cid, block in sorted(blocks.items()):
+        if not isinstance(block, dict) or block.get("kind") != "RunManifest":
+            continue
+        name = block.get("run_name")
+        seen.setdefault(name, []).append(cid)
+        run = runs.setdefault(name, Run(name))
+        run.manifest_cid, run.manifest = cid, block
+        by_manifest[cid] = run
+    collisions = {n: c for n, c in seen.items() if len(c) > 1}
+    if collisions:
+        raise cas.GateError(
+            "run_name is not unique in %s: %s. A run name identifies one "
+            "run; two RunManifests under one name means the wrong run is "
+            "being asserted about."
+            % (store_root, "; ".join("%r has %d manifests (%s)"
+                                     % (n, len(c), ", ".join(x[:16] + "..." for x in c))
+                                     for n, c in sorted(collisions.items()))))
+    for cid, block in sorted(blocks.items()):
+        if not isinstance(block, dict) or block.get("kind") != "RunCompletion":
+            continue
+        link = block.get("run")
+        run = by_manifest.get(link.text) if isinstance(link, cas.Cid) else None
+        if run is None:
+            run = runs.setdefault("<orphan:%s>" % cid[:12], Run(None))
+        run.completion_cid, run.completion = cid, block
+    return runs
+
+
+class _BlockLookup(object):
+    """Duck-types Gate's block(cid) over a plain {cid: block} dict, so
+    Run.collections/items (which call gate.block(cid)) work against any
+    store's blocks, not only gate.store's."""
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+
+    def block(self, cid):
+        return self._blocks.get(cid)
+
+
+def _run_of(store, name):
+    """(Run, block-lookup) for the one run named `name` in `store`. What
+    Gate.run does for gate.store, generalised to any store: pass the returned
+    lookup to run.collections(...)/run.items(...) in place of a Gate."""
+    blocks = {}
+    for cid, _path in store.blocks("dagcbor"):
+        blocks[cid] = store.read_block(cid)
+    runs = _assemble_runs(blocks, store.root)
+    run = runs.get(name)
+    if run is None:
+        raise cas.GateError(
+            "no run named %r in %s (found: %s)"
+            % (name, store.root, ", ".join(sorted(runs)) or "no RunManifest blocks at all"))
+    return run, _BlockLookup(blocks)
+
+
+def _coords_raw_cid(store, rel_path):
+    """The store's own coords/<rel_path> pointer, parsed to a raw block cid,
+    or None if there is no such coordinate. Raises if the pointer text is not
+    a Store URI naming a CID."""
+    pointer = store.coords_pointer(rel_path)
+    if pointer is None:
+        return None
+    match = re.match(r"^cas://([^/]+)", pointer)
+    if not match or not cas.is_cid(match.group(1)):
+        raise cas.GateError("coords/%s does not hold a Store URI: %r" % (rel_path, pointer))
+    return match.group(1)
+
+
+# The warning texts CasObserver.groovy logs on the `nextflow.cas` logger
+# (Task 3): once per publishDir process with no workflow output, once per run
+# naming the unjoined publishes it made. Nextflow reports a top-level
+# process's simple name, so LEGACY here (not a fully-qualified name).
+LEGACY_PUBLISHDIR_WARNING = (
+    "nf-blocks: process 'LEGACY' uses publishDir; the files it publishes are "
+    "stored but no run records them. Declare them as workflow outputs "
+    "(output { }) to keep their lineage")
+LEGACY_UNJOINED_WARNING = (
+    "nf-blocks: 3 file(s) stored this run are in no workflow output, so no run "
+    "records them: ")
+# The files run "outputs" stores that no workflow output claims: LEGACY's two
+# publishDir files (a publish event each) and the collectFile(storeDir:) file
+# (no publish event at all, final review C1).
+OUTPUTS_UNJOINED = ("collected/samples.txt", "legacy/A.legacy", "legacy/B.legacy")
+
+
+@assertion(14, "workflow outputs with an index join, and each index file is linked by address")
+def assert_fourteen(gate):
+    """Tickets 26 answers 1, 2: both outputs join with their Meta Maps, and
+    each collection's index leaf is the raw CID of the bytes at its own
+    coordinate (hashed here, not trusted)."""
+    store = outputs_store(gate)
+    run, lookup = _run_of(store, "outputs")
+    if not run.completion:
+        return FAIL, "run outputs has a RunManifest but no RunCompletion block"
+    collections = run.collections(lookup)
+    problems = []
+    for name in ("tuples", "records"):
+        if name not in collections:
+            problems.append("run outputs has no %r OutputCollection" % name)
+    if problems:
+        return FAIL, "; ".join(problems)
+
+    for name in ("tuples", "records"):
+        _cid, block = collections[name]
+        items = run.items(lookup, name)
+        for item_cid, item in items:
+            meta = metadata_view(item) if item else {}
+            if "id" not in meta:
+                problems.append("%s item %s: no 'id' in its Meta Map (%r)"
+                                % (name, item_cid, meta))
+        index = block.get("index")
+        if not isinstance(index, dict):
+            problems.append("%s: OutputCollection has no index (%r)" % (name, index))
+            continue
+        leaf = index.get("leaf") or {}
+        path = index.get("path")
+        raw_cid = _coords_raw_cid(store, path) if path else None
+        if raw_cid is None:
+            problems.append("%s: no coords/%s in %s" % (name, path, store.root))
+            continue
+        data = store.read(raw_cid)                  # re-hashes; raises if it does not match
+        computed = cas.cid_raw(data)
+        leaf_address = _address_text(leaf.get("address"))
+        if computed != raw_cid or computed != leaf_address:
+            problems.append("%s: the raw CID of coords/%s's bytes is %s, the coords "
+                            "pointer names %s, the index leaf's address is %s: these "
+                            "must all agree"
+                            % (name, path, computed, raw_cid, leaf_address))
+            continue
+        if path == "tuples/index.json":
+            try:
+                rows = json.loads(data.decode("utf-8"))
+            except Exception as exc:
+                problems.append("tuples/index.json does not parse as JSON: %s" % exc)
+            else:
+                if not isinstance(rows, list) or len(rows) != 2:
+                    problems.append("tuples/index.json: expected a 2-row JSON array, "
+                                    "found %r" % (rows,))
+        elif path == "records/index.csv":
+            lines = data.decode("utf-8").splitlines()
+            if len(lines) != 3 or "id" not in lines[0]:
+                problems.append("records/index.csv: expected a header row and 2 data "
+                                "rows, found %d line(s): %r" % (len(lines), lines))
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, ("tuples and records both join with Meta Maps carrying 'id'; each "
+                  "collection's index leaf is the raw CID of the bytes at its own "
+                  "coordinate, matching the coords pointer; tuples/index.json has 2 "
+                  "rows and records/index.csv has a header and 2 rows")
+
+
+@assertion(15, "an index Nextflow fails to write is never_published while the run succeeds")
+def assert_fifteen(gate):
+    """Ticket 26 answer 4: run "outputs-badindex" exits 0 with status succeeded;
+    its tuples collection has 2 items and an index leaf with reason
+    never_published; anomalies.never_published >= 1; no coordinate
+    tuples/index.csv exists in store-outputs, or, if it does, the leaf still
+    is not addressed."""
+    store = outputs_store(gate)
+    run, lookup = _run_of(store, "outputs-badindex")
+    if not run.completion:
+        return FAIL, "run outputs-badindex has a RunManifest but no RunCompletion block"
+    problems = []
+    exit_code = gate.exit_code("outputs-badindex")
+    if exit_code != 0:
+        problems.append("run outputs-badindex exited %r, expected 0" % (exit_code,))
+    if run.completion.get("status") != "succeeded":
+        problems.append("run outputs-badindex: status is %r, expected 'succeeded'"
+                        % run.completion.get("status"))
+
+    collections = run.collections(lookup)
+    if "tuples" not in collections:
+        return FAIL, "; ".join(problems + ["run outputs-badindex has no 'tuples' "
+                                           "OutputCollection"])
+    _cid, block = collections["tuples"]
+    items = run.items(lookup, "tuples")
+    if len(items) != 2:
+        problems.append("tuples: expected 2 items, found %d" % len(items))
+
+    index = block.get("index")
+    leaf = {}
+    if not isinstance(index, dict):
+        problems.append("tuples: OutputCollection has no index (%r)" % (index,))
+    else:
+        leaf = index.get("leaf") or {}
+        if leaf.get("reason") != "never_published":
+            problems.append("tuples index leaf reason is %r, expected 'never_published'"
+                            % leaf.get("reason"))
+
+    # Checked from the store itself, not just from what the RunCompletion says:
+    # either no tuples/index.csv coordinate exists in store-outputs, or, if one
+    # does, the index leaf must still not be addressed. Reading only
+    # leaf.get("address") never touches store-outputs' coords/ tree at all, so
+    # a plugin bug that wrote a stray coordinate while still (incorrectly)
+    # marking the leaf never_published would sail through undetected.
+    coord_cid = _coords_raw_cid(store, "tuples/index.csv")
+    if leaf.get("address") is not None:
+        if coord_cid is not None:
+            problems.append("coords/tuples/index.csv exists (%s) in %s and the "
+                            "tuples index leaf is addressed (%r): a coordinate "
+                            "may exist only while the leaf still is not addressed"
+                            % (coord_cid, store.root, leaf.get("address")))
+        else:
+            problems.append("tuples index leaf has address %r though CsvWriter never "
+                            "wrote the file" % (leaf.get("address"),))
+
+    anomalies = run.completion.get("anomalies") or {}
+    never_published = anomalies.get("never_published")
+    if not isinstance(never_published, int) or never_published < 1:
+        problems.append("anomalies.never_published is %r, expected >= 1" % (never_published,))
+
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, ("run outputs-badindex exited 0 with status succeeded; its tuples "
+                  "index leaf is never_published (reason=%r, address=%r); "
+                  "anomalies.never_published=%s"
+                  % (leaf.get("reason"), leaf.get("address"), never_published))
+
+
+@assertion(16, "a publishDir process warns, and every file no output claims counts as unjoined")
+def assert_sixteen(gate):
+    """Ticket 19 answer 2: run "outputs" logs "process 'LEGACY' uses
+    publishDir" once and "3 file(s) stored this run are in no workflow
+    output" once. The expected unjoined count is computed from the store:
+    every coords/ pointer in store-outputs whose path no collection of
+    either run names (an item's publish path or an index path). That set
+    must be exactly LEGACY's two publishDir files and the collectFile
+    (storeDir:) file, which Nextflow writes with no publish event; each is
+    an addressed coordinate no item or index leaf's address names; and
+    anomalies.unjoined must equal its size."""
+    store = outputs_store(gate)
+    run, lookup = _run_of(store, "outputs")
+    if not run.completion:
+        return FAIL, "run outputs has a RunManifest but no RunCompletion block"
+    problems = []
+
+    log_text = _read(os.path.join(gate.root, "logs", "outputs", "nextflow.log"))
+    publishdir_hits = log_text.count(LEGACY_PUBLISHDIR_WARNING)
+    if publishdir_hits != 1:
+        problems.append("logs/outputs/nextflow.log has the LEGACY publishDir warning "
+                        "%d time(s), expected 1" % publishdir_hits)
+    unjoined_hits = log_text.count(LEGACY_UNJOINED_WARNING)
+    if unjoined_hits != 1:
+        problems.append("logs/outputs/nextflow.log has the unjoined-files warning %d "
+                        "time(s), expected 1" % unjoined_hits)
+
+    addressed = set()
+    claimed = set()
+    runs = [(run, lookup)]
+    try:
+        runs.append(_run_of(store, "outputs-badindex"))
+    except cas.GateError:
+        pass                                        # assertion 15 reports a missing run
+    for each, each_lookup in runs:
+        for out_name, (_cid, block) in each.collections(each_lookup).items():
+            claimed.update(_strings(block.get("paths")))
+            index = block.get("index")
+            if isinstance(index, dict):
+                if index.get("path"):
+                    claimed.add(index["path"])
+                if each is run:
+                    address = _address_text((index.get("leaf") or {}).get("address"))
+                    if address:
+                        addressed.add(address)
+            if each is not run:
+                continue
+            for _item_cid, item in each.items(each_lookup, out_name):
+                if not item:
+                    continue
+                for leaf in _leaves(item.get("value")):
+                    address = _address_text(leaf.get("address"))
+                    if address:
+                        addressed.add(address)
+
+    unclaimed = [rel for rel in store.coords_paths() if rel not in claimed]
+    if tuple(unclaimed) != OUTPUTS_UNJOINED:
+        problems.append("the coords/ pointers no collection names are %r, expected %r"
+                        % (unclaimed, list(OUTPUTS_UNJOINED)))
+    anomalies = run.completion.get("anomalies") or {}
+    if anomalies.get("unjoined") != len(unclaimed):
+        problems.append("anomalies.unjoined is %r, but %d coords/ pointer(s) no collection "
+                        "names: %s" % (anomalies.get("unjoined"), len(unclaimed),
+                                       ", ".join(unclaimed) or "none"))
+
+    for rel in OUTPUTS_UNJOINED:
+        raw_cid = _coords_raw_cid(store, rel)
+        if raw_cid is None:
+            problems.append("no coords/%s in %s" % (rel, store.root))
+            continue
+        data = store.read(raw_cid)                  # re-hashes; raises if it does not match
+        if cas.cid_raw(data) != raw_cid:
+            problems.append("coords/%s: the bytes there do not hash to %s" % (rel, raw_cid))
+        if raw_cid in addressed:
+            problems.append("coords/%s (%s) is also an item or index leaf's address; "
+                            "it should be unjoined" % (rel, raw_cid))
+
+    if problems:
+        return FAIL, "; ".join(problems)
+    return PASS, ("logs/outputs/nextflow.log warns once about LEGACY's publishDir and "
+                  "once about 3 unjoined files; anomalies.unjoined == %d, the coords/ "
+                  "pointers no collection names (%s), each addressed and named by no "
+                  "item or index leaf" % (len(unclaimed), ", ".join(unclaimed)))
+
+
+def _strings(value):
+    """Every string in a nested list (an OutputCollection's paths)."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for element in value:
+            for text in _strings(element):
+                yield text
 
 
 # --------------------------------------------------------------------------

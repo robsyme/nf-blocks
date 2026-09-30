@@ -223,4 +223,71 @@ class JoinTest extends Specification {
         result.outputs[0].collection.items == result.outputs[1].collection.items
         result.providers == ['head-node': [cid], 's3-copy': [cid]]
     }
+
+    def 'an output with an index links its Output Index File, addressed from this run\'s publish'() {
+        given:
+        final bam = rawCid(1)
+        final idx = rawCid(3)
+        final run = dagCid(9)
+        final session = sessionWith([
+            'cas://lab/aligned/A/A.bam'     : new CasSession.Publish(new StoreRef(bam, 'A.bam'), 100L, 'head-node'),
+            'cas://lab/aligned/index.json'  : new CasSession.Publish(new StoreRef(idx, 'index.json'), 40L, 'head-node'),
+        ], run)
+        final captured = [aligned: [[[id: 'A'], coord('cas://lab/aligned/A/A.bam')]]] as Map<String, Object>
+        final indexes = [aligned: coord('cas://lab/aligned/index.json')] as Map<String, Path>
+
+        when:
+        final result = Join.join(captured, indexes, session)
+
+        then:
+        final c = result.outputs[0].collection
+        c.index.path == 'aligned/index.json'
+        c.index.leaf.name == 'index.json'
+        c.index.leaf.address == idx
+        c.index.leaf.size == 40L
+        result.joinedKeys == ['cas://lab/aligned/A/A.bam', 'cas://lab/aligned/index.json'] as Set
+        result.providers['head-node'].contains(idx)
+        result.anomalies.neverPublished == 0
+    }
+
+    def 'an index file with no publish this run is never_published'() {
+        given:
+        final session = sessionWith([:], dagCid(9))
+
+        when:
+        final result = Join.join([bad: []] as Map<String, Object>, [bad: coord('cas://lab/bad/index.csv')] as Map<String, Path>, session)
+
+        then:
+        result.outputs[0].collection.index.leaf.reason == Leaf.NEVER_PUBLISHED
+        result.outputs[0].collection.index.leaf.address == null
+        result.anomalies.neverPublished == 1
+        result.joinedKeys == ['cas://lab/bad/index.csv'] as Set
+    }
+
+    def 'an output with an index and no items keeps its index leaf'() {
+        given:
+        final idx = rawCid(4)
+        final session = sessionWith(['cas://lab/none/index.json': new CasSession.Publish(new StoreRef(idx, 'index.json'), 2L, 'head-node')], dagCid(9))
+
+        when:
+        final result = Join.join([none: []] as Map<String, Object>, [none: coord('cas://lab/none/index.json')] as Map<String, Path>, session)
+
+        then:
+        result.outputs[0].collection.items.isEmpty()
+        result.outputs[0].collection.index.leaf.address == idx
+    }
+
+    def 'a value output that emitted nothing is an empty collection, not an unaddressed anomaly'() {
+        given:
+        final session = sessionWith([:], dagCid(9))
+
+        when:
+        final result = Join.join([summary: null] as Map<String, Object>, session)
+
+        then:
+        result.outputs.size() == 1
+        result.outputs[0].name == 'summary'
+        result.outputs[0].collection.items.isEmpty()
+        result.anomalies.unaddressed == 0
+    }
 }

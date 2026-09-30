@@ -11,6 +11,12 @@ export class BlockError extends Error {
   constructor(code, cid, message) { super(message); this.code = code; this.cid = cid }
 }
 
+/** Where a block is served from (DESIGN.md §15): its path resolved against the
+ * member base, never the page, since nf-blocks:explore serves each member at
+ * m/<alias>/ and ?store= points the base anywhere. BlockFetcher.urlFor, which
+ * load fetches from and views.js links a download to, is the one caller. */
+export const blockHref = (cidText, base) => new URL(blockPath(cidText), base).href
+
 const PROVIDERS = new Set(['head-node', 'fusion-node', 's3-copy'])
 
 // What the IPLD Schema cannot say (DESIGN.md §6, ticket 16): an OutputItem's
@@ -43,6 +49,11 @@ export class BlockFetcher {
     this.fetches = 0
   }
 
+  /** The URL this fetcher loads the block from. */
+  urlFor(cidText) {
+    return blockHref(cidText, this.base)
+  }
+
   get(cidText) {
     if (!this.cache.has(cidText))
       this.cache.set(cidText, this.load(cidText).catch((e) => { this.cache.delete(cidText); throw e }))
@@ -65,7 +76,7 @@ export class BlockFetcher {
     }
     let res
     try {
-      res = await this.fetchFn(new URL(blockPath(cidText), this.base).href)
+      res = await this.fetchFn(this.urlFor(cidText))
     } catch (e) {
       throw new BlockError('fetch_failed', cidText, `could not fetch block ${cidText}: ${e.message}`)
     }

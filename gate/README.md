@@ -65,6 +65,8 @@ block, not as a silently different value. Order violations raise
    | `fail` | pipeline-a | `--fail`, MAYBE_FAIL exits 7 for sample B; non-zero exit is expected and does not stop the script |
    | `resumed` | pipeline-a | `-resume cold`, with every published source file at mode 000 |
    | `elsewhere` | pipeline-b | a second launch directory into the same store |
+   | `outputs` | gate/outputs | milestone 5: `tuples`/`records` with a JSON and a CSV index, and `LEGACY`'s `publishDir`; its own store, `GATE_STORE=$GATE_ROOT/store-outputs` |
+   | `outputs-badindex` | gate/outputs-badindex | milestone 5: a CSV `index { header true }` on a tuple channel, which Nextflow fails to write while the run still exits 0; same `store-outputs` |
    | `consumer` | consumer | reads back through `lid://`, `cas://` and `fromStore` |
    | `consumer-seeded` | consumer | the consumer again with its cache deleted and the metadata blocks of the runs in `store/`'s snapshot at mode 000 (restored to 444 after) |
    | `consumer-scan` | consumer | the consumer again with its cache deleted and `store/`'s snapshot moved aside (put back after) |
@@ -79,7 +81,7 @@ block, not as a silently different value. Order violations raise
    (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
    both below. Exits non-zero when any tier fails.
 
-Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `cache/`, `logs/`,
+Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `store-outputs/`, `cache/`, `logs/`,
 `browser/`, `browser-b/`, `selection/`, `selection-typed/` and the snapshots first. Every one of them is evidence, and stale
 evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
 the zip just built on every run that builds.
@@ -303,10 +305,12 @@ plugins/                 NXF_PLUGINS_DIR for these runs only
 cache/nf-blocks/*.sqlite the indexes; the producer's is selected by pipeline
 store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
+store-outputs/           milestone 5's `outputs`/`outputs-badindex` runs, seen by nothing else
 browser/ browser-b/      browser tiers A and B: inputs, observations, logs
 selection/               tier B's selection pipeline launch directory
 selection-typed/         tier B's typed consumer launch directory
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
+outputs/ outputs-badindex/  milestone 5's launch directories
 consumer/                the second pipeline
 logs/<name>/             stdout.log stderr.log nextflow.log exit
 blocks-after-cold.txt    find blocks -type f, after `cold`
@@ -335,6 +339,9 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 7 | `fromStore` with `where: [sample: 'B']` returns exactly one item | requires exactly one file under `hashes/fromstore/` digesting to the Gate's sha256 of `B.bam` |
 | 10 | two launch directories give identical Output Item and Directory Manifest addresses, and nothing store-local leaks into a block | compares the two closures; searches every decoded `bafy…` block, whole and without exemption, for the `GATE_ROOT` path and the OS user name, naming the JSON path of any hit |
 | 13 | a cold cache seeds from the Index Snapshot: `consumer-seeded` (cache deleted, the producer's run metadata blocks at mode 000) and `consumer-scan` (snapshot removed too) stage the same bytes as the consumer; the first reads no locked block, the second prints the fallback warning; store-out's snapshot run count does not fall | reads each consumer run's own `hashes` collection in `store-out` and the sha256sum text its leaves address; the locked set (`logs/consumer-seeded/locked`) is computed by the Gate from the snapshot's `run` rows and the RunCompletions' own links, and any `could not be read` or `could not be decoded as` line in `nextflow.log` naming one of those paths fails it (a locked RunCompletion read logs the second); the snapshot run counts are `count(*)` over `run`, read-only, before (`seeding.json`) and after |
+| 14 | run `outputs`'s `tuples` and `records` collections join with their Meta Maps, and each output's `index {}` file is linked by address | reads `store-outputs` (its own store) directly; every item's Meta Map (via `metadata_view`) must carry `id`; for each collection, hashes the bytes at its `index.path` coordinate itself and requires that hash to equal both the coords pointer's CID and the index leaf's own recorded address; `tuples/index.json` must parse as a 2-row JSON array, `records/index.csv` a header row and 2 data rows |
+| 15 | run `outputs-badindex` exits 0 and is marked `succeeded` although its CSV index (`header true` on a tuple channel) was never written | requires the `tuples` collection to hold 2 items and its index leaf to carry `reason: never_published`, and `anomalies.never_published >= 1`; reads `store-outputs`'s own `coords/tuples/index.csv` (not just the leaf's recorded `address`) and requires either no such coordinate or, if one exists, the leaf still unaddressed |
+| 16 | run `outputs`'s `LEGACY` process (`publishDir`, no workflow output) warns once about the process and once about 3 unjoined files: LEGACY's 2 and the `collectFile(storeDir:)` file `collected/samples.txt`, which Nextflow stores with no publish event; `anomalies.unjoined == 3` | counts each warning text's occurrences in `logs/outputs/nextflow.log`; computes the expected count from `store-outputs` itself, as every `coords/` pointer that no collection of `outputs` or `outputs-badindex` names (an item path or an index path), requires that set to be exactly `collected/samples.txt`, `legacy/A.legacy` and `legacy/B.legacy` and `anomalies.unjoined` to equal its size; hashes each of the three from its own coords bytes and requires none to be an item or index Leaf address |
 | 8, 9, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
 **Assertion 4c is inconclusive under `mode 'copy'`, and says so.** Measured on

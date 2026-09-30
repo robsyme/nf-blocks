@@ -230,19 +230,28 @@ export class Explorer {
     return { row, completion, collections }
   }
 
-  /** One page of a collection's items, with first, last, total, next and prev as runPage. */
+  /**
+   * One page of a collection's items, with first, last, total, next and prev
+   * as runPage, and its Output Index File (Task 4, DESIGN.md §15) if the
+   * OutputCollection block carries one: `{ leaf, path } | null`. The snapshot's
+   * `collection` table has no index column, so the block is fetched even for
+   * a snapshot row; a tail row reuses the block it already decoded for items.
+   */
   async collection(cid, { limit = ITEMS_PAGE, offset = 0 } = {}) {
     const [row] = await this.db.query(SQL.collectionByCid, [cid])
     if (row) {
       const items = (await this.db.query(SQL.collectionItems, [cid, limit, offset])).map(r => r.item_cid)
       const [{ n }] = await this.db.query(SQL.collectionItemCount, [cid])
-      return { cid, output: row.output_name, completion: row.completion_cid, items, ...span({ offset, limit, shown: items.length, count: n }) }
+      const block = (await this.blocks.ofKind(cid, 'OutputCollection')).value
+      return { cid, output: row.output_name, completion: row.completion_cid, items, index: block.index ?? null,
+        ...span({ offset, limit, shown: items.length, count: n }) }
     }
     const block = (await this.blocks.ofKind(cid, 'OutputCollection')).value
     const completion = this.stale.find(s => s.completion?.collections.some(c => text(c) === cid))?.cid ?? null
     const all = block.items.filter(Boolean).map(text)
     const items = all.slice(offset, offset + limit)
-    return { cid, output: block.name, completion, items, ...span({ offset, limit, shown: items.length, count: all.length }) }
+    return { cid, output: block.name, completion, items, index: block.index ?? null,
+      ...span({ offset, limit, shown: items.length, count: all.length }) }
   }
 
   /** An item's block. `view` is read from the typed decoding, so its pairs type floats as the index does (metadata.js). */

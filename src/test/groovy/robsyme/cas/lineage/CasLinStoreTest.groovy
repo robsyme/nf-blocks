@@ -277,4 +277,47 @@ class CasLinStoreTest extends Specification {
         then:
         thrown(AbortRunException)
     }
+
+    /** A delegate that always fails a save with the given exception, installed over the fixture's store. */
+    private CasLinStore storeWithDelegateThrowing(IOException failure) {
+        store.@delegate = new DefaultLinStore() {
+            @Override
+            void save(String key, LinSerializable value) { throw failure }
+        }
+        return store
+    }
+
+    private static LinSerializable someRecord() { new TaskRun(name: 'ALIGN') }
+
+    def 'an interrupted save while the run is already failing warns instead of aborting (ticket 18)'() {
+        given: 'the finalizer thread saving a record after Nextflow has already recorded a failure'
+        final failing = Mock(Session) { getError() >> new RuntimeException('task failed'); getConfig() >> [:] }
+        Global.session = failing
+        final throwing = storeWithDelegateThrowing(
+            new IOException('Exception calling listObject', new InterruptedException('Thread was interrupted')))
+
+        when:
+        throwing.save('run-7f3a#output', someRecord())
+
+        then:
+        noExceptionThrown()
+
+        cleanup:
+        Global.session = session
+    }
+
+    def 'the same interruption on a run that is not failing still aborts'() {
+        given:
+        Global.session = Mock(Session) { getError() >> null; getConfig() >> [:] }
+        final throwing = storeWithDelegateThrowing(new IOException('boom', new InterruptedException('x')))
+
+        when:
+        throwing.save('run-7f3a#output', someRecord())
+
+        then:
+        thrown(AbortRunException)
+
+        cleanup:
+        Global.session = session
+    }
 }

@@ -55,14 +55,23 @@ class CasObserver implements TraceObserverV2 {
     /** output name -> the captured (already target-normalised) value, for the join. */
     private final Map<String, Object> capturedOutputs = new LinkedHashMap<String, Object>()
 
+    /** output name -> the Output Index File Nextflow named for it (ticket 26). */
+    private final Map<String, Path> capturedIndexes = new LinkedHashMap<String, Path>()
+
     /** join key -> the labels seen on its publish event, kept for the index layer. */
     private final ConcurrentHashMap<String, List<String>> labels = new ConcurrentHashMap<>()
+
+    /** Every cas:// coordinate a publish event named this run, for the unjoined count (ticket 19). */
+    private final Set<String> publishedKeys = ConcurrentHashMap.newKeySet()
 
     /** The missing-fromStore hint is logged once per run, however often onFlowError fires. */
     private final AtomicBoolean hinted = new AtomicBoolean(false)
 
     /** Process names already warned about an unchained afterScript (Task 9 fix round 1), so onProcessCreate warns once each. */
     private final Set<String> nodeHashWarned = ConcurrentHashMap.newKeySet()
+
+    /** Processes already warned about publishDir, so each is warned once. */
+    private final Set<String> publishDirWarned = ConcurrentHashMap.newKeySet()
 
     // --------------------------------------------------------------- lifecycle
 
@@ -115,8 +124,11 @@ class CasObserver implements TraceObserverV2 {
         if( target == null || !isCasTarget(target) )
             return
         final String key = Coordinates.key(target)
+        publishedKeys.add(key)
         if( event.labels )
             labels.put(key, event.labels)
+        // A file written by appends (a CSV Output Index File) is hashed now, once.
+        finalizeSpools { cas.finalizePending(key) }
         // Our upload() already hashed and recorded this; if neither the publish
         // nor its durable pointer file names the coordinate, provenance is lost.
         if( cas.publishFor(key) != null )
@@ -129,12 +141,36 @@ class CasObserver implements TraceObserverV2 {
     @Override
     void onWorkflowOutput(WorkflowOutputEvent event) {
         capturedOutputs.put(event.name, event.value)
+        if( event.index != null )
+            capturedIndexes.put(event.name, event.index)
     }
 
     @Override
     void onTaskCached(TaskEvent event) {
         // Skeleton: record only. Address reuse by task hash is a later task.
         log.debug("cached task ${event?.handler?.task?.hash}")
+    }
+
+    /**
+     * The publishDir warning comes first and does not depend on node hashing:
+     * a process may declare publishDir with node hashing off entirely.
+     */
+    @Override
+    void onProcessCreate(TaskProcessor process) {
+        warnPublishDir(process)
+        warnNodeHash(process)
+    }
+
+    /** Ticket 19 answer 2: lineage comes from workflow outputs only, so a publishDir process is told once. */
+    private void warnPublishDir(TaskProcessor process) {
+        final String name = process?.name
+        if( name == null )
+            return
+        final Object declared = process.config?.get('publishDir')
+        if( !declared || !publishDirWarned.add(name) )
+            return
+        ConsoleLog.LOG.warn("nf-blocks: process '${name}' uses publishDir; the files it publishes are stored but no run records them. " +
+            "Declare them as workflow outputs (output { }) to keep their lineage")
     }
 
     /**
@@ -149,8 +185,7 @@ class CasObserver implements TraceObserverV2 {
      * rather than turned into a run failure: the head node still addresses
      * that process's outputs.
      */
-    @Override
-    void onProcessCreate(TaskProcessor process) {
+    private void warnNodeHash(TaskProcessor process) {
         final Map config = session?.config
         if( config == null || !CasConfig.nodeHashEnabled(config) )
             return
@@ -265,7 +300,24 @@ class CasObserver implements TraceObserverV2 {
 
     private void writeCompletion() {
         final Cid manifest = ensureManifest()
-        final Join.Result joined = Join.join(capturedOutputs, cas)
+        // A write through the provider with no publish event is still recorded.
+        // From here on every write through the provider is stored when it closes.
+        final List<String> unclosed = (List<String>) finalizeSpools { cas.finalizeAllPending() }
+        if( unclosed )
+            ConsoleLog.LOG.warn("nf-blocks: ${unclosed.size()} file(s) written through cas:// were still open when the run completed, so this run does not record them: " +
+                "${unclosed.take(3).join(', ')}${unclosed.size() > 3 ? ', ...' : ''}")
+        final Join.Result joined = Join.join(capturedOutputs, capturedIndexes, cas)
+
+        // Every coordinate this run stored (an upload, a stream, a collectFile storeDir)
+        // or a publish event named (a resumed publish known only by its pointer).
+        final Set<String> stored = new TreeSet<String>(publishedKeys)
+        stored.addAll(cas.publishes.keySet())
+        stored.removeAll(joined.joinedKeys)
+        final List<String> unjoined = new ArrayList<String>(stored)
+        final Anomalies anomalies = (joined.anomalies ?: Anomalies.NONE).plus(Anomalies.unjoined(unjoined.size()))
+        if( !unjoined.isEmpty() )
+            ConsoleLog.LOG.warn("nf-blocks: ${unjoined.size()} file(s) stored this run are in no workflow output, so no run records them: " +
+                "${unjoined.take(3).join(', ')}${unjoined.size() > 3 ? ', ...' : ''}. Declare them as workflow outputs (output { }) to keep their lineage")
 
         final List<Cid> collections = new ArrayList<Cid>()
         final Map<String, Cid> byName = new TreeMap<String, Cid>()
@@ -289,7 +341,7 @@ class CasObserver implements TraceObserverV2 {
             possiblyIncomplete: !success,
             startedAt         : iso(meta?.start),
             finishedAt        : iso(meta?.complete),
-            anomalies         : joined.anomalies ?: Anomalies.NONE,
+            anomalies         : anomalies,
             error             : success ? null : (meta?.errorMessage ?: null),
             providers         : joined.providers,
         ]).toCbor(), 'RunCompletion')
@@ -408,6 +460,7 @@ class CasObserver implements TraceObserverV2 {
     private void appendStoreLog(Cid completion) {
         try {
             StoreLog.append(cas.store, StoreLogKind.RUN, completion, nowMillis())
+            cas.noteLogged(completion)
         }
         catch( Exception e ) {
             log.warn("the store log entry for ${completion} could not be written; it is derived: ${e.message}", e)
@@ -420,6 +473,19 @@ class CasObserver implements TraceObserverV2 {
     }
 
     // ------------------------------------------------------------- plumbing
+
+    /** Hashing a spool is a provenance write: a failure aborts the run (Rule 3). */
+    private static Object finalizeSpools(Closure body) {
+        try {
+            return body.call()
+        }
+        catch( AbortRunException e ) {
+            throw e
+        }
+        catch( Exception e ) {
+            throw new AbortRunException("Unable to record a file written through cas://: ${e.message}", e)
+        }
+    }
 
     /** Writes a provenance block; a failure here aborts the run (Rule 3). */
     private Cid putBlock(Object cbor, String kind) {

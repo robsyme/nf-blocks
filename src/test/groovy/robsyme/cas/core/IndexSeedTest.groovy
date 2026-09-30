@@ -332,4 +332,52 @@ class IndexSeedTest extends Specification {
         cleanup:
         cold?.close()
     }
+
+    def 'no snapshot warning when the only Store Log entry is the one this run wrote (ticket 18)'() {
+        given: 'a brand-new member: this run has just logged its own first entry'
+        run('r1', 'A', System.currentTimeMillis())
+        final String only = StoreLog.of(lab).read()[0].cid.toString()
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.catchUp(lab, StoreLog.of(lab), 'lab', new LocalSnapshotStorage(lab.root), tmp.resolve('t'), [only] as Set)
+
+        then:
+        console.list.findAll { it.formattedMessage.contains('no usable Index Snapshot') }.isEmpty()
+
+        cleanup:
+        cold?.close()
+    }
+
+    def 'the snapshot warning still fires when an older entry is there too (ticket 18)'() {
+        given: 'an older entry from a previous run, alongside the entry this run wrote'
+        run('r1', 'A', System.currentTimeMillis() - 3_600_000L)
+        run('r2', 'B', System.currentTimeMillis())
+        final String newest = StoreLog.of(lab).read()[0].cid.toString()
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.catchUp(lab, StoreLog.of(lab), 'lab', new LocalSnapshotStorage(lab.root), tmp.resolve('t'), [newest] as Set)
+
+        then:
+        console.list.count { it.formattedMessage.contains('no usable Index Snapshot') } == 1
+
+        cleanup:
+        cold?.close()
+    }
+
+    def 'the 5-arg catchUp still warns as before (quietFor defaults to empty)'() {
+        given:
+        run('r1', 'A', System.currentTimeMillis())
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.catchUp(lab, StoreLog.of(lab), 'lab', new LocalSnapshotStorage(lab.root), tmp.resolve('t'))
+
+        then:
+        console.list.count { it.formattedMessage.contains('no usable Index Snapshot') } == 1
+
+        cleanup:
+        cold?.close()
+    }
 }

@@ -430,6 +430,16 @@ class Index implements Closeable {
      * warning when the member's Store Log is not empty.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
+        catchUp(store, storeLog, member, snapshots, tempDir, Collections.<String> emptySet())
+    }
+
+    /**
+     * As the 5-arg {@code catchUp}, but told which Store Log entries this run
+     * itself just wrote (its own writable member's, only): those don't count
+     * as evidence a snapshot should exist, so a brand-new store's first run
+     * does not warn (ticket 18, decision from the sarek measurement).
+     */
+    void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir, Set<String> quietFor) {
         // Ticket 04 decision 6: an absent watermark alone triggers seeding.
         if( snapshots != null && meta(watermarkKey(member)) == null ) {
             Path file = null
@@ -439,12 +449,12 @@ class Index implements Closeable {
                 seedFrom(file, member)
             }
             catch( SnapshotUnusable e ) {
-                warnUnusable(storeLog, member, e.reason)
+                warnUnusable(storeLog, member, e.reason, quietFor)
             }
             catch( Exception e ) {
                 // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
                 // leaves the snapshot unreadable, and the full scan below still runs (ticket 04 decision 2).
-                warnUnusable(storeLog, member, 'unreadable')
+                warnUnusable(storeLog, member, 'unreadable', quietFor)
                 log.debug("fetching the Index Snapshot of '${member}' failed", e)
             }
             finally {
@@ -454,9 +464,14 @@ class Index implements Closeable {
         catchUp(store, storeLog, member)
     }
 
-    /** Silent decision 17: one warning, and only when the member's Store Log is not empty. */
-    private static void warnUnusable(StoreLog storeLog, String member, String reason) {
-        if( !storeLog.read().isEmpty() )
+    /**
+     * Silent decision 17: one warning, and only when the member's Store Log
+     * holds an entry beyond the ones this run itself just wrote (ticket 18):
+     * a run's own first entry is no evidence that a snapshot should already
+     * exist.
+     */
+    private static void warnUnusable(StoreLog storeLog, String member, String reason, Set<String> quietFor) {
+        if( storeLog.read().any { StoreLogEntry e -> !quietFor.contains(e.cid.toString()) } )
             CONSOLE.warn("store member '${member}' has no usable Index Snapshot (${reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.")
     }
 

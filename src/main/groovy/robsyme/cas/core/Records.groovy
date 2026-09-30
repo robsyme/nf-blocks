@@ -473,22 +473,33 @@ class DirectoryManifest {
 @ToString(includePackage = false, includeNames = true)
 class Anomalies {
 
-    static final Anomalies NONE = new Anomalies(0, 0, 0, 0)
+    static final Anomalies NONE = new Anomalies(0, 0, 0, 0, 0)
 
     final int unresolvable
     final int unaddressed
     final int declined
     final int neverPublished
+    /** Publishes into the store that joined to no workflow output item (ticket 19): publishDir's files. */
+    final int unjoined
 
     Anomalies(int unresolvable, int unaddressed, int declined, int neverPublished) {
+        this(unresolvable, unaddressed, declined, neverPublished, 0)
+    }
+
+    Anomalies(int unresolvable, int unaddressed, int declined, int neverPublished, int unjoined) {
         this.unresolvable = unresolvable
         this.unaddressed = unaddressed
         this.declined = declined
         this.neverPublished = neverPublished
+        this.unjoined = unjoined
     }
 
     static Anomalies unresolvable(int count) {
         return new Anomalies(count, 0, 0, 0)
+    }
+
+    static Anomalies unjoined(int count) {
+        return new Anomalies(0, 0, 0, 0, count)
     }
 
     Anomalies plus(Anomalies other) {
@@ -498,11 +509,12 @@ class Anomalies {
             unresolvable + other.unresolvable,
             unaddressed + other.unaddressed,
             declined + other.declined,
-            neverPublished + other.neverPublished)
+            neverPublished + other.neverPublished,
+            unjoined + other.unjoined)
     }
 
     boolean isEmpty() {
-        return unresolvable == 0 && unaddressed == 0 && declined == 0 && neverPublished == 0
+        return unresolvable == 0 && unaddressed == 0 && declined == 0 && neverPublished == 0 && unjoined == 0
     }
 
     Map<String, Object> toCbor() {
@@ -511,6 +523,7 @@ class Anomalies {
         map.put('unaddressed', (long) unaddressed)
         map.put('declined', (long) declined)
         map.put('never_published', (long) neverPublished)
+        map.put('unjoined', (long) unjoined)
         return map
     }
 
@@ -521,7 +534,8 @@ class Anomalies {
             (int) Records.number(Records.require(counts, 'unresolvable'), 'unresolvable'),
             (int) Records.number(Records.require(counts, 'unaddressed'), 'unaddressed'),
             (int) Records.number(Records.require(counts, 'declined'), 'declined'),
-            (int) Records.number(Records.require(counts, 'never_published'), 'never_published'))
+            (int) Records.number(Records.require(counts, 'never_published'), 'never_published'),
+            counts.containsKey('unjoined') ? (int) Records.number(counts.get('unjoined'), 'unjoined') : 0)
     }
 }
 
@@ -726,8 +740,13 @@ class OutputCollection {
     final String name
     final List<Cid> items
     final List<List<String>> paths
+    final OutputIndex index
 
     OutputCollection(String assertedBy, Cid run, String name, List<Cid> items, List<List<String>> paths) {
+        this(assertedBy, run, name, items, paths, null)
+    }
+
+    OutputCollection(String assertedBy, Cid run, String name, List<Cid> items, List<List<String>> paths, OutputIndex index) {
         if( !assertedBy )
             throw new IllegalArgumentException('an output collection needs an asserted_by')
         if( run == null )
@@ -745,6 +764,7 @@ class OutputCollection {
         this.name = name
         this.items = Collections.unmodifiableList(order.collect { Integer i -> givenItems.get(i) })
         this.paths = Collections.unmodifiableList(order.collect { Integer i -> givenPaths.get(i) })
+        this.index = index
     }
 
     /**
@@ -778,6 +798,8 @@ class OutputCollection {
         map.put('name', name)
         map.put('items', new ArrayList<Object>(items))
         map.put('paths', paths.collect { List<String> p -> p == null ? null : new ArrayList<Object>(p) })
+        if( index != null )
+            map.put('index', index.toCbor())
         return map
     }
 
@@ -790,7 +812,45 @@ class OutputCollection {
             Records.cid(Records.require(block, 'run'), 'run'),
             Records.string(Records.require(block, 'name'), 'name'),
             items.collect { Object c -> Records.cid(c, 'items') },
-            paths.collect { Object p -> p == null ? null : (List<String>) ((List) p).collect { Object s -> Records.string(s, 'paths') } })
+            paths.collect { Object p -> p == null ? null : (List<String>) ((List) p).collect { Object s -> Records.string(s, 'paths') } },
+            block.containsKey('index') ? OutputIndex.fromCbor((Map) block.get('index')) : null)
+    }
+}
+
+/**
+ * A workflow output's Output Index File (glossary; ticket 26): the file Nextflow
+ * writes for an output that declares `index {}`. Linked from its collection so it
+ * is in the closure; its content names Publish Coordinates, so it is a view, never
+ * provenance. The leaf is addressed only from a publish made in the same run.
+ */
+@CompileStatic
+@EqualsAndHashCode
+@ToString(includePackage = false, includeNames = true)
+class OutputIndex {
+    final Leaf leaf
+    /** The index file's publish path, relative to outputDir, '/'-joined. */
+    final String path
+
+    OutputIndex(Leaf leaf, String path) {
+        if( leaf == null )
+            throw new IllegalArgumentException('an output index needs its leaf')
+        if( !path )
+            throw new IllegalArgumentException('an output index needs its publish path')
+        this.leaf = leaf
+        this.path = path
+    }
+
+    Map<String, Object> toCbor() {
+        final Map<String, Object> map = new LinkedHashMap<String, Object>()
+        map.put('leaf', leaf.toCbor())
+        map.put('path', path)
+        return map
+    }
+
+    static OutputIndex fromCbor(Map map) {
+        return new OutputIndex(
+            Leaf.fromCbor((Map) Records.require(map, 'leaf')),
+            Records.string(Records.require(map, 'path'), 'path'))
     }
 }
 

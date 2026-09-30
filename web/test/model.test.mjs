@@ -4,7 +4,7 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { readFileSync } from 'node:fs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
-import { blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
 import { Float } from '../src/typed.js'
 import { attrRows } from '../src/metadata.js'
 
@@ -117,18 +117,26 @@ test('past 20 stale runs the notice is on', async () => {
   assert.equal(explorer.notice, true)
 })
 
+// A real, fetchable OutputCollection block for the big snapshot's one collection
+// (Task 4: Explorer.collection now reads the block even for a snapshot row, to
+// answer `index`), addressed at its own hash rather than a placeholder string.
+const bigColl = block({ kind: 'OutputCollection', schema: 1, asserted_by: 'test', run: rawCid('big-run-manifest'),
+  name: 'aligned', items: [], paths: [] })
+const bigCollCid = bigColl.cid.toString()
+
 /** A snapshot with 120 runs of `big` and one collection of 1200 items, and no tail. */
+
 async function openBig() {
   const sqlite3 = await loadSqlite()
   const bytes = makeDb(sqlite3, [readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'),
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
      INSERT INTO run (completion_cid, pipeline, run_name, status, possibly_incomplete, finished_at)
      SELECT printf('run%03d', i), 'big', printf('R%03d', i), 'succeeded', 0, printf('2026-09-01T%02d:%02d:00.000Z', i / 60, i % 60) FROM n`,
-    "INSERT INTO collection(collection_cid, kind, completion_cid, output_name) VALUES ('coll', 'output', 'run001', 'aligned')",
+    `INSERT INTO collection(collection_cid, kind, completion_cid, output_name) VALUES ('${bigCollCid}', 'output', 'run001', 'aligned')`,
     `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
-     INSERT INTO collection_item(collection_cid, item_cid) SELECT 'coll', printf('item%04d', i) FROM n`])
+     INSERT INTO collection_item(collection_cid, item_cid) SELECT '${bigCollCid}', printf('item%04d', i) FROM n`])
   return Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(bytes),
-    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: async () => new Response('', { status: 404 }) }),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(new Map([[bigCollCid, bigColl.bytes]])) }),
     listFn: async () => ({ names: [], readable: true }) })
 }
 
@@ -152,10 +160,10 @@ test('the tail\'s runs are on the first page and counted in its span and the tot
 
 test('a collection\'s items come a page at a time, with its item count', async () => {
   const explorer = await openBig()
-  const first = await explorer.collection('coll')
+  const first = await explorer.collection(bigCollCid)
   assert.equal(first.items.length, 500)
   assert.deepEqual([first.first, first.last, first.total, first.next, first.prev], [1, 500, 1200, 500, null])
-  const last = await explorer.collection('coll', { offset: 1000 })
+  const last = await explorer.collection(bigCollCid, { offset: 1000 })
   assert.equal(last.items[0], 'item1001')
   assert.deepEqual([last.first, last.last, last.total, last.next, last.prev], [1001, 1200, 1200, null, 500])
 })
@@ -203,7 +211,7 @@ test('runLabel names a collection by its run and output, from the snapshot or th
 
 test('allItems lists every item of a collection past the page size without fetching an OutputItem (decision 12)', async () => {
   const explorer = await openBig()
-  const all = await explorer.allItems('coll')
+  const all = await explorer.allItems(bigCollCid)
   assert.equal(all.length, 1200)
   assert.deepEqual([all[0], all[1199]], ['item0001', 'item1200'])
   assert.equal(explorer.blocks.fetches, 0)

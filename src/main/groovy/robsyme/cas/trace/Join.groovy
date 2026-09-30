@@ -10,6 +10,7 @@ import robsyme.cas.core.Coordinates
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputCollection
+import robsyme.cas.core.OutputIndex
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Providers
 import robsyme.cas.core.Records
@@ -24,6 +25,11 @@ import robsyme.cas.core.Records
  * {@code cas://} coordinate {@link Path}s), and it reads addresses out of the
  * session's {@code publishes} map. It stores nothing; the observer writes the
  * blocks whose addresses this computes.
+ *
+ * An {@code index {}} block does not null the value at 26.04.6
+ * ({@code PublishOp.groovy:219-229}); a null value is a value channel that
+ * emitted nothing, and its output becomes an empty collection rather than an
+ * {@code unaddressed} anomaly (ticket 26).
  */
 @CompileStatic
 class Join {
@@ -49,11 +55,14 @@ class Join {
         final Anomalies anomalies
         /** Provider name to every Leaf address the run published under it (DESIGN.md §6, ticket 16, final review I5). */
         final Map<String, List<Cid>> providers
+        /** The join keys of every Leaf this join built, addressed or not, and of every index file (ticket 26). */
+        final Set<String> joinedKeys
 
-        Result(List<JoinedOutput> outputs, Anomalies anomalies, Map<String, List<Cid>> providers) {
+        Result(List<JoinedOutput> outputs, Anomalies anomalies, Map<String, List<Cid>> providers, Set<String> joinedKeys) {
             this.outputs = outputs
             this.anomalies = anomalies
             this.providers = providers
+            this.joinedKeys = Collections.unmodifiableSet(joinedKeys)
         }
     }
 
@@ -72,11 +81,24 @@ class Join {
     /**
      * @param captured output name -> the normalised published value; a channel
      *                 output's value is a collection of items, a value output's
-     *                 value is the single item.
+     *                 value is the single item. A null value is a value channel
+     *                 that emitted nothing, and joins to an empty collection.
      * @param session  the run's shared state: {@code publishFor}, {@code uploadAnomaliesFor},
      *                 {@code assertedBy} and the RunManifest address.
      */
     static Result join(Map<String, Object> captured, CasSession session) {
+        return join(captured, Collections.<String, Path> emptyMap(), session)
+    }
+
+    /**
+     * @param captured output name -> the normalised published value (see the
+     *                 2-arg {@link #join}).
+     * @param indexes  output name -> its Output Index File's {@code cas://}
+     *                 coordinate {@link Path}, for an output that declares
+     *                 {@code index {}} (glossary; ticket 26).
+     * @param session  the run's shared state, as the 2-arg {@link #join}.
+     */
+    static Result join(Map<String, Object> captured, Map<String, Path> indexes, CasSession session) {
         final Cid run = session.getRunManifest()
         if( run == null )
             throw new IllegalStateException('the run manifest must be written before the outputs are joined')
@@ -84,35 +106,34 @@ class Join {
         final Counters counters = new Counters()
         final List<JoinedOutput> outputs = new ArrayList<JoinedOutput>()
         final Map<String, TreeMap<String, Cid>> byProvider = new TreeMap<String, TreeMap<String, Cid>>()
+        final Set<String> joined = new LinkedHashSet<String>()
 
         for( Map.Entry<String, Object> entry : captured.entrySet() ) {
             final String name = entry.key
             final Object value = entry.value
-            if( value == null ) {
-                // An index {} block hid the value (DESIGN.md §11); the output's
-                // items cannot be addressed. Recorded, never guessed.
-                counters.unaddressed += 1
-                continue
-            }
-            final List<Object> rawItems = itemsOf(value)
+            // A null value is a value channel that emitted nothing (ticket 26);
+            // its output is an empty collection, not an unaddressed anomaly.
+            final List<Object> rawItems = value == null ? Collections.<Object> emptyList() : itemsOf(value)
             final List<OutputItem> items = new ArrayList<OutputItem>(rawItems.size())
             final List<Cid> itemCids = new ArrayList<Cid>(rawItems.size())
             final List<List<String>> itemPaths = new ArrayList<List<String>>(rawItems.size())
             for( Object raw : rawItems ) {
                 final List<String> leafPaths = new ArrayList<String>()
-                final Object built = build(raw, leafPaths, counters, session, byProvider)
+                final Object built = build(raw, leafPaths, counters, session, byProvider, joined)
                 final OutputItem item = OutputItem.of(built)
                 items.add(item)
                 itemCids.add(DagCbor.cidOf(DagCbor.encode(item.toCbor())))
                 itemPaths.add(leafPaths)
             }
-            final OutputCollection collection = new OutputCollection(assertedBy, run, name, itemCids, itemPaths)
+            final Path indexPath = indexes.get(name)
+            final OutputIndex index = indexPath == null ? null : indexFor(indexPath, counters, session, byProvider, joined)
+            final OutputCollection collection = new OutputCollection(assertedBy, run, name, itemCids, itemPaths, index)
             outputs.add(new JoinedOutput(name, items, collection))
         }
         final Map<String, List<Cid>> providers = byProvider.collectEntries {
             String k, TreeMap<String, Cid> v -> [(k): new ArrayList<Cid>(v.values())]
         } as Map<String, List<Cid>>
-        return new Result(outputs, counters.toAnomalies(), providers)
+        return new Result(outputs, counters.toAnomalies(), providers, joined)
     }
 
     /** A channel output is a collection of items; a value output is one item. */
@@ -129,9 +150,9 @@ class Join {
      * {@code leafPaths} in the depth-first order {@link OutputItem#leaves} uses.
      */
     private static Object build(Object raw, List<String> leafPaths, Counters counters, CasSession session,
-                                Map<String, TreeMap<String, Cid>> byProvider) {
+                                Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
         if( raw instanceof Path )
-            return leafFor((Path) raw, leafPaths, counters, session, byProvider)
+            return leafFor((Path) raw, leafPaths, counters, session, byProvider, joined)
         if( raw == null ) {
             leafPaths.add(null)
             counters.declined += 1
@@ -140,21 +161,22 @@ class Join {
         if( raw instanceof Map ) {
             final Map<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) raw).entrySet() )
-                out.put(String.valueOf(e.key), build(e.value, leafPaths, counters, session, byProvider))
+                out.put(String.valueOf(e.key), build(e.value, leafPaths, counters, session, byProvider, joined))
             return out
         }
         if( raw instanceof Collection ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (Collection) raw )
-                out.add(build(element, leafPaths, counters, session, byProvider))
+                out.add(build(element, leafPaths, counters, session, byProvider, joined))
             return out
         }
         return raw
     }
 
     private static Leaf leafFor(Path path, List<String> leafPaths, Counters counters, CasSession session,
-                               Map<String, TreeMap<String, Cid>> byProvider) {
+                               Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
         final String key = Coordinates.key(path)
+        joined.add(key)
         final List<String> segments = segmentsOf(key)
         final String name = segments.isEmpty() ? null : segments.last()
         final String relPath = segments.join('/')
@@ -179,6 +201,18 @@ class Join {
         // the RunCompletion past what the index reads for a big directory (final review I5).
         byProvider.computeIfAbsent(provider, { String k -> new TreeMap<String, Cid>() }).put(address.toString(), address)
         return Leaf.of(name, address, size)
+    }
+
+    /**
+     * An output's Output Index File: the {@link Leaf} of its publish, addressed
+     * only from a publish made in the same run ({@link CasSession#publishFor},
+     * never the Pointer File, ticket 26 answer 4), and its publish path.
+     */
+    private static OutputIndex indexFor(Path indexPath, Counters counters, CasSession session,
+                                        Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
+        final List<String> ignored = new ArrayList<String>()
+        final Leaf leaf = leafFor(indexPath, ignored, counters, session, byProvider, joined)
+        return new OutputIndex(leaf, segmentsOf(Coordinates.key(indexPath)).join('/'))
     }
 
     private static void fold(Counters counters, Anomalies a) {

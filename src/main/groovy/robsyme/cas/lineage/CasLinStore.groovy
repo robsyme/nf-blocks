@@ -1,5 +1,6 @@
 package robsyme.cas.lineage
 
+import java.nio.channels.ClosedByInterruptException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.stream.Stream
@@ -152,8 +153,39 @@ class CasLinStore implements LinStore {
             delegate.save(key, value)
         }
         catch( IOException e ) {
+            // Nextflow interrupts the finalizer thread saving a run's records when
+            // the run is already failing; the AWS SDK (or NIO) turns that into an
+            // IOException, and the second notification from Session.destroy saves
+            // the record again, so nothing is lost -- just warn (ticket 18).
+            if( interrupted(e) && failingSession() ) {
+                log.warn("nf-blocks: saving lineage record '${key}' was interrupted while the run was already failing; Nextflow saves its records again when the run ends")
+                return
+            }
             throw new AbortRunException("Unable to save lineage record '${key}': ${e.message}", e)
         }
+    }
+
+    /**
+     * Whether {@code t} (or the current thread) signals an interruption: our
+     * own {@link InterruptedException}, NIO's {@link ClosedByInterruptException},
+     * or the AWS SDK's {@code AbortedException} -- matched by simple class name
+     * so this package need not import the SDK.
+     */
+    private static boolean interrupted(Throwable t) {
+        if( Thread.currentThread().isInterrupted() )
+            return true
+        Throwable cause = t
+        while( cause != null ) {
+            if( cause instanceof InterruptedException || cause instanceof ClosedByInterruptException || cause.class.simpleName == 'AbortedException' )
+                return true
+            cause = cause.cause
+        }
+        return false
+    }
+
+    /** Whether the current Nextflow run has already failed. */
+    private static boolean failingSession() {
+        return (Global.session as Session)?.error != null
     }
 
     /**

@@ -6,13 +6,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { compose, copyOutcome, copyText, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
+import { collection, compose, copyOutcome, copyText, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
+import { memberWithIndexedCollection, memberWithUnjoinedRun } from './fixture.mjs'
 
 test('copyText: a via-less member copies its bare address; a via\'d one copies cas://<via>/<address>', () => {
   assert.equal(copyText('item1', '-'), 'item1')
@@ -106,6 +107,14 @@ function rowCtx(tray = new Tray(null)) {
   ctx.trayChanged = () => ctx.changed.push(tray.size)
   return ctx
 }
+
+/** Installs the fake DOM, then awaits a view call already in flight: safe because
+ * every view awaits its own model call before its first `h()`, so `document` is
+ * always installed before that happens. */
+function render(promise) { installDom(); return promise }
+
+/** A ctx for a view under test that touches no write path (Task 4's collection/run tests). */
+const ctx = () => rowCtx()
 
 test('a query result row: label, file chips, pills linking to query 3 with the pair added, the pick carrying its collection (decision 9, 12)', async () => {
   installDom()
@@ -212,4 +221,30 @@ test('a run that published nothing says so under Outputs, with no snippet toggle
   assert.equal(empty.textContent, 'This run published no outputs.')
   assert.equal(node.querySelectorAll('[data-snippet-mode]').length, 0)
   assert.equal(node.querySelectorAll('ul').length, 0)
+})
+
+test('a collection with an Output Index File offers it as a download', async () => {
+  const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.json', indexPath: 'multiqc/index.json' })
+  const page = await render(collection(ex, ids.collection, 0, ctx()))
+  const p = page.querySelector('[data-output-index]')
+  assert.ok(p, 'the index paragraph is shown')
+  assert.equal(p.getAttribute('data-output-index'), ids.indexFile)
+  const a = p.querySelector('a[download]')
+  assert.equal(a.getAttribute('download'), 'index.json')
+  // The member base, not the page: under nf-blocks:explore the member is at m/<alias>/ (final review I3).
+  assert.equal(a.getAttribute('href'), `http://h/m/lab/blocks/${ids.indexFile.slice(-2)}/${ids.indexFile}`)
+  assert.match(p.textContent, /Nextflow's index/)
+})
+
+test('a collection whose index was never written says so', async () => {
+  const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.csv', indexPath: 'bad/index.csv', neverPublished: true })
+  const page = await render(collection(ex, ids.collection, 0, ctx()))
+  assert.equal(page.querySelector('[data-output-index]'), null)
+  assert.equal(page.querySelector('[data-output-index-missing]').getAttribute('data-output-index-missing'), 'bad/index.csv')
+})
+
+test('the run page counts unjoined publishes', async () => {
+  const { ex, ids } = await memberWithUnjoinedRun(2)
+  const page = await render(run(ex, ids.completion))
+  assert.match(page.textContent, /unjoined 2/)
 })

@@ -377,6 +377,297 @@ class CasFileSystemProviderTest extends Specification {
         store.has(cid)
     }
 
+    // ------------------------------------------------ appends (Task 6a spool)
+
+    private static Cid rawCidOf(String text) {
+        return Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest(text.getBytes('UTF-8')))
+    }
+
+    private Set<String> rawBlocks() {
+        return store.listBlocks().withCloseable { s -> s.filter { Cid c -> c.isRaw() }.collect { it.toString() } } as Set<String>
+    }
+
+    /** What CsvWriter.apply does (Nextflow 26.04.6, CsvWriter.groovy:38-51): a delete, then one Groovy append per piece. */
+    private static void csvStyle(Path target) {
+        target.delete()
+        target << 'a' << 'b\n'
+        target << 'c' << 'd\n'
+        target << ''
+    }
+
+    def 'a delete then five appends is one block of the whole content, finalised once'() {
+        given:
+        def target = p('cas://lab/records/index.csv')
+        def before = rawBlocks()
+
+        when:
+        csvStyle(target)
+
+        then: 'nothing is published until the spool is finalised'
+        sess().publishFor('cas://lab/records/index.csv') == null
+        rawBlocks() == before
+
+        when:
+        sess().finalizePending('cas://lab/records/index.csv')
+
+        then:
+        def cid = rawCidOf('ab\ncd\n')
+        coords.read('records/index.csv').get() == new StoreRef(cid, 'index.csv')
+        sess().publishFor('cas://lab/records/index.csv').size == 6
+        sess().publishFor('cas://lab/records/index.csv').provider == 'head-node'
+        rawBlocks() - before == [cid.toString()] as Set
+        new String(store.open(cid).withStream { it.bytes }, 'UTF-8') == 'ab\ncd\n'
+    }
+
+    def 'reading a coordinate with a pending spool finalises it first and sees every byte'() {
+        given:
+        def target = p('cas://lab/records/index.csv')
+        csvStyle(target)
+
+        expect:
+        new String(Files.readAllBytes(target), 'UTF-8') == 'ab\ncd\n'
+        sess().publishFor('cas://lab/records/index.csv').ref.cid == rawCidOf('ab\ncd\n')
+    }
+
+    def 'listing the parent of a pending coordinate finalises it, so the child is listed'() {
+        given:
+        csvStyle(p('cas://lab/records/index.csv'))
+
+        expect:
+        names(provider.newDirectoryStream(p('cas://lab/records'), null)) == ['index.csv']
+        coords.read('records/index.csv').get().cid == rawCidOf('ab\ncd\n')
+    }
+
+    def 'a write without APPEND after appends replaces the content'() {
+        given:
+        def target = p('cas://lab/records/index.csv')
+        csvStyle(target)
+
+        when:
+        target.text = 'replaced\n'
+        sess().finalizePending('cas://lab/records/index.csv')
+
+        then:
+        coords.read('records/index.csv').get().cid == rawCidOf('replaced\n')
+        sess().publishFor('cas://lab/records/index.csv').size == 9
+    }
+
+    def 'an APPEND onto a coordinate that already resolves seeds the spool with its content'() {
+        given:
+        provider.upload(sourceFile('work/old.txt', 'old\n'), p('cas://lab/log/run.txt'))
+
+        when:
+        p('cas://lab/log/run.txt') << 'new\n'
+        sess().finalizePending('cas://lab/log/run.txt')
+
+        then:
+        coords.read('log/run.txt').get().cid == rawCidOf('old\nnew\n')
+        sess().publishFor('cas://lab/log/run.txt').size == 8
+    }
+
+    def 'an APPEND after a finalise seeds a new spool from the published content'() {
+        given:
+        def target = p('cas://lab/log/run.txt')
+        target << 'one\n'
+        sess().finalizePending('cas://lab/log/run.txt')
+
+        when:
+        target << 'two\n'
+        sess().finalizeAllPending()
+
+        then:
+        coords.read('log/run.txt').get().cid == rawCidOf('one\ntwo\n')
+    }
+
+    def 'delete drops a pending spool: nothing resolves and nothing is published'() {
+        given:
+        def target = p('cas://lab/records/index.csv')
+        csvStyle(target)
+        def before = rawBlocks()
+
+        when:
+        provider.delete(target)
+
+        then:
+        !sess().hasPendingSpools()
+
+        when: 'deleteIfExists also drops one (both before the join: after it an append is stored at close)'
+        target << 'x'
+        def dropped = provider.deleteIfExists(target)
+        sess().finalizeAllPending()
+
+        then:
+        dropped
+        !coords.exists('records/index.csv')
+        sess().publishFor('cas://lab/records/index.csv') == null
+        rawBlocks() == before
+    }
+
+    def 'finalizeAllPending names a spool whose stream is still open, finalising the rest, and its close stores it'() {
+        given:
+        csvStyle(p('cas://lab/records/index.csv'))
+        def open = provider.newOutputStream(p('cas://lab/records/partial.csv'), java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND)
+        open.write('half'.getBytes('UTF-8'))
+
+        when:
+        def unclosed = sess().finalizeAllPending()
+
+        then:
+        unclosed == ['cas://lab/records/partial.csv']
+        sess().publishFor('cas://lab/records/partial.csv') == null
+        !coords.exists('records/partial.csv')
+        coords.read('records/index.csv').get().cid == rawCidOf('ab\ncd\n')
+
+        when: 'the stream closes after the join'
+        open.write('+rest'.getBytes('UTF-8'))
+        open.close()
+
+        then:
+        coords.read('records/partial.csv').get().cid == rawCidOf('half+rest')
+        !sess().hasPendingSpools()
+
+        cleanup:
+        open?.close()
+    }
+
+    def 'a write without APPEND is published at close, with no finalise call (final review I2)'() {
+        given:
+        def before = rawBlocks()
+
+        when:
+        p('cas://lab/pipeline_info/report.html').text = '<html/>\n'
+
+        then:
+        def cid = rawCidOf('<html/>\n')
+        coords.read('pipeline_info/report.html').get() == new StoreRef(cid, 'report.html')
+        sess().publishFor('cas://lab/pipeline_info/report.html').size == 8
+        sess().publishFor('cas://lab/pipeline_info/report.html').provider == 'head-node'
+        !sess().hasPendingSpools()
+        rawBlocks() - before == [cid.toString()] as Set
+    }
+
+    def 'a write without APPEND drops a pending spool for the key first'() {
+        given:
+        def target = p('cas://lab/records/index.csv')
+        target << 'stale'
+
+        when:
+        target.text = 'fresh\n'
+
+        then:
+        !sess().hasPendingSpools()
+        coords.read('records/index.csv').get().cid == rawCidOf('fresh\n')
+
+        when: 'nothing left pending can overwrite it later'
+        sess().finalizeAllPending()
+
+        then:
+        coords.read('records/index.csv').get().cid == rawCidOf('fresh\n')
+    }
+
+    def 'once the join has run an APPEND close is stored at close'() {
+        given:
+        sess().finalizeAllPending()
+        def target = p('cas://lab/log/late.txt')
+
+        when:
+        target << 'one\n'
+
+        then:
+        coords.read('log/late.txt').get().cid == rawCidOf('one\n')
+        !sess().hasPendingSpools()
+
+        when: 'a second append seeds from the stored content'
+        target << 'two\n'
+
+        then:
+        coords.read('log/late.txt').get().cid == rawCidOf('one\ntwo\n')
+        sess().publishFor('cas://lab/log/late.txt').size == 8
+    }
+
+    def 'threads appending to different keys, and to the same key, give the right bytes'() {
+        given:
+        final int n = 200
+        final List<String> keys = ['cas://lab/par/a.txt', 'cas://lab/par/b.txt', 'cas://lab/par/shared.txt']
+        final Closure<Thread> appender = { String uri, String tag ->
+            Thread.start {
+                final CasPath target = p(uri)
+                for( int i = 0; i < n; i++ )
+                    target << "${tag}${i}\n".toString()
+            }
+        }
+
+        when:
+        final List<Thread> threads = [
+            appender('cas://lab/par/a.txt', 'a'), appender('cas://lab/par/b.txt', 'b'),
+            appender('cas://lab/par/shared.txt', 'x'), appender('cas://lab/par/shared.txt', 'y')]
+        threads*.join()
+        sess().finalizeAllPending()
+
+        then:
+        final String a = (0..<n).collect { "a${it}\n" }.join('')
+        final String b = (0..<n).collect { "b${it}\n" }.join('')
+        new String(store.open(coords.read('par/a.txt').get().cid).withStream { it.bytes }, 'UTF-8') == a
+        new String(store.open(coords.read('par/b.txt').get().cid).withStream { it.bytes }, 'UTF-8') == b
+        final List<String> shared = new String(store.open(coords.read('par/shared.txt').get().cid).withStream { it.bytes }, 'UTF-8').readLines()
+        shared.findAll { it.startsWith('x') } == (0..<n).collect { "x${it}".toString() }
+        shared.findAll { it.startsWith('y') } == (0..<n).collect { "y${it}".toString() }
+        shared.size() == 2 * n
+        keys.every { sess().publishFor(it) != null }
+    }
+
+    def 'finalizeAllPending leaves no spool file behind'() {
+        given:
+        final Path spools = Files.createDirectories(tmp.resolve('spools'))
+        final config = CasConfig.from(
+                [lineage: [store: [location: 'cas://lab']], cas: [stores: [lab: [location: tmp.resolve('store').toString()]], tmpDir: spools.toString()]],
+                'cas://lab')
+        CasSession.unbind(session)
+        CasSession.bind(session, new CasSession(config, store, coords))
+
+        when:
+        csvStyle(p('cas://lab/records/index.csv'))
+
+        then:
+        Files.list(spools).withCloseable { it.count() } == 1L
+
+        when:
+        sess().finalizeAllPending()
+
+        then:
+        Files.list(spools).withCloseable { it.count() } == 0L
+        coords.read('records/index.csv').get().cid == rawCidOf('ab\ncd\n')
+    }
+
+    def 'appends to a coordinate on an S3 member are one PUT of the whole content'() {
+        given:
+        Closure<robsyme.cas.s3.S3Ops> saved = CasSession.s3OpsFactory
+        robsyme.cas.s3.MemoryS3Ops bucket = new robsyme.cas.s3.MemoryS3Ops('member')
+        CasSession.s3OpsFactory = { Map c, String b -> bucket } as Closure<robsyme.cas.s3.S3Ops>
+        final config = CasConfig.from(
+                [lineage: [store: [location: 'cas://lab']],
+                 cas: [stores: [lab: [location: 's3://member/cas']], tmpDir: tmp.resolve('t').toString()]],
+                'cas://lab')
+        CasSession.unbind(session)
+        CasSession.bind(session, new CasSession(config))
+        def target = p('cas://lab/records/index.csv')
+
+        when:
+        csvStyle(target)
+        sess().finalizePending('cas://lab/records/index.csv')
+
+        then:
+        def cid = rawCidOf('ab\ncd\n')
+        def blockPuts = bucket.calls.findAll { it.startsWith('PUT cas/blocks/') || it.startsWith('MPU cas/blocks/') }
+        blockPuts == ["PUT cas/blocks/${cid.toString()[-2..-1]}/${cid}".toString()]
+        bucket.objects["cas/blocks/${cid.toString()[-2..-1]}/${cid}".toString()].text() == 'ab\ncd\n'
+        sess().coordinatesOf('lab').read('records/index.csv').get().cid == cid
+        sess().publishFor('cas://lab/records/index.csv').size == 6
+
+        cleanup:
+        CasSession.s3OpsFactory = saved
+    }
+
     // ------------------------------------------------- read-only members (final review I3)
 
     /** Rebinds the session with a second, read-only member `core` beside the writable `lab`; returns core's root. */

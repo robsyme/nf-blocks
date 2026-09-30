@@ -163,7 +163,7 @@ class RecordsTest extends Specification {
         final Anomalies two = new Anomalies(0, 3, 0, 4)
 
         expect:
-        one.toCbor() == [unresolvable: 1L, unaddressed: 0L, declined: 2L, never_published: 0L]
+        one.toCbor() == [unresolvable: 1L, unaddressed: 0L, declined: 2L, never_published: 0L, unjoined: 0L]
         Anomalies.fromCbor(roundTrip(one.toCbor())) == one
         one.plus(two) == new Anomalies(1, 3, 2, 4)
         Anomalies.NONE == new Anomalies(0, 0, 0, 0)
@@ -176,6 +176,19 @@ class RecordsTest extends Specification {
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains('never_published')
+    }
+
+    def 'anomalies carry unjoined, and an older block without it reads as zero'() {
+        given:
+        final withIt = new Anomalies(1, 2, 3, 4, 5)
+
+        expect:
+        withIt.toCbor() == [unresolvable: 1L, unaddressed: 2L, declined: 3L, never_published: 4L, unjoined: 5L]
+        Anomalies.fromCbor(withIt.toCbor()).unjoined == 5
+        Anomalies.fromCbor([unresolvable: 0L, unaddressed: 0L, declined: 0L, never_published: 0L]).unjoined == 0
+        new Anomalies(0, 0, 0, 0).unjoined == 0
+        !new Anomalies(0, 0, 0, 0, 1).isEmpty()
+        new Anomalies(0, 0, 0, 0, 1).plus(new Anomalies(0, 0, 0, 0, 2)).unjoined == 3
     }
 
     // ---- Leaf, schema 2: no provider (ticket 16) ----
@@ -418,6 +431,42 @@ class RecordsTest extends Specification {
         thrown(IllegalArgumentException)
     }
 
+    def 'an output collection without an index encodes exactly as before'() {
+        given:
+        final run = Cid.of(Cid.DAG_CBOR, new byte[32])
+        final plain = new OutputCollection('test', run, 'aligned', [], [])
+
+        expect: 'no index key at all, so existing collection addresses do not move'
+        !plain.toCbor().containsKey('index')
+        OutputCollection.fromCbor(plain.toCbor()).index == null
+    }
+
+    def 'an output collection keeps its Output Index File as a leaf and a publish path'() {
+        given:
+        final run = Cid.of(Cid.DAG_CBOR, new byte[32])
+        final file = Cid.of(Cid.RAW, ([7] * 32) as byte[])
+        final index = new OutputIndex(Leaf.of('index.json', file, 312L), 'multiqc/index.json')
+        final c = new OutputCollection('test', run, 'multiqc', [], [], index)
+
+        when:
+        final back = OutputCollection.fromCbor((Map) DagCbor.decode(DagCbor.encode(c.toCbor())))
+
+        then:
+        c.toCbor().index == [leaf: Leaf.of('index.json', file, 312L).toCbor(), path: 'multiqc/index.json']
+        back.index.path == 'multiqc/index.json'
+        back.index.leaf.address == file
+        back.index.leaf.size == 312L
+    }
+
+    def 'a never-written index is a leaf with a reason'() {
+        given:
+        final run = Cid.of(Cid.DAG_CBOR, new byte[32])
+        final index = new OutputIndex(Leaf.without('index.csv', Leaf.NEVER_PUBLISHED), 'bad/index.csv')
+
+        expect:
+        OutputCollection.fromCbor(new OutputCollection('test', run, 'bad', [], [], index).toCbor()).index.leaf.reason == Leaf.NEVER_PUBLISHED
+    }
+
     def 'a collection needs its run, its name and an asserted_by'() {
         when:
         new OutputCollection(assertedBy, run, name, [], [])
@@ -529,7 +578,7 @@ class RecordsTest extends Specification {
 
         expect:
         completion.toCbor().asserted_by == 'gate'
-        completion.toCbor().anomalies == [unresolvable: 1L, unaddressed: 0L, declined: 2L, never_published: 0L]
+        completion.toCbor().anomalies == [unresolvable: 1L, unaddressed: 0L, declined: 2L, never_published: 0L, unjoined: 0L]
         completion.toCbor().possibly_incomplete == false
         completion.toCbor().exit_status == 0L
         completion.isSuccessful()

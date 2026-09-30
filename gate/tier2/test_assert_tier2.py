@@ -146,6 +146,15 @@ FUSION_QC = {"A_qc/summary.txt": SUMMARY, "A_qc/alias.txt": b"summary.txt",
              "A_qc/.fusion.symlinks": b"alias.txt\n", "A_qc/nested/detail.txt": DETAIL}
 FUSION_QC_NODE = {"A_qc/summary.txt": SUMMARY, "A_qc/nested/detail.txt": DETAIL}   # find -type f: no link, no sidecar
 
+# Ticket 18: cas-sarek's ts run. Nextflow's PublishOp writes a workflow output's Output Index File
+# (ticket 26) from the head node straight into the output directory: it is never a task's own output, so
+# it has no file in any task work dir and lives only in the member (a block plus a coords/ pointer).
+TS_META = {"id": "sarek"}
+MQ_REPORT = b"multiqc report\n"
+MQ_DATA = b"multiqc data\n"
+MQ_PLOT = b"multiqc plot\n"
+INDEX_JSON = b'{"report": "multiqc"}\n'
+
 TASKS = {
     "t1": {"11/aaaa": {"A.bam": A_BAM}, "12/bbbb": {"B.bam": B_BAM}, "13/cccc": FLAT_QC},
     "t2": {"21/aaaa": {"A.bam": A_BAM}, "22/bbbb": {"B.bam": B_BAM}, "23/cccc": FUSION_QC},
@@ -209,18 +218,28 @@ class World(object):
         return self.block(member, {"kind": "OutputItem", "schema": 2, "value": [
             meta, {"kind": "Leaf", "name": name, "address": cas.Cid(address), "size": size, "reason": None}]})
 
-    def run(self, member, name, collections, providers, nf_hash, pipeline="cas-test-pipeline"):
+    def run(self, member, name, collections, providers, nf_hash, pipeline="cas-test-pipeline", anomalies=None):
+        """collections[output] is (items, paths) or (items, paths, index): index is an OutputCollection.index
+        value (ticket 26), {"leaf": Leaf dict, "path": string}. anomalies, when given, is a RunCompletion
+        Anomalies map (ticket 19 adds "unjoined"); omitted, as the other runs leave it, for no "anomalies" key."""
         manifest = self.block(member, {"kind": "RunManifest", "schema": 2, "run_name": name,
                                        "nf_run_hash": nf_hash, "pipeline": pipeline})
         links = []
         for output in sorted(collections):
-            items, paths = collections[output]
-            links.append(cas.Cid(self.block(member, {"kind": "OutputCollection", "schema": 2, "asserted_by": "gate",
-                                                     "run": cas.Cid(manifest), "name": output,
-                                                     "items": [cas.Cid(i) for i in items], "paths": paths})))
-        completion = self.block(member, {"kind": "RunCompletion", "schema": 2, "run": cas.Cid(manifest),
-                                         "collections": links, "status": "succeeded",
-                                         "providers": {k: [cas.Cid(c) for c in sorted(v)] for k, v in providers.items()}})
+            items, paths, *rest = collections[output]
+            index = rest[0] if rest else None
+            value = {"kind": "OutputCollection", "schema": 2, "asserted_by": "gate",
+                     "run": cas.Cid(manifest), "name": output,
+                     "items": [cas.Cid(i) for i in items], "paths": paths}
+            if index is not None:
+                value["index"] = index
+            links.append(cas.Cid(self.block(member, value)))
+        completion_value = {"kind": "RunCompletion", "schema": 2, "run": cas.Cid(manifest),
+                            "collections": links, "status": "succeeded",
+                            "providers": {k: [cas.Cid(c) for c in sorted(v)] for k, v in providers.items()}}
+        if anomalies is not None:
+            completion_value["anomalies"] = anomalies
+        completion = self.block(member, completion_value)
         self.rts -= 1
         self.s3.put(BUCKET, "%s/log/%d-run-%s" % (member, self.rts, completion), b"")
         self.cids[(member, name)] = {"completion": completion, "manifest": manifest}
@@ -276,7 +295,45 @@ class World(object):
             self.run("cas-t6", name, {"aligned": aligned}, {"s3-copy": raw}, h)
         self.coord("cas-t6", "aligned/A/A.bam", cas.cid_raw(A_BAM), "A.bam")
         self.snapshot("cas-t6", 2, "2026-09-28T12:30:00.000Z")
+        self._sarek()
         self._consumer()
+
+    # -- cas-sarek (ticket 18) --------------------------------------------
+    def _sarek(self):
+        """multiqc: 3 items (Meta Map {"id": "sarek"} plus a file Leaf) and an OutputIndex at
+        multiqc/index.json; 5 more coords/reports/ pointers no item or index leaf references, so the
+        independent count of unjoined publishes is 5."""
+        member = "cas-sarek"
+        for name, data in (("multiqc_report.html", MQ_REPORT), ("multiqc_data.json", MQ_DATA), ("plot.png", MQ_PLOT)):
+            self.block(member, data)
+            self.coord(member, "multiqc/%s" % name, cas.cid_raw(data), name)
+        self.block(member, INDEX_JSON)
+        self.coord(member, "multiqc/index.json", cas.cid_raw(INDEX_JSON), "index.json")
+        for i, content in enumerate((b"extra report %d\n" % n for n in range(1, 6)), start=1):
+            cid = self.block(member, content)
+            self.coord(member, "reports/x%d.txt" % i, cid, "x%d.txt" % i)
+        self.ts_items = [self.item(member, TS_META, name, cas.cid_raw(data), len(data))
+                         for name, data in (("multiqc_report.html", MQ_REPORT), ("multiqc_data.json", MQ_DATA),
+                                            ("plot.png", MQ_PLOT))]
+        self.ts_paths = [["multiqc/multiqc_report.html"], ["multiqc/multiqc_data.json"], ["multiqc/plot.png"]]
+        self.write_ts(unjoined=5)
+
+    @staticmethod
+    def index_of(address):
+        return {"leaf": {"kind": "Leaf", "name": "index.json", "address": cas.Cid(address),
+                        "size": len(INDEX_JSON), "reason": None},
+                "path": "multiqc/index.json"}
+
+    def write_ts(self, unjoined, index_address=None):
+        """(Re)writes cas-sarek's ts RunCompletion; a test drop_run's the old one first to replace it
+        with another anomalies.unjoined or another index leaf address."""
+        member = "cas-sarek"
+        order = sorted(range(len(self.ts_items)), key=lambda i: self.ts_items[i])
+        index = self.index_of(index_address if index_address is not None else cas.cid_raw(INDEX_JSON))
+        providers = {"s3-copy": [cas.cid_raw(d) for d in (MQ_REPORT, MQ_DATA, MQ_PLOT, INDEX_JSON)]}
+        anomalies = {"unresolvable": 0, "unaddressed": 0, "declined": 0, "never_published": 0, "unjoined": unjoined}
+        self.run(member, "ts", {"multiqc": ([self.ts_items[i] for i in order], [self.ts_paths[i] for i in order], index)},
+                 providers, "hts", pipeline="cas-sarek", anomalies=anomalies)
 
     @staticmethod
     def consumer_texts():
@@ -330,6 +387,13 @@ class World(object):
         for run in ("t1", "t2", "t2b", "t4", "t5", "t6a", "t6b"):
             self.write("logs/%s/exit" % run, "0\n")
             self.write("logs/%s/nextflow.log" % run, "INFO nextflow.cas - nf-blocks: the head node read 0 bytes\n")
+        self.write("logs/ts/exit", "0\n")
+        self.write("logs/ts/nextflow.log",
+                   "INFO nextflow.cas - nf-blocks: the head node read 0 bytes\n"
+                   "WARN nextflow.cas - nf-blocks: process 'NFCORE_SAREK:SAREK:MULTIQC:MULTIQC' uses publishDir; "
+                   "cas.enabled records it once, at completion\n"
+                   "WARN nextflow.cas - nf-blocks: 5 published file(s) are in no workflow output, recorded as "
+                   "unjoined publishes\n")
         self.write("evidence/refs-t4.env", "T2_DIR='%s'\n" % t.refs(self.ctx())["T2_DIR"])
         self.write("evidence/cas-out-after-t4.json", json.dumps({"meta_runs": 1, "count": 1}))
         self.write("evidence/if-match.json", json.dumps({"status": 412, "body": "second"}))
@@ -591,6 +655,12 @@ class AssertionTest(WorldTest):
         self.w.write("evidence/if-match.json", json.dumps({"status": 200, "body": "third"}))
         self.assertEqual(self.status(t.t6)[0], t.FAIL)
 
+    def test_ts_passes_with_3_items_an_index_leaf_and_5_unjoined_coords(self):
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.PASS)
+        self.assertIn("multiqc has 3 item(s)", message)
+        self.assertIn("anomalies.unjoined 5 matches 5", message)
+
 
 class FailPathTest(WorldTest):
     """Each check the paid run relies on, seen to FAIL on a crafted input (Task 14, final review)."""
@@ -665,6 +735,42 @@ class FailPathTest(WorldTest):
         status, message = self.status(t.t6)
         self.assertEqual(status, t.FAIL)
         self.assertIn("block %s" % cid, message)
+
+    def test_ts_fails_when_unjoined_disagrees_with_the_independent_count(self):
+        self.w.drop_run("cas-sarek", "ts")
+        self.w.write_ts(unjoined=3)
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("anomalies.unjoined is 3; 5 coords/", message)
+
+    def test_ts_fails_when_the_index_leaf_does_not_match_the_members_bytes(self):
+        # A wrong index leaf address is also, itself, an unreferenced coords/multiqc/index.json pointer
+        # (the real one): the independent count rises from 5 to 6, so unjoined is given as 6 to isolate
+        # the index-leaf FAIL from an unjoined-count one. No block was ever written for this address, so
+        # Member.verified (fetch + re-hash) fails to find it: the member's bytes don't back the claim.
+        self.w.drop_run("cas-sarek", "ts")
+        wrong = cas.cid_raw(b"not the index.json bytes\n")
+        self.w.write_ts(unjoined=6, index_address=wrong)
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("index leaf %s: NoSuchKey" % wrong, message)
+
+    def test_ts_fails_when_the_index_leaf_disagrees_with_its_coordinate(self):
+        # The RunCompletion's index leaf keeps the real, correctly-hashing address; only the standalone
+        # coords/multiqc/index.json pointer (a second, independently-written source) is rewritten to a
+        # different, also validly-stored block, isolating the pointer cross-check from a bytes mismatch.
+        other = self.w.block("cas-sarek", b"a different index.json\n")
+        self.w.coord("cas-sarek", "multiqc/index.json", other, "index.json")
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("index leaf's address is", message)
+        self.assertIn("coords/multiqc/index.json names %s" % other, message)
+
+    def test_ts_fails_when_an_item_leafs_address_disagrees_with_its_coordinate(self):
+        self.w.coord("cas-sarek", "multiqc/multiqc_report.html", cas.cid_raw(b"different bytes\n"), "multiqc_report.html")
+        status, message = self.status(t.ts)
+        self.assertEqual(status, t.FAIL)
+        self.assertIn("coords/multiqc/multiqc_report.html names", message)
 
 
 class VerdictTest(unittest.TestCase):
