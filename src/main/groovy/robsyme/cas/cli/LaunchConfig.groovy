@@ -53,7 +53,11 @@ class LaunchConfig {
      */
     static Map read(Path homeDir, Path launchDir, Map<String, String> env) {
         final Path base = launchDir.toAbsolutePath().normalize()
-        final List<Path> files = files(homeDir, base, env)
+        return read(files(homeDir.toAbsolutePath().normalize(), base, env), base, env)
+    }
+
+    /** Reads the given files (as {@link #files} lists them) over the launch directory {@code base}. */
+    static Map read(List<Path> files, Path base, Map<String, String> env) {
         final ConfigObject merged = new ConfigObject()
         if( files.isEmpty() )
             return merged

@@ -1024,7 +1024,12 @@ is built on first publish over the composite and the writable member, with
   still keeps one RunCompletion per run; a notification that arrives after
   is the loser and returns once the write is done. On 26.04.6 the second
   notification from `Session.destroy` still waits, and the stop finds
-  nothing left to do.
+  nothing left to do. A completion written from the stop may precede
+  `WorkflowMetadata.invokeOnComplete` (a shutdown callback on the aborting
+  thread), so a failed run's `error` falls back to `session.error`'s
+  message when the metadata has none, scrubbed as any `error` is
+  (`Records.scrubText`); `exit_status` and `finished_at` then have no such
+  source and stay null and the write time.
   *Amended 2026-09-29 (milestone 5, ticket 19):* `RunCompletion.anomalies`
   gains `unjoined`: `publishedKeys` minus `Join`'s `joinedKeys` (every key
   an `onFilePublish` event named that no item or `index` Leaf claimed),
@@ -1368,7 +1373,12 @@ exists, later overriding earlier, with the `standard` profile, parsed with
 never reaches the plugin, so the verb sees no store unless one of the
 default files names it (use `NXF_CONFIG_FILE` instead). `-C` does not
 reach it either. On 26.04.6 the 4-argument path and `-c`
-are unchanged.
+are unchanged. So that a verb never acts on another store unannounced, the
+3-argument path first checks the verb against `VERBS` (a usage error, exit
+2, reads no config), then prints on stderr the config files it read, or
+that it read none, and that `-c` does not reach plugin verbs on 26.08.0-edge
+and later (use `NXF_CONFIG_FILE` or `./nextflow.config`). stdout is
+untouched, so `items ... | put /dev/stdin` still pipes.
 
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2

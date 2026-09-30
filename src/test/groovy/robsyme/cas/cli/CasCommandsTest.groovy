@@ -185,4 +185,31 @@ class CasCommandsTest extends Specification {
         execWithoutLauncher('snapshot', [], tempDir.resolve('home'), launchDir) == 1
         err.toString().contains('could not read the Nextflow config')
     }
+
+    def 'without a Launcher, the verb says on stderr which config files it read, and that -c does not reach it'() {
+        given:
+        logRun()
+        final Path launchDir = tempDir.resolve('launch')
+        writeConfig(launchDir.resolve('nextflow.config'), storeConfig())
+
+        when:
+        final int status = execWithoutLauncher('snapshot', [], tempDir.resolve('home'), launchDir)
+
+        then:
+        status == 0
+        err.toString().contains(launchDir.resolve('nextflow.config').toAbsolutePath().normalize().toString())
+        err.toString().contains('-c')
+        err.toString().contains('26.08.0-edge')
+        err.toString().contains('NXF_CONFIG_FILE')
+        !out.toString().contains('-c')
+    }
+
+    def 'without a Launcher and without any config file, the verb says it read none'() {
+        when:
+        execWithoutLauncher('snapshot', [], tempDir.resolve('home'), tempDir.resolve('launch'))
+
+        then:
+        err.toString().contains('no Nextflow config file')
+        err.toString().contains('NXF_CONFIG_FILE')
+    }
 }

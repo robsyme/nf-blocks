@@ -98,6 +98,7 @@ class CasObserverTest extends Specification {
         if( session != null )
             CasSession.unbind(session)
         Global.session = null
+        CasObserver.resetPending()
     }
 
     /**
@@ -1100,5 +1101,51 @@ class CasObserverTest extends Specification {
 
         then:
         blocksOfKind('RunCompletion').isEmpty()
+    }
+
+    def 'a failed RunCompletion written from the plugin stop falls back to the session error when WorkflowMetadata has none yet'() {
+        given: 'meta() leaves errorMessage unset, as before WorkflowMetadata.invokeOnComplete has run'
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        session.getError() >> new RuntimeException('Salmon failed to produce lib_format_counts')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when:
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion')[0].get('error') == 'Salmon failed to produce lib_format_counts'
+    }
+
+    def 'the notification that loses the latch leaves nothing pending for the plugin stop'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        cas.claimCompletion()
+        cas.completionWritten()
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        !CasObserver.PENDING.contains(observer)
+    }
+
+    def 'resetPending forgets observers whose run was never notified'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+
+        when:
+        CasObserver.resetPending()
+
+        then:
+        CasObserver.PENDING.isEmpty()
     }
 }

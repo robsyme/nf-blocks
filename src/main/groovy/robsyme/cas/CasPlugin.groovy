@@ -1,6 +1,12 @@
 package robsyme.cas
 
+import java.nio.file.Path
+import java.nio.file.Paths
+
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
+import nextflow.Const
+import nextflow.SysEnv
 import nextflow.cli.Launcher
 import nextflow.cli.PluginExecAware
 import nextflow.file.FileHelper
@@ -18,6 +24,11 @@ import robsyme.cas.trace.CasObserver
 class CasPlugin extends BasePlugin implements PluginExecAware {
 
     private static CasFileSystemProvider provider
+
+    /** Where the 3-argument exec looks for config (DESIGN.md §15); test seams. */
+    @PackageScope Path homeDir = Const.APP_HOME_DIR
+    @PackageScope Path launchDir = Paths.get('.')
+    @PackageScope Map<String, String> env = SysEnv.get()
 
     CasPlugin(PluginWrapper wrapper) {
         super(wrapper)
@@ -66,6 +77,6 @@ class CasPlugin extends BasePlugin implements PluginExecAware {
      * lacks it. The config is read without `-c` (DESIGN.md §15).
      */
     int exec(String pluginId, String cmd, List<String> args) {
-        return new CasCommands().exec(pluginId, cmd, args)
+        return new CasCommands().exec(pluginId, cmd, args, homeDir, launchDir, env, System.out, System.err)
     }
 }

@@ -7,6 +7,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import groovy.util.logging.Slf4j
 import nextflow.Session
 import nextflow.config.Manifest
@@ -232,6 +233,8 @@ class CasObserver implements TraceObserverV2 {
             // The other notification is writing the RunCompletion. A failed
             // run's second notification comes from Session.destroy on main,
             // which reaches System.exit next, so wait until the write is done.
+            // Either way this observer has nothing left for the plugin stop to do.
+            PENDING.remove(this)
             if( !cas.awaitCompletionWritten(COMPLETION_WAIT_MILLIS) )
                 log.warn("the run's RunCompletion was still being written after ${COMPLETION_WAIT_MILLIS} ms; not waiting longer")
             return
@@ -276,6 +279,12 @@ class CasObserver implements TraceObserverV2 {
                 PENDING.remove(observer)
             }
         }
+    }
+
+    /** Test seam: forgets every pending observer, so one test's observers never reach another's stop. */
+    @PackageScope
+    static void resetPending() {
+        PENDING.clear()
     }
 
     private void finishOnStop() {
@@ -396,7 +405,7 @@ class CasObserver implements TraceObserverV2 {
             startedAt         : iso(meta?.start),
             finishedAt        : iso(meta?.complete),
             anomalies         : anomalies,
-            error             : success ? null : (meta?.errorMessage ?: null),
+            error             : success ? null : errorText(meta),
             providers         : joined.providers,
         ]).toCbor(), 'RunCompletion')
 
@@ -449,6 +458,20 @@ class CasObserver implements TraceObserverV2 {
         ]).toCbor(), 'RunManifest')
         cas.setRunManifest(cid)
         return cid
+    }
+
+    /**
+     * A failed run's error: WorkflowMetadata's, else the session's own. On an
+     * aborted run written from the plugin stop, WorkflowMetadata's onComplete
+     * attributes may not be set yet (it runs on the aborting thread). The
+     * RunCompletion scrubs whichever it gets (Records.scrubText).
+     */
+    private String errorText(WorkflowMetadata meta) {
+        final String fromMeta = meta?.errorMessage
+        if( fromMeta )
+            return fromMeta
+        final Throwable error = session.error
+        return error == null ? null : (error.message ?: error.class.name)
     }
 
     private String pipelineIdentity(WorkflowMetadata meta, Manifest manifest) {

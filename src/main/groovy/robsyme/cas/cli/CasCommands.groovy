@@ -63,9 +63,19 @@ class CasCommands {
 
     int exec(String pluginId, String cmd, List<String> args, Path homeDir, Path launchDir, Map<String, String> env,
              PrintStream out, PrintStream err) {
+        // A usage error needs no config, so a broken config file cannot turn it into exit 1.
+        if( !(cmd in VERBS) ) {
+            err.println(usage(cmd))
+            return 2
+        }
+        final Path base = launchDir.toAbsolutePath().normalize()
         final Map config
         try {
-            config = LaunchConfig.read(homeDir, launchDir, env)
+            final List<Path> files = LaunchConfig.files(homeDir.toAbsolutePath().normalize(), base, env)
+            // -c never reaches the plugin on this path, so a verb could act on another
+            // store than the one meant: say what was read (review round 1).
+            err.println(configNotice(cmd, files))
+            config = LaunchConfig.read(files, base, env)
         }
         catch( Exception e ) {
             log.debug("nf-blocks:${cmd}: could not read the Nextflow config", e)
@@ -73,6 +83,14 @@ class CasCommands {
             return 1
         }
         return run(cmd, args, config, out, err)
+    }
+
+    static String configNotice(String cmd, List<Path> files) {
+        final String read = files
+            ? "nf-blocks:${cmd}: read config ${files.join(', ')}"
+            : "nf-blocks:${cmd}: read no Nextflow config file (none at \$NXF_HOME/config or ./nextflow.config)"
+        return read + "\nnf-blocks:${cmd}: on Nextflow 26.08.0-edge and later, -c does not reach plugin verbs; " +
+            'name the config with NXF_CONFIG_FILE=<file> or ./nextflow.config'
     }
 
     int run(String cmd, List<String> args, Map config, PrintStream out, PrintStream err) {
