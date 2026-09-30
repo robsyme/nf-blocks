@@ -27,6 +27,12 @@ examples below do. What it supports today:
   publishes into a writable S3 member (below). Under Fusion the task node
   hashes its own outputs; between S3 buckets S3 computes the SHA-256 of a
   server-side copy, so most files never pass through the head node.
+- Milestone 5 (nf-core pipelines): nf-blocks records lineage from workflow
+  outputs (`output { }`) only. A process that publishes with `publishDir`
+  is warned about once; its files are still stored in the content-addressed
+  tree, but counted as `unjoined` rather than recorded against any run. An
+  output that declares `index { }` records its Output Index File too, linked
+  from its Output Collection. See "Pipelines that use publishDir" below.
 - nf-blocks requires the `nf-amazon` plugin (`>=3.9.2`). If you install
   nf-blocks by unpacking a local build into `NXF_PLUGINS_DIR` rather than
   from the registry, Nextflow 26.04.6 does not fetch that dependency, so
@@ -40,8 +46,9 @@ examples below do. What it supports today:
   block's address is its content and existing stores keep their blocks.
 - Warnings from the plugin go to `.nextflow.log`. These also print on the
   terminal: the missing-`fromStore` hint, the default `outputDir` line, a
-  clock skew against S3, a process that node hashing cannot reach, and a
-  member indexed without a usable Index Snapshot.
+  clock skew against S3, a process that node hashing cannot reach, a member
+  indexed without a usable Index Snapshot, a process that declares
+  `publishDir`, and a run whose published files joined no workflow output.
 
 ## Get Started
 
@@ -103,6 +110,46 @@ work directory path:
 ```json
 {"kind":"FileOutput","spec":{"path":"cas://lab/aligned/A/A.bam", ...}}
 ```
+
+## Pipelines that use publishDir
+
+Most nf-core pipelines still publish with `publishDir` rather than a
+workflow `output { }` block, and nf-blocks only builds lineage from workflow
+outputs. Point one at `cas://` and its `publishDir` files are still stored
+(they get a block and a Publish Coordinate, so they read back and stage like
+any other content), but no run's RunCompletion links them: `fromStore` and
+the explorer's per-run Output Collections do not reach them, and the
+milestone 6 sweep will treat them as unreferenced content.
+
+This is loud, not silent. A process that declares `publishDir` while
+`outputDir` is `cas://` is warned about once, on the console and in
+`.nextflow.log`:
+
+```
+nf-blocks: process 'NAME' uses publishDir; the files it publishes are stored but no run records them. Declare them as workflow outputs (output { }) to keep their lineage
+```
+
+and at the end of a run, every published file that no workflow output
+claimed is counted in `RunCompletion.anomalies.unjoined` and warned once
+with the count and the first few coordinates:
+
+```
+nf-blocks: N published file(s) are in no workflow output, so no run records them: cas://lab/..., cas://lab/..., cas://lab/..., .... Declare them as workflow outputs (output { }) to keep their lineage
+```
+
+To keep a pipeline's lineage, migrate its publishes to the [workflow output
+definition](https://www.nextflow.io/docs/latest/workflow.html#publishing-outputs).
+An output that declares `index { }` is joined like any other, and its Output
+Index File is linked from the Output Collection and offered as a download
+from the explorer's collection page.
+
+Adding nf-blocks to a pipeline you don't own, such as an nf-core one, with a
+`-c` config file needs care too: see the plugin-pins note in "Get Started"
+above. Measured against nf-core/sarek 3.10.0: only its `multiqc` output uses
+`output { }`, so a default run records lineage for `multiqc` and counts
+everything else (`reports/`, `preprocessing/`, `csv/`, `variant_calling/`,
+`pipeline_info/`, and the `multiqc/index.json` Output Index File itself) as
+`unjoined`.
 
 ## Publishing into S3
 

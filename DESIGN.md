@@ -938,9 +938,22 @@ is built on first publish over the composite and the writable member, with
 - `onFilePublish(event)`: nothing to hash (our `upload()` already did). Look
   up `Coordinates.key(event.target)` in `publishes`; if absent, resolve
   through the Pointer File; if still absent, `AbortRunException`. Attach
-  labels.
+  labels. *Amended 2026-09-29 (milestone 5, ticket 19):* every `cas://` key
+  an event names is also recorded in `publishedKeys`, whether or not a
+  workflow output ever joins it. `onFlowComplete` subtracts `Join`'s
+  `joinedKeys` from `publishedKeys` to count `unjoined`.
 - `onWorkflowOutput(event)`: store the event (name, value) for the join. If
   `value` is null because an `index {}` block exists, record the anomaly.
+  *Amended 2026-09-29 (milestone 5, ticket 26):* that premise is wrong. At
+  26.04.6, `PublishOp.onComplete` (`PublishOp.groovy:219-229`) sends the
+  published value and the index path together, so `index {}` never nulls
+  the value; a null value is instead a value channel that emitted nothing,
+  and `Join` builds an empty collection for it, not an `unaddressed`
+  anomaly. This bullet also captures `event.index`, the Output Index
+  File's `cas://` coordinate, when the output declares one; `Join` links
+  it into the `OutputCollection` as an `index` Leaf (name, address, size)
+  and its publish path, addressed only from a publish made in this run
+  (`CasSession.publishFor`), never an existing Pointer File (§6).
 - `onTaskCached(event)`: record the task hash so the task layer is not empty
   (skeleton: log only; address reuse by task hash is a later task).
 - `onFlowComplete()`: one-shot. Build every `OutputItem` from the captured
@@ -970,6 +983,12 @@ is built on first publish over the composite and the writable member, with
   an `AbortRunException` there skips `notifyError` (`Session.groovy:1125-1128`)
   for every observer, losing the user's `onError` and the hint below. A clean
   run keeps the abort.
+  *Amended 2026-09-29 (milestone 5, ticket 19):* `RunCompletion.anomalies`
+  gains `unjoined`: `publishedKeys` minus `Join`'s `joinedKeys` (every key
+  an `onFilePublish` event named that no item or `index` Leaf claimed),
+  counted and, when non-empty, warned once with the count, the first three
+  coordinates and a pointer to the output DSL. The run's status is
+  unchanged.
 - `onFlowError(event)` (2026-09-27): when `session.error`, or a cause of it,
   is a `MissingMethodException` whose method is `Channel.fromStore` (untyped),
   or `fromStore` on a receiver of type `nextflow.dataflow.ChannelNamespace` or
@@ -1002,6 +1021,12 @@ is built on first publish over the composite and the writable member, with
   when the process's effective `afterScript` does not start with
   `NodeHash.script()`; that process's outputs are still addressed on the
   head node, same as any other run without node hashing.
+  *Amended 2026-09-29 (milestone 5, ticket 19):* before that node-hash
+  check, `onProcessCreate` warns once per process name whose config
+  declares `publishDir` while `outputDir` is `cas://`, independent of
+  `cas.nodeHash`: lineage comes from workflow outputs only, so that
+  process's files are stored but referenced by no run's `RunCompletion`.
+  The warning names the process and points at the output DSL.
 
 ## 12. Index (`robsyme.cas.core.Index`)
 
@@ -2203,3 +2228,105 @@ Added during execution:
     `CopyObject` into the enforced prefix, so under it `s3-copy` falls back
     to the head-node read (§5). For Rob: keep the policy as optional
     hardening with that cost, or narrow it.
+
+## 18. Milestone 5: nf-core pipelines in the store (2026-09-29)
+
+*Status 2026-09-30: built on `feat/m5-nfcore`. `./gradlew check`: 1,081 unit
+tests and 4 `memoryBoundTest` features pass, `dependencyCheck` green,
+`webTest` 186 of 186. `make gate` on a fresh `GATE_ROOT`: lineage 15 PASS, 0
+FAIL, 6 SKIP; browser tier A 5/5; tier B 12/12 (no flake this run). Tier
+two's own unit tests, `python3 -m unittest discover -s gate/tier2`, 43 OK.
+Not yet run, for Rob (needs his SSO session): `make gate-tier2 GATE_ROOT=<the
+same root>` (T1-T6, T2b, TS) against nf-core/sarek 3.10.0 in its own member;
+then merge `feat/m5-nfcore` to `main`.*
+
+Plan `docs/plans/2026-09-29-nfcore-milestone-5.md`, from the map
+`../.scratch/post-gate/roadmap.md` ("Milestone 5"); each ticket's `## Answer`
+holds the reasoning, and the execution ledger is
+`.superpowers/sdd/2026-09-29-nfcore-milestone-5/progress.md`.
+
+1. Lineage comes from workflow outputs only: a `publishDir` publish into
+   `cas://` still gets a block and a Publish Coordinate — the provider
+   cannot tell a `publishDir` write from an output-DSL one — but no Output
+   Collection refers to it (§11).
+   [19](../.scratch/post-gate/issues/19-publishdir-publishes-in-the-closure.md).
+2. This is loud, not silent: `onProcessCreate` warns once per process whose
+   config declares `publishDir` while `outputDir` is `cas://`, and
+   `onFlowComplete` counts every publish that joined no item or index Leaf
+   in a new `RunCompletion.anomalies.unjoined`, warning once with the count,
+   the first few coordinates and a pointer to the output DSL (§11, §6).
+   [19](../.scratch/post-gate/issues/19-publishdir-publishes-in-the-closure.md).
+3. `index {}` does not null the workflow output event's value at 26.04.6:
+   `PublishOp.onComplete` (`PublishOp.groovy:219-229`) sends the published
+   value and the index path together. A null value is instead a value
+   channel that emitted nothing, and `Join` builds an empty collection for
+   it rather than an `unaddressed` anomaly (§11).
+   [26](../.scratch/post-gate/issues/26-workflow-outputs-with-an-index-block.md).
+4. `OutputCollection` gains an optional `index` field, an `OutputIndex`
+   (a `Leaf` and its publish path), addressed only from a publish this run
+   itself made, never an existing Pointer File. Never written (a CSV
+   `header: true` on a tuple channel, say), it reads `never_published`;
+   written after the `RunCompletion` (seen only on an aborted run), it stays
+   unreferenced. The explorer offers it as a download from the collection
+   page (§6, §11, §15).
+   [26](../.scratch/post-gate/issues/26-workflow-outputs-with-an-index-block.md).
+5. Found by the Gate, not the original plan (Task 6a): Nextflow's
+   `CsvWriter` (v26.04.6) writes a CSV Output Index File as one delete and
+   several appends, and `cas://`'s `newOutputStream` did not honour
+   `APPEND` — each append replaced the coordinate, so a CSV index was
+   stored as one byte. Fixed with a per-coordinate spool file, finalised
+   once, that `CasSession` holds (§8, decision 1 below).
+6. Gate tier one gains `gate/outputs` (a JSON-indexed tuple output and a CSV
+   `header: true`-indexed record output, both joining with Meta Maps, and a
+   `LEGACY` process publishing through `publishDir` alone) and
+   `gate/outputs-badindex` (a CSV index Nextflow's `CsvWriter` throws
+   writing, on a tuple channel, while the run still exits 0), each in their
+   own store; assertions 14-16 (§14, `gate/README.md`).
+   [19](../.scratch/post-gate/issues/19-publishdir-publishes-in-the-closure.md),
+   [26](../.scratch/post-gate/issues/26-workflow-outputs-with-an-index-block.md).
+7. Tier two gains nf-core/sarek 3.10.0's test profile
+   (`gate/tier2/tier2.sh`, `gate/tier2/sarek.config`, `gate/tier2/gatk4-quay.config`),
+   the longest run in the tier (about 15 min), started first and in the
+   background into its own member. Its check (TS) verifies the run
+   succeeded, `multiqc`'s items carry a Meta Map and independently
+   re-hashed, addressed Leaves, the `index` Leaf hashes independently to
+   the work bucket's `index.json` object, and `anomalies.unjoined` matches
+   the `coords/` pointers no item or index Leaf claims; the log names the
+   `publishDir` warning (`gate/tier2/README.md`).
+   [18](../.scratch/post-gate/issues/18-measure-sarek-on-the-queue.md).
+
+### Decisions made where the tickets are silent, as built
+
+1. Task 6a: `cas://`'s `newOutputStream` honours `APPEND` through a
+   per-coordinate spool file `CasSession` holds under `cas.tmpDir`, keyed by
+   the join key. Without `APPEND` the spool starts empty, replacing a
+   pending one; with it, the write continues the pending spool or seeds one
+   by streaming the coordinate's current block. A pending spool is
+   finalised exactly once, into one block, one Pointer File write and one
+   `recordPublish`, when the provider next resolves the coordinate or a
+   directory above it, when `onFilePublish` names it, or at the join (every
+   spool still pending, `finalizeAllPending`). A spool still open at the
+   join races a failing run's own publish thread; it is dropped with a
+   console warning naming the coordinate rather than aborting the whole
+   `RunCompletion` over one file, since a failed run has no publish barrier
+   (§8). A finalise-per-close design was rejected: it would store one
+   orphan block and one write per append (two per CSV row) and re-hash
+   O(n²) bytes, where the deferred spool stores exactly one block.
+2. Gate assertion 15 reads `store-outputs`'s own `coords/tuples/index.csv`
+   directly rather than trusting only the plugin-reported leaf address, so
+   a plugin bug that left a stray coordinate on disk while still marking
+   the leaf `never_published` would fail it (Task 6 review round 1).
+3. Tier two's TS check verifies every Leaf independently: it fetches and
+   re-hashes the member's own block at the claimed address, cross-checked
+   against the standalone `coords/` pointer, rather than trusting the
+   `RunCompletion`'s recorded address field alone. The Output Index File is
+   looked up the same way, against the member, not a task work directory,
+   since `PublishOp` writes it from the head node straight to the output
+   directory, never as a task's own output (Task 7 review round 1, fixing a
+   Critical finding that would have failed TS on every real run).
+4. Adding nf-blocks to a pipeline you don't own with a `-c` config file
+   replaces that pipeline's `plugins { }` block rather than adding to it:
+   measured against nf-core/sarek 3.10.0, whose `nf-schema@2.7.2` pin was
+   silently replaced by that day's `nf-schema 3.0.0` release, and the run
+   failed until the pipeline's pins were repeated beside nf-blocks's own.
+   Documented in README (ticket 18 finding, for Rob).
