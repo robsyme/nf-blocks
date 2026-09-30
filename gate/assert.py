@@ -178,34 +178,11 @@ class Gate(object):
     # -- runs -----------------------------------------------------------
     @property
     def runs(self):
-        """{run_name: Run}, assembled from the blocks alone."""
+        """{run_name: Run}, assembled from the blocks alone. Delegates to
+        _assemble_runs, the same run-name/RunCompletion assembly store-outputs'
+        _run_of uses, so gate.store and store-outputs can never drift apart."""
         if self._runs is None:
-            runs = {}
-            by_manifest = {}
-            seen = {}
-            for cid, block in sorted(self.of_kind("RunManifest").items()):
-                name = block.get("run_name")
-                seen.setdefault(name, []).append(cid)
-                run = runs.setdefault(name, Run(name))
-                run.manifest_cid, run.manifest = cid, block
-                by_manifest[cid] = run
-            collisions = {n: c for n, c in seen.items() if len(c) > 1}
-            if collisions:
-                raise cas.GateError(
-                    "run_name is not unique in %s: %s. A run name identifies one "
-                    "run; two RunManifests under one name means the wrong run is "
-                    "being asserted about."
-                    % (self.store.root,
-                       "; ".join("%r has %d manifests (%s)"
-                                 % (n, len(c), ", ".join(x[:16] + "..." for x in c))
-                                 for n, c in sorted(collisions.items()))))
-            for cid, block in sorted(self.of_kind("RunCompletion").items()):
-                link = block.get("run")
-                run = by_manifest.get(link.text) if isinstance(link, cas.Cid) else None
-                if run is None:
-                    run = runs.setdefault("<orphan:%s>" % cid[:12], Run(None))
-                run.completion_cid, run.completion = cid, block
-            self._runs = runs
+            self._runs = _assemble_runs(self.blocks, self.store.root)
         return self._runs
 
     def run(self, name):
@@ -1664,8 +1641,8 @@ def outputs_store(gate):
 
 def _assemble_runs(blocks, store_root):
     """{run_name: Run}, linking each RunCompletion to its RunManifest by
-    run_name. What Gate.runs does for gate.blocks, generalised to any {cid:
-    block} dict, so store-outputs' own blocks can be resolved the same way."""
+    run_name. Shared by Gate.runs (over gate.blocks) and store-outputs' own
+    _run_of (over any {cid: block} dict), so the two can never drift apart."""
     runs = {}
     by_manifest = {}
     seen = {}
@@ -1680,7 +1657,9 @@ def _assemble_runs(blocks, store_root):
     collisions = {n: c for n, c in seen.items() if len(c) > 1}
     if collisions:
         raise cas.GateError(
-            "run_name is not unique in %s: %s"
+            "run_name is not unique in %s: %s. A run name identifies one "
+            "run; two RunManifests under one name means the wrong run is "
+            "being asserted about."
             % (store_root, "; ".join("%r has %d manifests (%s)"
                                      % (n, len(c), ", ".join(x[:16] + "..." for x in c))
                                      for n, c in sorted(collisions.items()))))
@@ -1852,7 +1831,21 @@ def assert_fifteen(gate):
         if leaf.get("reason") != "never_published":
             problems.append("tuples index leaf reason is %r, expected 'never_published'"
                             % leaf.get("reason"))
-        if leaf.get("address") is not None:
+
+    # Checked from the store itself, not just from what the RunCompletion says:
+    # either no tuples/index.csv coordinate exists in store-outputs, or, if one
+    # does, the index leaf must still not be addressed. Reading only
+    # leaf.get("address") never touches store-outputs' coords/ tree at all, so
+    # a plugin bug that wrote a stray coordinate while still (incorrectly)
+    # marking the leaf never_published would sail through undetected.
+    coord_cid = _coords_raw_cid(store, "tuples/index.csv")
+    if leaf.get("address") is not None:
+        if coord_cid is not None:
+            problems.append("coords/tuples/index.csv exists (%s) in %s and the "
+                            "tuples index leaf is addressed (%r): a coordinate "
+                            "may exist only while the leaf still is not addressed"
+                            % (coord_cid, store.root, leaf.get("address")))
+        else:
             problems.append("tuples index leaf has address %r though CsvWriter never "
                             "wrote the file" % (leaf.get("address"),))
 

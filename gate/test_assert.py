@@ -861,16 +861,24 @@ class OutputsAssertionsTest(TempTree):
             gate_assert.LEGACY_PUBLISHDIR_WARNING,
             gate_assert.LEGACY_UNJOINED_WARNING, "legacy/A.legacy, legacy/B.legacy"))
 
-    def _build_badindex_run(self, index_leaf=None):
+    def _build_badindex_run(self, index_leaf=None, write_coord=False):
         """Run "outputs-badindex": tuples joins with a Meta Map carrying "id";
         its CSV index write failed, so the index leaf is never_published
-        unless `index_leaf` overrides it (assertion 15's FAIL case)."""
+        unless `index_leaf` overrides it (assertion 15's FAIL case).
+        `write_coord` additionally writes a real coords/tuples/index.csv
+        pointer (and the raw bytes it names) in store-outputs, independent of
+        whatever the index leaf itself claims — assertion 15 must read this,
+        not just trust the leaf's own recorded fields."""
         run_link = self._manifest("outputs-badindex")
         a_leaf, _a_cid = self._addressed_leaf("A.txt", b"sample A\n")
         b_leaf, _b_cid = self._addressed_leaf("B.txt", b"sample B\n")
         items = [self._item([{"id": "A"}, a_leaf]), self._item([{"id": "B"}, b_leaf])]
         if index_leaf is None:
             index_leaf = self._never_published_leaf("index.csv")
+        if write_coord:
+            coord_bytes = b'"id","file"\n"A","tuples/A/A.txt"\n"B","tuples/B/B.txt"\n'
+            coord_cid = self.b.raw(coord_bytes)
+            self.b.coord("tuples/index.csv", coord_cid)
         tuples_cid = self.b.block({
             "kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
             "run": cas.Cid(run_link), "name": "tuples",
@@ -906,6 +914,23 @@ class OutputsAssertionsTest(TempTree):
         status, message = gate_assert.assert_fifteen(self.gate)
         self.assertEqual(status, gate_assert.FAIL)
         self.assertIn("never_published", message)
+
+    def test_fifteen_fails_when_a_tuples_index_csv_coordinate_exists_and_the_leaf_is_addressed(self):
+        """The store itself, not just the leaf's own recorded fields: a real
+        coords/tuples/index.csv pointer plus an addressed leaf must fail even
+        though both individually look plausible."""
+        addressed, _cid = self._addressed_leaf("index.csv", b"id,file\n")
+        self._build_badindex_run(index_leaf=addressed, write_coord=True)
+        status, message = gate_assert.assert_fifteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("coords/tuples/index.csv", message)
+
+    def test_fifteen_passes_when_a_tuples_index_csv_coordinate_exists_but_the_leaf_is_not_addressed(self):
+        """The brief's "or, if it does" clause: a coordinate may exist as
+        long as the leaf still is not addressed."""
+        self._build_badindex_run(write_coord=True)
+        status, message = gate_assert.assert_fifteen(self.gate)
+        self.assertEqual(status, gate_assert.PASS, message)
 
     # -- assertion 16 -----------------------------------------------------
 
