@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-19):
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-20):
 Selections and Claims written through the page, all local, over a
 composition of a writable member and a read-only one.
 
@@ -85,6 +85,8 @@ def _file(gate, name):
 SHARED_TS = "2026-01-01T00:00:00.000Z"
 SHARED_MILLIS = 1767225600000
 HORIZON_MILLIS = 9999999999999   # StoreLog.HORIZON_MILLIS
+# B20 (Task 11, ticket 21 answer 6): the note B.retain types into the run page's Pin form.
+RETAIN_PIN_NOTE = "kept while investigating"
 
 
 def _put_block(root, block):
@@ -222,7 +224,8 @@ def prepare(root):
                 "shared": {"s3": s3, "n_s": n_s, "s4": s4, "n1": n1, "n2": n2,
                            "s5": s5, "n5": n5, "d5": d5, "s6": s6, "d6": d6},
                 "cli": {"output": "aligned", "condition": "sample=A", "name": "from-the-cli", "members": cli_members,
-                        "runs": "lid://%s,cas://%s" % (cold.nf_run_hash, again.completion_cid)}}
+                        "runs": "lid://%s,cas://%s" % (cold.nf_run_hash, again.completion_cid)},
+                "retain": {"run": cold.completion_cid, "pin_note": RETAIN_PIN_NOTE}}
     q = "?token={token}"
     steps = [
         {"id": "B.first", "server": "explore", "path": "", "query": q, "hash": "#/item/%s/%s" % (coll["aligned"], a),
@@ -269,6 +272,12 @@ def prepare(root):
         # B9 and B18 run what the Selection view shows for S2, untyped and typed.
         {"id": "B.snippets", "server": "explore", "path": "", "query": q, "hash": "#/selection/{S2}",
          "actions": [{"snippetMode": "untyped"}, {"extract": "untyped"}, {"snippetMode": "typed"}, {"extract": "typed"}]},
+        # B20 (Task 11): Pin, Release content and Restore content on the run page. Each write's
+        # own re-render (waitWrite) already shows the updated badges before the next click.
+        {"id": "B.retain", "server": "explore", "path": "", "query": q, "hash": "#/run/%s" % cold.completion_cid,
+         "actions": [{"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
+                     {"click": "#release"}, {"waitWrite": True},
+                     {"click": "#restore"}, {"waitWrite": True}, {"extract": "after"}]},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})
@@ -952,6 +961,44 @@ def evaluate(root):
                       "the Selection at the Gate's address %s with one current name"
                       % (cli["output"], cli["condition"], cli["runs"], cli["name"], address))
 
+    def b20():
+        problems = []
+        retain = expected["retain"]
+        posts = [p for p in _posts(seen("B.retain")) if _kind(p) == "Claim"]
+        if len(posts) != 3:
+            return FAIL, "B.retain: %d writing Claim POST(s), expected 3 (pin, release, restore)" % len(posts)
+        pin_addr, pin_block, found = verify_post("B.retain", posts[0], dagjson.expected_claim)
+        problems += found
+        release_addr, release_block, found = verify_post("B.retain", posts[1], dagjson.expected_claim)
+        problems += found
+        restore_addr, restore_block, found = verify_post("B.retain", posts[2], dagjson.expected_claim)
+        problems += found
+        if (pin_block.get("verb"), pin_block.get("attribute"), pin_block.get("value")) != ("add", "pin", retain["pin_note"]):
+            problems.append("B.retain's first Claim is %r, expected add pin %r"
+                            % ((pin_block.get("verb"), pin_block.get("attribute"), pin_block.get("value")), retain["pin_note"]))
+        if _text(pin_block.get("subject")) != retain["run"]:
+            problems.append("the pin Claim's subject is %s, not cold's RunCompletion %s" % (_text(pin_block.get("subject")), retain["run"]))
+        if (release_block.get("verb"), release_block.get("attribute"), release_block.get("value")) != ("set", "retain", "lineage"):
+            problems.append('B.retain\'s second Claim is %r, expected set retain "lineage"'
+                            % ((release_block.get("verb"), release_block.get("attribute"), release_block.get("value")),))
+        if _text(release_block.get("subject")) != retain["run"]:
+            problems.append("the release Claim's subject is %s, not cold's RunCompletion %s" % (_text(release_block.get("subject")), retain["run"]))
+        if (restore_block.get("verb"), restore_block.get("attribute")) != ("del", "retain"):
+            problems.append("B.retain's third Claim is a %r %r, expected del retain"
+                            % (restore_block.get("verb"), restore_block.get("attribute")))
+        if [_text(x) for x in restore_block.get("supersedes") or []] != [release_addr]:
+            problems.append("the restore Claim supersedes %r, expected exactly the release Claim %s"
+                            % ([_text(x) for x in restore_block.get("supersedes") or []], release_addr))
+        for label, address in (("pin", pin_addr), ("release", release_addr), ("restore", restore_addr)):
+            entries = [e for e in store.store_log() if e[2] == address]
+            if len(entries) != 1:
+                problems.append("the store's log/ holds %d entries for the %s Claim %s, expected 1" % (len(entries), label, address))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, ("the run page's Pin, Release content and Restore content wrote an add pin (%r), a set retain "
+                      '"lineage" and a del retain superseding it, each at the Gate\'s own address with one log/ entry'
+                      % retain["pin_note"])
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
@@ -964,6 +1011,7 @@ def evaluate(root):
     run(17, "a per-run query pick keeps its collection, and Add all adds every item with it", b17)
     run(18, "the typed consumer receives records", b18)
     run(19, "items --format selection piped into put /dev/stdin --name writes the named Selection", b19)
+    run(20, "the run page's Pin, Release content and Restore content write the Claims they describe", b20)
     return results
 
 

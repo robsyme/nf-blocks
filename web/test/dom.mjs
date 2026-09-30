@@ -57,10 +57,16 @@ class FakeElement extends FakeNode {
   /** Runs this element's own listeners for `type` and returns what they return (a Promise for an async handler). */
   fire(type) { return Promise.all((this.listeners.get(type) ?? []).map(fn => fn({ currentTarget: this, target: this, preventDefault() {} }))) }
   click() { return this.fire('click') }
+  /** A real Event (e.g. `new Event('input')`) dispatched synchronously to this element's own listeners only. */
+  dispatchEvent(event) {
+    for (const fn of this.listeners.get(event.type) ?? []) fn({ currentTarget: this, target: this, type: event.type, preventDefault() {} })
+    return true
+  }
 
   matches(selector) {
-    const parts = selector.match(/^[a-z]+|\.[\w-]+|\[[^\]]+\]/gi) ?? []
+    const parts = selector.match(/^[a-z]+|#[\w-]+|\.[\w-]+|\[[^\]]+\]/gi) ?? []
     return parts.every((p) => {
+      if (p.startsWith('#')) return this.attributes.get('id') === p.slice(1)
       if (p.startsWith('.')) return this.classes().includes(p.slice(1))
       if (p.startsWith('[')) {
         const [, k, v] = p.match(/^\[([\w-]+)(?:=["']?([^"'\]]*)["']?)?\]$/)

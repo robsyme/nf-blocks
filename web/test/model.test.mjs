@@ -7,6 +7,7 @@ import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 import { block, blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
 import { Float } from '../src/typed.js'
 import { attrRows } from '../src/metadata.js'
+import { claimState } from '../src/claims.js'
 
 async function open(overrides = {}) {
   const now = Date.now()
@@ -226,6 +227,24 @@ test('an item\'s view keeps its floats floats, so its pairs are typed as the ind
   assert.deepEqual(attrRows(it.view).map(r => [r.path, r.type, r.value]).sort(),
     [['depth', 'float', '1.5'], ['lane', 'int', '1'], ['sample', 'string', 'A']])
   assert.equal(it.leaves[0].name, 'A.bam')
+})
+
+// Task 11 (ticket 21 answer 6): run, item and collection each carry the
+// subject's own claim state, for the explorer's release/restore/pin controls.
+// No Claim is written in this fixture, so an unclaimed subject's state is the
+// same claimState([]) every other subject with no Claims gets.
+test('run, item and collection each carry the subject\'s own claim state, unclaimed here', async () => {
+  const { explorer, member } = await open()
+  const unclaimed = { ...claimState([]), claims: [] }
+  const run = await explorer.run(member.runs.R1.completion)
+  assert.deepEqual(run.state, unclaimed)
+  const it = await explorer.item(member.runs.R1.collection, member.item.A)
+  assert.deepEqual(it.state, unclaimed)
+  const coll = await explorer.collection(member.runs.R1.collection)
+  assert.deepEqual(coll.state, unclaimed)
+  // A stale (tail-only) collection's block is read from its own branch, and still carries a state.
+  const stale = await explorer.collection(member.runs.R2.collection)
+  assert.deepEqual(stale.state, unclaimed)
 })
 
 test('concurrent queries share one closure per stale run, so progress counts each item once (final review finding 7)', async () => {

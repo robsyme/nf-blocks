@@ -98,8 +98,50 @@ export async function pipeline(ex, name, offset = 0) {
   return node
 }
 
-export async function run(ex, completionCid) {
-  const { row, completion, collections } = await ex.run(completionCid)
+/** The note shown instead of write controls when writing is unavailable, or available but not to this page (mirrors the Selection view's `actions()`). */
+function unavailableNote(ctx) {
+  if (!ctx.write.available) return h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason)
+  return h('p', { 'data-unavailable': '', class: 'muted' }, `Writes go to the writable member, ${ctx.write.writable}.`)
+}
+
+/**
+ * Release/Restore content on a run, and Pin/Unpin on any subject (ticket 21
+ * answer 6, DESIGN.md §15): the "pinned", "content released" and "hidden but
+ * pinned" badges; a pin note form and each current pin with its own Unpin;
+ * Release/Restore content on a run only. Offered where `actions()` offers a
+ * Selection's own writes (`ctx.write.available && ctx.write.here`);
+ * elsewhere the badges still show and the controls are `unavailableNote`.
+ */
+function retentionPanel(subject, state, ctx, { isRun = false } = {}) {
+  const status = h('p', { class: 'muted', 'data-retention-status': '' })
+  const can = ctx.write.available && ctx.write.here
+  const badges = [
+    isRun && state.released ? h('span', { class: 'badge', 'data-badge': 'content-released' }, 'content released') : null,
+    isRun && state.hidden && state.pinned ? h('span', { class: 'badge', 'data-badge': 'hidden-but-pinned' }, 'hidden but pinned') : null,
+    state.pinned ? h('span', { class: 'badge', 'data-badge': 'pinned' }, 'pinned') : null,
+  ]
+  const pins = state.pins.length ? h('ul', {}, state.pins.map(p => h('li', { 'data-pin': '', 'data-claim': p.cid }, p.note, ' ',
+    can ? h('button', { type: 'button', 'data-unpin': p.cid,
+      onclick: (e) => ctx.write.run(status, () => ctx.write.writer.unpin(subject, p.cid), e.currentTarget) }, 'Unpin') : null))) : null
+  const note = h('input', { id: 'pin-note', type: 'text', maxlength: '256', placeholder: 'why keep this? e.g. figure 3' })
+  const pin = h('button', { type: 'button', id: 'pin', disabled: true,
+    onclick: (e) => ctx.write.run(status, () => ctx.write.writer.pin(subject, note.value.trim()), e.currentTarget) }, 'Pin')
+  note.addEventListener('input', () => { pin.disabled = !note.value.trim() })
+  const release = isRun ? (state.released
+    ? h('button', { type: 'button', id: 'restore', onclick: (e) => ctx.write.run(status, () => ctx.write.writer.restore(subject, state.retainClaims), e.currentTarget) }, 'Restore content')
+    : h('button', { type: 'button', id: 'release', onclick: (e) => ctx.write.run(status, () => ctx.write.writer.release(subject, state.retainClaims), e.currentTarget) }, 'Release content')) : null
+  return h('section', { 'data-retention': subject },
+    h('p', {}, badges),
+    pins,
+    can ? [
+      isRun ? h('p', { class: 'muted' }, "Releasing keeps this run's lineage and lets a sweep reclaim its files after the grace period. Pinned items stay.") : null,
+      h('p', {}, release, ' ', note, ' ', pin),
+      status]
+      : unavailableNote(ctx))
+}
+
+export async function run(ex, completionCid, ctx) {
+  const { row, completion, collections, state } = await ex.run(completionCid)
   const a = completion.anomalies
   // Decision 13: the run's lineage ID, which fromStore(run:) and nf-blocks:items --run accept.
   const lid = row.nf_run_hash ? `lid://${row.nf_run_hash}` : null
@@ -113,6 +155,7 @@ export async function run(ex, completionCid) {
       h('dt', {}, 'finished'), h('dd', {}, completion.finished_at),
       h('dt', {}, 'anomalies'), h('dd', {}, `unresolvable ${a.unresolvable}, unaddressed ${a.unaddressed}, declined ${a.declined}, never published ${a.never_published}, unjoined ${a.unjoined ?? 0}`),
       completion.error ? [h('dt', {}, 'error'), h('dd', {}, completion.error)] : null),
+    retentionPanel(completionCid, state, ctx, { isRun: true }),
     h('h2', {}, 'Outputs'),
     // A run with no workflow outputs (a consumer that only reads, say) records no Output Collections.
     collections.length === 0 ? h('p', { class: 'muted', 'data-no-outputs': '' }, 'This run published no outputs.') : [
@@ -139,6 +182,7 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
   const c = await ex.collection(collectionCid, { offset })
   return h('section', {},
     h('h1', {}, c.output), cid(collectionCid),
+    retentionPanel(collectionCid, c.state, ctx),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
     indexLine(ex, c.index),
     pager(`#/collection/${collectionCid}`, c, 'items'),
@@ -159,6 +203,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
     h('h1', {}, 'Item'),
     // `-` is an item reached with no collection (a Selection member picked by a query).
     h('p', {}, collectionCid !== '-' ? cid(`cas://${collectionCid}/${itemCid}`) : cid(itemCid)),
+    retentionPanel(itemCid, it.state, ctx),
     from ? h('p', { title: collectionCid }, 'From ', from.completion ? link(`#/run/${from.completion}`, runLabelText(from, collectionCid)) : runLabelText(from, collectionCid)) : null,
     h('p', {}, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })),
     holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, link(`#/selection/${s}`, cid(s)))))] : null,
@@ -174,8 +219,12 @@ export async function item(ex, collectionCid, itemCid, ctx) {
 
 export async function content(ex, contentCid, ctx) {
   const rows = await ex.producersOf(contentCid, ctx.progress)
+  // Task 11: the content's own retain/pin state; there is no dedicated model.js loader for a
+  // content page, so this reads Explorer's already-public claimStates directly.
+  const state = (await ex.claimStates([contentCid])).get(contentCid)
   return h('section', {},
     h('h1', {}, 'Every producer of this content'), cid(contentCid),
+    retentionPanel(contentCid, state, ctx),
     rows.length === 0 ? h('p', { class: 'muted' }, 'No run in this member produced it.')
       : table(['file', 'item', 'run'], rows.map(p => h('tr', {
         'data-producer': '', 'data-content': p.content_cid, 'data-item': p.item_cid, 'data-collection': p.collection_cid,
