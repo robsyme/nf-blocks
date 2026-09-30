@@ -58,4 +58,14 @@ class CasPlugin extends BasePlugin implements PluginExecAware {
     int exec(Launcher launcher, String pluginId, String cmd, List<String> args) {
         return new CasCommands().exec(launcher, pluginId, cmd, args)
     }
+
+    /**
+     * `nextflow plugin nf-blocks:<cmd>` on Nextflow >= 26.08.0-edge, whose
+     * `PluginExecAware.exec` dropped the Launcher (nextflow 1dc8cf68f). Not
+     * an override here: the plugin compiles against 26.04.6, whose interface
+     * lacks it. The config is read without `-c` (DESIGN.md §15).
+     */
+    int exec(String pluginId, String cmd, List<String> args) {
+        return new CasCommands().exec(pluginId, cmd, args)
+    }
 }

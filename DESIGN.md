@@ -1347,6 +1347,29 @@ nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --ru
                                               [--pipeline <id>] [--format csv|json|occurrences|selection]
 ```
 
+*Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
+`1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
+`int exec(String pluginId, String cmd, List<String> args)`: the Launcher, and
+with it every launcher option, is gone, and a plugin without that method
+fails with "does not define or inherit an implementation of the resolved
+method". `CasPlugin` implements both; the plugin compiles against 26.04.6,
+so the 3-argument one carries no `@Override`, and each Nextflow calls the
+one its interface names. Both reach `CasCommands.run`. The new
+`PluginAbstractExec` builds its config from `NXF_WORK` and
+`NXF_CLOUDCACHE_PATH` alone and `CmdPlugin.executePluginCommand` passes the
+plugin nothing else, so on the 3-argument path `CasCommands` reads the files
+`ConfigCmdAdapter.resolveConfigFiles` reads when no `-c` is given
+(`robsyme.cas.cli.LaunchConfig`): `$NXF_HOME/config` (`Const.APP_HOME_DIR`),
+then `./nextflow.config`, or the file `NXF_CONFIG_FILE` names, each when it
+exists, later overriding earlier, with the `standard` profile, parsed with
+`ConfigParserFactory`, whose API is the same on both versions. Measured on
+26.09.1-edge: `./nextflow.config` and `NXF_CONFIG_FILE=<file>` work;
+`nextflow -c <file> plugin nf-blocks:<verb>` is accepted by the launcher and
+never reaches the plugin, so the verb sees no store unless one of the
+default files names it (use `NXF_CONFIG_FILE` instead). `-C` does not
+reach it either. On 26.04.6 the 4-argument path and `-c`
+are unchanged.
+
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
 on a usage error.

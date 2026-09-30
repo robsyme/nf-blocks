@@ -104,4 +104,85 @@ class CasCommandsTest extends Specification {
         run('snapshot', [], [:]) == 1
         err.toString().contains('lineage.store.location')
     }
+    // Nextflow >= 26.08.0-edge: the 3-argument exec has no Launcher, so the config is
+    // read from the default files alone (DESIGN.md §15).
+
+    private int execWithoutLauncher(String cmd, List<String> args, Path home, Path launchDir, Map<String, String> env = [:]) {
+        return new CasCommands().exec('nf-blocks', cmd, args, home, launchDir, env, new PrintStream(out, true), new PrintStream(err, true))
+    }
+
+    private void writeConfig(Path file, String text) {
+        Files.createDirectories(file.parent)
+        Files.writeString(file, text)
+    }
+
+    private String storeConfig() {
+        return """
+            lineage.store.location = 'cas://lab'
+            cas.stores.lab.location = '${tempDir.resolve('store')}'
+            cas.index.path = '${tempDir.resolve('cache/index.sqlite')}'
+        """.stripIndent()
+    }
+
+    def 'without a Launcher, the verb reads nextflow.config in the launch directory'() {
+        given:
+        logRun()
+        final Path launchDir = tempDir.resolve('launch')
+        writeConfig(launchDir.resolve('nextflow.config'), storeConfig())
+
+        when:
+        final int status = execWithoutLauncher('snapshot', [], tempDir.resolve('home'), launchDir)
+
+        then:
+        status == 0
+        Files.isRegularFile(tempDir.resolve('store/index/v3.sqlite'))
+        out.toString().contains('1 runs')
+    }
+
+    def 'without a Launcher, the home config is read first and the launch directory config overrides it'() {
+        given:
+        logRun()
+        final Path home = tempDir.resolve('home')
+        final Path launchDir = tempDir.resolve('launch')
+        writeConfig(home.resolve('config'), storeConfig().replace("'cas://lab'", "'cas://elsewhere'"))
+        writeConfig(launchDir.resolve('nextflow.config'), "lineage.store.location = 'cas://lab'\n")
+
+        when:
+        final int status = execWithoutLauncher('snapshot', [], home, launchDir)
+
+        then: 'cas.stores comes from the home config, lineage from the launch directory'
+        status == 0
+        Files.isRegularFile(tempDir.resolve('store/index/v3.sqlite'))
+    }
+
+    def 'without a Launcher, NXF_CONFIG_FILE names the launch directory config'() {
+        given:
+        logRun()
+        final Path launchDir = tempDir.resolve('launch')
+        writeConfig(tempDir.resolve('other/cas.config'), storeConfig())
+
+        when:
+        final int status = execWithoutLauncher('snapshot', [], tempDir.resolve('home'), launchDir,
+            [NXF_CONFIG_FILE: tempDir.resolve('other/cas.config').toString()])
+
+        then:
+        status == 0
+        Files.isRegularFile(tempDir.resolve('store/index/v3.sqlite'))
+    }
+
+    def 'without a Launcher and without any config file, the verb reports the missing store'() {
+        expect:
+        execWithoutLauncher('snapshot', [], tempDir.resolve('home'), tempDir.resolve('launch')) == 1
+        err.toString().contains('lineage.store.location')
+    }
+
+    def 'without a Launcher, a config that does not parse is reported, exit 1'() {
+        given:
+        final Path launchDir = tempDir.resolve('launch')
+        writeConfig(launchDir.resolve('nextflow.config'), 'cas { stores { \n')
+
+        expect:
+        execWithoutLauncher('snapshot', [], tempDir.resolve('home'), launchDir) == 1
+        err.toString().contains('could not read the Nextflow config')
+    }
 }

@@ -1,9 +1,12 @@
 package robsyme.cas.cli
 
+import java.nio.file.Path
 import java.nio.file.Paths
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
+import nextflow.Const
+import nextflow.SysEnv
 import nextflow.cli.Launcher
 import nextflow.config.ConfigBuilder
 import robsyme.cas.CasConfig
@@ -47,6 +50,29 @@ class CasCommands {
             return 1
         }
         return run(cmd, args, config, System.out, System.err)
+    }
+
+    /**
+     * Nextflow >= 26.08.0-edge (nextflow 1dc8cf68f): no Launcher, so no
+     * {@code -c}; the config is read from the default files alone
+     * ({@link LaunchConfig}).
+     */
+    int exec(String pluginId, String cmd, List<String> args) {
+        return exec(pluginId, cmd, args, Const.APP_HOME_DIR, Paths.get('.'), SysEnv.get(), System.out, System.err)
+    }
+
+    int exec(String pluginId, String cmd, List<String> args, Path homeDir, Path launchDir, Map<String, String> env,
+             PrintStream out, PrintStream err) {
+        final Map config
+        try {
+            config = LaunchConfig.read(homeDir, launchDir, env)
+        }
+        catch( Exception e ) {
+            log.debug("nf-blocks:${cmd}: could not read the Nextflow config", e)
+            err.println("nf-blocks:${cmd}: could not read the Nextflow config: ${e.message}")
+            return 1
+        }
+        return run(cmd, args, config, out, err)
     }
 
     int run(String cmd, List<String> args, Map config, PrintStream out, PrintStream err) {
