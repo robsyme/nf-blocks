@@ -133,6 +133,15 @@ consume() {   # <run> <cache dir>
     echo "--- $run exit $status"
 }
 
+# Ticket 18: nf-core/sarek 3.10.0's test profile, started first because it is the longest run
+# (about 15 min), into its own member. Not produce(): sarek is fetched, not copied, and takes neither
+# gate.config nor batch.config.
+mkdir -p "$T2/ts" "$T2/logs/ts"
+run_nf "$T2/logs/ts/stdout.log" "$T2/ts" T2_TRACE="$T2/trace/ts.txt" XDG_CACHE_HOME="$T2/cache-ts" \
+    "$NEXTFLOW" -log "$T2/logs/ts/nextflow.log" run nf-core/sarek -r 3.10.0 -profile test,docker -name ts \
+    -c "$REPO/gate/tier2/sarek.config" -c "$REPO/gate/tier2/gatk4-quay.config" &
+TS_PID=$!
+
 TP="${PIPELINE_SRC:-$REPO/../.scratch/content-addressed-lineage/test-pipeline}"
 produce t1  cas    "$TP"
 produce t2  cas-t2 "$TP" -c "$REPO/gate/tier2/fusion.config"
@@ -168,6 +177,12 @@ done
 # The deterministic half of ticket 03 decision 6 on AWS itself: a PutObject whose If-Match names a replaced
 # ETag is refused with 412 (the plugin's skip on that 412 is pinned by S3SnapshotStorageTest, Task 7).
 "$PY" "$REPO/gate/tier2/s3gate.py" if-match "$T2_BUCKET" > "$T2/evidence/if-match.json" || true
+
+# ts (ticket 18): wait for the background sarek run before the checks, the same way produce() records an exit.
+ts_status=0
+wait "$TS_PID" || ts_status=$?
+echo "$ts_status" > "$T2/logs/ts/exit"
+echo "--- ts exit $ts_status"
 
 echo
 status=0

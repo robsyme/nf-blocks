@@ -27,14 +27,15 @@ An SSO login for `AWS_PROFILE` (default `scidev`): `aws sso login --profile scid
 from a working AWS CLI. The head node is the laptop; no Batch head job runs.
 
 The Seqera Platform token in `~/.nextflow/config` (`tower.accessToken`), which
-Wave needs to build the Fusion containers for t2 and t2b. The registry must be
-reachable, since nf-wave is downloaded into `$GATE_ROOT/plugins` on first use.
+Wave needs to build the Fusion containers for t2, t2b and ts. The registry
+must be reachable, since nf-wave is downloaded into `$GATE_ROOT/plugins` on
+first use.
 
 ## What it creates and destroys
 
 One run id, `t2-<UTC date>-<time>-<random>`, names everything:
 
-    s3://nf-blocks-t2-<run id>/                     the members: cas, cas-t2, cas-out, cas-t6 (us-east-1)
+    s3://nf-blocks-t2-<run id>/                     the members: cas, cas-t2, cas-out, cas-t6, cas-sarek (us-east-1)
     s3://scidev-playground-us-east-1/robsyme/nf-blocks-gate/<run id>/work/
                                                     the Batch work dir (the instance role allows only that bucket)
     $GATE_ROOT/tier2/<run id>/                      logs, traces, evidence; kept
@@ -62,12 +63,25 @@ remains. `T2_TIMEOUT` (seconds) shortens the watchdog for testing the harness.
 
 | Run | Pipeline | Fusion | Writable member |
 |---|---|---|---|
+| ts | nf-core/sarek 3.10.0 | on | `cas-sarek` (`lab`, fresh) |
 | t1 | Test Pipeline | off | `cas` (`lab`) |
 | t2 | Test Pipeline | on | `cas-t2` (`lab`, fresh) |
 | t2b | `gate/tier2/small` | on | `cas` (T1's) |
 | t4 | consumer, on Batch | off | `cas-out` (`out`), reading `lab` = `cas` |
 | t5 | consumer again, its cache deleted | off | as t4 |
 | t6a, t6b | Test Pipeline from two launch dirs, started together | off | `cas-t6` (fresh) |
+
+`ts` is started first, in the background: nf-core/sarek's test profile is the
+longest run (about 15 min) of the tier, so it runs beside t1 through t6 rather
+than after them. It takes neither `gate/gate.config` (which would rename the
+pipeline and drop its pins) nor `batch.config` (which forces an ubuntu
+container on every process), only `gate/tier2/sarek.config` and
+`gate/tier2/gatk4-quay.config`. About 23 Batch jobs, 15 minutes, an estimated
+$0.10 to $0.20. sarek's `gatk4_gcnvkernel` Wave image has a 1.98 GB layer that
+Cloudflare does not cache (measured at ~300 KB/s, ticket 18); its GATK4
+modules run on `quay.io/biocontainers/gatk4:4.6.2.0--py310hdfd78af_1` instead,
+until a smaller Wave image exists. `GATK4_MARKDUPLICATES` keeps sarek's own
+image.
 
 After t6 the harness runs `nf-blocks:items` and `nf-blocks:snapshot` against
 `cas-t6`, then up to three attempts at two snapshot verbs started together, and
@@ -137,6 +151,16 @@ of the last attempt's two verbs printed `not rewritten: replaced_meanwhile` it
 passes, and when the verbs never overlapped in three attempts T6 is SKIP with
 "ticket 03 decision 6 was not observed through the plugin on AWS". Rerun
 rather than debug a SKIP.
+
+TS (ticket 18). ts exited 0 and its RunCompletion succeeded. Its `multiqc`
+`OutputCollection` has at least one item, each carrying a Meta Map with `id`
+and an addressed file `Leaf`; its `index` (`index { path "multiqc/index.json"
+}`) has a `Leaf` whose address equals the SHA-256 of the work bucket's own
+`index.json` object, hashed by the Gate. `anomalies.unjoined` equals the
+number of `cas-sarek`'s `coords/` pointers that name a block neither an item
+`Leaf` nor the index `Leaf` references (sarek publishes report files outside
+the declared workflow output), and is greater than zero. `logs/ts/` names at
+least one "uses publishDir" warning (Task 3).
 
 After the table the harness prints the Batch job count and total job seconds
 from `trace/*.txt`, and each producer's `nf-blocks: the head node read ...`
