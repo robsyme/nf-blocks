@@ -449,6 +449,7 @@ class CasObserver implements TraceObserverV2 {
     private void appendStoreLog(Cid completion) {
         try {
             StoreLog.append(cas.store, StoreLogKind.RUN, completion, nowMillis())
+            cas.noteLogged(completion)
         }
         catch( Exception e ) {
             log.warn("the store log entry for ${completion} could not be written; it is derived: ${e.message}", e)

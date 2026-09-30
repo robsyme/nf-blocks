@@ -120,6 +120,16 @@ class CasSession {
     private final AtomicBoolean completed = new AtomicBoolean(false)
     private final CountDownLatch completionDone = new CountDownLatch(1)
 
+    /**
+     * Store Log entries this run itself has written to the writable member,
+     * by cid, so {@code catchUpIndex} can tell {@link Index#catchUp} not to
+     * treat them as evidence a snapshot should already exist (ticket 18).
+     */
+    private final Set<String> loggedThisRun = ConcurrentHashMap.newKeySet()
+
+    /** Notes a Store Log entry this run itself wrote (ticket 18). */
+    void noteLogged(Cid entry) { loggedThisRun.add(entry.toString()) }
+
     /** A test seam: the S3Ops for a bucket, from the loaded config map. */
     static Closure<S3Ops> s3OpsFactory = { Map config, String bucket -> S3Access.open(config, bucket) } as Closure<S3Ops>
 
@@ -207,7 +217,8 @@ class CasSession {
         final Set<String> failed = new LinkedHashSet<String>()
         for( BlockStore member : members() ) {
             try {
-                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir)
+                final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
+                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir, quietFor)
             }
             catch( Exception e ) {
                 failed.add(member.alias())

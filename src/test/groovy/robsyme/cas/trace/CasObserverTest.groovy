@@ -642,7 +642,7 @@ class CasObserverTest extends Specification {
         final ListAppender<ILoggingEvent> logged = capture()
         ((Logger) LoggerFactory.getLogger(CasObserver.name)).level = Level.INFO
         Index failing = Spy(cas.openIndex()) {
-            catchUp(_, _, 'lab', _, _) >> { throw new IOException('the Store Log cannot be listed') }
+            catchUp(_, _, 'lab', _, _, _) >> { throw new IOException('the Store Log cannot be listed') }
         }
         observer = new CasObserver() {
             @Override
