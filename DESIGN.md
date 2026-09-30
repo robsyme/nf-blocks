@@ -2548,9 +2548,13 @@ script (`Session.groovy:606` at v26.04.6, confirmed with
    before every trash batch, every delete batch and before writing a ledger;
    a registration with no heartbeat for 10 minutes counts as dead. A run
    that cannot write its own registration warns and continues rather than
-   aborting (DESIGN §0 rule 3 covers provenance, not this) — the age floor
-   and grace still stand between a sweep and a block such a run dedups onto.
-   [20] answers 1, 6, 7; plan decision 11.
+   aborting (DESIGN §0 rule 3 covers provenance, not this). It still reads
+   `sweep.lock` and waits while a fresh one is held, without heartbeating
+   (it has no registration to renew), so a sweep already running is waited
+   out; a sweep that starts later cannot see it. The age floor protects a
+   block such a run writes, but not an old block it dedups onto: one
+   already in a ledger past its deadline, and dead in that sweep's mark, can
+   be deleted under the run. [20] answers 1, 6, 7; plan decision 11.
 2. Trash is a ledger, on both backends, never a tag, a copy or a rename:
    `trash/<deadline>-<sweep id>` lists the addresses one sweep trashed and
    their sizes; blocks stay in place and readable; a later sweep deletes
@@ -2559,8 +2563,11 @@ script (`Session.groovy:606` at v26.04.6, confirmed with
    `untrash` needed (§5). [20] answer 2; plan decision 14.
 3. The age floor is judged against the store's own clock, stable per address
    because writes are conditional (S3 `LastModified`, local mtime); a sweep
-   also clears `tmp/` staging keys and incomplete multipart uploads under
-   the member prefix past the age floor. [20] answer 3.
+   also clears `tmp/` staging keys and incomplete multipart uploads to keys
+   under the member's `blocks/` or `tmp/` past the age floor, and no other
+   upload, so a member at the bucket root (empty prefix) leaves other tools'
+   uploads alone. `sweep.lock`, `live/` and `trash/` objects are written as
+   STANDARD whatever `aws.client.storageClass` gives the blocks. [20] answer 3.
 4. The mark (`Mark.of`, ticket 20 answer 4, ticket 21 answers 1 to 4; plan
    decisions 1 to 6) reads blocks level by level, in windows of about
    `threads * 8` blocks, expanding and dropping each decoded map before the
@@ -2623,9 +2630,11 @@ a reviewer could reject any of them.
    its subject is held by a read-only member (checked with `has()` on
    members after the first): the sweep cannot remove that subject, so
    removing its Claims would change its meaning (un-deleting it). A Claim
-   block this build cannot parse is kept live and reported
+   block this build cannot parse (a field missing, or of the wrong shape,
+   such as a `supersedes` that is not a list) is kept live and reported
    (`unreadableClaims`), never swept — wherever Claims disagree, content is
-   kept.
+   kept. A RunCompletion's `input_set`, when it is a link (milestone 7
+   writes one), is metadata of the run, kept with the RunManifest.
 5. Only `set retain "lineage"` releases. A `set retain` with any other value
    keeps content, so a later value cannot be misread as consent by this
    build.
@@ -2633,7 +2642,15 @@ a reviewer could reject any of them.
    1, naming up to 20), because the blocks under it are unknown. A missing
    content block (raw or Directory Manifest) is reported, not refused: it is
    already gone, and what was under a gone manifest is protected only by
-   other roots. A Store Log entry whose own block is in no member is
+   other roots. To get past the refusal, either restore the missing block
+   (from a copy, or by re-running what wrote it), or, if what needs it
+   should go, `put` a `delete` Claim on the root that reaches it: the
+   report's `needed by` names the block linking to it, which leads up to a
+   RunCompletion or a Selection. A root with a clean `delete` and no pin is
+   not walked, so its missing metadata no longer blocks the sweep, which
+   then trashes the rest (a pinned root also needs its pins removed with
+   `del pin`, and any other root still reaching the block keeps needing
+   it). A Store Log entry whose own block is in no member is
    dangling: not a root, reported, and deleted from the writable member's
    log by `--apply`, but only once older than the age floor (a conservative
    narrowing of the plan: a fresh dangling entry could be one a concurrent
@@ -2651,8 +2668,15 @@ a reviewer could reject any of them.
    it wrote; the grace may be 0. Either under a day warns. A block trashed
    by two ledgers (in two members, or across a lock loss and a retry) goes
    by the later deadline, not the earlier one — a conservative narrowing.
+   A ledgered block that becomes live while no sweep runs, and is released
+   again before the next one, is still in its old ledger, so that next
+   sweep deletes it once it is dead and past the ledger's original
+   deadline, with no fresh grace: only a sweep that sees it live drops it
+   from its ledger. Pin it, or `untrash` it, to restart the clock.
 9. `--budget <size>` caps the bytes a sweep newly trashes, in address order.
-   What it deletes was capped when it was trashed.
+   What it deletes was capped when it was trashed. No `--budget` means no
+   cap; `--budget 0` (or any size that is 0 bytes) is a usage error, exit 2,
+   rather than a second way to say "no cap".
 10. Before each delete batch and before writing the ledger the sweep
     re-checks: its own lock (a heartbeat that throws counts as lost, the
     same as one that is refused — a transient store error must stop
@@ -2662,7 +2686,19 @@ a reviewer could reject any of them.
     live set, never out of it). After a lost lock the ledgers already on
     disk are left untouched rather than rewritten — a conservative
     narrowing that can leave a ledger listing a block another sweep has
-    since deleted, harmless since deletion is idempotent.
+    since deleted, harmless since deletion is idempotent. Due Claims are
+    deleted last, only after every other due block went (no stop, no failed
+    batch, no block S3 would not delete), and a due Claim whose subject is
+    still in the writable member and was not deleted in the same pass is
+    held back in its ledger: a Claim deleted ahead of its subject (a
+    `delete`, or a `del pin` on a hidden run) would make the next mark read
+    that subject as undeleted, a content root with half its metadata gone,
+    refusing every later `--apply`. A stop request (Ctrl-C) is also checked
+    between the mark's windows, so a sweep interrupted while marking ends
+    there and releases the lock; if a sweep has not ended 30 s after Ctrl-C,
+    the stop hook releases the lock itself before the JVM exits, and the
+    sweeping thread's next heartbeat then fails, stopping it before its next
+    step. A `--wait` that is still waiting ends at Ctrl-C too.
 11. A run that cannot write its registration warns and continues; a Claim or
     Selection written during a sweep is caught by the Store Log re-check
     unless it lands between the last re-check and a delete batch — that gap
