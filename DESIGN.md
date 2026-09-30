@@ -44,9 +44,10 @@ artifacts only.
    `sweep`, `prune` and `untrash` land with Gate assertion 9 (§14, §15, §19);
    `bundle`, `merge`, `verify` and `project` still wait. `sweep` and `prune`
    are dry runs unless `--apply true`; `untrash` acts on its first call.
-   `put` stays the only way to write a Claim from the command line: `sweep`
-   and `prune` write Trash ledgers and index rows, `prune --apply` writes
-   `set retain "lineage"` Claims through the same `Put` builder `put` uses.
+   `put` stays the only way to write a pin or a `retain` Claim by hand:
+   `sweep` writes Trash ledgers and index rows, and `prune --apply` writes
+   only the one fixed-shape `set retain "lineage"` Claim, through the same
+   `Put` builder `put` uses.
 6. The Gate's assertions never trust the plugin: they hash bytes themselves.
 
 ## 1. Plugin identity and layout
@@ -1424,9 +1425,9 @@ waits instead of refusing, polling and printing why. `--budget <size>` (a
 address order; what a budget-capped run deletes was capped when it was
 trashed, not when it is deleted. `prune --apply` exits 1 only on a Claim
 write failure, naming how many of the planned releases it wrote first.
-`untrash` always acts (there is no dry run) and exits 1 when nothing named
-is in any Trash ledger. §19 has the full contract and plan decisions 6 and
-8 to 13.
+`untrash` always acts (there is no dry run) and exits 1 when another sweep
+holds `sweep.lock`, or when nothing named is in any Trash ledger. §19 has
+the full contract and plan decisions 6 and 8 to 13.
 
 *Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
 `1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
@@ -2590,9 +2591,10 @@ script (`Session.groovy:606` at v26.04.6, confirmed with
    pinned run releases as usual, since its pins hold regardless. [21] answer
    5; plan decision 12.
 7. `sweep`, `prune` and `untrash` land in the CLI (§0 rule 5, §15): dry runs
-   by default, `--apply true` to act; `untrash` always acts. `put` stays the
-   only way to write a pin or a `retain` Claim by hand. [07], [20] and [21]
-   throughout.
+   by default, `--apply true` to act; `untrash` always acts, and exits 1
+   when another sweep holds `sweep.lock` or when nothing named is in any
+   Trash ledger. `put` stays the only way to write a pin or a `retain`
+   Claim by hand. [07], [20] and [21] throughout.
 8. Gate assertion 9 (§14) and tier two's T7 (`gate/tier2/README.md`) exercise
    the sequence above end to end, T7 on an S3 member, also exercising the
    lock and the ledger. [21] answer 7.
@@ -2672,10 +2674,10 @@ a reviewer could reject any of them.
     Identity is pruned separately. A run whose `retain` group is in conflict
     is skipped and reported; a pinned run is released as usual (its pins
     hold).
-13. `untrash` takes the sweep lock, removes the named addresses (or a whole
-    sweep with `--sweep <id>`) from the ledgers, and says that a block still
-    unreachable is trashed again by the next sweep, so the way to keep it is
-    a pin or `del retain`.
+13. `untrash` takes the sweep lock, exiting 1 if another sweep already holds
+    it, removes the named addresses (or a whole sweep with `--sweep <id>`)
+    from the ledgers, and says that a block still unreachable is trashed
+    again by the next sweep, so the way to keep it is a pin or `del retain`.
 14. Ledger format, not a block: JSON
     `{"sweep": <id>, "trashed_at": <iso>, "deadline": <iso>, "blocks": [{"cid": <text>, "size": <int>}, ...]}`,
     blocks sorted by cid, named `trash/<13-digit deadline epoch millis>-<sweep id>`
