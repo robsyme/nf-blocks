@@ -72,8 +72,16 @@ export async function buildMember({ now = Date.now(), extra = null } = {}) {
   ]
   const watermark = entryName(at.R1, 'run', runs.R1.completion)
   const snapshot = await snapshotOf(runs.R1, item, content, watermark, more.rows)
+  /** The first fixture block value of the given kind, decoded. */
+  const valueOfKind = (kind) => {
+    for (const bytes of blocks.values()) {
+      const value = dagCbor.decode(bytes)
+      if (value.kind === kind) return value
+    }
+    return null
+  }
   return { blocks, log, watermark, runs, item: Object.fromEntries(Object.entries(item).map(([k, v]) => [k, v.toString()])),
-    content: Object.fromEntries(Object.entries(content).map(([k, v]) => [k, v.toString()])), snapshot }
+    content: Object.fromEntries(Object.entries(content).map(([k, v]) => [k, v.toString()])), snapshot, valueOfKind }
 }
 
 /** R1's rows, as Index.ingestRun and IndexSnapshot.write would leave them. */

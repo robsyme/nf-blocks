@@ -416,6 +416,12 @@ type OutputCollection struct {
   name String
   items [nullable &OutputItem]  # sorted by cid string
   paths [[nullable String]]
+  index optional OutputIndex     # 2026-09-29 (ticket 26): the Output Index File of an output with index {}
+}
+
+type OutputIndex struct {
+  leaf Leaf
+  path String
 }
 
 type RunManifest struct {
@@ -467,6 +473,7 @@ type Anomalies struct {
   unaddressed Int
   declined Int
   never_published Int
+  unjoined optional Int  # 2026-09-29 (ticket 19): publishes that joined no item; absent reads as 0
 }
 
 # Block explorer spec section 7.
@@ -564,7 +571,8 @@ Leaves carry `provider`, and ignores it. The RunCompletion records providers.
   run: Cid,                      // RunManifest
   name: string,                  // output name from the workflow output DSL
   items: [Cid|null, ...],        // OutputItem links sorted ascending by cid string; null only when Nextflow handed us a null item
-  paths: [[string, ...], ...] }  // paths[i] = publish paths (relative to outputDir, '/'-joined) of item i's leaves in depth-first order; null for a leaf with no path
+  paths: [[string, ...], ...],   // paths[i] = publish paths (relative to outputDir, '/'-joined) of item i's leaves in depth-first order; null for a leaf with no path
+  index: { leaf: Leaf, path: string }|absent }  // 2026-09-29 (ticket 26): the Output Index File of an output with `index {}`; absent when the output declares none
 ```
 
 ### RunManifest
@@ -646,7 +654,7 @@ Nothing reads `config` by machine: it is provenance for people.
   exit_status: int|null,
   possibly_incomplete: bool,            // true for every failed run (no barrier exists on that path)
   started_at: string, finished_at: string,
-  anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int },
+  anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int, unjoined: int },  // unjoined added 2026-09-29 (ticket 19); absent on an older block reads as 0
   error: string|null,
   providers: { <provider>: [Cid, ...] } }   // schema 2: every Leaf address the run published (each file leaf and each directory leaf's manifest) under the provider that supplied it; not the files inside a directory (final review I5)
 ```
