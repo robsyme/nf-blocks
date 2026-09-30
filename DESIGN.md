@@ -1337,7 +1337,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.1.0-beta.2'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.2.0-beta.1'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -1947,6 +1947,12 @@ Not yet run, for Rob (they need his SSO session): `make gate-cloud`
 (A6-A7), `make gate-tier2` (T1-T6, T2b), one `explore` against a
 writable S3 member in a bucket he names, and, at release, a clean-machine
 install from the registry confirming nf-amazon is fetched (Task 1 ruling).*
+
+*Status 2026-09-28: accepted with Rob's SSO session on `9b0c7f2`: `make gate`
+12/0/6, A 5/5, B 12/12; `make gate-cloud` A6-A7 2/0; `make gate-tier2` T1-T6
+7/0/0 (70 Batch jobs, the head node read 0 bytes in every run); one
+`explore` against a writable S3 member. Merged to `main` at `0b32a0e` and
+released as 0.2.0-beta.1.*
 
 Plan `docs/plans/2026-09-27-cloud-milestone-4.md`, from the map
 `../.scratch/post-gate/map.md`; each ticket's `## Answer` (and addendum)

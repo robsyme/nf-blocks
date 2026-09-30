@@ -19,7 +19,7 @@ built against.
 
 ### Status: beta
 
-This is a beta (`0.1.0-beta.2`). Pin the version in `plugins { }`, as the
+This is a beta (`0.2.0-beta.1`). Pin the version in `plugins { }`, as the
 examples below do. What it supports today:
 
 - Milestone 4 (cloud): any member, the writable one included, is a local
@@ -50,7 +50,7 @@ the same store alias:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0-beta.2'
+    id 'nf-blocks@0.2.0-beta.1'
 }
 
 lineage.enabled = true
@@ -75,6 +75,13 @@ aborts.
 
 Nextflow downloads the plugin from the Nextflow Registry the first time the
 pipeline runs.
+
+To add nf-blocks to someone else's pipeline, such as an nf-core one, with a
+`-c` config file: a `plugins { }` block in that file replaces the pipeline's
+own plugin list rather than adding to it. Repeat the pipeline's pinned plugins
+beside nf-blocks, or Nextflow installs the latest release of each one the
+pipeline includes (measured with nf-core/sarek 3.10.0, whose `nf-schema@2.7.2`
+pin was replaced by nf-schema 3.0.0, and the run failed).
 
 ## Examples
 
@@ -105,7 +112,7 @@ the work dir is on S3 too:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0-beta.2'
+    id 'nf-blocks@0.2.0-beta.1'
 }
 
 lineage.enabled = true
@@ -240,7 +247,7 @@ member beside its own writable one:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.1.0-beta.2'
+    id 'nf-blocks@0.2.0-beta.1'
 }
 
 manifest.name = 'downstream'           // or cas.pipeline = 'downstream'

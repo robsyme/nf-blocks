@@ -88,7 +88,7 @@ the zip just built on every run that builds.
 
 Two things `gate.config` has to say that are not obvious:
 
-- `plugins { id 'nf-blocks@0.1.0-beta.2' }` — the version must be pinned. An unpinned
+- `plugins { id 'nf-blocks@0.2.0-beta.1' }` — the version must be pinned. An unpinned
   id sends Nextflow to the plugin registry, which has never heard of nf-blocks,
   and the run dies with `Cannot find latest version of nf-blocks plugin` before
   anything is loaded.
