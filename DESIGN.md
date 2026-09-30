@@ -1505,6 +1505,8 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
+| `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26) |
+| `[data-output-index-missing]` | a collection's Output Index File, when it was never written: `data-output-index-missing` the publish path it was to have (ticket 26) |
 | `[data-page]` | on the pipeline, collection and Selections views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |

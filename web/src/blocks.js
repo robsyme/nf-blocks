@@ -11,6 +11,10 @@ export class BlockError extends Error {
   constructor(code, cid, message) { super(message); this.code = code; this.cid = cid }
 }
 
+/** Where a block is served from (DESIGN.md §15): the one function BlockFetcher.load
+ * fetches from and views.js links a download to, so both always agree. */
+export const blockHref = (cidText) => blockPath(cidText)
+
 const PROVIDERS = new Set(['head-node', 'fusion-node', 's3-copy'])
 
 // What the IPLD Schema cannot say (DESIGN.md §6, ticket 16): an OutputItem's
@@ -65,7 +69,7 @@ export class BlockFetcher {
     }
     let res
     try {
-      res = await this.fetchFn(new URL(blockPath(cidText), this.base).href)
+      res = await this.fetchFn(new URL(blockHref(cidText), this.base).href)
     } catch (e) {
       throw new BlockError('fetch_failed', cidText, `could not fetch block ${cidText}: ${e.message}`)
     }

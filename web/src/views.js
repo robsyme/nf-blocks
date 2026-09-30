@@ -2,6 +2,7 @@
 // One function per route (DESIGN.md §15). Each returns a node; the data-*
 // attributes are the contract the Gate reads, the rest is for people.
 import { h, link, cid, copyOutcome } from './html.js'
+import { blockHref } from './blocks.js'
 import { saveChoice } from './save-choice.js'
 import { saveSequence, retryRestore } from './save-flow.js'
 import { Previews } from './previews.js'
@@ -111,7 +112,7 @@ export async function run(ex, completionCid) {
       h('dt', {}, 'pipeline'), h('dd', {}, link(`#/pipeline/${enc(row.pipeline)}`, row.pipeline)),
       h('dt', {}, 'status'), h('dd', {}, completion.possibly_incomplete ? `${completion.status}, possibly incomplete` : completion.status),
       h('dt', {}, 'finished'), h('dd', {}, completion.finished_at),
-      h('dt', {}, 'anomalies'), h('dd', {}, `unresolvable ${a.unresolvable}, unaddressed ${a.unaddressed}, declined ${a.declined}, never published ${a.never_published}`),
+      h('dt', {}, 'anomalies'), h('dd', {}, `unresolvable ${a.unresolvable}, unaddressed ${a.unaddressed}, declined ${a.declined}, never published ${a.never_published}, unjoined ${a.unjoined ?? 0}`),
       completion.error ? [h('dt', {}, 'error'), h('dd', {}, completion.error)] : null),
     h('h2', {}, 'Outputs'),
     // A run with no workflow outputs (a consumer that only reads, say) records no Output Collections.
@@ -122,11 +123,25 @@ export async function run(ex, completionCid) {
         lid ? snippetBlock({ kind: 'run', lid, output: c.output }) : null)))])
 }
 
+/** The collection's Output Index File line (Task 4, DESIGN.md §15): a download
+ * link when it was published, or a note naming its publish path when it was not. */
+function indexLine(idx) {
+  if (!idx) return null
+  return idx.leaf.address
+    ? h('p', { 'data-output-index': String(idx.leaf.address) },
+        "Nextflow's index file for this output: ",
+        h('a', { href: blockHref(String(idx.leaf.address)), download: idx.leaf.name }, idx.leaf.name),
+        ` (published at ${idx.path})`)
+    : h('p', { 'data-output-index-missing': idx.path },
+        `Nextflow's index file for this output (${idx.path}) was never written.`)
+}
+
 export async function collection(ex, collectionCid, offset = 0, ctx) {
   const c = await ex.collection(collectionCid, { offset })
   return h('section', {},
     h('h1', {}, c.output), cid(collectionCid),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
+    indexLine(c.index),
     pager(`#/collection/${collectionCid}`, c, 'items'),
     c.total === 0 ? h('p', { class: 'muted' }, 'This collection has no items.')
       : itemRows(ex, ctx, { items: c.items, total: c.total, collectionCid, completion: c.completion, output: c.output, where: [],

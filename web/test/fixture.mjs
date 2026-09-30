@@ -7,7 +7,9 @@ import * as dagCbor from '@ipld/dag-cbor'
 import { CID } from 'multiformats/cid'
 import * as Digest from 'multiformats/hashes/digest'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { loadSqlite } from './helpers.mjs'
+import { loadSqlite, snapshotDb } from './helpers.mjs'
+import { Explorer } from '../src/model.js'
+import { BlockFetcher } from '../src/blocks.js'
 
 const HORIZON = 9999999999999
 export const entryName = (millis, kind, cid) => `${String(HORIZON - millis).padStart(13, '0')}-${kind}-${cid}`
@@ -26,11 +28,11 @@ function manifest(runName) {
     nextflow_version: '26.04.6', params: {}, config: {}, script: null, started_at: '2026-09-01T00:00:00.000Z' }
 }
 
-function completion(run, collections, status, finishedAt) {
+function completion(run, collections, status, finishedAt,
+  anomalies = { unresolvable: 0, unaddressed: 1, declined: 0, never_published: 0 }) {
   return { kind: 'RunCompletion', schema: 1, asserted_by: 'test', run, collections, input_set: null, status,
     exit_status: status === 'succeeded' ? 0 : 1, possibly_incomplete: status !== 'succeeded',
-    started_at: '2026-09-01T00:00:00.000Z', finished_at: finishedAt,
-    anomalies: { unresolvable: 0, unaddressed: 1, declined: 0, never_published: 0 }, error: null }
+    started_at: '2026-09-01T00:00:00.000Z', finished_at: finishedAt, anomalies, error: null }
 }
 
 export async function buildMember({ now = Date.now(), extra = null } = {}) {
@@ -124,4 +126,62 @@ export function blockFetch(blocks) {
   }
   fn.asked = asked
   return fn
+}
+
+/** An Explorer open over a fixture member, the way model.test.mjs's own `open` builds one. */
+async function explorerOf(member, now) {
+  return Explorer.open({
+    base: 'http://h/m/lab/',
+    openDb: async () => snapshotDb(member.snapshot),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(member.blocks) }),
+    listFn: async () => ({ names: member.log, readable: true }),
+    now: () => now,
+  })
+}
+
+/**
+ * A member (Task 4) whose one run is a tail run only (not in the snapshot),
+ * publishing a single collection with an Output Index File: `{ ids: { ex,
+ * collection, completion, indexFile } }`. `indexFile` is the index leaf's
+ * address, or `null` when `neverPublished` leaves it unwritten (`reason:
+ * 'never_published'`, `address` and `size` both null, DESIGN.md §6 Leaf).
+ */
+export async function memberWithIndexedCollection({ indexName, indexPath, neverPublished = false } = {}) {
+  const now = Date.now()
+  let ids
+  const member = await buildMember({
+    now,
+    extra: ({ put, at }) => {
+      const m = put(manifest('R4'))
+      const address = neverPublished ? null : rawCid(`index-content-${indexPath}`)
+      const leaf = { kind: 'Leaf', name: indexName, address, size: neverPublished ? null : 42,
+        reason: neverPublished ? 'never_published' : null }
+      const coll = put({ kind: 'OutputCollection', schema: 1, asserted_by: 'test', run: m, name: 'aligned',
+        items: [], paths: [], index: { leaf, path: indexPath } })
+      const comp = put(completion(m, [coll], 'succeeded', '2026-09-04T10:00:00.000Z'))
+      ids = { collection: coll.toString(), completion: comp.toString(), indexFile: address ? address.toString() : null }
+      return { log: [entryName(at.R3 + 2000, 'run', comp.toString())], rows: null }
+    },
+  })
+  return { ex: await explorerOf(member, now), ids }
+}
+
+/**
+ * A member (Task 4) whose one run is a tail run only, its RunCompletion
+ * carrying `anomalies.unjoined: n`: `{ ex, ids: { completion } }`.
+ */
+export async function memberWithUnjoinedRun(n) {
+  const now = Date.now()
+  let ids
+  const member = await buildMember({
+    now,
+    extra: ({ put, at }) => {
+      const m = put(manifest('R4'))
+      const comp = put(completion(m, [], 'succeeded', '2026-09-04T10:00:00.000Z',
+        { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0, unjoined: n }))
+      ids = { completion: comp.toString() }
+      return { log: [entryName(at.R3 + 2000, 'run', comp.toString())], rows: null }
+    },
+  })
+  return { ex: await explorerOf(member, now), ids }
 }
