@@ -60,6 +60,14 @@ class StoreBuilder(object):
         open(os.path.join(d, "%013d-%s-%s" % (9999999999999 - written_millis, kind, cid)),
              "w").close()
 
+    def coord(self, rel_path, cid):
+        """A coords/<rel_path> Store URI pointer file, as gate/fixtures/make_fixture.py's
+        Writer.coord writes one."""
+        path = os.path.join(self.root, "coords", *rel_path.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("cas://%s/%s\n" % (cid, rel_path.rsplit("/", 1)[-1]))
+
     def manifest(self, entries):
         return self.block({"kind": "DirectoryManifest", "schema": 1,
                            "entries": entries})
@@ -451,7 +459,8 @@ class TestRunExitAssertion(TempTree):
             fh.write("%d\n" % code)
 
     def test_all_expected_exits_pass(self):
-        for name in ("cold", "again", "resumed", "elsewhere", "consumer"):
+        for name in ("cold", "again", "resumed", "elsewhere", "outputs",
+                     "outputs-badindex", "consumer"):
             self._exit(name, 0)
         self._exit("fail", 1)
         status, message = gate_assert.assert_runs_exited(gate_assert.Gate(self.tmp))
@@ -476,7 +485,8 @@ class TestRunExitAssertion(TempTree):
 
     def test_resumed_failing_on_nextflows_own_publish_copy_is_not_our_failure(self):
         """The lock for assertion 4c is caught by PublishDir first (issue 17)."""
-        for name in ("cold", "again", "elsewhere", "consumer"):
+        for name in ("cold", "again", "elsewhere", "outputs", "outputs-badindex",
+                     "consumer"):
             self._exit(name, 0)
         self._exit("fail", 1)
         self._exit("resumed", 1)
@@ -734,6 +744,181 @@ class SeedingRunsTest(TempTree):
 
     def test_no_watermark_fails(self):
         self.assertEqual(len(gate_assert._seeding_problems(self.b.store, None, [self.old])), 1)
+
+
+class OutputsAssertionsTest(TempTree):
+    """gate/outputs and gate/outputs-badindex (milestone 5, plan 2026-09-29): a fake
+    store-outputs shaped like the real runs, so assertions 14 to 16 run against it
+    without the Gate. run "outputs" carries tuples (index.json), records (index.csv,
+    header true) and LEGACY's two unjoined publishDir files; run "outputs-badindex"
+    carries a tuples collection whose CSV index write failed (never_published)."""
+
+    def setUp(self):
+        super(OutputsAssertionsTest, self).setUp()
+        self.b = StoreBuilder(self.path("store-outputs"))
+        self.gate = gate_assert.Gate(self.tmp)
+
+    def _manifest(self, run_name):
+        return self.b.block({
+            "kind": "RunManifest", "schema": 1, "asserted_by": "gate",
+            "pipeline": "cas-gate-outputs", "run_name": run_name,
+            "nf_run_hash": "a" * 32, "session_id": "s", "resumed": False,
+            "nextflow_version": "26.04.6", "repository": None, "revision": None,
+            "commit_id": None, "params": {}, "config": "", "script": None,
+            "started_at": "2026-01-01T00:00:00.000Z"})
+
+    def _item(self, value):
+        return self.b.block({"kind": "OutputItem", "schema": 2, "value": value})
+
+    def _addressed_leaf(self, name, data):
+        """A Leaf whose address is the raw CID of `data`, also written to the
+        store; returns (leaf, cid)."""
+        cid = self.b.raw(data)
+        return {"kind": "Leaf", "name": name, "address": cas.Cid(cid),
+                "size": len(data), "reason": None}, cid
+
+    def _never_published_leaf(self, name):
+        return {"kind": "Leaf", "name": name, "address": None, "size": None,
+                "reason": "never_published"}
+
+    def _completion(self, run_link, collection_cids, unjoined=0, never_published=0):
+        return self.b.block({
+            "kind": "RunCompletion", "schema": 2, "asserted_by": "gate",
+            "run": cas.Cid(run_link),
+            "collections": [cas.Cid(c) for c in collection_cids],
+            "input_set": None, "status": "succeeded", "exit_status": 0,
+            "possibly_incomplete": False,
+            "started_at": "2026-01-01T00:00:00.000Z",
+            "finished_at": "2026-01-01T00:00:01.000Z",
+            "anomalies": {"unresolvable": 0, "unaddressed": 0, "declined": 0,
+                         "never_published": never_published, "unjoined": unjoined},
+            "error": None, "providers": {}})
+
+    def _exit(self, name, code):
+        d = self.path("logs", name)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "exit"), "w") as fh:
+            fh.write("%d\n" % code)
+
+    def _log(self, name, text):
+        d = self.path("logs", name)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "nextflow.log"), "w") as fh:
+            fh.write(text)
+
+    def _build_outputs_run(self, tuples_leaf_address=None, unjoined=2):
+        """Run "outputs": tuples/records join with a Meta Map carrying "id",
+        each with an index Nextflow wrote; LEGACY's two publishDir files are
+        addressed coordinates no item or index leaf names.
+
+        `tuples_leaf_address` overrides the tuples index leaf's recorded
+        address (assertion 14's FAIL case); `unjoined` overrides
+        RunCompletion.anomalies.unjoined (assertion 16's FAIL case).
+        """
+        run_link = self._manifest("outputs")
+        a_leaf, _a_cid = self._addressed_leaf("A.txt", b"sample A\n")
+        b_leaf, _b_cid = self._addressed_leaf("B.txt", b"sample B\n")
+        tuples_items = [self._item([{"id": "A"}, a_leaf]),
+                        self._item([{"id": "B"}, b_leaf])]
+        records_items = [self._item({"id": "A", "file": a_leaf}),
+                         self._item({"id": "B", "file": b_leaf})]
+
+        tuples_index_bytes = b'[[{"id":"A"},"tuples/A/A.txt"],[{"id":"B"},"tuples/B/B.txt"]]'
+        tuples_index_cid = self.b.raw(tuples_index_bytes)
+        self.b.coord("tuples/index.json", tuples_index_cid)
+        tuples_leaf = {"kind": "Leaf", "name": "index.json",
+                       "address": cas.Cid(tuples_leaf_address or tuples_index_cid),
+                       "size": len(tuples_index_bytes), "reason": None}
+
+        records_index_bytes = b'"id","file"\n"A","records/A/A.txt"\n"B","records/B/B.txt"\n'
+        records_index_cid = self.b.raw(records_index_bytes)
+        self.b.coord("records/index.csv", records_index_cid)
+        records_leaf = {"kind": "Leaf", "name": "index.csv",
+                        "address": cas.Cid(records_index_cid),
+                        "size": len(records_index_bytes), "reason": None}
+
+        tuples_cid = self.b.block({
+            "kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
+            "run": cas.Cid(run_link), "name": "tuples",
+            "items": [cas.Cid(c) for c in tuples_items],
+            "paths": [["tuples/A/A.txt"], ["tuples/B/B.txt"]],
+            "index": {"leaf": tuples_leaf, "path": "tuples/index.json"}})
+        records_cid = self.b.block({
+            "kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
+            "run": cas.Cid(run_link), "name": "records",
+            "items": [cas.Cid(c) for c in records_items],
+            "paths": [["records/A/A.txt"], ["records/B/B.txt"]],
+            "index": {"leaf": records_leaf, "path": "records/index.csv"}})
+
+        legacy_a = self.b.raw(b"legacy A\n")
+        legacy_b = self.b.raw(b"legacy B\n")
+        self.b.coord("legacy/A.legacy", legacy_a)
+        self.b.coord("legacy/B.legacy", legacy_b)
+
+        self._completion(run_link, [tuples_cid, records_cid], unjoined=unjoined)
+        self._exit("outputs", 0)
+        self._log("outputs", "%s\n%s%s\n" % (
+            gate_assert.LEGACY_PUBLISHDIR_WARNING,
+            gate_assert.LEGACY_UNJOINED_WARNING, "legacy/A.legacy, legacy/B.legacy"))
+
+    def _build_badindex_run(self, index_leaf=None):
+        """Run "outputs-badindex": tuples joins with a Meta Map carrying "id";
+        its CSV index write failed, so the index leaf is never_published
+        unless `index_leaf` overrides it (assertion 15's FAIL case)."""
+        run_link = self._manifest("outputs-badindex")
+        a_leaf, _a_cid = self._addressed_leaf("A.txt", b"sample A\n")
+        b_leaf, _b_cid = self._addressed_leaf("B.txt", b"sample B\n")
+        items = [self._item([{"id": "A"}, a_leaf]), self._item([{"id": "B"}, b_leaf])]
+        if index_leaf is None:
+            index_leaf = self._never_published_leaf("index.csv")
+        tuples_cid = self.b.block({
+            "kind": "OutputCollection", "schema": 1, "asserted_by": "gate",
+            "run": cas.Cid(run_link), "name": "tuples",
+            "items": [cas.Cid(c) for c in items],
+            "paths": [["tuples/A/A.txt"], ["tuples/B/B.txt"]],
+            "index": {"leaf": index_leaf, "path": "tuples/index.csv"}})
+        self._completion(run_link, [tuples_cid], never_published=1)
+        self._exit("outputs-badindex", 0)
+
+    # -- assertion 14 -----------------------------------------------------
+
+    def test_fourteen_passes(self):
+        self._build_outputs_run()
+        status, message = gate_assert.assert_fourteen(self.gate)
+        self.assertEqual(status, gate_assert.PASS, message)
+
+    def test_fourteen_fails_when_the_index_leaf_address_is_wrong(self):
+        self._build_outputs_run(tuples_leaf_address=cas.cid_raw(b"not the bytes at the coordinate"))
+        status, message = gate_assert.assert_fourteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("tuples", message)
+
+    # -- assertion 15 -----------------------------------------------------
+
+    def test_fifteen_passes(self):
+        self._build_badindex_run()
+        status, message = gate_assert.assert_fifteen(self.gate)
+        self.assertEqual(status, gate_assert.PASS, message)
+
+    def test_fifteen_fails_when_the_bad_runs_index_leaf_is_addressed(self):
+        addressed, _cid = self._addressed_leaf("index.csv", b"id,file\n")
+        self._build_badindex_run(index_leaf=addressed)
+        status, message = gate_assert.assert_fifteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("never_published", message)
+
+    # -- assertion 16 -----------------------------------------------------
+
+    def test_sixteen_passes(self):
+        self._build_outputs_run()
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.PASS, message)
+
+    def test_sixteen_fails_when_unjoined_undercounts_the_legacy_publishes(self):
+        self._build_outputs_run(unjoined=1)
+        status, message = gate_assert.assert_sixteen(self.gate)
+        self.assertEqual(status, gate_assert.FAIL)
+        self.assertIn("unjoined", message)
 
 
 if __name__ == "__main__":
