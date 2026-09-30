@@ -56,10 +56,17 @@ class Mark {
         BlockAbsent() { super(null, null, false, false) }
     }
 
+    /** Thrown out of {@link #of} or {@link #extend} when the stop request answers true between windows; the mark is then incomplete and must not be used to delete. */
+    static final class Stopped extends RuntimeException {
+        Stopped() { super('the mark was stopped', null, false, false) }
+    }
+
     private final BlockStore store
     private final int threads
     /** Every composite member but the writable first one, so a Claim can check whether its subject survives there (ruling 2). */
     private final List<BlockStore> otherMembers
+    /** Asked between windows; null never stops. */
+    private final Closure<Boolean> stopRequested
     private final Map<Cid, Integer> seen = new HashMap<Cid, Integer>()
     private final Set<Cid> liveSet = ConcurrentHashMap.newKeySet()
     private final Set<Cid> runs = new LinkedHashSet<Cid>()
@@ -79,10 +86,11 @@ class Mark {
     final List<Cid> unreadableClaims = new ArrayList<Cid>()
     final Roots roots = new Roots()
 
-    private Mark(BlockStore store, int threads) {
+    private Mark(BlockStore store, int threads, Closure<Boolean> stopRequested) {
         this.store = store
         this.threads = Math.max(1, threads)
         this.otherMembers = otherMembersOf(store)
+        this.stopRequested = stopRequested
     }
 
     private static List<BlockStore> otherMembersOf(BlockStore store) {
@@ -95,10 +103,23 @@ class Mark {
     }
 
     static Mark of(BlockStore store, List<MemberLog> logs, int threads) {
-        final Mark m = new Mark(store, threads)
+        return of(store, logs, threads, null)
+    }
+
+    /** As above, asking `stopRequested` before each window; it throws {@link Stopped} when that answers true. */
+    static Mark of(BlockStore store, List<MemberLog> logs, int threads, Closure<Boolean> stopRequested) {
+        final Mark m = new Mark(store, threads, stopRequested)
         m.extend(logs)
         return m
     }
+
+    private void checkStop() {
+        if( stopRequested != null && stopRequested.call() )
+            throw new Stopped()
+    }
+
+    /** The subject of a Claim this mark has read, or null when `cid` is not one (or not a readable one). */
+    synchronized Cid subjectOf(Cid cid) { claimSubject.get(cid) }
 
     Set<Cid> getLive() { Collections.unmodifiableSet(liveSet) }
 
@@ -132,6 +153,7 @@ class Mark {
                     }
                 }
             }
+            checkStop()
             final Map<Cid, Object> claimBlocks = readAll(newClaims)
             for( Cid c : newClaims ) {
                 if( !claimBlocks.containsKey(c) ) {
@@ -144,7 +166,10 @@ class Mark {
                     try {
                         claim = Claim.fromCbor((Map) raw)
                     }
-                    catch( IllegalArgumentException e ) {
+                    catch( RuntimeException e ) {
+                        // IllegalArgumentException from the field checks, and a
+                        // ClassCastException from a field of the wrong shape (a
+                        // `supersedes` that is not a list): unreadable, not fatal.
                         claim = null
                     }
                 }
@@ -259,6 +284,7 @@ class Mark {
             final int window = Math.max(1, threads * WINDOW_FACTOR)
             int i = 0
             while( i < todo.size() ) {
+                checkStop()
                 final int end = Math.min(i + window, todo.size())
                 processWindow(todo.subList(i, end), next)
                 i = end
@@ -318,6 +344,8 @@ class Mark {
         switch( Records.kindOf(block) ) {
             case Records.RUN_COMPLETION:
                 meta(block.get('run'), META, v.cid, next)
+                // The run's InputSet (null until milestone 7 writes one) is its metadata.
+                meta(block.get('input_set'), META, v.cid, next)
                 for( Object c : (List) (block.get('collections') ?: []) )
                     meta(c, v.want, v.cid, next)
                 break

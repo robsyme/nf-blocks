@@ -474,4 +474,201 @@ class SweepTest extends Specification {
         lines.any { it.contains('age floor (10m)') }
         r.toJson().fresh == [[session: '9c1e', run_name: 'happy_turing', pipeline: 'p', age_seconds: 20L]]
     }
+
+    // ------------------------------------------------ final review fixes (items 1, 2)
+
+    /** Writes a `verb` Claim on `subject` whose address sorts before `before`'s, by moving the fixture clock. */
+    private Cid claimSortingBefore(Cid subject, String verb, Cid before) {
+        while( true ) {
+            final Claim c = new Claim('test', subject, verb, null, null, [], Index.isoMillis(f.clock + 1))
+            if( DagCbor.cidOf(DagCbor.encode(c.toCbor())).toString() < before.toString() )
+                return f.claim(subject, verb, null, null)
+            f.clock++
+        }
+    }
+
+    /** Local retention storage with some behaviour replaced, served by a LocalBlockStore over the same root. */
+    private LocalBlockStore storeWith(RetentionStorage storage) {
+        return new LocalBlockStore(root, 'lab', true) {
+            @Override RetentionStorage retentionStorage() { storage }
+        }
+    }
+
+    /** A hidden run, trashed by one sweep, its ledger now past its deadline; returns the run and its delete Claim. */
+    private Map hiddenRunDue() {
+        final Map gone = f.run('gone', [[g: f.raw('gone')]])
+        final Cid del = claimSortingBefore((Cid) gone.completion, 'delete', (Cid) gone.completion)
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        return gone + [claim: del]
+    }
+
+    def 'a stop between batches never leaves a deleted run without its delete Claim'() {
+        given: 'batches of one, and a stop as soon as either the Claim or its subject has gone'
+        final Map gone = hiddenRunDue()
+        final Cid del = (Cid) gone.claim
+        final Cid completion = (Cid) gone.completion
+        final Sweep s = sweep()
+        s.batchSize = 1
+        final Closure<Boolean> stop = { -> !f.store.has(del) || !f.store.has(completion) } as Closure<Boolean>
+
+        when:
+        final SweepReport r = s.apply(false, 0L, stop, say, sleeper)
+        final SweepReport dry = sweep().dryRun()
+
+        then: 'the subject went first; its Claim stays ledgered, so the run is not resurrected'
+        r.stopped == 'interrupted'
+        !f.store.has(completion)
+        f.store.has(del)
+        dry.missingMetadata == []
+        dry.roots.contentRoots == 0
+
+        when: 'the next sweep finishes the job'
+        final SweepReport rest = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        rest.applied
+        !f.store.has(del)
+        f.store.retentionStorage().listLedgers() == []
+    }
+
+    /** Local retention storage whose deleteBlocks leaves the given blocks in place and reports them failed. */
+    static class PartialDeletes implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['deleteBlocks']) final RetentionStorage inner
+        final Set<Cid> refuse
+        PartialDeletes(RetentionStorage inner, Set<Cid> refuse) { this.inner = inner; this.refuse = refuse }
+        List<Cid> deleteBlocks(Collection<Cid> cids) {
+            inner.deleteBlocks(cids.findAll { !refuse.contains(it) })
+            return cids.findAll { refuse.contains(it) }.toList()
+        }
+    }
+
+    def 'a partial DeleteObjects failure keeps every Claim for the next sweep'() {
+        given:
+        final Map gone = hiddenRunDue()
+        final Cid del = (Cid) gone.claim
+        final Cid completion = (Cid) gone.completion
+        final LocalBlockStore flaky = storeWith(new PartialDeletes(f.store.retentionStorage(), [completion] as Set))
+
+        when:
+        final SweepReport r = new Sweep(flaky, SweepPolicy.defaults()).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        f.store.has(completion)
+        f.store.has(del)
+        r.warnings.any { it.contains('could not be deleted') }
+        sweep().dryRun().roots.contentRoots == 0
+
+        when:
+        final SweepReport rest = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        rest.applied
+        !f.store.has(completion)
+        !f.store.has(del)
+    }
+
+    def 'a due Claim whose subject is still waiting in Trash is held back, not deleted'() {
+        given: 'the run completion moved to a ledger whose deadline has not passed'
+        final Map gone = hiddenRunDue()
+        final Cid del = (Cid) gone.claim
+        final Cid completion = (Cid) gone.completion
+        final RetentionStorage s = f.store.retentionStorage()
+        final String name = s.listLedgers()[0]
+        final TrashLedger l = TrashLedger.parse(name, s.readLedger(name))
+        s.writeLedger(name, l.without([completion] as Set).toJson())
+        final TrashLedger later = new TrashLedger('later', System.currentTimeMillis() + SweepPolicy.DAY, l.trashedAt, [(completion): l.blocks[completion]])
+        s.writeLedger(later.name, later.toJson())
+
+        when:
+        final SweepReport r = sweep().apply(false, 0L, { -> false }, say, sleeper)
+        final SweepReport dry = sweep().dryRun()
+
+        then:
+        r.applied
+        f.store.has(completion)
+        f.store.has(del)
+        s.listLedgers().any { TrashLedger.parse(it, s.readLedger(it)).blocks.containsKey(del) }
+        dry.roots.hidden == 1
+        dry.roots.contentRoots == 0
+        dry.missingMetadata == []
+    }
+
+    /** Local retention storage whose ledger writes fail. */
+    static class FailingLedgers implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['writeLedger']) final RetentionStorage inner
+        FailingLedgers(RetentionStorage inner) { this.inner = inner }
+        void writeLedger(String name, byte[] body) { throw new IOException('ledger write refused') }
+    }
+
+    def 'the lock is released when the applied pass throws'() {
+        given:
+        final Map b = f.run('b', [[u: f.raw('only')]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        new Sweep(storeWith(new FailingLedgers(f.store.retentionStorage())), SweepPolicy.defaults())
+            .apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        final IOException e = thrown()
+        e.message == 'ledger write refused'
+        SweepLock.holder(f.store.retentionStorage()) == null
+    }
+
+    /** Local retention storage counting its block listings. */
+    static class CountingListings implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['listBlockStats']) final RetentionStorage inner
+        int listings = 0
+        CountingListings(RetentionStorage inner) { this.inner = inner }
+        List<BlockStat> listBlockStats() { listings++; inner.listBlockStats() }
+    }
+
+    def 'a stop request during the mark ends the sweep there and releases the lock'() {
+        given:
+        f.run('a', [[x: f.raw('x')], [y: f.raw('y')]])
+        final CountingListings counting = new CountingListings(f.store.retentionStorage())
+
+        when:
+        final SweepReport r = new Sweep(storeWith(counting), SweepPolicy.defaults()).apply(false, 0L, { -> true }, say, sleeper)
+
+        then:
+        r.stopped == 'interrupted'
+        !r.applied
+        counting.listings == 0
+        SweepLock.holder(f.store.retentionStorage()) == null
+    }
+
+    def 'abandon releases the lock of a sweep still running, which then stops before deleting'() {
+        given:
+        final Cid only = f.raw('only')
+        final Map b = f.run('b', [[u: only]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        final Sweep s = sweep()
+        SweepLock.Holder afterAbandon = new SweepLock.Holder('not called', null, 0L)
+        boolean abandoned = false
+        final Closure<Boolean> hook = { ->
+            if( !abandoned ) {
+                abandoned = true
+                s.abandon()
+                afterAbandon = SweepLock.holder(f.store.retentionStorage())
+            }
+            false
+        } as Closure<Boolean>
+
+        when:
+        final SweepReport r = s.apply(false, 0L, hook, say, sleeper)
+
+        then:
+        abandoned
+        afterAbandon == null
+        r.stopped.contains('lock')
+        r.deleted == []
+        f.store.has(only)
+    }
 }

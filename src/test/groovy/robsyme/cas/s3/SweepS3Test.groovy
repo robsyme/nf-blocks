@@ -28,7 +28,7 @@ class SweepS3Test extends Specification {
 
     private SweepReport apply() { new Sweep(store, SweepPolicy.defaults()).apply(false, 0L, { -> false }, say, sleeper) }
 
-    def 'a release is ledgered under trash/, deleted in one DeleteObjects past the deadline, and old uploads aborted'() {
+    def 'a release is ledgered under trash/, deleted past the deadline (blocks, then their Claims), and old uploads aborted'() {
         given:
         final Cid only = f.raw('only')
         final Map b = f.run('b', [[u: only]])
@@ -60,7 +60,8 @@ class SweepS3Test extends Specification {
 
         then:
         second.applied
-        ops.calls.count { it.startsWith('DELETEMANY') } == 1
+        // One DeleteObjects for the blocks, then one for the Claims, which go only after their subjects.
+        ops.calls.count { it.startsWith('DELETEMANY') } == 2
         second.deleted.size() == first.trashed
         !store.has(only)
         !store.has((Cid) gone.completion)

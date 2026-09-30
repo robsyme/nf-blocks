@@ -51,7 +51,10 @@ class RetentionCommands {
             throw new UsageException("--format is text or json, got '${format}'")
         if( wait && !apply )
             throw new UsageException('--wait applies to --apply only; a dry run never waits')
-        final long budget = o.flag('budget') ? bytes(o.flag('budget')) : 0L
+        // No --budget means no cap; an explicit 0 is refused rather than read as "no cap" too.
+        final long budget = o.flag('budget') != null ? bytes(o.flag('budget')) : 0L
+        if( o.flag('budget') != null && budget <= 0L )
+            throw new UsageException("--budget caps what one sweep trashes and must be above 0, got '${o.flag('budget')}'; leave --budget out for no cap")
         final SweepPolicy policy = policy(config, err)
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
         cas.checkClock()
@@ -63,9 +66,15 @@ class RetentionCommands {
         }
         final AtomicBoolean stop = new AtomicBoolean(false)
         final CountDownLatch done = new CountDownLatch(1)
+        // Ctrl-C: ask the sweep to stop (the mark checks between windows, the deletes before each
+        // batch) and wait for it; if it has not ended in 30 s the JVM exits without its finally,
+        // so release the lock here rather than leave it held for 10 minutes.
         final Thread hook = new Thread({ ->
             stop.set(true)
-            try { done.await(30, TimeUnit.SECONDS) } catch( InterruptedException e ) { Thread.currentThread().interrupt() }
+            boolean ended = false
+            try { ended = done.await(30, TimeUnit.SECONDS) } catch( InterruptedException e ) { Thread.currentThread().interrupt() }
+            if( !ended )
+                sweeper.abandon()
         } as Runnable, 'nf-blocks-sweep-stop')
         Runtime.runtime.addShutdownHook(hook)
         SweepReport r = null

@@ -142,9 +142,9 @@ class CasCommands {
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
             '                         nextflow -q plugin nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size\n' +
-            '  sweep [--apply] [--wait] [--budget <size>] [--format text|json]\n' +
+            '  sweep [--apply true] [--wait true] [--budget <size>] [--format text|json]\n' +
             '                         dry run unless --apply: roots, live, dead and Trash; --apply trashes the newly dead and deletes what is past its grace\n' +
-            '  prune (--keep-last <n> | --keep-newer <period>) [--pipeline <id>] [--apply]\n' +
+            '  prune (--keep-last <n> | --keep-newer <period>) [--pipeline <id>] [--apply true]\n' +
             '                         dry run unless --apply: release the content of older runs, keeping their lineage (set retain "lineage")\n' +
             '  untrash (<cid>... | --sweep <id>)\n' +
             '                         take blocks out of the Trash ledger; a block nothing reaches is trashed again by the next sweep'

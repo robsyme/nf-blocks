@@ -93,6 +93,14 @@ class CasCommandsTest extends Specification {
         err.toString().contains('snapshot')
     }
 
+    def 'the usage shows --apply and --wait with their value, as the README does'() {
+        expect:
+        run('frobnicate') == 2
+        err.toString().contains('sweep [--apply true] [--wait true] [--budget <size>]')
+        err.toString().contains('[--pipeline <id>] [--apply true]')
+        !err.toString().contains('[--apply]')
+    }
+
     def 'snapshot takes no flags'() {
         expect:
         run('snapshot', ['--port', '1']) == 2

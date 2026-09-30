@@ -36,7 +36,7 @@ class RetentionFixture {
     /**
      * A run with one output `out` whose items each hold the given leaves;
      * returns [completion, collection, items]. {@code options} (finishedAt,
-     * status, pipeline, possiblyIncomplete) are passed through to the
+     * status, pipeline, possiblyIncomplete, inputSet) are passed through to the
      * completion and manifest builders; a caller that omits them gets the
      * same run as before.
      */
@@ -87,7 +87,7 @@ class RetentionFixture {
 
     static Map completion(Cid manifest, List<Cid> collections, Map options = [:]) {
         final String status = (options.status ?: 'succeeded') as String
-        return new RunCompletion([assertedBy: 'test', run: manifest, collections: collections, inputSet: null,
+        return new RunCompletion([assertedBy: 'test', run: manifest, collections: collections, inputSet: (Cid) options.inputSet,
             status: status, exitStatus: status == 'succeeded' ? 0 : 1,
             possiblyIncomplete: options.possiblyIncomplete ?: false,
             startedAt: '2026-09-28T10:00:00.000Z', finishedAt: (options.finishedAt ?: '2026-09-28T10:05:00.000Z') as String,

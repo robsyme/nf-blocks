@@ -200,6 +200,24 @@ class RetentionCommandsTest extends Specification {
         !index().withCloseable { Index i -> i.claimState(s2).released }
     }
 
+    def 'sweep --budget 0 is a usage error, not a sweep without a cap'() {
+        given:
+        f.claim(theRun.completion, 'set', 'retain', 'lineage')
+        ageAll()
+
+        when:
+        final int code = run('sweep', ['--apply', 'true', '--budget', budget])
+
+        then:
+        code == 2
+        err.toString().contains('--budget')
+        err.toString().contains('leave --budget out')
+        !Files.exists(store.resolve('trash'))
+
+        where:
+        budget << ['0', '0 B']
+    }
+
     def 'prune without a policy is a usage error'() {
         expect:
         run('prune', []) == 2

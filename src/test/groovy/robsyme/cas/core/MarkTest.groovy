@@ -408,6 +408,41 @@ class MarkTest extends Specification {
         ((List<Cid>) r.items).every { Cid i -> m.isLive(i) }
     }
 
+    def 'a Claim whose supersedes is not a list is unreadable, kept live and listed, and the mark goes on'() {
+        given:
+        final Map r = f.run('a', [[x: f.raw('x')]])
+        final Map bad = new Claim('test', (Cid) r.completion, 'delete', null, null, [], Index.isoMillis(++f.clock)).toCbor()
+        bad.put('supersedes', 'not a list')
+        final Cid badClaim = f.store.putDagCbor(bad)
+        StoreLog.append(f.store, StoreLogKind.CLAIM, badClaim, ++f.clock)
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(badClaim)
+        m.unreadableClaims == [badClaim]
+        m.isLive((Cid) r.completion)
+        m.roots.contentRoots == 1
+    }
+
+    def "a RunCompletion's input_set link is metadata: kept for a run, and for a released one"() {
+        given:
+        final Cid inputSet = f.store.putDagCbor([note: 'an input set'])
+        final Map r = f.run('a', [[x: f.raw('x')]], [inputSet: inputSet])
+        final Cid otherInputs = f.store.putDagCbor([note: 'another input set'])
+        final Map b = f.run('b', [[y: f.raw('y')]], [inputSet: otherInputs])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(inputSet)
+        m.isLive(otherInputs)
+        m.missingMetadata == []
+    }
+
     private Set<Cid> leavesOf(Cid item) {
         return OutputItem.fromCbor((Map) DagCbor.decode(f.store.open(item).readAllBytes())).leaves()*.address as Set
     }

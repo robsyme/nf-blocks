@@ -29,6 +29,10 @@ class Sweep {
     private final BlockStore writable
     private final RetentionStorage storage
     private final SweepPolicy policy
+    /** Blocks per delete batch: {@link #BATCH}, smaller only in a test. */
+    @groovy.transform.PackageScope int batchSize = BATCH
+    /** The lock of the applied pass in progress, for {@link #abandon}; null otherwise. */
+    private volatile SweepLock active
 
     Sweep(BlockStore store, SweepPolicy policy) {
         policy.validate()
@@ -109,6 +113,10 @@ class Sweep {
                 }
                 say.call("waiting for sweep ${h.sweepId} to release the lock; checking every 30 s".toString())
             }
+            if( stopRequested.call() ) {
+                r.stopped = 'interrupted'
+                return r
+            }
             sleeper.call(LiveWriter.POLL_MILLIS)
         }
         r.fresh = []
@@ -117,10 +125,12 @@ class Sweep {
         final AtomicBoolean lost = new AtomicBoolean(false)
         beats.scheduleAtFixedRate({ -> beat(lock, lost) } as Runnable,
             SweepLock.HEARTBEAT_MILLIS, SweepLock.HEARTBEAT_MILLIS, TimeUnit.MILLISECONDS)
+        active = lock
         try {
             return applyLocked(new Pass(r, lock, lost, registry, stopRequested), budgetBytes)
         }
         finally {
+            active = null
             beats.shutdownNow()
             try {
                 beats.awaitTermination(5, TimeUnit.SECONDS)
@@ -147,6 +157,19 @@ class Sweep {
             log.warn("nf-blocks sweep: the sweep lock heartbeat failed, stopping before the next step: ${t.message}")
             lost.set(true)
         }
+    }
+
+    /**
+     * Releases the lock of an applied pass still in progress, from another
+     * thread: the stop hook calls it when the sweep has not ended within its
+     * wait, so a JVM that exits anyway leaves no held sweep.lock behind. Safe:
+     * the lock forgets its version, so the sweeping thread's next heartbeat
+     * fails and it stops before its next step.
+     */
+    void abandon() {
+        final SweepLock l = active
+        if( l != null )
+            releaseQuietly(l)
     }
 
     private static void releaseQuietly(SweepLock lock) {
@@ -185,7 +208,14 @@ class Sweep {
         p.seen = logs()
         for( MemberLog l : p.seen )
             p.seenNames.add(new HashSet<String>(l.entries*.name))
-        final Mark mark = Mark.of(store, p.seen, THREADS)
+        final Mark mark
+        try {
+            mark = Mark.of(store, p.seen, THREADS, p.stopRequested)
+        }
+        catch( Mark.Stopped e ) {
+            r.stopped = 'interrupted'
+            return r
+        }
         p.mark = mark
         final List<BlockStat> stats = storage.listBlockStats()
         final List<TrashLedger> ledgers = ledgers(r)
@@ -200,36 +230,20 @@ class Sweep {
         }
 
         // Delete what is due, a batch at a time, re-checking before each (plan decision 10).
+        // Claims go last, and only once every other due block went: a Claim deleted ahead of
+        // its subject would change what the subject means to the next mark (a hidden run
+        // whose delete Claim is gone is a content root again, with its metadata half gone).
+        final List<BlockStat> blocksDue = new ArrayList<BlockStat>()
+        final List<BlockStat> claimsDue = new ArrayList<BlockStat>()
+        for( BlockStat s : plan.due )
+            (mark.subjectOf(s.cid) != null ? claimsDue : blocksDue).add(s)
         final List<Cid> deleted = new ArrayList<Cid>()
-        final List<BlockStat> due = new ArrayList<BlockStat>(plan.due)
-        for( int from = 0; from < due.size(); from += BATCH ) {
-            r.stopped = recheck(p)
-            if( r.stopped != null )
-                break
-            final List<BlockStat> batch = new ArrayList<BlockStat>()
-            for( BlockStat s : due.subList(from, Math.min(due.size(), from + BATCH)) )
-                if( !mark.isLive(s.cid) )
-                    batch.add(s)
-            if( batch.isEmpty() )
-                continue
-            List<Cid> failed = null
-            try {
-                failed = storage.deleteBlocks(batch*.cid)
-            }
-            catch( Exception e ) {
-                // Which of the batch went is unknown: record none. A later sweep drops what is
-                // gone from its ledger and clears its log entries as dangling.
-                r.stopped = "deleting a batch of ${batch.size()} block(s) failed: ${e.message}".toString()
-                break
-            }
-            final Set<Cid> failedSet = new HashSet<Cid>(failed)
-            for( BlockStat s : batch )
-                if( !failedSet.contains(s.cid) ) {
-                    deleted.add(s.cid)
-                    r.deletedBytes += s.size
-                }
-            if( failed )
-                r.warnings.add("${failed.size()} block(s) could not be deleted and stay in Trash: ${failed.take(20).join(', ')}".toString())
+        final boolean blocksClean = deleteDue(p, blocksDue, deleted)
+        if( !claimsDue.isEmpty() ) {
+            if( blocksClean )
+                deleteClaimsDue(p, claimsDue, stats, deleted)
+            else
+                r.warnings.add("${claimsDue.size()} Claim(s) past their deadline stay in Trash for the next sweep, since not every other due block was deleted".toString())
         }
         r.deleted = deleted
         deleteLogEntries(deleted)
@@ -237,7 +251,7 @@ class Sweep {
         // unless the lock was lost: then another sweep owns the ledgers, and leaving them as they are
         // only keeps blocks (a later sweep drops what is gone).
         r.rescued = 0      // what this sweep actually dropped, not the plan's count
-        if( !p.lockLost )
+        if( !p.lockLost && !p.lost.get() )
             rewriteLedgers(r, ledgers, deleted, stats, mark)
         if( r.stopped == null )
             r.stopped = recheck(p)
@@ -269,6 +283,84 @@ class Sweep {
     }
 
     /**
+     * Deletes `due` a batch at a time, re-checking before each batch and
+     * leaving out whatever the mark now holds live. True only when every batch
+     * ran and every block in it went; a stop, a failed request or a block S3
+     * could not delete makes it false (`r.stopped` or a warning says which).
+     */
+    private boolean deleteDue(Pass p, List<BlockStat> due, List<Cid> deleted) {
+        final SweepReport r = p.r
+        boolean clean = true
+        for( int from = 0; from < due.size(); from += batchSize ) {
+            r.stopped = recheck(p)
+            if( r.stopped != null )
+                return false
+            final List<BlockStat> batch = new ArrayList<BlockStat>()
+            for( BlockStat s : due.subList(from, Math.min(due.size(), from + batchSize)) )
+                if( !p.mark.isLive(s.cid) )
+                    batch.add(s)
+            if( batch.isEmpty() )
+                continue
+            List<Cid> failed = null
+            try {
+                failed = storage.deleteBlocks(batch*.cid)
+            }
+            catch( Exception e ) {
+                // Which of the batch went is unknown: record none. A later sweep drops what is
+                // gone from its ledger and clears its log entries as dangling.
+                r.stopped = "deleting a batch of ${batch.size()} block(s) failed: ${e.message}".toString()
+                return false
+            }
+            final Set<Cid> failedSet = new HashSet<Cid>(failed)
+            for( BlockStat s : batch )
+                if( !failedSet.contains(s.cid) ) {
+                    deleted.add(s.cid)
+                    r.deletedBytes += s.size
+                }
+            if( failed ) {
+                r.warnings.add("${failed.size()} block(s) could not be deleted and stay in Trash: ${failed.take(20).join(', ')}".toString())
+                clean = false
+            }
+        }
+        return clean
+    }
+
+    /**
+     * The due Claims, after every other due block went. A Claim whose subject
+     * is still in the writable member (listed at the start, or there now) and
+     * was not deleted in this pass is held back: it stays in its ledger for a
+     * later sweep, so the subject never outlives what its Claims said of it.
+     */
+    private void deleteClaimsDue(Pass p, List<BlockStat> claimsDue, List<BlockStat> stats, List<Cid> deleted) {
+        final Set<Cid> listed = new HashSet<Cid>()
+        for( BlockStat s : stats )
+            listed.add(s.cid)
+        final Set<Cid> gone = new HashSet<Cid>(deleted)
+        final List<BlockStat> ready = new ArrayList<BlockStat>()
+        int held = 0
+        for( BlockStat s : claimsDue ) {
+            final Cid subject = p.mark.subjectOf(s.cid)
+            if( !gone.contains(subject) && (listed.contains(subject) || stillThere(subject)) )
+                held++
+            else
+                ready.add(s)
+        }
+        if( held )
+            p.r.warnings.add("${held} Claim(s) past their deadline stay in Trash until their subject is deleted".toString())
+        deleteDue(p, ready, deleted)
+    }
+
+    /** Whether the writable member holds `cid` now; a failure to tell counts as yes, which keeps the Claim. */
+    private boolean stillThere(Cid cid) {
+        try {
+            return writable.has(cid)
+        }
+        catch( Exception e ) {
+            return true
+        }
+    }
+
+    /**
      * Null when the sweep may go on; else why it stops. In order: a stop request,
      * the lock (lost to the heartbeat thread, or refused or failing now), a fresh
      * registration, then the Store Log entries written since the mark, which
@@ -296,7 +388,12 @@ class Sweep {
                 p.r.fresh = fresh
                 return "a pipeline started: ${describe(fresh)} is live".toString()
             }
-            p.mark.extend(newEntries(p))
+            try {
+                p.mark.extend(newEntries(p))
+            }
+            catch( Mark.Stopped e ) {
+                return 'interrupted'
+            }
             if( p.mark.missingMetadata )
                 return "the mark cannot read ${p.mark.missingMetadata.size()} metadata block(s) written since it began: ${p.mark.missingMetadata.take(20).join('; ')}".toString()
             return null
