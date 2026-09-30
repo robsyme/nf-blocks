@@ -859,7 +859,27 @@ class CasObserverTest extends Specification {
         cas.coordinates.read('notes.txt').get().cid == expected
     }
 
-    def 'a file still being written when the run completes is dropped with a warning, and the run is still recorded'() {
+    def 'a file written after the run completes is stored at close (final review I2)'() {
+        given: 'an observer after nf-blocks (nf-prov) writing into outputDir at onFlowComplete'
+        bind(config())
+        observer.onFlowCreate(session)
+        observer.onFlowComplete()
+
+        when:
+        coord('cas://lab/pipeline_info/manifest.json').text = '{}\n'
+        coord('cas://lab/pipeline_info/late.log') << 'one\n' << 'two\n'
+
+        then:
+        cas.coordinates.read('pipeline_info/manifest.json').get().cid == rawCidOf('{}\n')
+        cas.coordinates.read('pipeline_info/late.log').get().cid == rawCidOf('one\ntwo\n')
+        cas.publishFor('cas://lab/pipeline_info/late.log').size == 8
+    }
+
+    private static Cid rawCidOf(String text) {
+        return Cid.of(Cid.RAW, java.security.MessageDigest.getInstance('SHA-256').digest(text.getBytes('UTF-8')))
+    }
+
+    def 'a file still being written when the run completes is left out of the run with a warning, and stored when it closes'() {
         given: 'a failed run whose completion races a publish thread mid-append'
         bind(config())
         final console = capture('nextflow.cas')
@@ -879,6 +899,13 @@ class CasObserverTest extends Specification {
         cas.publishFor('cas://lab/records/index.csv') == null
         warnings(console, 'still open when the run completed') == 1
         console.list.find { it.formattedMessage.contains('still open') }.formattedMessage.contains('cas://lab/records/index.csv')
+
+        when: 'the publish thread finishes after the join'
+        open.write(',"file"\n'.getBytes('UTF-8'))
+        open.close()
+
+        then:
+        cas.coordinates.read('records/index.csv').get().cid == rawCidOf('"id","file"\n')
 
         cleanup:
         open?.close()

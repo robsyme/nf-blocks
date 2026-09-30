@@ -767,26 +767,34 @@ throw `AccessDeniedException` naming both aliases, before anything is read or
 written: a pointer written there would name blocks only this run's writable
 member holds.
 - `createDirectory`: create the coordinate directory under `coords/`.
-- `newOutputStream` on a coordinate (*amended 2026-09-30, Task 6a*): Nextflow
-  writes a CSV Output Index File as a delete and then one append per piece
-  (`CsvWriter.apply`, v26.04.6), so a close is not the end of the file. The
-  stream writes to a per-coordinate spool file that `CasSession` holds, keyed
-  by the join key, under `cas.tmpDir`. Without `APPEND` the spool starts
-  empty, replacing a pending one; with `APPEND` the write continues the
-  pending spool, or else a new one seeded by streaming the coordinate's
-  current block (empty when it names no file; a directory is refused).
-  `close()` hashes nothing. A pending spool is finalised exactly once, into
-  one block, one Pointer File write and one `recordPublish` (`head-node`, the
-  spool's byte count), then deleted: when the provider next resolves the
-  coordinate or a directory above it (a read, attributes, access, a listing,
-  an `upload`), when `onFilePublish` names it, and for every spool left at the
-  join (`finalizeAllPending`, before `Join.join`). A later `APPEND` seeds a
-  new spool from the published content. `delete`/`deleteIfExists` drop a
-  pending spool. A spool whose stream is still open at the join (a publish
-  thread racing a failed run's completion) is dropped with a console warning
-  naming the coordinate, and the rest of the run is recorded; a failure to
-  hash or write a closed spool from the observer aborts the run (rule 3).
-  Spool operations for one key are serialised on a per-key lock.
+- `newOutputStream` on a coordinate (*amended 2026-09-30, Task 6a; narrowed
+  2026-09-30 by the milestone 5 final review*): Nextflow writes a CSV Output
+  Index File as a delete and then one append per piece (`CsvWriter.apply`,
+  v26.04.6), so an `APPEND` close is not the end of the file. Every stream
+  writes to a spool file under `cas.tmpDir`. A stream opened without
+  `APPEND` has a spool of its own and is stored when it closes, as before
+  Task 6a: one block, one Pointer File write and one `recordPublish`
+  (`head-node`, the byte count); a pending spool for the key is dropped
+  first. A stream opened with `APPEND` continues the key's pending spool
+  (`CasSession` holds it, keyed by the join key), or else a new one seeded
+  by streaming the coordinate's current block (empty when it names no
+  file; a directory is refused), and its `close()` hashes nothing. A
+  pending spool is finalised exactly once, into one block, one Pointer File
+  write and one `recordPublish`, then deleted: when the provider next
+  resolves the coordinate or a directory above it (a read, attributes,
+  access, a listing, an `upload`), when `onFilePublish` names it, and for
+  every spool left at the join (`finalizeAllPending`, before `Join.join`).
+  `finalizeAllPending` also seals the session: from then on an `APPEND`
+  close is stored at close too, since nothing sweeps again and observers
+  that run after nf-blocks (nf-prov) still write into `outputDir`. A later
+  `APPEND` seeds a new spool from the published content.
+  `delete`/`deleteIfExists` drop a pending spool. A spool whose stream is
+  still open at the join (a publish thread racing a failed run's
+  completion) is left out of the `RunCompletion` with a console warning
+  naming the coordinate, and stays pending, so its close stores it; the rest
+  of the run is recorded. A failure to hash or write a closed spool from the
+  observer aborts the run (rule 3). Spool operations for one key are
+  serialised on a per-key lock.
 - `delete`/`deleteIfExists` on a coordinate: remove the Pointer File only.
   Never touches a block.
 - `canUpload(source, target)`: `target instanceof CasPath && target.isCoordinate()`.
@@ -2306,12 +2314,18 @@ holds the reasoning, and the execution ledger is
    `recordPublish`, when the provider next resolves the coordinate or a
    directory above it, when `onFilePublish` names it, or at the join (every
    spool still pending, `finalizeAllPending`). A spool still open at the
-   join races a failing run's own publish thread; it is dropped with a
-   console warning naming the coordinate rather than aborting the whole
-   `RunCompletion` over one file, since a failed run has no publish barrier
-   (§8). A finalise-per-close design was rejected: it would store one
-   orphan block and one write per append (two per CSV row) and re-hash
-   O(n²) bytes, where the deferred spool stores exactly one block.
+   join races a failing run's own publish thread; it is left out of the
+   `RunCompletion` with a console warning naming the coordinate rather than
+   aborting the whole `RunCompletion` over one file, since a failed run has
+   no publish barrier (§8). A finalise-per-close design for appends was
+   rejected: it would store one orphan block and one write per append (two
+   per CSV row) and re-hash O(n²) bytes, where the deferred spool stores
+   exactly one block. *Narrowed by the final review:* only `APPEND` streams
+   are deferred. A stream without `APPEND` is stored at close, and once the
+   join has run every close is, so a write after the join (an observer
+   after nf-blocks, such as nf-prov) or before a head node dies keeps its
+   Pointer File. Cost if wrong: a CSV built by appends after the join
+   stores its intermediate blocks (orphans, sweepable).
 2. Gate assertion 15 reads `store-outputs`'s own `coords/tuples/index.csv`
    directly rather than trusting only the plugin-reported leaf address, so
    a plugin bug that left a stray coordinate on disk while still marking

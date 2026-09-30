@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import groovy.util.logging.Slf4j
 import nextflow.Global
 import nextflow.Session
@@ -389,9 +390,11 @@ class CasSession {
 
     /**
      * A coordinate's bytes written through {@code newOutputStream}, on their
-     * way to one block (DESIGN.md §8). Nextflow builds a CSV Output Index File
-     * from a series of appends, so a close is not the end of the file: the
-     * spool is hashed once, when something needs the coordinate.
+     * way to one block (DESIGN.md §8). A stream opened without APPEND is stored
+     * when it closes. Nextflow builds a CSV Output Index File from a delete and
+     * a series of appends, so an APPEND close is not the end of the file: that
+     * spool is {@code deferred}, held in {@link #spools} and hashed once, when
+     * something needs the coordinate or the join runs.
      */
     @CompileStatic
     private static class Spool {
@@ -399,34 +402,45 @@ class CasSession {
         final String rel
         final String name
         final Path file
+        final boolean deferred
         /** Streams opened on the spool and not yet closed; guarded by the key's lock. */
         int writers
-        Spool(CoordinateTree tree, String rel, String name, Path file) {
-            this.tree = tree; this.rel = rel; this.name = name; this.file = file
+        Spool(CoordinateTree tree, String rel, String name, Path file, boolean deferred) {
+            this.tree = tree; this.rel = rel; this.name = name; this.file = file; this.deferred = deferred
         }
     }
 
-    /** join key -> its spool, while one is pending. */
+    /** join key -> its deferred (APPEND) spool, while one is pending. */
     private final ConcurrentHashMap<String, Spool> spools = new ConcurrentHashMap<>()
 
     /** join key -> the object its spool operations synchronise on; never removed, so two threads always share one. */
     private final ConcurrentHashMap<String, Object> spoolLocks = new ConcurrentHashMap<>()
+
+    /**
+     * Set when the join's sweep ({@link #finalizeAllPending}) starts: from then
+     * on an APPEND close is stored at once too, since nothing sweeps again (an
+     * observer after nf-blocks, such as nf-prov, still writes into outputDir).
+     */
+    private volatile boolean sealed = false
 
     private Object spoolLock(String key) {
         return spoolLocks.computeIfAbsent(key, { String k -> new Object() })
     }
 
     /**
-     * A stream into the coordinate's spool. Without {@code append} the spool
-     * starts empty, replacing a pending one; with it, a pending spool is
+     * A stream into a spool for the coordinate. Without {@code append} the
+     * stream has a spool of its own, stored as one block, one Pointer File
+     * write and one {@code recordPublish} when it closes, and a pending
+     * spool for the key is dropped first. With it, a pending spool is
      * appended to, else a new one is seeded from {@code current} (the
-     * coordinate's content, or null when it resolves to no file). The bytes are
-     * copied by streams, never held (DESIGN.md §0 rule 2). Closing the stream
-     * hashes nothing: {@link #finalizePending} does, once.
+     * coordinate's content, or null when it resolves to no file), and the
+     * close stores nothing until the join has run. The bytes are copied by
+     * streams, never held (DESIGN.md §0 rule 2).
      */
     OutputStream openSpool(String key, CoordinateTree tree, String rel, String name, boolean append, Closure<InputStream> current) throws IOException {
+        final Object lock = spoolLock(key)
         Spool spool = null
-        synchronized( spoolLock(key) ) {
+        synchronized( lock ) {
             Spool pending = spools.get(key)
             // Assumes no stream on the old spool is still open: Nextflow writes one path sequentially.
             if( pending != null && !append ) {
@@ -435,7 +449,7 @@ class CasSession {
                 pending = null
             }
             if( pending == null ) {
-                pending = new Spool(tree, rel, name, newSpoolFile())
+                pending = new Spool(tree, rel, name, newSpoolFile(), append)
                 if( append ) {
                     final InputStream seed = current.call()
                     if( seed != null ) {
@@ -443,14 +457,15 @@ class CasSession {
                         catch( IOException e ) { Files.deleteIfExists(pending.file); throw e }
                         finally { seed.close() }
                     }
+                    spools.put(key, pending)
                 }
-                spools.put(key, pending)
             }
             pending.writers++
             spool = pending
         }
         final OutputStream out = Files.newOutputStream(spool.file, StandardOpenOption.WRITE, StandardOpenOption.APPEND)
-        final Object lock = spoolLock(key)
+        final CasSession self = this
+        final Spool target = spool
         return new FilterOutputStream(out) {
             private boolean closed = false
             @Override void write(byte[] b, int off, int len) throws IOException { out.write(b, off, len) }
@@ -458,10 +473,46 @@ class CasSession {
             void close() throws IOException {
                 if( closed ) return
                 closed = true
-                try { super.close() }
-                finally { synchronized( lock ) { spool.writers-- } }
+                boolean flushed = false
+                try { super.close(); flushed = true }
+                finally { self.spoolClosed(key, target, flushed) }
             }
         }
+    }
+
+    /**
+     * A stream on {@code spool} closed. A spool of its own (no APPEND) is
+     * stored now; a deferred one is stored now only once the join has run and
+     * no other stream on it is open, and only while it is still the key's
+     * pending spool (a delete or a later write may have dropped it).
+     */
+    @PackageScope void spoolClosed(String key, Spool spool, boolean flushed) throws IOException {
+        synchronized( spoolLock(key) ) {
+            spool.writers--
+            if( !spool.deferred ) {
+                try {
+                    if( flushed )
+                        storeSpool(key, spool)
+                }
+                finally { Files.deleteIfExists(spool.file) }
+                return
+            }
+            if( flushed && sealed && spools.get(key).is(spool) )
+                finalizePending(key)
+        }
+    }
+
+    /** One block, one Pointer File write and one {@code recordPublish} of the spool's bytes. */
+    private void storeSpool(String key, Spool spool) throws IOException {
+        final long size = Files.size(spool.file)
+        Cid cid = null
+        final InputStream input = Files.newInputStream(spool.file)
+        try { cid = store.putStreaming(input) }
+        finally { input.close() }
+        final StoreRef ref = new StoreRef(cid, spool.name)
+        spool.tree.write(spool.rel, ref)
+        recordPublish(key, new Publish(ref, size, Providers.HEAD_NODE))
+        log.debug "cas: published a written file as block ${cid} at ${key} (${size} bytes)"
     }
 
     private Path newSpoolFile() throws IOException {
@@ -473,7 +524,7 @@ class CasSession {
         return file
     }
 
-    /** True while any coordinate has a spool not yet finalised; lets a read skip the lookup. */
+    /** True while any coordinate has a deferred spool not yet finalised; lets a read skip the lookup. */
     boolean hasPendingSpools() {
         return !spools.isEmpty()
     }
@@ -485,23 +536,15 @@ class CasSession {
      * spool pending, so a later call can still record it.
      */
     void finalizePending(String key) throws IOException {
-        if( spools.isEmpty() )
+        if( !spools.containsKey(key) )
             return
         synchronized( spoolLock(key) ) {
             final Spool spool = spools.get(key)
             if( spool == null || spool.writers > 0 )
                 return
-            final long size = Files.size(spool.file)
-            Cid cid = null
-            final InputStream input = Files.newInputStream(spool.file)
-            try { cid = store.putStreaming(input) }
-            finally { input.close() }
-            final StoreRef ref = new StoreRef(cid, spool.name)
-            spool.tree.write(spool.rel, ref)
-            recordPublish(key, new Publish(ref, size, Providers.HEAD_NODE))
+            storeSpool(key, spool)
             spools.remove(key)
             Files.deleteIfExists(spool.file)
-            log.debug "cas: published appended file as block ${cid} at ${key} (${size} bytes)"
         }
     }
 
@@ -517,25 +560,22 @@ class CasSession {
 
     /**
      * Every pending spool finalised, for the join (a write with no publish
-     * event is still recorded). A spool whose stream is still open holds bytes
-     * no one finished writing, most likely a publish thread racing a failed
-     * run's completion: it is deleted and its key returned, so the caller can
-     * warn and still record the rest of the run. A hash or write failure of a
-     * closed spool throws.
+     * event is still recorded), and the session sealed: any close after this
+     * is stored at once. A spool whose stream is still open holds bytes no one
+     * finished writing, most likely a publish thread racing a failed run's
+     * completion: it stays pending, so its close stores it, and its key is
+     * returned so the caller can warn that the run does not record it. A hash
+     * or write failure of a closed spool throws.
      *
-     * @return the keys of the spools dropped because a stream on them was open, sorted
+     * @return the keys of the spools left out because a stream on them was open, sorted
      */
     List<String> finalizeAllPending() throws IOException {
+        sealed = true
         final List<String> unclosed = new ArrayList<String>()
         for( String key : new ArrayList<String>(spools.keySet()) ) {
             finalizePending(key)
-            synchronized( spoolLock(key) ) {
-                final Spool left = spools.remove(key)
-                if( left != null ) {
-                    unclosed.add(key)
-                    Files.deleteIfExists(left.file)
-                }
-            }
+            if( spools.containsKey(key) )
+                unclosed.add(key)
         }
         return unclosed.sort()
     }
