@@ -3,18 +3,27 @@ package robsyme.cas.core
 import java.nio.file.Path
 
 /**
- * A local writable member with runs built from real blocks: each run's items
- * hold file leaves (raw) and optionally a directory leaf, logged like a real run.
+ * A writable member with runs built from real blocks: each run's items hold
+ * file leaves (raw) and optionally a directory leaf, logged like a real run.
+ * Local by default; any store that is also a LoggedStore (an S3BlockStore over
+ * MemoryS3Ops) through the second constructor.
  */
 class RetentionFixture {
 
-    final LocalBlockStore store
+    final BlockStore store
     final Path root
     long clock = 1_790_000_000_000L
 
     RetentionFixture(Path root) {
         this.root = root
         this.store = new LocalBlockStore(root, 'lab', true)
+    }
+
+    RetentionFixture(BlockStore store) {
+        if( !(store instanceof LoggedStore) )
+            throw new IllegalArgumentException("a retention fixture needs a store with a Store Log, not ${store}")
+        this.root = null
+        this.store = store
     }
 
     Cid raw(String text) { store.putStreaming(new ByteArrayInputStream(text.getBytes('UTF-8'))) }
@@ -61,7 +70,7 @@ class RetentionFixture {
         return s
     }
 
-    List<MemberLog> logs() { [new MemberLog('lab', true, StoreLog.read(store))] }
+    List<MemberLog> logs() { [new MemberLog(store.alias(), true, StoreLog.read(store))] }
 
     static Map manifest(String name, Cid script) {
         return new RunManifest(RecordsTest.manifestArgs() + [runName: name, nfRunHash: "hash-${name}".toString(), script: script]).toCbor()
