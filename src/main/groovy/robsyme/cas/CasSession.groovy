@@ -622,6 +622,11 @@ class CasSession {
         return completed.compareAndSet(false, true)
     }
 
+    /** True once a notification has claimed the completion, whether or not it has finished writing it. */
+    boolean completionClaimed() {
+        return completed.get()
+    }
+
     /** Called by the notification that claimed the completion, once it has written it (or failed to). */
     void completionWritten() {
         completionDone.countDown()

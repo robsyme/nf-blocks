@@ -8,6 +8,7 @@ import nextflow.plugin.BasePlugin
 import org.pf4j.PluginWrapper
 import robsyme.cas.cli.CasCommands
 import robsyme.cas.nio.CasFileSystemProvider
+import robsyme.cas.trace.CasObserver
 
 /**
  * Plugin entry point for nf-blocks, the content-addressed lineage store.
@@ -26,6 +27,18 @@ class CasPlugin extends BasePlugin implements PluginExecAware {
     void start() {
         super.start()
         provider()
+    }
+
+    /**
+     * Nextflow stops the plugins on main just before it exits
+     * (ScriptRunner.shutdown), so an aborted run's RunCompletion, which may
+     * still be on its way on the aborting thread, is finished here first
+     * (DESIGN.md §11).
+     */
+    @Override
+    void stop() {
+        CasObserver.finishPending()
+        super.stop()
     }
 
     /**

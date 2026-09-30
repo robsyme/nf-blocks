@@ -1006,6 +1006,25 @@ is built on first publish over the composite and the writable member, with
   logged at warn as above. `Session.notifyEvent` logs any other exception
   than `AbortRunException` at debug (`Session.groovy:1125-1128`), so without
   this line a run could go unrecorded with nothing on the terminal.
+  *Amended 2026-09-30 (patch 0.3.0-beta.2, aborted runs):* from Nextflow
+  26.08.0-edge (`14d5f26c4`, #7349, "Fix race condition calling workflow
+  onComplete twice") `Session.shutdown0` runs once (a `compareAndSet` on
+  `shutdownInitiated`), so an aborted run is notified only on the thread
+  that called `Session.abort`, after its shutdown callbacks (the user's
+  `onComplete`, `TaskPollingMonitor.cleanup` killing tasks), and
+  `Session.destroy` on main no longer notifies at all. Main goes straight on
+  to `Plugins.stop()` and `System.exit` (`ScriptRunner.shutdown`,
+  `ScriptRunner.groovy:243-248`), and the aborting thread's write was lost
+  (agitated_hodgkin on 26.09.0-edge: "Session aborted" at 13:01:33.996,
+  nf-blocks stopped at 13:01:34.092, no RunCompletion). `CasPlugin.stop()`
+  therefore calls `CasObserver.finishPending()`: for each observer of the
+  JVM whose RunCompletion is not written, if the latch is claimed it waits
+  up to 60 s for the write; if not, and `session.isAborted()`, it runs
+  `onFlowComplete()` itself on main (failing-run rules above). The latch
+  still keeps one RunCompletion per run; a notification that arrives after
+  is the loser and returns once the write is done. On 26.04.6 the second
+  notification from `Session.destroy` still waits, and the stop finds
+  nothing left to do.
   *Amended 2026-09-29 (milestone 5, ticket 19):* `RunCompletion.anomalies`
   gains `unjoined`: `publishedKeys` minus `Join`'s `joinedKeys` (every key
   an `onFilePublish` event named that no item or `index` Leaf claimed),

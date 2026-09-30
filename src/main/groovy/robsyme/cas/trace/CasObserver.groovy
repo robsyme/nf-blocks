@@ -73,12 +73,16 @@ class CasObserver implements TraceObserverV2 {
     /** Processes already warned about publishDir, so each is warned once. */
     private final Set<String> publishDirWarned = ConcurrentHashMap.newKeySet()
 
+    /** Observers of this JVM whose RunCompletion is not yet written, for {@link #finishPending}. */
+    private static final Set<CasObserver> PENDING = ConcurrentHashMap.newKeySet()
+
     // --------------------------------------------------------------- lifecycle
 
     @Override
     void onFlowCreate(Session session) {
         this.session = session
         this.cas = CasSession.of(session)
+        PENDING.add(this)
         validateOutputDir()
         // Ticket 03 decision 2: one HEAD on the writable S3 member, before any entry is stamped.
         cas.checkClock()
@@ -245,7 +249,49 @@ class CasObserver implements TraceObserverV2 {
         }
         finally {
             cas.completionWritten()
+            PENDING.remove(this)
         }
+    }
+
+    /**
+     * Called from {@code CasPlugin.stop()}, which Nextflow runs on main from
+     * {@code ScriptRunner.shutdown} (Session.destroy, then Plugins.stop, then
+     * System.exit). From 26.08.0-edge (nextflow 14d5f26c4, #7349)
+     * {@code Session.shutdown0} runs once, so an aborted run is notified only
+     * on the thread that called {@code Session.abort}, and main no longer
+     * waits for it. Here main either waits for that thread's write, or, when
+     * the notification has not reached this observer yet, writes the failed
+     * RunCompletion itself; the latch keeps it to one either way.
+     */
+    static void finishPending() {
+        for( CasObserver observer : new ArrayList<CasObserver>(PENDING) ) {
+            try {
+                observer.finishOnStop()
+            }
+            catch( Throwable t ) {
+                // completeRun has already said so on the terminal.
+                log.warn("nf-blocks could not record the run when the plugin stopped: ${t.message}", t)
+            }
+            finally {
+                PENDING.remove(observer)
+            }
+        }
+    }
+
+    private void finishOnStop() {
+        if( cas == null || session == null )
+            return
+        if( cas.completionClaimed() ) {
+            if( !cas.awaitCompletionWritten(COMPLETION_WAIT_MILLIS) )
+                log.warn("the run's RunCompletion was still being written after ${COMPLETION_WAIT_MILLIS} ms when the plugin stopped; not waiting longer")
+            return
+        }
+        // Only an aborted run can reach the stop unnotified: a run that ends
+        // normally is notified on main, from Session.destroy, before Plugins.stop.
+        if( !session.isAborted() )
+            return
+        log.debug('the aborted run was not yet notified of its completion when the plugin stopped; writing its RunCompletion now')
+        onFlowComplete()
     }
 
     /**

@@ -1024,4 +1024,81 @@ class CasObserverTest extends Specification {
         cleanup:
         dirs.each { Path d -> d.toFile().setWritable(true, false) }
     }
+    private robsyme.cas.CasPlugin plugin() {
+        final descriptor = Stub(org.pf4j.PluginDescriptor) { getPluginId() >> 'nf-blocks' }
+        final wrapper = Stub(org.pf4j.PluginWrapper) { getDescriptor() >> descriptor }
+        return new robsyme.cas.CasPlugin(wrapper)
+    }
+
+    def 'an aborted run whose completion notification has not arrived when the plugin stops is recorded by the stop, once'() {
+        // Nextflow >= 26.08.0-edge (14d5f26c4, #7349): Session.shutdown0 runs once, so an
+        // abort notifies onFlowComplete only on the aborting thread, while main goes on to
+        // Session.destroy, Plugins.stop and System.exit (ScriptRunner.groovy:243-248).
+        // agitated_hodgkin (26.09.0-edge) lost its RunCompletion to that race.
+        given:
+        bind(config(), meta(1))
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        session.getError() >> new RuntimeException('Salmon failed to produce lib_format_counts')
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when: 'main stops the plugins before the aborting thread notifies the observer'
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion').size() == 1
+        blocksOfKind('RunCompletion')[0].get('status') == 'failed'
+        blocksOfKind('RunCompletion')[0].get('possibly_incomplete') == true
+        StoreLog.read(cas.store).size() == 1
+
+        when: 'the aborting thread notifies it afterwards'
+        final long started = System.nanoTime()
+        observer.onFlowComplete()
+
+        then: 'no second RunCompletion, and no wait'
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).size() == 1
+        (System.nanoTime() - started) < 5_000_000_000L
+    }
+
+    def 'the plugin stop waits for a completion the aborting thread is still writing'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> false
+        session.isAborted() >> true
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        and: 'the aborting thread has claimed the latch and is still writing'
+        cas.claimCompletion()
+
+        when:
+        final stopper = Thread.start { plugin().stop() }
+        stopper.join(300)
+        final boolean waited = stopper.isAlive()
+        cas.completionWritten()
+        stopper.join(5_000)
+
+        then:
+        waited
+        !stopper.isAlive()
+        blocksOfKind('RunCompletion').isEmpty()
+    }
+
+    def 'the plugin stop writes nothing for a run that was neither completed nor aborted'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+
+        when:
+        plugin().stop()
+
+        then:
+        blocksOfKind('RunCompletion').isEmpty()
+    }
 }
