@@ -29,7 +29,7 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'items', 'put', 'snapshot']
+    static final List<String> VERBS = ['explore', 'items', 'prune', 'put', 'snapshot', 'sweep', 'untrash']
 
     /** The verb's clock, which stamps the name Claim of put --name; a test seam. */
     Closure<Long> clock = { -> System.currentTimeMillis() } as Closure<Long>
@@ -68,6 +68,12 @@ class CasCommands {
                     return ItemsCommand.run(args, config, out, err)
                 case 'put':
                     return put(Options.parse(args, ['dry-run', 'name'] as Set), config, out, err, stdin, clock)
+                case 'sweep':
+                    return RetentionCommands.sweep(Options.parse(args, ['apply', 'wait', 'budget', 'format'] as Set), config, out, err)
+                case 'prune':
+                    return RetentionCommands.prune(Options.parse(args, ['keep-last', 'keep-newer', 'pipeline', 'apply'] as Set), config, out, err, clock)
+                case 'untrash':
+                    return RetentionCommands.untrash(Options.parse(args, ['sweep'] as Set), config, out, err)
             }
             return 2
         }
@@ -91,7 +97,13 @@ class CasCommands {
             '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
             '                         nextflow -q plugin nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put /dev/stdin --name <name>\n' +
-            '  snapshot               rewrite the writable member\'s Index Snapshot at any size'
+            '  snapshot               rewrite the writable member\'s Index Snapshot at any size\n' +
+            '  sweep [--apply] [--wait] [--budget <size>] [--format text|json]\n' +
+            '                         dry run unless --apply: roots, live, dead and Trash; --apply trashes the newly dead and deletes what is past its grace\n' +
+            '  prune (--keep-last <n> | --keep-newer <period>) [--pipeline <id>] [--apply]\n' +
+            '                         dry run unless --apply: release the content of older runs, keeping their lineage (set retain "lineage")\n' +
+            '  untrash (<cid>... | --sweep <id>)\n' +
+            '                         take blocks out of the Trash ledger; a block nothing reaches is trashed again by the next sweep'
     }
 
     /**

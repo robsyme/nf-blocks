@@ -33,5 +33,9 @@ class CasConfigScopeTest extends Specification {
 
         and: 'a placeholder store member: cas.stores.<alias>.location'
         scope.getOption(['stores', 'lab', 'location']) != null
+
+        and: 'the nested sweep scope (ticket 07 answers 2 and 6)'
+        scope.getOption(['sweep', 'ageFloor']) != null
+        scope.getOption(['sweep', 'grace']) != null
     }
 }
