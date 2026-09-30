@@ -124,13 +124,18 @@ class RetentionCommandsTest extends Specification {
         Files.list(store.resolve('trash')).count() == 1
     }
 
-    def 'sweep --apply beside a fresh registration exits 1 naming it'() {
+    def 'sweep --apply beside a fresh registration exits 1 naming it, and the report says applied: false'() {
         given:
         Files.createDirectories(store.resolve('live'))
         Files.write(store.resolve('live/s1'), '{"run_name":"busy_bee"}'.bytes)
 
-        expect:
-        run('sweep', ['--apply', 'true']) == 1
+        when:
+        final int code = run('sweep', ['--apply', 'true', '--format', 'json'])
+        final Map json = (Map) new JsonSlurper().parseText(out.toString())
+
+        then:
+        code == 1
+        json.applied == false
         err.toString().contains('busy_bee') || out.toString().contains('busy_bee')
     }
 
@@ -147,6 +152,26 @@ class RetentionCommandsTest extends Specification {
         then:
         Index.open(indexPath).withCloseable { Index i -> i.countRows('run') } == 0
         out.toString().contains('wrote')
+    }
+
+    def 'an applied sweep that deletes blocks, with --format json, prints exactly one JSON object with a snapshot field'() {
+        given: 'a deleted run, aged, swept once (ledgered), its ledger expired'
+        f.claim(theRun.completion, 'delete', null, null)
+        ageAll()
+        run('sweep', ['--apply', 'true'])
+        expireLedgers()
+        out.reset()
+        err.reset()
+
+        when:
+        run('sweep', ['--apply', 'true', '--format', 'json'])
+        final Map json = (Map) new JsonSlurper().parseText(out.toString())
+
+        then:
+        json.applied == true
+        ((List) json.deleted).size() > 0
+        json.snapshot instanceof String
+        ((String) json.snapshot).contains('wrote')
     }
 
     // --------------------------------------------------------------- prune

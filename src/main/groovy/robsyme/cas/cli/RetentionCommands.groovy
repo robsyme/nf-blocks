@@ -78,25 +78,40 @@ class RetentionCommands {
             done.countDown()
             try { Runtime.runtime.removeShutdownHook(hook) } catch( IllegalStateException e ) { /* already shutting down */ }
         }
-        out.println(format == 'json' ? JsonOutput.toJson(r.toJson()) : r.toText())
-        if( r.deleted )
-            forgetAndSnapshot(cas, r, out)
-        return r.stopped == null ? 0 : 1
+        // Forget-and-snapshot runs before anything is printed, so a --format json
+        // reader always gets exactly one JSON object on stdout (review fix round 1, finding 1).
+        final String snapshotLine = r.deleted ? forgetAndSnapshot(cas, r) : null
+        if( format == 'json' ) {
+            final Map json = r.toJson()
+            if( snapshotLine != null )
+                json.snapshot = snapshotLine
+            out.println(JsonOutput.toJson(json))
+        }
+        else {
+            out.println(r.toText())
+            if( snapshotLine != null )
+                out.println("snapshot   ${snapshotLine}")
+        }
+        return r.applied ? 0 : 1
     }
 
-    /** Plan decision 7. Derived: a failure warns and the sweep's result stands. */
-    private static void forgetAndSnapshot(CasSession cas, SweepReport r, PrintStream out) {
+    /**
+     * Plan decision 7. Derived: a failure warns and the sweep's result stands.
+     * Returns the one-line outcome ("wrote ..." or "not rewritten: ...") rather
+     * than printing it, so the caller can fold it into a JSON report or a text one.
+     */
+    private static String forgetAndSnapshot(CasSession cas, SweepReport r) {
         final SnapshotBase base = cas.snapshotBase()
         final Index index = cas.openIndex()
         try {
             index.forget(r.deleted)
             final Set<String> failed = cas.catchUpIndex(index)
             final IndexSnapshot.Result s = cas.snapshotWritable(index, 0L, base, failed)
-            out.println(s.skipped ? "snapshot   not rewritten: ${s.skipped}" :
-                "snapshot   wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${s.runs} runs)")
+            return s.skipped ? "not rewritten: ${s.skipped}".toString() :
+                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${s.runs} runs)".toString()
         }
         catch( Exception e ) {
-            out.println("snapshot   not rewritten: ${e.message}; run nf-blocks:snapshot")
+            return "not rewritten: ${e.message}; run nf-blocks:snapshot".toString()
         }
         finally {
             index.close()
