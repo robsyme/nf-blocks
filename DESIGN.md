@@ -2246,11 +2246,13 @@ Added during execution:
 
 ## 18. Milestone 5: nf-core pipelines in the store (2026-09-29)
 
-*Status 2026-09-30: built on `feat/m5-nfcore`. `./gradlew check`: 1,081 unit
-tests and 4 `memoryBoundTest` features pass, `dependencyCheck` green,
-`webTest` 186 of 186. `make gate` on a fresh `GATE_ROOT`: lineage 15 PASS, 0
-FAIL, 6 SKIP; browser tier A 5/5; tier B 12/12 (no flake this run). Tier
-two's own unit tests, `python3 -m unittest discover -s gate/tier2`, 43 OK.
+*Status 2026-09-30, after the final review's fix wave: built on
+`feat/m5-nfcore`. `./gradlew check`: 1,087 unit tests and 4
+`memoryBoundTest` features pass, `dependencyCheck` green, `webTest` 187 of
+187. Gate unit tests 296 OK (1 skipped). `make gate` on a fresh
+`GATE_ROOT`: lineage 15 PASS, 0 FAIL, 6 SKIP; browser tier A 5/5; tier B
+12/12 (no flake this run). Tier two's own unit tests, `python3 -m unittest
+discover -s gate/tier2`, 43 OK.
 Not yet run, for Rob (needs his SSO session): `make gate-tier2 GATE_ROOT=<the
 same root>` (T1-T6, T2b, TS) against nf-core/sarek 3.10.0 in its own member;
 then merge `feat/m5-nfcore` to `main`.*
