@@ -91,4 +91,49 @@ class MemoryS3OpsTest extends Specification {
         then:
         thrown(S3PreconditionFailed)
     }
+
+    def 'a listing carries each object LastModified, and the clock is the latest Date'() {
+        given:
+        final ops = new MemoryS3Ops('b')
+        ops.putText('p/a', 'x')
+        ops.advance(60_000L)
+        ops.putText('p/b', 'y')
+
+        when:
+        final List<S3Listed> listed = ops.list('p/', 0)
+
+        then:
+        listed*.key == ['p/a', 'p/b']
+        listed[1].lastModifiedMillis - listed[0].lastModifiedMillis >= 60_000L
+        ops.lastServerDateMillis() >= listed[1].lastModifiedMillis
+    }
+
+    def 'deleteMany removes up to a thousand keys and refuses more'() {
+        given:
+        final ops = new MemoryS3Ops('b')
+        (1..3).each { ops.putText("p/${it}", 'x') }
+
+        expect:
+        ops.deleteMany(['p/1', 'p/3', 'p/missing']) == []
+        ops.objects.keySet() == ['p/2'] as Set
+
+        when:
+        ops.deleteMany((1..1001).collect { "k${it}".toString() })
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'an open multipart upload is listed until it completes or is aborted'() {
+        given:
+        final ops = new MemoryS3Ops('b')
+        final String open = ops.createMultipart('p/tmp/x', S3PutOptions.create())
+        final String done = ops.createMultipart('p/blocks/aa/y', S3PutOptions.create())
+        ops.abortMultipart('p/blocks/aa/y', done)
+
+        expect:
+        ops.listUploads('p/')*.uploadId == [open]
+        ops.listUploads('p/')[0].key == 'p/tmp/x'
+        ops.listUploads('q/') == []
+    }
 }

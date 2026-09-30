@@ -113,6 +113,16 @@ class S3Part {
 class S3Listed {
     String key
     long size
+    long lastModifiedMillis
+}
+
+/** An incomplete multipart upload (ticket 20 answer 3: the sweep aborts those older than the age floor). */
+@Canonical
+@CompileStatic
+class S3Upload {
+    String key
+    String uploadId
+    long initiatedMillis
 }
 
 /** The per-request fields of the aws scope (ticket 01 Q1): nf-amazon's client carries none of them. */

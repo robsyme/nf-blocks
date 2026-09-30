@@ -45,5 +45,14 @@ interface S3Ops {
     /** The Date header of the first response this instance saw, in epoch millis; null before one. */
     Long firstServerDateMillis()
 
+    /** The Date header of the latest response this instance saw, in epoch millis; null before one. The store's clock (ticket 20 answer 6). */
+    Long lastServerDateMillis()
+
+    /** One DeleteObjects of at most 1,000 keys; the keys S3 could not delete. A missing key is not an error. */
+    List<String> deleteMany(List<String> keys)
+
+    /** Every incomplete multipart upload whose key starts with prefix. */
+    List<S3Upload> listUploads(String prefix)
+
     String describe()
 }
