@@ -1549,7 +1549,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.3.0-beta.2'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.4.0-beta.1'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -2505,15 +2505,7 @@ holds the reasoning, and the execution ledger is
 
 ## 19. Milestone 6: retention (2026-09-30)
 
-*Status: built on `feat/m6-retention` at `1a6c043` (which also carries
-main's 0.3.0-beta.2 patch release, §0, §1, §15). `./gradlew check`: 1,254
-unit tests and 4 `memoryBoundTest` features pass, `dependencyCheck` green.
-`web`, `node --test`: 205 of 205. Gate unit tests, `python3 -m unittest -v`
-under `gate`: 312 OK (1 skipped); under `gate/tier2`: 53 OK. `make gate` on
-a fresh `GATE_ROOT`: lineage 16 PASS, 0 FAIL, 5 SKIP; browser tier A 5/5;
-tier B 13/13, no flake this run. Tier two (T1 to T7, T2b, TS) not yet run:
-Rob runs `make gate-tier2` (`T2_TIMEOUT` can be raised by environment if T7
-makes a run tight).*
+*Status: merged to main at `934c934` (PR #1) and released as 0.4.0-beta.1. Accepted on `e5fc807` after the whole-branch review and its fix wave: `./gradlew check` 1,270 unit tests and 4 `memoryBoundTest` features pass, `dependencyCheck` green; `web`, `node --test`: 205 of 205; Gate unit tests 312 OK (1 skipped) under `gate` and 53 OK under `gate/tier2`; `make gate` on a fresh `GATE_ROOT`: lineage 16 PASS, 0 FAIL, 5 SKIP, browser tier A 5/5, tier B 13/13. Tier two (T1 to T7, T2b, TS) not yet run against this release: `make gate-tier2` with `T2_TIMEOUT=3600`, since T7 adds several minutes to a run that was near its 45-minute watchdog.*
 
 Plan `docs/plans/2026-09-30-retention-milestone-6.md`; tickets
 [20](../.scratch/post-gate/issues/20-retention-on-s3.md) and

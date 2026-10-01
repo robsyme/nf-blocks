@@ -19,7 +19,7 @@ built against.
 
 ### Status: beta
 
-This is a beta (`0.3.0-beta.2`). Pin the version in `plugins { }`, as the
+This is a beta (`0.4.0-beta.1`). Pin the version in `plugins { }`, as the
 examples below do. What it supports today:
 
 - Milestone 4 (cloud): any member, the writable one included, is a local
@@ -60,7 +60,7 @@ the same store alias:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.3.0-beta.2'
+    id 'nf-blocks@0.4.0-beta.1'
 }
 
 lineage.enabled = true
@@ -164,7 +164,7 @@ the work dir is on S3 too:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.3.0-beta.2'
+    id 'nf-blocks@0.4.0-beta.1'
 }
 
 lineage.enabled = true
@@ -299,7 +299,7 @@ member beside its own writable one:
 
 ```groovy
 plugins {
-    id 'nf-blocks@0.3.0-beta.2'
+    id 'nf-blocks@0.4.0-beta.1'
 }
 
 manifest.name = 'downstream'           // or cas.pipeline = 'downstream'
