@@ -3,8 +3,8 @@
 import { h, link, cid, copyOutcome } from '../html.js'
 import { Previews } from '../previews.js'
 import { retryRestore } from '../save-flow.js'
-import { snippetBlock, snippetToggle } from '../snippets.js'
-import { copyText, errorNode, flag, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
+import { fold } from '../folds.js'
+import { copyText, crumbs, errorNode, flag, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
 
 /** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
 function undoUnavailableNote(ctx) {
@@ -18,6 +18,7 @@ export async function selections(ex, { offset = 0, deleted = false }, ctx) {
   const page = await ex.selectionPage({ offset, showDeleted: deleted })
   const route = deleted ? '#/selections?deleted=1' : '#/selections'
   return h('section', {},
+    crumbs({ text: 'Selections' }),
     h('h1', {}, deleted ? 'Deleted Selections' : 'Selections'),
     // With showDeleted, hiddenCount counts the current rows left out, so it is shown only in the current view.
     h('p', {}, deleted ? link('#/selections', 'Show current Selections')
@@ -90,8 +91,10 @@ export async function selection(ex, selectionCid, ctx) {
   }
   const memberList = h('ol', { class: 'rows' }, members.map(({ node }) => node))
   watchRows(memberList, previews, members.filter(({ m }) => m.kind === 'item').map(({ node }) => node))
+  ctx.use?.({ selection: selectionCid, members: s.members.length, names: st.names })
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
-    h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'), cid(selectionCid),
+    crumbs({ text: 'Selections', href: '#/selections' }, { text: st.names.length ? st.names.join(' / ') : 'Unnamed Selection' }),
+    h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'),
     st.nameConflicted ? h('p', { class: 'warn' }, 'More than one name is current. Renaming supersedes them all.') : null,
     h('ul', {}, st.nameClaims.map(c => byCid.get(c)).filter(c => c.verb === 'set').map(c => h('li', {
       'data-name': c.value, 'data-claim': c.cid, 'data-conflicted': c.conflicted ? '' : null },
@@ -101,18 +104,13 @@ export async function selection(ex, selectionCid, ctx) {
         : 'Deletion in conflict: these Claims are all current, so it stays visible.'),
       h('ul', {}, st.deletionClaims.map(c => byCid.get(c)).map(c => h('li', { 'data-deletion-claim': c.cid, 'data-verb': c.verb },
         `${c.verb} by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
-    h('dl', {}, h('dt', {}, 'first seen in this member'), h('dd', {}, s.firstSeen ?? 'unknown'),
-      h('dt', {}, 'assembled by'), h('dd', {}, s.block.asserted_by)),
+    fold(`details:${selectionCid}`, 'Details', h('p', {}, cid(selectionCid)),
+      h('dl', {}, h('dt', {}, 'first seen in this member'), h('dd', {}, s.firstSeen ?? 'unknown'),
+        h('dt', {}, 'assembled by'), h('dd', {}, s.block.asserted_by))),
     actions(selectionCid, st, ctx, status),
     status,
     h('h2', {}, `Members (${s.members.length})`),
-    memberList,
-    ctx.write.served ? h('p', {}, 'Samplesheet: ',
-      h('a', { href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'CSV'), ' ',
-      h('a', { href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')) : null,
-    h('h2', {}, 'Use it in a workflow'),
-    h('p', {}, 'Read this Selection in a downstream workflow. Script kind: ', snippetToggle()),
-    snippetBlock({ kind: 'selection', cid: selectionCid }))
+    memberList)
 }
 
 function actions(selectionCid, st, ctx, status) {

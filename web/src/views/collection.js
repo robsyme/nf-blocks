@@ -2,7 +2,8 @@
 // #/collection/<cid> and #/content/<cid> (DESIGN.md §15).
 import { h, link, cid } from '../html.js'
 import { Previews } from '../previews.js'
-import { itemRows, pager, retentionPanel, table } from './common.js'
+import { fold } from '../folds.js'
+import { crumbs, itemRows, pager, runCrumbs, retentionPanel, table } from './common.js'
 
 /** The collection's Output Index File line (Task 4, DESIGN.md §15): a download
  * link when it was published, or a note naming its publish path when it was not. */
@@ -19,15 +20,18 @@ function indexLine(ex, idx) {
 
 export async function collection(ex, collectionCid, offset = 0, ctx) {
   const c = await ex.collection(collectionCid, { offset })
+  if (c.completion) ctx.use?.({ completion: c.completion, output: c.output, where: [], count: c.total })
   return h('section', {},
-    h('h1', {}, c.output), cid(collectionCid),
-    retentionPanel(collectionCid, c.state, ctx, { kind: 'collection', href: ctx.write.hrefFor(`#/collection/${collectionCid}`) }),
+    c.completion ? runCrumbs(ex, c.completion, [{ text: c.output }]) : crumbs({ text: c.output }),
+    h('h1', {}, c.output),
+    fold(`storage:${collectionCid}`, 'Storage', retentionPanel(collectionCid, c.state, ctx, { kind: 'collection', href: ctx.write.hrefFor(`#/collection/${collectionCid}`) })),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
     indexLine(ex, c.index),
     pager(`#/collection/${collectionCid}`, c, 'items'),
     c.total === 0 ? h('p', { class: 'muted' }, 'This collection has no items.')
       : itemRows(ex, ctx, { items: c.items, total: c.total, collectionCid, completion: c.completion, output: c.output, where: [],
-        previews: new Previews(ex) }))
+        previews: new Previews(ex) }),
+    fold(`details:${collectionCid}`, 'Details', h('p', {}, cid(collectionCid))))
 }
 
 export async function content(ex, contentCid, ctx) {
@@ -36,8 +40,9 @@ export async function content(ex, contentCid, ctx) {
   // content page, so this reads Explorer's already-public claimStates directly.
   const state = (await ex.claimStates([contentCid])).get(contentCid)
   return h('section', {},
-    h('h1', {}, 'Every producer of this content'), cid(contentCid),
-    retentionPanel(contentCid, state, ctx, { kind: 'content', href: ctx.write.hrefFor(`#/content/${contentCid}`) }),
+    crumbs({ text: 'File' }),
+    h('h1', {}, 'Every run that produced this file'), cid(contentCid),
+    fold(`storage:${contentCid}`, 'Storage', retentionPanel(contentCid, state, ctx, { kind: 'content', href: ctx.write.hrefFor(`#/content/${contentCid}`) })),
     rows.length === 0 ? h('p', { class: 'muted' }, 'No run in this member produced it.')
       : table(['file', 'item', 'run'], rows.map(p => h('tr', {
         'data-producer': '', 'data-content': p.content_cid, 'data-item': p.item_cid, 'data-collection': p.collection_cid,

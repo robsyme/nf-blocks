@@ -6,6 +6,7 @@ import { h, link, cid, copyOutcome } from '../html.js'
 import { Previews } from '../previews.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { trayNote } from '../tray.js'
+import { itemTable, withoutDuplicates } from '../table.js'
 
 export const enc = encodeURIComponent
 
@@ -114,9 +115,9 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
     onclick: (event) => {
       ctx.tray.add({ address, via, kind })
       ctx.trayChanged()
-      event.currentTarget.textContent = 'In the tray'
+      event.currentTarget.textContent = 'Picked'
       event.currentTarget.disabled = true
-    } }, inTray ? 'In the tray' : kind === 'selection' ? 'Add this Selection to the tray' : 'Add to the tray')
+    } }, inTray ? 'Picked' : kind === 'selection' ? 'Add this Selection to picked' : 'Add to picked')
 }
 
 export const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
@@ -154,13 +155,13 @@ export async function pickAll(ex, tray, { items = null, collectionCid }) {
 }
 
 /** "Added N to the tray.", and the unsaved note when storage refused the write. */
-export const added = (n, tray) => [`Added ${n} to the tray.`, trayNote(tray)].filter(Boolean).join(' ')
+export const added = (n, tray) => [`Picked ${n}.`, trayNote(tray)].filter(Boolean).join(' ')
 
 export function markInTray(list, addresses) {
   const only = addresses ? new Set(addresses) : null
   for (const button of list.querySelectorAll('[data-pick]')) {
     if (only && !only.has(button.dataset.pick)) continue
-    button.textContent = 'In the tray'
+    button.textContent = 'Picked'
     button.disabled = true
   }
 }
@@ -206,7 +207,7 @@ export function itemRow(ex, ctx, { address, via = [], previews, target = null, i
   return li
 }
 
-export function fillRow(row, preview, paths) {
+export function fillRow(row, preview, paths, duplicates = new Set()) {
   if (preview.error) {
     row.label.replaceChildren(h('span', { class: 'muted', title: preview.message ?? '' },
       preview.error === 'block_missing' ? 'not held in this member' : `no preview (${preview.error})`))
@@ -214,7 +215,7 @@ export function fillRow(row, preview, paths) {
   }
   row.label.replaceChildren(labelText(preview, paths) || h('span', { class: 'muted' }, 'no Meta Map'))
   row.files.replaceChildren(...preview.files.map(f => h('span', { class: 'chip' }, f)))
-  const pills = pairsNode(preview.pairs, row.target, { size: 'row' })
+  const pills = pairsNode(withoutDuplicates(preview.pairs, duplicates), row.target, { size: 'row' })
   row.pairs.replaceChildren(...(pills ? [pills] : []))
 }
 
@@ -232,7 +233,9 @@ export function watchRows(list, previews, lis) {
   const redraw = nextFrame(() => {
     if (list.isConnected) shown = true
     else if (shown) { off(); previews.cancel(); return }
-    const paths = labelPaths(rows.map(r => previews.get(r.address)).filter(p => p?.pairs))
+    const loaded = rows.map(r => previews.get(r.address)).filter(p => p?.pairs)
+    const { duplicates } = itemTable(loaded)
+    const paths = labelPaths(loaded.map(p => ({ ...p, pairs: withoutDuplicates(p.pairs, duplicates) })))
     const key = JSON.stringify(paths)
     const relabel = key !== lastPaths
     lastPaths = key
@@ -240,7 +243,7 @@ export function watchRows(list, previews, lis) {
       const p = previews.get(r.address)
       if (p === undefined || (p === r.drawn && !relabel)) continue
       r.drawn = p
-      fillRow(r, p, paths)
+      fillRow(r, p, paths, duplicates)
     }
   })
   const off = previews.onChange(redraw)
@@ -260,9 +263,9 @@ export function itemRows(ex, ctx, { items, total = items.length, collectionCid =
   const target = { completion, output, where }
   const checked = new Set()
   const status = h('span', { class: 'muted' })
-  const addChecked = h('button', { type: 'button', disabled: true }, 'Add checked (0)')
+  const addChecked = h('button', { type: 'button', disabled: true }, 'Pick checked (0)')
   const showChecked = () => {
-    addChecked.textContent = `Add checked (${checked.size})`
+    addChecked.textContent = `Pick checked (${checked.size})`
     addChecked.disabled = checked.size === 0
   }
   const lis = items.map((address, index) => itemRow(ex, ctx, { address, via, previews, target, index,
@@ -298,7 +301,7 @@ export function itemRows(ex, ctx, { items, total = items.length, collectionCid =
     } finally {
       button.disabled = false
     }
-  } }, `Add all ${total} to the tray`)
+  } }, `Pick all ${total}`)
   watchRows(list, previews, lis)
   return h('div', { class: 'item-rows' }, h('p', { class: 'row-actions' }, addChecked, ' ', addAll, ' ', status), list)
 }

@@ -142,7 +142,7 @@ test('a query result row: label, file chips, pills linking to query 3 with the p
   const all = node.querySelector('[data-pick-all]')
   assert.equal(all.dataset.via, 'coll')
   assert.equal(all.dataset.count, '2')
-  assert.equal(all.textContent, 'Add all 2 to the tray')
+  assert.equal(all.textContent, 'Pick all 2')
 })
 
 test('an item with no Meta Map has an empty pills container and is labelled by its files', async () => {
@@ -166,7 +166,7 @@ test('Add all on a collection page reads every item, adds them with the collecti
   assert.equal(ctx.tray.size, 5)
   assert.deepEqual(ctx.tray.entries().map(e => e.via), every.map(() => ['coll']))
   assert.deepEqual(ctx.changed, [5], 'trayChanged after the items are in, so #tray[data-count] shows them')
-  assert.ok(node.querySelectorAll('[data-pick]').every(b => b.disabled && b.textContent === 'In the tray'))
+  assert.ok(node.querySelectorAll('[data-pick]').every(b => b.disabled && b.textContent === 'Picked'))
 })
 
 test('Add all into a tray the browser cannot save says so next to the count added', async () => {
@@ -178,8 +178,8 @@ test('Add all into a tray the browser cannot save says so next to the count adde
   const node = itemRows(ex, ctx, { items: every, collectionCid: 'coll', previews: new Previews(ex) })
   await node.querySelector('[data-pick-all]').click()
   assert.equal(ctx.tray.size, 3)
-  const status = node.querySelector('.row-actions').querySelectorAll('span').find(s => s.textContent.startsWith('Added'))
-  assert.equal(status.textContent, `Added 3 to the tray. ${UNSAVED_NOTE}`)
+  const status = node.querySelector('.row-actions').querySelectorAll('span').find(s => s.textContent.startsWith('Picked'))
+  assert.equal(status.textContent, `Picked 3. ${UNSAVED_NOTE}`)
 })
 
 test('Add checked adds only the checked rows, with the collection as via', async () => {
@@ -190,7 +190,7 @@ test('Add checked adds only the checked rows, with the collection as via', async
   const boxes = node.querySelectorAll('input[type=checkbox]')
   boxes[0].checked = true; await boxes[0].fire('change')
   boxes[2].checked = true; await boxes[2].fire('change')
-  const add = node.querySelectorAll('button').find(b => b.textContent === 'Add checked (2)')
+  const add = node.querySelectorAll('button').find(b => b.textContent === 'Pick checked (2)')
   await add.click()
   assert.deepEqual(ctx.tray.entries(), [{ address: 'i1', kind: 'item', via: ['coll'] }, { address: 'i3', kind: 'item', via: ['coll'] }])
   assert.deepEqual(ctx.changed, [2])

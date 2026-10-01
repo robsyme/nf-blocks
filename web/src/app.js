@@ -22,7 +22,7 @@ import { createNav } from './nav.js'
 const ROUTES = [
   ['home', /^#?\/?$/, (ex) => views.home(ex)],
   ['idle', /^#\/idle$/, () => views.idle()],
-  ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0))],
+  ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0), ctx)],
   ['run', /^#\/run\/([^/]+)$/, (ex, m, ctx) => views.run(ex, m[1], ctx)],
   ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.collection(ex, m[1], Number(m[2] ?? 0), ctx)],
   ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m, ctx) => views.item(ex, m[1], m[2], ctx)],
