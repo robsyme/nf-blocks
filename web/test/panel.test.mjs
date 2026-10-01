@@ -156,3 +156,66 @@ test('a slower draw that finishes after a newer one does not overwrite it', asyn
   await slow
   assert.match(el.querySelector('[data-snippet="untyped"]').textContent, /lid:\/\/fast/)
 })
+
+const tick = () => new Promise(r => setTimeout(r, 0))
+
+test('a redraw during a save keeps the same status node when the tray stays picked (i)', async () => {
+  const w = world()
+  w.tray.add({ address: 'i1', via: ['coll'] })
+  await w.panel.draw({ route: 'compose', view: null })
+  const status = w.el.querySelector('#write-status')
+  w.ctx.write.run = async (st) => {
+    w.ctx.trayChanged()
+    st.textContent = 'Saved, but the page could not refresh'
+  }
+  await w.el.querySelector('#compose-save').click()
+  await tick()
+  assert.equal(w.el.querySelector('#write-status'), status)
+  assert.match(w.el.textContent, /Saved, but the page could not refresh/)
+})
+
+test('a further draw keeps the held-elsewhere prompt and the prefilled name (ii)', async () => {
+  const w = world()
+  w.tray.add({ address: 'i1', via: ['coll'] })
+  w.tray.toMembers = () => []
+  w.ctx.write.run = async (st, fn) => { await fn() }
+  w.ctx.write.writer = { selection: async () => ({ exists: true, here: false, address: 'bafysel', names: ['treated BAMs'], name_claims: ['c1'] }) }
+  await w.panel.draw({ route: 'compose', view: null })
+  await w.el.querySelector('#compose-save').click()
+  await tick()
+  assert.ok(w.el.querySelector('[data-held-elsewhere]'))
+  assert.equal(w.el.querySelector('#compose-name').value, 'treated BAMs')
+  await w.panel.draw()
+  assert.ok(w.el.querySelector('[data-held-elsewhere]'))
+  assert.ok(w.el.querySelector('#compose-copy'))
+  assert.equal(w.el.querySelector('#compose-name').value, 'treated BAMs')
+})
+
+test('a draw requested during a save renders the latest input once it settles (iii)', async () => {
+  const w = world()
+  w.tray.add({ address: 'i1', via: ['coll'] })
+  await w.panel.draw({ route: 'compose', view: null })
+  w.ctx.write.run = async () => {
+    w.tray.clear()
+    await w.panel.draw({ route: 'items', view: { ...ITEMS, output: 'quant' } })
+    assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'picked')
+  }
+  await w.el.querySelector('#compose-save').click()
+  await tick()
+  assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'whole')
+  assert.match(w.el.textContent, /All 5 items of quant/)
+})
+
+test('a stale "latest good run" click does not change another output', async () => {
+  const w = world({ latest: 'bafynewer' })
+  let release
+  w.ex.latestSuccessfulRun = () => new Promise(r => { release = () => r('bafynewer') })
+  await w.panel.draw({ route: 'items', view: ITEMS })
+  const click = w.el.querySelector('[data-run-mode]').querySelectorAll('button').find(b => b.textContent === 'latest good run').click()
+  await w.panel.draw({ route: 'items', view: { ...ITEMS, output: 'quant' } })
+  release()
+  await click
+  await tick()
+  assert.equal(w.el.querySelector('[data-run-mode]').dataset.runMode, 'this')
+  assert.ok(!/latest good run is now/.test(w.el.textContent))
+})

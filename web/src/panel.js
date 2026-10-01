@@ -39,9 +39,28 @@ export function createPanel({ el, ex, ctx }) {
   let mode = 'this'
   let modeKey = null
   let note = null
+  let saving = false
+  // Made once and re-appended on every picked draw, so a redraw never detaches
+  // the save feedback or loses the typed name.
+  const name = h('input', { id: 'compose-name', placeholder: 'A name, e.g. treated BAMs' })
+  name.value = ''
+  const status = h('div', { id: 'write-status' })
+
+  // Every write the panel starts goes through here: no rebuild while it runs,
+  // one draw when it settles.
+  async function guarded(button, fn) {
+    saving = true
+    try {
+      await ctx.write.run(status, fn, button)
+    } finally {
+      saving = false
+      await draw()
+    }
+  }
 
   async function draw(input = last) {
     last = input
+    if (saving) return
     const mine = ++drawn
     const s = panelState({ ...input, picked: ctx.tray.size })
     const key = s.completion ? `${s.completion}/${s.output}` : null
@@ -84,16 +103,21 @@ export function createPanel({ el, ex, ctx }) {
 
   function runSwitch(id) {
     const choose = async (next) => {
+      const key = modeKey
       try {
         if (next === 'latest') {
           const best = await ex.latestSuccessfulRun(id.pipeline)
+          if (modeKey !== key) return
           if (!best) { note = `${id.pipeline} has no good run, so "latest" would find nothing.`; return draw() }
-          note = best === id.completion ? null : `The latest good run is now ${(await ex.runIdentity(best)).run_name ?? best}, not this one.`
+          const newer = best === id.completion ? null : (await ex.runIdentity(best)).run_name ?? best
+          if (modeKey !== key) return
+          note = newer === null ? null : `The latest good run is now ${newer}, not this one.`
         } else {
           note = null
         }
         mode = next
       } catch (e) {
+        if (modeKey !== key) return
         note = `Could not find the latest good run: ${e?.message ?? e}`
       }
       return draw()
@@ -133,11 +157,9 @@ export function createPanel({ el, ex, ctx }) {
         h('ul', { class: 'picked-entries' }, members.map(e => h('li', { 'data-tray-entry': e.address, 'data-kind': e.kind },
           h('code', { class: 'cid', title: e.address }, short(e.address))))))
     }))
-    const status = h('div', { id: 'write-status' })
-    const name = h('input', { id: 'compose-name', placeholder: 'A name, e.g. treated BAMs' })
     const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
     const save = h('button', { type: 'button', id: 'compose-save', class: 'primary', disabled: blocked,
-      onclick: (event) => ctx.write.run(status, () => saveFlow(status, name), event.currentTarget) }, 'Save as Selection')
+      onclick: (event) => guarded(event.currentTarget, () => saveFlow(status, name)) }, 'Save as Selection')
     const clear = h('button', { type: 'button', onclick: () => { ctx.tray.clear(); ctx.trayChanged() } }, 'Clear')
     return [
       h('p', {}, `Picked: ${counted(entries.length, 'item')}`),
@@ -169,10 +191,10 @@ export function createPanel({ el, ex, ctx }) {
       status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(dry.names) },
         `This Selection already exists${named}.${deletedNote(choice.deletion, 'in this composition')} `,
         link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'),
-        choice.restore.length ? [', ', h('button', { type: 'button', id: 'exists-restore', onclick: (e) => ctx.write.run(status, async () => {
+        choice.restore.length ? [', ', h('button', { type: 'button', id: 'exists-restore', onclick: (e) => guarded(e.currentTarget, async () => {
           await ctx.write.writer.undo(dry.address, choice.restore)
           return { address: dry.address, href: `#/selection/${dry.address}` }
-        }, e.currentTarget) }, 'Restore')] : null,
+        }) }, 'Restore')] : null,
         ' or ', cancel, '.'))
       return { outcome: 'exists' }
     }
@@ -182,7 +204,7 @@ export function createPanel({ el, ex, ctx }) {
         : choice.names.length === 1 ? ` as ${choice.names[0]}` : ` as ${choice.names.join(', ')} (in conflict)`
       status.replaceChildren(h('p', { 'data-held-elsewhere': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(choice.names) },
         `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'in this composition')} `,
-        h('button', { type: 'button', id: 'compose-copy', onclick: (e) => ctx.write.run(status, () => saveAndName(choice), e.currentTarget) },
+        h('button', { type: 'button', id: 'compose-copy', onclick: (e) => guarded(e.currentTarget, () => saveAndName(choice)) },
           choice.restore.length ? 'Restore a copy here' : 'Save a copy here'), ' or ', cancel, '.'))
       return { outcome: 'elsewhere' }
     }
