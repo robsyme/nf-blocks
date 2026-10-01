@@ -33,13 +33,22 @@ export function panelState({ route, view = null, picked = 0 }) {
 const deletedNote = (deletion, where) => deletion === 'deleted' ? ` It is deleted ${where}.`
   : deletion === 'conflicted' ? ` Its deletion is in conflict ${where}.` : ''
 
-export function createPanel({ el, ex, ctx }) {
+/** The label of the narrow-screen toggle (spec §3.1): "Use · N", N the items the panel would use. */
+export function useLabel(s, tray) {
+  const n = s.state === 'whole' || s.state === 'filtered' ? s.count
+    : s.state === 'picked' ? tray.size
+    : s.state === 'saved' ? s.members : null
+  return n === null || n === undefined ? 'Use' : `Use · ${n}`
+}
+
+export function createPanel({ el, ex, ctx, onState = null }) {
   let drawn = 0
   let last = { route: 'open', view: null }
   let mode = 'this'
   let modeKey = null
   let note = null
   let saving = false
+  let saveHash // the hash the running save started on
   let statusHash // the page the status was written on; it goes when the reader moves on
   // Made once and re-appended on every picked draw, so a redraw never detaches
   // the save feedback or loses the typed name.
@@ -52,6 +61,7 @@ export function createPanel({ el, ex, ctx }) {
   async function guarded(button, fn) {
     saving = true
     const hash = globalThis.location?.hash
+    saveHash = hash
     try {
       await ctx.write.run(status, fn, button)
     } finally {
@@ -66,7 +76,8 @@ export function createPanel({ el, ex, ctx }) {
 
   async function draw(input = last) {
     last = input
-    if (saving) return
+    // Held only while the page is still where the save began: a save that navigated is done writing.
+    if (saving && globalThis.location?.hash === saveHash) return
     if (status.childNodes.length && globalThis.location?.hash !== statusHash) status.replaceChildren()
     const mine = ++drawn
     const s = panelState({ ...input, picked: ctx.tray.size })
@@ -81,6 +92,7 @@ export function createPanel({ el, ex, ctx }) {
     if (mine !== drawn) return
     const feedback = s.state !== 'picked' && status.childNodes.length ? status : null
     el.replaceChildren(h('section', { 'data-panel-state': s.state }, h('h2', {}, 'Use in a workflow'), body, feedback))
+    try { onState?.(s) } catch { /* a label failure must not break the panel */ }
   }
 
   async function bodyOf(s, view) {

@@ -16,7 +16,7 @@ import { h, link } from './html.js'
 import * as views from './views/index.js'
 import { PAIRS_CSS } from './pairs.js'
 import { APP_CSS } from './styles.js'
-import { createPanel } from './panel.js'
+import { createPanel, useLabel } from './panel.js'
 import { createNav } from './nav.js'
 
 const ROUTES = [
@@ -103,14 +103,14 @@ async function render() {
     }
     main.replaceChildren(node)
     rendered = true
-    await panel.draw({ route: name, view })
+    await panel.draw({ route: name, view }).catch(() => {})
     if (mine !== sequence) return
     updateStale()
     finish('ready')
   } catch (e) {
     if (mine !== sequence) return
     main.replaceChildren(views.errorNode(e))
-    await panel.draw({ route: 'error', view: null })
+    await panel.draw({ route: 'error', view: null }).catch(() => {})
     finish('error')
   }
 }
@@ -282,7 +282,8 @@ async function start() {
     modeEl.dataset.mode = mode
     modeEl.textContent = mode === 'whole' ? 'snapshot downloaded whole: this server ignores Range' : 'snapshot read by range'
     updateStale()
-    panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, trayChanged: updateTray } })
+    panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, trayChanged: updateTray },
+      onState: (s) => { document.getElementById('use-toggle').textContent = useLabel(s, tray) } })
     nav = createNav(explorer, { el: document.getElementById('nav-body') })
     // Before the first render, so its snapshot reads fall in the open phase (plan P1).
     await nav.load()

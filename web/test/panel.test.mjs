@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { installDom } from './dom.mjs'
 import { Tray } from '../src/tray.js'
-import { createPanel, panelState } from '../src/panel.js'
+import { createPanel, panelState, useLabel } from '../src/panel.js'
 
 const ITEMS = { completion: 'bafyrun', output: 'markdup', where: [], count: 5, checked: 5 }
 
@@ -292,4 +292,43 @@ test('when write.run returns without running the attempt, saving clears and the 
   w.tray.clear()
   await w.panel.draw({ route: 'items', view: ITEMS })
   assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'whole')
+})
+
+test('a draw during a save that navigated renders at once, before the attempt settles', async () => {
+  const saved = globalThis.location
+  globalThis.location = { hash: '#/compose' }
+  try {
+    const w = world()
+    w.tray.add({ address: 'i1', via: ['coll'] })
+    await w.panel.draw({ route: 'compose', view: null })
+    let seen
+    w.ctx.write.run = async () => {
+      w.tray.clear()
+      globalThis.location.hash = '#/selection/bafysel'
+      await w.panel.draw({ route: 'selection', view: { selection: 'bafysel', members: 1 } })
+      seen = w.el.querySelector('[data-panel-state]').dataset.panelState
+    }
+    await w.el.querySelector('#compose-save').click()
+    await tick()
+    assert.equal(seen, 'saved')
+  } finally { globalThis.location = saved }
+})
+
+test('onState gets the computed state after each draw', async () => {
+  const w = world()
+  const seen = []
+  const panel = createPanel({ el: w.el, ex: w.ex, ctx: w.ctx, onState: (s) => seen.push(s.state) })
+  await panel.draw({ route: 'items', view: ITEMS })
+  assert.deepEqual(seen, ['whole'])
+})
+
+test('useLabel: Use · N from the count, the picked list or the members', () => {
+  const tray = { size: 4 }
+  assert.equal(useLabel({ state: 'whole', count: 5 }, tray), 'Use · 5')
+  assert.equal(useLabel({ state: 'filtered', count: 3 }, tray), 'Use · 3')
+  assert.equal(useLabel({ state: 'whole', count: null }, tray), 'Use')
+  assert.equal(useLabel({ state: 'picked' }, tray), 'Use · 4')
+  assert.equal(useLabel({ state: 'saved', members: 2 }, tray), 'Use · 2')
+  assert.equal(useLabel({ state: 'saved', members: null }, tray), 'Use')
+  assert.equal(useLabel({ state: 'none' }, tray), 'Use')
 })
