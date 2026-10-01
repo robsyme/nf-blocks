@@ -219,3 +219,44 @@ test('a stale "latest good run" click does not change another output', async () 
   assert.equal(w.el.querySelector('[data-run-mode]').dataset.runMode, 'this')
   assert.ok(!/latest good run is now/.test(w.el.textContent))
 })
+
+test('a save that could not refresh keeps its message after the tray empties', async () => {
+  const saved = globalThis.location
+  globalThis.location = { hash: '#/compose' }
+  try {
+    const w = world()
+    w.tray.add({ address: 'i1', via: ['coll'] })
+    await w.panel.draw({ route: 'compose', view: null })
+    w.ctx.write.run = async (st) => {
+      w.tray.clear()
+      w.ctx.trayChanged()
+      const p = document.createElement('p')
+      p.setAttribute('data-refresh-failed', '')
+      p.textContent = 'Saved, but the page could not refresh'
+      st.replaceChildren(p)
+    }
+    await w.el.querySelector('#compose-save').click()
+    await tick()
+    assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'none')
+    assert.match(w.el.textContent, /Saved, but the page could not refresh/)
+    assert.ok(w.el.querySelector('[data-refresh-failed]'))
+  } finally { globalThis.location = saved }
+})
+
+test('a save that navigated empties the stale status', async () => {
+  const saved = globalThis.location
+  globalThis.location = { hash: '#/compose' }
+  try {
+    const w = world()
+    w.tray.add({ address: 'i1', via: ['coll'] })
+    await w.panel.draw({ route: 'compose', view: null })
+    w.ctx.write.run = async (st) => {
+      st.textContent = 'Saving...'
+      w.tray.clear()
+      globalThis.location.hash = '#/selection/bafysel'
+    }
+    await w.el.querySelector('#compose-save').click()
+    await tick()
+    assert.doesNotMatch(w.el.textContent, /Saving/)
+  } finally { globalThis.location = saved }
+})

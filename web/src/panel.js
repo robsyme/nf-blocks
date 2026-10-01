@@ -50,10 +50,14 @@ export function createPanel({ el, ex, ctx }) {
   // one draw when it settles.
   async function guarded(button, fn) {
     saving = true
+    const hash = globalThis.location?.hash
     try {
       await ctx.write.run(status, fn, button)
     } finally {
       saving = false
+      // A save that navigated leaves stale "Saving..." text; one that could not
+      // refresh leaves its message, which must outlive the picked state.
+      if (globalThis.location?.hash !== hash) status.replaceChildren()
       await draw()
     }
   }
@@ -72,7 +76,8 @@ export function createPanel({ el, ex, ctx }) {
       body = h('p', { class: 'warn' }, `Could not prepare the call: ${e?.message ?? e}`)
     }
     if (mine !== drawn) return
-    el.replaceChildren(h('section', { 'data-panel-state': s.state }, h('h2', {}, 'Use in a workflow'), body))
+    const feedback = s.state !== 'picked' && status.childNodes.length ? status : null
+    el.replaceChildren(h('section', { 'data-panel-state': s.state }, h('h2', {}, 'Use in a workflow'), body, feedback))
   }
 
   async function bodyOf(s, view) {
