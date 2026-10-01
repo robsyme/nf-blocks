@@ -1711,15 +1711,15 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
-| `[data-preview-for]` | the Meta Map pills container of one item row: `data-preview-for` the item cid. Empty (no pills) when the item has no Meta Map (milestone 3) |
-| `[data-pick-all]` | "Add all N to the tray" on query results and collection pages: `data-via` the collection, `data-count` N; adds every item of the query or collection, not only the page (milestone 3) |
+| `[data-preview-for]` | the items table row, or an item row's pills container: `data-preview-for` the item cid. A pills container is empty (no pills) when the item has no Meta Map (milestone 3; the table row since layout B) |
+| `[data-pick-all]` | "Pick all N" on query results and collection pages: `data-via` the collection, `data-count` N; adds every item of the query or collection, not only the page (milestone 3; labelled "Add all N to the tray" before layout B) |
 | `body[data-write]` | `available` or `unavailable` |
 | `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |
 | `body[data-written]` | the address the last successful write made |
-| `#tray[data-count]` | items in the tray |
+| `#tray[data-count]` | items in the tray, shown as "Picked (N)" (layout B) |
 | `#tray-unsaved` | shown, with a plain-prose note, while the tray's last write to `sessionStorage` failed |
 | `[data-pick]` | a button adding `data-pick` (an address) with `data-via` (space-separated collections) and `data-kind` (`item` or `selection`); on query 3 results `data-via` is the run's Output Collection (milestone 3) |
-| `[data-tray-entry]` | one tray entry on `#/compose`: `data-tray-entry` address, `data-kind` |
+| `[data-tray-entry]` | an entry of the panel's picked list: `data-tray-entry` address, `data-kind` (on `#/compose`'s page before layout B) |
 | `#compose-name`, `#compose-save` | the new Selection's name, and save |
 | `[data-exists]` | the dry run found the Selection in the writable member (`here`): `data-exists` address, `data-names` JSON, `data-deletion` the composition's deletion state (decision 23) |
 | `#exists-restore` | "Restore", on `[data-exists]` when the composition's `deletion` is not `none`: one `del` superseding `deletion_claims` (decision 23) |
@@ -1737,8 +1737,14 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-undo]` | an Undo button on a row of `#/selections?deleted=1`: `data-undo` the Selection's cid |
 | `[data-refresh-failed]` | the write succeeded but the page could not refresh afterwards |
 | `[data-samplesheet]` | `csv` or `json` export link (served by `explore` only) |
-| `[data-snippet]` | the `<code>` holding one consumer call line on the Selection and run pages: `untyped`, `channel.fromStore(...)`, or `typed`, `nextflow.Channel.fromStore(..., records: true)`. The mode is the bare string in `localStorage` key `nf-blocks.snippets` (milestone 3) |
+| `[data-snippet]` | the `<code>` holding one consumer call line, on the panel; at most one per mode on a page: `untyped`, `channel.fromStore(...)`, or `typed`, `nextflow.Channel.fromStore(..., records: true)`. The mode is the bare string in `localStorage` key `nf-blocks.snippets` (milestone 3; on the Selection and run pages before layout B) |
 | `[data-snippet-mode]` | one of the two toggle buttons, `untyped` or `typed`, that switch every snippet on the page; `aria-pressed` marks the current one (milestone 3) |
+| `[data-panel-state]` | the "Use in a workflow" panel's section: `none`, `whole`, `filtered`, `picked` or `saved`, the panel's state (layout B spec section 6.1) |
+| `[data-where]` | on the panel's call `<code>` when the items view is filtered: the chips as JSON `[[path, type, value], ...]`, the same conditions the call's `where:` carries (layout B) |
+| `[data-run-mode]` | the panel's run switch: `this` or `latest` (layout B) |
+| `[data-columns]` | on the items table: its column paths as JSON (layout B) |
+| `[data-fold]` | a folded section (`<details>`): `storage`, `details`, `lineage`, `filter`, `meta` or `config`; whether it is open survives a re-render for the life of the page (layout B) |
+| `[data-anomaly]` | one Lineage check line on the run overview: `data-anomaly` the anomaly's key (layout B) |
 | `[data-hidden-runs]` | on a pipeline page, how many runs a delete Claim hides |
 | `[data-error]` | an error: `data-error` code, `data-cid` when a block is to blame |
 | `window.__nfBlocks.verified` | every cid whose bytes the page hashed and accepted |
@@ -2036,7 +2042,7 @@ by item CID (decision 18).
 
 ### Gate browser tier B
 
-Twelve assertions (spec section 1.3, tier B), all local: a Selection made in
+Fourteen assertions (spec section 1.3, tier B), all local: a Selection made in
 the page has the Gate's own address (8); `fromStore(selection:)` receives each
 distinct item once, nested included (9); rename, delete and undo are Claims at
 the Gate's addresses, and a replay writes nothing (10); two sessions renaming
@@ -2048,7 +2054,10 @@ another member does not lock a rename (15); a copy deleted in another member is
 restored (16); a per-run query pick keeps its collection, and Add all adds
 every item with it (17); the typed consumer receives records (18);
 `items --format selection` piped into `put /dev/stdin --name` through the
-real launcher writes the named Selection at the Gate's address (19). B9's and
+real launcher writes the named Selection at the Gate's address (19); the run
+page's Pin, Release content and Restore content write the Claims they
+describe (20); and, since layout B, the items view's filtered call, run
+verbatim, stages exactly the items the page listed (21). B9's and
 B18's consumers run the call line the Selection view shows (`[data-snippet]`)
 verbatim, so a broken snippet fails the Gate. B12 probes with a Selection no
 step has written, so the assertion can actually fail if a refusal ever let a
@@ -2149,6 +2158,73 @@ Left out, per the map: plugin factories on the typed `channel` namespace
 (nextflow-io/nextflow#7694, upstream), self-registration of `fromStore` so
 the include is optional, and a "one of" condition in the page and in
 `fromStore(where:)`.
+
+### Layout B (2026-09-30)
+
+Spec `docs/superpowers/specs/2026-09-30-explorer-layout-b-design.md`, plan
+`docs/plans/2026-09-30-explorer-layout-b.md`. The page has three regions: a
+left column (store status, `#members`, pipelines, recent Selections), the
+middle view, and the "Use in a workflow" panel (`[data-panel-state]`, §15).
+The panel replaces `#/compose`'s page: the picked list, `#compose-name`,
+`#compose-save` and `#compose-copy` live in its `picked` state, and
+`#/compose` renders the home view with the panel open. The consumer calls
+(`[data-snippet]`) moved from the Selection and run pages into the panel.
+
+Plan decisions, where the spec is silent or the Gate forced a refinement:
+
+- P1. The left column queries the snapshot at load, and otherwise only on a
+  reader's click or on the `#/run` and `#/pipeline` routes, so Gate assertion
+  2's query-phase counts for `#/items` and `#/content` do not grow.
+- P2. The panel names a run from its RunCompletion and RunManifest blocks
+  (`Explorer.runIdentity`), not from the snapshot.
+- P3. The run switch shows whenever the run's pipeline is known; "latest good
+  run" runs `latestSuccessfulRun` only when clicked, and says so when there is
+  none.
+- P4. The `filtered` state says "M items of <output>, where ..." without the
+  unfiltered total; the items view does not count rows the filter hides.
+- P5. `#/compose` renders home with the panel open, with no redirect (tier B
+  waits for exactly one render).
+- P6. Each items row keeps a "Pick" button carrying `[data-pick]`, and gets
+  an "Open" link to the item page; the row itself is not a link.
+- P7. Folds remember whether they are open for the life of the page, so a
+  write's re-render keeps Storage open (`B.retain` opens it with one click).
+- P8. Float values in `where:` get a `d` suffix (`1.0E-5d`), so they type
+  back to the index's `Double.toString` text.
+- P9. File chips drop the prefix one item's files share, up to its last
+  `.`; an item with one file shows its whole name.
+- P10. The "same for every item" line needs at least two loaded items.
+- P11. The item page has no "View" for text files: Download, and a "where
+  else" link to the content page.
+- P12. `[data-member]` stays on the Selection view (a Selection's member
+  row); the store member links (`#members`) moved to the left column. The
+  spec's section 10 is amended to say so.
+- P13. The Collection, Content, Latest and Idle views stay, restyled into the
+  middle column with breadcrumbs; Collection and Content get the Storage fold.
+- P14. Panel and left-column failures show as `.warn` text without
+  `[data-error]`, since tier A reads every `[data-error]` as the view's.
+- P15. The panel's `saved` state has no Undo; delete and undo stay on the
+  Selection view.
+- P16. Only the same key at two paths is a duplicate column (`id` and
+  `meta.id`); equal values alone never merge keys.
+
+Controller rulings during the build that change what the page does:
+
+- While a save runs, the panel holds redraws on the hash the save started on
+  and draws once when it settles; a draw on a new hash proceeds.
+- The panel's write status (`#write-status`) is kept across states after a
+  write that did not navigate, and cleared on a draw whose hash differs from
+  the one it was written on.
+- The header's toggle reads "Use · N": the item count in `whole` and
+  `filtered`, the picked list's size in `picked`, the Selection's members in
+  `saved`, plain "Use" otherwise.
+- The stylesheet is bundled into the page's script as strings and appended
+  at start, not a separate file, so the page can show unstyled for a moment
+  before the script runs.
+
+Gate: tier B check 21 runs the items view's filtered call (step `B.where`,
+`[data-panel-state=filtered]`, `[data-snippet][data-where]`) verbatim in
+`gate/selection` and requires it to stage exactly the one item the page
+listed in `[data-item-result]`.
 
 ## 17. Milestone 4: cloud (2026-09-28)
 

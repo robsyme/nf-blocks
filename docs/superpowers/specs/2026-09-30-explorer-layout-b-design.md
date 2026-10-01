@@ -1,6 +1,7 @@
 # Explorer layout B: browse, pick, use
 
 Date: 2026-09-30. Status: design approved in conversation, spec awaiting review.
+Amended 2026-09-30 by the implementation plan (P12).
 Mockups: `.superpowers/brainstorm/5517-1790814981/content/` (`layout.html`,
 `middle-column.html`, `use-panel.html`, `nav-item-narrow.html`; gitignored,
 local only).
@@ -305,7 +306,9 @@ The Gate drives the page through the `data-*` contract in DESIGN.md §15–16
 
 - Every existing attribute stays on the element that means the same thing.
   `body[data-state]`, `[data-render]`, `[data-route]`, `#snapshot-mode`,
-  `#stale`, `[data-member]` move with the store status into the left column.
+  `#stale`, `#members` (the store member links) move with the store status
+  into the left column; `[data-member]`, a Selection's member row, stays on
+  the Selection view.
 - `[data-snippet]` and `[data-snippet-mode]` are in the panel. There is at
   most one `[data-snippet="untyped"]` on a page, so tier B's
   `querySelector` reads the panel's call. A tier B step that read a run
