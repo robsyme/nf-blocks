@@ -275,7 +275,7 @@ def prepare(root):
         # B20 (Task 11): Pin, Release content and Restore content on the run page. Each write's
         # own re-render (waitWrite) already shows the updated badges before the next click.
         {"id": "B.retain", "server": "explore", "path": "", "query": q, "hash": "#/run/%s" % cold.completion_cid,
-         "actions": [{"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
+         "actions": [{"click": "[data-fold=storage] > summary"}, {"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
                      {"click": "#release"}, {"waitWrite": True},
                      {"click": "#restore"}, {"waitWrite": True}, {"extract": "after"}]},
     ]

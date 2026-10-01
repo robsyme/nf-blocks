@@ -64,7 +64,7 @@ class FakeElement extends FakeNode {
   }
 
   matches(selector) {
-    const parts = selector.match(/^[a-z]+|#[\w-]+|\.[\w-]+|\[[^\]]+\]/gi) ?? []
+    const parts = selector.match(/^[a-z][a-z0-9]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]/gi) ?? []
     return parts.every((p) => {
       if (p.startsWith('#')) return this.attributes.get('id') === p.slice(1)
       if (p.startsWith('.')) return this.classes().includes(p.slice(1))

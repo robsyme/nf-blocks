@@ -233,7 +233,7 @@ test('a collection whose index was never written says so', async () => {
 test('the run page counts unjoined publishes', async () => {
   const { ex, ids } = await memberWithUnjoinedRun(2)
   const page = await render(run(ex, ids.completion, ctx()))
-  assert.match(page.textContent, /unjoined 2/)
+  assert.match(page.textContent, /2 published files that are in no output/)
 })
 
 // Task 11: release/restore on a run, pin/unpin on any subject (ticket 21
@@ -274,6 +274,7 @@ function fixture({ runClaims = [], collectionClaims = [], itemClaims = [], conte
       state: claimState(collectionClaims) }),
     item: async () => ({ collection: COLLECTION, cid: ITEM, value: null, view: null, leaves: [], state: claimState(itemClaims) }),
     selectionsHolding: async () => [],
+    latestSuccessfulRun: async () => null, runIdentity: async () => ({}), blocks: { urlFor: (a) => a },
     runLabel: async () => null,
     producersOf: async () => [],
     claimStates: async (cids) => new Map(cids.map(c => [c, claimState(contentClaims)])),
