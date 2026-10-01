@@ -2,10 +2,12 @@
 // The "Use in a workflow" panel (explorer layout B spec §6). panelState picks
 // one state from the route, what the view reported (ctx.use) and the picked
 // list; createPanel draws it. A call on screen always returns what it says.
-// The panel reads runs from their blocks only (Explorer.runIdentity), and
-// shows failures without [data-error] (plan P2, P14).
+// The panel reads runs from their blocks only (Explorer.runIdentity), never
+// the snapshot (a picked group is named from ctx.sources), and shows failures
+// without [data-error] (plan P2, P14).
 import { h, link } from './html.js'
-import { snippetBlock, snippetToggle } from './snippets.js'
+import { snippetBlock, snippetToggle, whereRepeatsPath } from './snippets.js'
+import { fold } from './folds.js'
 import { saveChoice } from './save-choice.js'
 import { saveSequence } from './save-flow.js'
 import { trayNote } from './tray.js'
@@ -104,6 +106,15 @@ export function createPanel({ el, ex, ctx, onState = null }) {
 
   async function output(s, view) {
     const id = await ex.runIdentity(s.completion)
+    const pickButton = (n, disabled) => h('button', { type: 'button', id: 'pick-checked', disabled, onclick: () => view?.pickChecked?.() }, `Pick these ${n}`)
+    if (whereRepeatsPath(s.where)) {
+      const checked = s.partial ? s.partial.checked : s.count
+      return [
+        h('p', {}, `${counted(s.count ?? 0, 'item')} of ${s.output}, where ${whereText(s.where)}`),
+        h('p', { class: 'muted' }, 'A fromStore filter holds one value per key, so this filter, with a key used twice, cannot be copied as a call.'),
+        s.count > 0 ? h('p', {}, s.partial ? `${checked} of ${s.count} checked. ` : '', pickButton(checked, checked === 0), ' to use them as a Selection.') : null,
+      ]
+    }
     const what = s.state === 'filtered' ? `${counted(s.count ?? 0, 'item')} of ${s.output}, where ${whereText(s.where)}`
       : s.count === null ? `Every item of ${s.output}` : `All ${counted(s.count, 'item')} of ${s.output}`
     const spec = mode === 'latest' ? { kind: 'latest', pipeline: id.pipeline, output: s.output, where: s.where }
@@ -116,8 +127,7 @@ export function createPanel({ el, ex, ctx, onState = null }) {
       mode === 'latest' ? h('p', { class: 'muted' }, '"latest" may match different items after the next run.') : null,
       note ? h('p', { class: 'muted' }, note) : null,
       s.partial ? h('p', {}, `${s.partial.checked} of ${s.partial.count} checked. `,
-        h('button', { type: 'button', id: 'pick-checked', disabled: s.partial.checked === 0, onclick: () => view?.pickChecked?.() },
-          `Pick these ${s.partial.checked}`)) : null,
+        pickButton(s.partial.checked, s.partial.checked === 0)) : null,
     ]
   }
 
@@ -159,23 +169,30 @@ export function createPanel({ el, ex, ctx, onState = null }) {
     ]
   }
 
-  function picked() {
+  async function picked() {
     const entries = ctx.tray.entries()
     const groups = new Map()
     for (const e of entries) {
       const key = e.kind === 'selection' ? `selection:${e.address}` : `via:${e.via[0] ?? '-'}`
       groups.set(key, [...(groups.get(key) ?? []), e])
     }
+    // Named from what the views recorded (ctx.sources), plus the run's block; never the snapshot.
+    const names = new Map()
+    for (const key of groups.keys()) {
+      if (!key.startsWith('via:') || key === 'via:-') continue
+      const source = ctx.sources?.get(key.slice(4))
+      if (!source) continue
+      let run = null
+      try { run = (await ex.runIdentity(source.completion))?.run_name ?? null } catch { /* the output alone */ }
+      names.set(key, run ? `${source.output} · ${run}` : source.output)
+    }
     const removeAll = (list) => { for (const e of list) ctx.tray.remove(e.address); ctx.trayChanged() }
     const list = h('ul', { class: 'picked' }, [...groups].map(([key, members]) => {
-      const label = h('span', {}, key.startsWith('selection:') ? 'Selection' : key === 'via:-' ? 'picked by a query across runs' : 'an output')
-      if (key.startsWith('via:') && key !== 'via:-') {
-        ex.runLabel(key.slice(4)).then((l) => { if (l) label.textContent = `${l.output} · ${l.run_name ?? 'unnamed run'}` }, () => {})
-      }
+      const label = h('span', {}, key.startsWith('selection:') ? 'Selection' : key === 'via:-' ? 'picked by a query across runs' : names.get(key) ?? 'an output')
       return h('li', {}, label, ` · ${members.length} `,
         h('button', { type: 'button', 'aria-label': 'remove these', onclick: () => removeAll(members) }, '✕'),
-        h('ul', { class: 'picked-entries' }, members.map(e => h('li', { 'data-tray-entry': e.address, 'data-kind': e.kind },
-          h('code', { class: 'cid', title: e.address }, short(e.address))))))
+        fold(`picked:${key}`, 'show items', h('ul', { class: 'picked-entries' }, members.map(e => h('li', { 'data-tray-entry': e.address, 'data-kind': e.kind },
+          h('code', { class: 'cid', title: e.address }, short(e.address)))))))
     }))
     const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
     const save = h('button', { type: 'button', id: 'compose-save', class: 'primary', disabled: blocked,

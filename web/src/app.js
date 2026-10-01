@@ -41,6 +41,8 @@ const ROUTES = [
 let explorer = null
 let sequence = 0
 let tray = null
+// Which run and output each collection is, recorded by the views that know both; the picked panel reads it instead of the snapshot.
+const sources = new Map()
 let write = null
 let store = null
 let busy = false
@@ -87,7 +89,7 @@ async function render() {
   let rendered = false
   const ctx = {
     progress: (done, total) => { if (mine === sequence) progress.textContent = `fetched ${done} of ${total} blocks`; updateStale() },
-    tray, write, trayChanged: updateTray, rerender: render,
+    tray, write, sources, trayChanged: updateTray, rerender: render,
     // What the view shows, for the panel (layout B spec §6); redrawn when it changes after the render.
     use: (v) => { if (mine !== sequence) return; view = v; if (rendered) panel.draw({ route: name, view }) },
     // Where the reader is, for the left column (plan P1: `expand` only from the run and pipeline views).
@@ -282,7 +284,7 @@ async function start() {
     modeEl.dataset.mode = mode
     modeEl.textContent = mode === 'whole' ? 'snapshot downloaded whole: this server ignores Range' : 'snapshot read by range'
     updateStale()
-    panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, trayChanged: updateTray },
+    panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, sources, trayChanged: updateTray },
       onState: (s) => { document.getElementById('use-toggle').textContent = useLabel(s, tray) } })
     nav = createNav(explorer, { el: document.getElementById('nav-body') })
     // Before the first render, so its snapshot reads fall in the open phase (plan P1).

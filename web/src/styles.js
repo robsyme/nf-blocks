@@ -11,7 +11,7 @@ export const APP_CSS = `
     --false: #ff7b72; --pill-key: #2c2c2e; --chip: #2a2f45; --code: #1f1f22; } }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
-  a { color: inherit; } h1 { font-size: 1.35rem; margin: .4rem 0 .2rem; } h2 { font-size: 1.02rem; }
+  a { color: var(--accent); } h1 { font-size: 1.35rem; margin: .4rem 0 .2rem; } h2 { font-size: 1.02rem; }
   code, .cid { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
   button { font: inherit; } button.primary { background: var(--accent); color: var(--accent-fg); border: 1px solid var(--accent); border-radius: 4px; padding: .15rem .6rem; }
   #bar { position: sticky; top: 0; z-index: 4; display: flex; gap: 1rem; align-items: center; padding: .5rem 16px;
@@ -22,7 +22,7 @@ export const APP_CSS = `
   #nav { background: var(--side); border-right: 1px solid var(--line); padding: .75rem; overflow-y: auto; }
   #nav input[type=search] { width: 100%; }
   #nav ul { list-style: none; padding: 0; margin: .25rem 0; } #nav li { padding: .1rem 0; }
-  #nav .nav-runs { padding-left: .9rem; } #nav [aria-current=page] > a { font-weight: 600; color: var(--accent); }
+  #nav .nav-runs { padding-left: .9rem; } #nav a { color: inherit; } #nav [aria-current=page] > a { font-weight: 600; color: var(--accent); }
   #nav .nav-toggle { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
   .nav-head { font-size: .75rem; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin: .9rem 0 .2rem; }
   #store-status { margin-top: 1.5rem; font-size: 12px; } #store-status > * { margin: .2rem 0; }

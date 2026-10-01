@@ -15,6 +15,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const holding = await ex.selectionsHolding(itemCid)
   const from = collectionCid === '-' ? null : await ex.runLabel(collectionCid).catch(() => null)
   if (from?.completion) {
+    ctx.sources?.set(collectionCid, { completion: from.completion, output: from.output })
     ctx.use?.({ completion: from.completion, output: from.output, where: [], count: null })
     ctx.mark?.({ run: from.completion })
   }

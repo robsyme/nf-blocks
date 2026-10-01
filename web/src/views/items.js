@@ -50,6 +50,7 @@ export async function items(ex, completionCid, output, whereText, ctx) {
   }
   const { items: results, collection: collectionCid } = found
   const via = collectionCid ? [collectionCid] : []
+  if (collectionCid) ctx.sources?.set(collectionCid, { completion: completionCid, output })
   const target = { completion: completionCid, output, where }
   const checked = new Set(results)
   const view = { completion: completionCid, output, where, count: results.length, checked: results.length,

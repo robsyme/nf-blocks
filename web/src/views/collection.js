@@ -20,6 +20,7 @@ function indexLine(ex, idx) {
 
 export async function collection(ex, collectionCid, offset = 0, ctx) {
   const c = await ex.collection(collectionCid, { offset })
+  if (c.completion) ctx.sources?.set(collectionCid, { completion: c.completion, output: c.output })
   if (c.completion) ctx.use?.({ completion: c.completion, output: c.output, where: [], count: c.total })
   return h('section', {},
     c.completion ? runCrumbs(ex, c.completion, [{ text: c.output }]) : crumbs({ text: c.output }),

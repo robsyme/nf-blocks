@@ -34,9 +34,10 @@ function world({ lid = 'lid://hash-R4', latest = 'bafyrun', write = { available:
   const ex = {
     runIdentity: async (c) => { asked.push(['runIdentity', c]); return { completion: c, pipeline: 'nf-core/rnaseq', run_name: c === 'bafyrun' ? 'high_jang' : 'newer', lid } },
     latestSuccessfulRun: async (p) => { asked.push(['latest', p]); return latest },
-    runLabel: async () => ({ run_name: 'high_jang', output: 'markdup', completion: 'bafyrun' }),
+    runLabel: () => { throw new Error('the panel must not read the snapshot') },
   }
-  const ctx = { tray, write: { served: true, ...write, hrefFor: (h) => h, run: async () => {} }, trayChanged: () => panel.draw() }
+  const sources = new Map([['coll', { completion: 'bafyrun', output: 'markdup' }]])
+  const ctx = { tray, sources, write: { served: true, ...write, hrefFor: (h) => h, run: async () => {} }, trayChanged: () => panel.draw() }
   const panel = createPanel({ el, ex, ctx })
   return { el, tray, ex, ctx, panel, asked }
 }
@@ -107,6 +108,11 @@ test('picked: grouped by output and run, each entry keeps [data-tray-entry], and
   assert.equal(el.querySelector('[data-panel-state]').dataset.panelState, 'picked')
   assert.equal(el.querySelectorAll('[data-tray-entry]').length, 3)
   assert.match(el.textContent, /markdup · high_jang · 2/)
+  const entries = el.querySelectorAll('[data-tray-entry]')
+  assert.ok(entries.every(e => e.dataset.kind), 'kind kept')
+  const folds = el.querySelectorAll('details')
+  assert.equal(folds.length, 2, 'one closed fold per group')
+  assert.ok(folds.every(f => !f.open))
   for (const id of ['#compose-name', '#compose-save', '#write-status']) assert.ok(el.querySelector(id), id)
   assert.ok(!el.querySelector('[data-snippet]'))
 })
@@ -331,4 +337,42 @@ test('useLabel: Use · N from the count, the picked list or the members', () => 
   assert.equal(useLabel({ state: 'saved', members: 2 }, tray), 'Use · 2')
   assert.equal(useLabel({ state: 'saved', members: null }, tray), 'Use')
   assert.equal(useLabel({ state: 'none' }, tray), 'Use')
+})
+
+test('picked: a group is named from ctx.sources and never reads the snapshot; unknown ones say "an output"', async () => {
+  const { el, panel, tray } = world()
+  tray.addMany([{ address: 'i1', via: ['coll'] }, { address: 'i2', via: ['unseen'] }])
+  await panel.draw({ route: 'compose', view: null })
+  assert.match(el.textContent, /markdup · high_jang · 1/)
+  assert.match(el.textContent, /an output · 1/)
+})
+
+test('where repeating a path: no call, a plain reason, and the rows to pick instead', async () => {
+  const { el, panel } = world()
+  let picked = 0
+  const where = [['sample', 'string', 'A'], ['sample', 'string', 'B']]
+  await panel.draw({ route: 'items', view: { ...ITEMS, where, count: 4, checked: 4, pickChecked: () => { picked++ } } })
+  assert.ok(!el.querySelector('[data-snippet]'))
+  assert.match(el.textContent, /holds one value per key/)
+  const button = el.querySelector('#pick-checked')
+  assert.equal(button.textContent, 'Pick these 4')
+  await button.click()
+  assert.equal(picked, 1)
+})
+
+test('where repeating a path with no matches offers nothing to pick', async () => {
+  const { el, panel } = world()
+  const where = [['sample', 'string', 'A'], ['sample', 'string', 'B']]
+  await panel.draw({ route: 'items', view: { ...ITEMS, where, count: 0, checked: 0 } })
+  assert.ok(!el.querySelector('[data-snippet]'))
+  assert.ok(!el.querySelector('#pick-checked'))
+})
+
+test('where repeating a path with some rows unchecked offers the checked ones, once', async () => {
+  const { el, panel } = world()
+  const where = [['sample', 'string', 'A'], ['sample', 'string', 'B']]
+  await panel.draw({ route: 'items', view: { ...ITEMS, where, count: 4, checked: 2, pickChecked: () => {} } })
+  assert.equal(el.querySelectorAll('button').filter(b => /^Pick these/.test(b.textContent)).length, 1)
+  assert.equal(el.querySelector('#pick-checked').textContent, 'Pick these 2')
+  assert.match(el.textContent, /2 of 4 checked/)
 })

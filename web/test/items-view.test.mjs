@@ -22,7 +22,7 @@ function fakeEx() {
   }
 }
 function ctx() {
-  const c = { tray: new Tray(null), used: [], marked: [], rerender: () => {}, write: { available: false, hrefFor: (h) => h } }
+  const c = { tray: new Tray(null), sources: new Map(), used: [], marked: [], rerender: () => {}, write: { available: false, hrefFor: (h) => h } }
   c.trayChanged = () => {}
   c.use = (v) => c.used.push({ ...v })
   c.mark = (m) => c.marked.push(m)
@@ -77,4 +77,11 @@ test('no items says so, and still reports the empty output to the panel', async 
   const page = await items(ex, 'bafyrun', 'markdup', JSON.stringify([['id', 'string', 'nope']]), c)
   assert.match(page.textContent, /No items match/)
   assert.equal(c.used.at(-1).count, 0)
+})
+
+test('the items view records which run and output its collection is, for the panel', async () => {
+  installDom()
+  const c = ctx()
+  await items(fakeEx(), 'bafyrun', 'markdup', '[]', c)
+  assert.deepEqual(c.sources.get('coll'), { completion: 'bafyrun', output: 'markdup' })
 })

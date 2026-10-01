@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { INCLUDE_LINE, SNIPPET_KEY, groovyKey, groovyValue, setSnippetMode, snippetLines, snippetMode, whereLiteral } from '../src/snippets.js'
+import { installDom } from './dom.mjs'
+import { INCLUDE_LINE, SNIPPET_KEY, groovyKey, groovyValue, setSnippetMode, snippetLines, snippetMode, snippetBlock, snippetToggle, liveCount, whereLiteral, whereRepeatsPath } from '../src/snippets.js'
 
 const SELECTION = 'bafyreib7lhx4cekrw4appaxcfb5r4yxk5amw2p6yrnnv2evci3niqplcbu'
 const LID = 'lid://4f1b2c3d4e5f60718293a4b5c6d7e8f9'
@@ -104,4 +105,28 @@ test('every call is one line, whatever the filter holds (the Gate substitutes it
     assert.ok(!call.includes('\n'), call)
   }
   assert.equal(groovyValue('string', 'line\nbreak'), "'line\\nbreak'")
+})
+
+test('whereRepeatsPath: true only when a path appears twice', () => {
+  assert.equal(whereRepeatsPath([]), false)
+  assert.equal(whereRepeatsPath(undefined), false)
+  assert.equal(whereRepeatsPath([['a', 'string', 'x'], ['b', 'string', 'x']]), false)
+  assert.equal(whereRepeatsPath([['a', 'string', 'x'], ['a', 'string', 'y']]), true)
+  assert.equal(whereRepeatsPath([['a', 'string', 'x'], ['a', 'int', '1']]), true)
+})
+
+test('groovyValue writes the normalised number, not the typed text', () => {
+  assert.equal(groovyValue('int', '08'), '8')
+  assert.equal(groovyValue('int', '-0'), '0')
+  assert.equal(groovyValue('float', ' 1.5'), '1.5d')
+  assert.equal(groovyValue('float', '0x10'), '16.0d')
+})
+
+test('the set of drawn snippets stays bounded across redraws', () => {
+  installDom()
+  const before = liveCount()
+  for (let i = 0; i < 500; i++) { snippetBlock({ kind: 'selection', cid: 'x' }); snippetToggle() }
+  assert.ok(liveCount() < before + 200, `grew to ${liveCount()}`)
+  // The newest draw is still there.
+  assert.ok(snippetBlock({ kind: 'selection', cid: 'x' }).querySelector('[data-snippet]'))
 })

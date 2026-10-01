@@ -5,6 +5,7 @@
 // remembered per viewer in localStorage where the browser allows it. The
 // Gate runs these call lines verbatim (decision 14).
 import { h, copyOutcome } from './html.js'
+import { predicateRow } from './metadata.js'
 
 export const SNIPPET_KEY = 'nf-blocks.snippets'
 export const INCLUDE_LINE = "include { fromStore } from 'plugin/nf-blocks'"
@@ -27,6 +28,17 @@ export function snippetMode(storage = safeLocalStorage()) {
 // and every snippet and toggle drawn, redrawn when the mode changes.
 let chosen = null
 const live = new Set()
+const LIVE_LIMIT = 64
+/** How many snippets and toggles are tracked for a mode change (tests). */
+export const liveCount = () => live.size
+
+// A panel redraw builds new snippets and drops the old nodes; without this the
+// set would keep every one. Only past a limit, and only nodes the browser says
+// left the page, so the snippets of the draw in progress are never lost.
+function track(entry) {
+  if (live.size >= LIVE_LIMIT) for (const shown of live) if (shown.node.isConnected === false) live.delete(shown)
+  live.add(entry)
+}
 const current = () => chosen ?? snippetMode()
 
 /** Sets the mode for every snippet on the page and remembers it; storage that refuses loses only the memory. */
@@ -66,13 +78,16 @@ export const groovyKey = (path) => (IDENTIFIER.test(path) && !KEYWORDS.has(path)
 export function groovyValue(type, value) {
   switch (type) {
     case 'string': return quote(value)
-    case 'int': return String(value)
-    case 'float': return `${value}d`
+    case 'int': return predicateRow('', 'int', String(value)).value
+    case 'float': return `${predicateRow('', 'float', String(value)).value}d`
     case 'bool': return String(value)
     case 'null': return 'null'
     default: throw new Error(`unknown type '${type}'`)
   }
 }
+
+/** True when two conditions share a path: a Groovy map keeps one value per key, so `where:` cannot say it. */
+export const whereRepeatsPath = (where) => new Set((where ?? []).map(([p]) => p)).size < (where?.length ?? 0)
 
 /** `[k: v, ...]` for the chips, or null when there are none. */
 export const whereLiteral = (where) => (where?.length ? `[${where.map(([p, t, v]) => `${groovyKey(p)}: ${groovyValue(t, v)}`).join(', ')}]` : null)
@@ -101,7 +116,7 @@ export function snippetBlock(spec) {
     copy.textContent = 'Copy'
   }
   draw(current())
-  live.add({ node, draw })
+  track({ node, draw })
   return node
 }
 
@@ -111,6 +126,6 @@ export function snippetToggle() {
     title: mode === 'typed' ? 'For scripts with nextflow.enable.types: processes get records.' : 'For scripts without nextflow.enable.types.',
     onclick: () => setSnippetMode(mode) }, mode))
   const node = h('span', { class: 'snippet-toggle', role: 'group', 'aria-label': 'script kind' }, buttons[0], ' | ', buttons[1])
-  live.add({ node, draw: (mode) => buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.snippetMode === mode))) })
+  track({ node, draw: (mode) => buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.snippetMode === mode))) })
   return node
 }
