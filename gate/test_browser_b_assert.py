@@ -1,5 +1,5 @@
 # gate/test_browser_b_assert.py
-"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-19)
+"""Browser tier B's checks (block explorer spec section 1.3, assertions 8-21)
 over a small hand-made world: blocks written with the Gate's own encoder into
 a writable member and a read-only one, a synthetic observed.json and
 probes.json, and a consumer store of hashes. Each
@@ -107,6 +107,11 @@ class World(object):
         self.store_typed = os.path.join(self.out, "store-typed")
         self.typed_hashes = {"%s.sha256" % f["name"]: f["sha256"] for f in FILES.values()}
         self.typed_exit = "0"
+        # B21 (layout B): the items view's filtered call on cold's aligned, run verbatim in selection-where.
+        self.where_call = "channel.fromStore(run: 'lid://cold', output: 'aligned', where: [sample: 'A'])"
+        self.where_exit = "0"
+        self.where_hashes_extra = False
+        self.store_where = os.path.join(self.out, "store-where")
         self.typed_tasks = ["typed:%s" % f["name"] for f in FILES.values()]
         self.typed_log = ("Sep-27 10:00:00.000 [main] INFO  nextflow.Session - Session start\n"
                           "Sep-27 10:00:02.000 [Task submitter] INFO  nextflow.Session - [ab/cdef01] Submitted process > HASH (typed:A.bam)\n")
@@ -344,9 +349,20 @@ class World(object):
         self.steps["B.snippets"] = {"id": "B.snippets", "requests": [], "pageErrors": [], "consoleErrors": [],
                                     "extracts": {"untyped": self.extract(snippets={"untyped": self.untyped, "typed": None}),
                                                  "typed": self.extract(snippets={"untyped": None, "typed": self.typed})}}
+        self.steps["B.where"] = {"id": "B.where", "requests": [], "pageErrors": [], "consoleErrors": [],
+                                 "extracts": {"untyped": self.extract(snippets={"untyped": self.where_call, "typed": None},
+                                                                      panel="filtered", where='[["sample","string","A"]]',
+                                                                      results=[ITEMS["A"]])}}
         dump("observed.json", {"steps": list(self.steps.values())})
         self.hash_store(self.store_out, self.hashes)
         self.hash_store(self.store_typed, {"typed": self.typed_hashes})
+        staged = ("A", "B") if self.where_hashes_extra else ("A",)
+        self.hash_store(self.store_where, {"fromstore": {"%s.sha256" % FILES[k]["name"]: FILES[k]["sha256"] for k in staged}})
+        with open(os.path.join(self.out, "selection-where.exit"), "w") as fh:
+            fh.write(self.where_exit + "\n")
+        os.makedirs(os.path.join(self.root, "selection-where"), exist_ok=True)
+        with open(os.path.join(self.root, "selection-where", "main.nf"), "w") as fh:
+            fh.write(B.substitute(UNTYPED_TEMPLATE, self.where_call))
         with open(os.path.join(self.out, "selection-typed.exit"), "w") as fh:
             fh.write(self.typed_exit + "\n")
         log = os.path.join(self.out, "selection-typed-nextflow.log")
@@ -415,7 +431,7 @@ class CheckTest(unittest.TestCase):
 
     def test_the_whole_world_passes(self):
         results = self.w.results()
-        self.assertEqual(sorted(results), list(range(8, 21)))
+        self.assertEqual(sorted(results), list(range(8, 22)))
         for number, (status, message) in results.items():
             self.assertEqual(status, B.PASS, "B%d: %s" % (number, message))
 
@@ -428,9 +444,9 @@ class CheckTest(unittest.TestCase):
         finally:
             sys.stdout = stdout
         self.assertEqual(code, 0, buf.getvalue())
-        for n in range(8, 21):
+        for n in range(8, 22):
             self.assertIn("B%d" % n, buf.getvalue())
-        self.assertIn("browser tier B: 13 PASS, 0 FAIL", buf.getvalue())
+        self.assertIn("browser tier B: 14 PASS, 0 FAIL", buf.getvalue())
 
     # -- B8 ---------------------------------------------------------------
     def test_b8_a_response_address_other_than_the_gates_fails(self):
@@ -849,6 +865,22 @@ class CheckTest(unittest.TestCase):
         log_dir = os.path.join(self.w.store, "log")
         os.remove(os.path.join(log_dir, [n for n in os.listdir(log_dir) if n.endswith(self.w.pin_claim)][0]))
         self.assertFail(20, "log/")
+
+    # -- B21 --------------------------------------------------------------
+    def test_b21_the_whole_world_passes(self):
+        self.assertPass(21)
+
+    def test_b21_a_call_without_the_filter_fails(self):
+        self.w.where_call = self.w.where_call.replace(", where: [sample: 'A']", "")
+        self.assertFail(21, "where")
+
+    def test_b21_a_consumer_staging_more_than_the_page_listed_fails(self):
+        self.w.where_hashes_extra = True   # the world adds B's file to store-where's fromstore hashes
+        self.assertFail(21, "staged")
+
+    def test_b21_a_failed_pipeline_fails(self):
+        self.w.where_exit = "1"
+        self.assertFail(21, "exit status")
 
 
 class SubstituteTest(unittest.TestCase):

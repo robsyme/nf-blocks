@@ -162,7 +162,8 @@ A failing line: read `browser/observed.json` for that step and
 
 ## Browser tier B (Selections)
 
-Tier B, milestones 2 and 3, assertions 8 to 19 of spec section 1.3. It is local:
+Tier B, milestones 2 and 3, assertions 8 to 19 of spec section 1.3, plus 20
+(milestone 6) and 21 (explorer layout B). It is local:
 `gate/browser/tier_b.sh` runs after tier A, reuses its `npm ci` and
 Playwright, and needs no network beyond what `explore` itself asks for.
 `GATE_SKIP_BROWSER=1` skips it with tier A.
@@ -267,11 +268,16 @@ and the Gate's DAG-CBOR encoder:
   Gate's address for {A via `cold`'s `aligned` and via `again`'s `aligned`},
   the block in the store reads back equal to the Gate's, and the Gate's
   `dagjson.claim_state` of it is the one current name `from-the-cli`.
+- B21 (layout B): the items view of `cold`'s `aligned` filtered to `sample`
+  `A` (step `B.where`) shows the panel `filtered`, lists only A, and its
+  untyped call carries `where: [sample: 'A']`; `gate/selection` runs that
+  call verbatim in `$GATE_ROOT/selection-where` (into `browser-b/store-where`,
+  `--selection unused`), exits 0 and stages exactly `A.bam` through it.
 
 Logs are in `browser-b/`: `explore.log`, `drive.log`, `probe.log`,
 `cli-items.err`, `cli-put.out`, `cli-put.err` and `cli.exit` (B19),
 `selection.log` (and `selection-nextflow.log`), `selection-typed.log` (and
-`selection-typed-nextflow.log`), beside `scenario.json`,
+`selection-typed-nextflow.log`), `selection-where.log` (B21), beside `scenario.json`,
 `observed.json`, `probes.json`, `expected.json` and the two samplesheets.
 A failing line: read that step in `observed.json` and `drive.log` first.
 
@@ -314,6 +320,7 @@ logs/retention/          one <step>.out/.err/.exit per verb, <step>.request per 
 browser/ browser-b/      browser tiers A and B: inputs, observations, logs
 selection/               tier B's selection pipeline launch directory
 selection-typed/         tier B's typed consumer launch directory
+selection-where/         tier B's B21 launch directory (the items view's filtered call)
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
 outputs/ outputs-badindex/  milestone 5's launch directories
 consumer/                the second pipeline

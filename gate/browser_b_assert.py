@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Gate browser tier B (block explorer spec section 1.3, assertions 8-20):
+"""Gate browser tier B (block explorer spec section 1.3, assertions 8-20; 21 from explorer layout B):
 Selections and Claims written through the page, all local, over a
 composition of a writable member and a read-only one.
 
     python3 gate/browser_b_assert.py prepare <GATE_ROOT>
     python3 gate/browser_b_assert.py probe <GATE_ROOT> <port> <token>
-    python3 gate/browser_b_assert.py consumer <GATE_ROOT> <untyped|typed> <src dir> <dest dir>
+    python3 gate/browser_b_assert.py consumer <GATE_ROOT> <untyped|typed> <src dir> <dest dir> [<step>]
     python3 gate/browser_b_assert.py cli-args <GATE_ROOT>
     python3 gate/browser_b_assert.py check <GATE_ROOT>
 
@@ -20,7 +20,8 @@ endpoint must refuse, dry-runs a Selection both members name, and fetches the
 samplesheet export. cli-args prints the arguments of B19's command line,
 `items <output> <condition> --run <refs> --format selection | put /dev/stdin
 --name <name>`, which tier_b.sh runs through the real launcher once explore
-has stopped. consumer copies a consumer pipeline with its marked call line replaced by the page's snippet, verbatim. check recomputes
+has stopped. consumer copies a consumer pipeline with its marked call line replaced by the page's snippet
+(step B.snippets unless <step> names another), verbatim. check recomputes
 every address with the Gate's encoder (gate/dagjson.py) and compares it, the
 store, the probes and the selection pipeline's hashes with those answers.
 Nothing the plugin or the page reports is taken on trust.
@@ -272,10 +273,14 @@ def prepare(root):
         # B9 and B18 run what the Selection view shows for S2, untyped and typed.
         {"id": "B.snippets", "server": "explore", "path": "", "query": q, "hash": "#/selection/{S2}",
          "actions": [{"snippetMode": "untyped"}, {"extract": "untyped"}, {"snippetMode": "typed"}, {"extract": "typed"}]},
+        # B21 (layout B): the items view's filtered call, untyped, as the panel shows it.
+        {"id": "B.where", "server": "explore", "path": "", "query": q,
+         "hash": "#/items/%s/aligned%s" % (cold.completion_cid, _where("sample", "A")),
+         "actions": [{"snippetMode": "untyped"}, {"extract": "untyped"}]},
         # B20 (Task 11): Pin, Release content and Restore content on the run page. Each write's
         # own re-render (waitWrite) already shows the updated badges before the next click.
         {"id": "B.retain", "server": "explore", "path": "", "query": q, "hash": "#/run/%s" % cold.completion_cid,
-         "actions": [{"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
+         "actions": [{"click": "[data-fold=storage] > summary"}, {"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
                      {"click": "#release"}, {"waitWrite": True},
                      {"click": "#restore"}, {"waitWrite": True}, {"extract": "after"}]},
     ]
@@ -407,10 +412,10 @@ def cli_args(root):
     return 0
 
 
-def consumer(root, mode, src, dest):
-    """Copy the consumer pipeline in `src` to `dest`, its marked line re-assigned to the page's [data-snippet=<mode>] text."""
+def consumer(root, mode, src, dest, step="B.snippets"):
+    """Copy the consumer pipeline in `src` to `dest`, its marked line re-assigned to the [data-snippet=<mode>] text step `step` read."""
     out = os.path.join(root, "browser-b")
-    extracts = (_observed(out).get("B.snippets") or {}).get("extracts") or {}
+    extracts = (_observed(out).get(step) or {}).get("extracts") or {}
     call = ((extracts.get(mode) or {}).get("snippets") or {}).get(mode)
     try:
         with open(os.path.join(src, "main.nf"), encoding="utf-8") as fh:
@@ -487,7 +492,7 @@ def _read_sheet_csv(path):
 
 
 def evaluate(root):
-    """[(status, number, title, message)] for assertions 8-19."""
+    """[(status, number, title, message)] for assertions 8-21."""
     out = os.path.join(root, "browser-b")
     expected = _read_json(os.path.join(out, "expected.json"))
     observed = _observed(out)
@@ -999,6 +1004,28 @@ def evaluate(root):
                       '"lineage" and a del retain superseding it, each at the Gate\'s own address with one log/ entry'
                       % retain["pin_note"])
 
+    def b21():
+        problems = []
+        got = extract("B.where", "untyped")
+        shown = ((got.get("snippets") or {}).get("untyped") or "").strip()
+        if got.get("panel") != "filtered":
+            problems.append("the items view's panel is %r, expected filtered" % got.get("panel"))
+        if got.get("results") != [items["A"]]:
+            problems.append("the items view listed %s, expected only A %s" % (got.get("results"), items["A"]))
+        if "where: [sample: 'A']" not in shown:
+            problems.append("the panel's call %r does not carry where: [sample: 'A']" % shown)
+        ran = snippet_call(os.path.join(root, "selection-where", "main.nf"))
+        if ran != shown:
+            problems.append("selection-where/main.nf ran %r, not the panel's call %r" % (ran, shown))
+        staged = pipeline_hashes("selection-where", "store-where").get("fromstore") or {}
+        want = {"%s.sha256" % files["A"]["name"]: files["A"]["sha256"]}
+        if staged != want:
+            problems.append("the filtered call staged %s, expected exactly %s"
+                            % (json.dumps(staged, sort_keys=True), json.dumps(want, sort_keys=True)))
+        if problems:
+            return FAIL, "; ".join(problems)
+        return PASS, "the items view's filtered call (%s), run verbatim, staged exactly A, the one item the page listed" % shown
+
     run(8, "a Selection made in the page has the Gate's own address", b8)
     run(9, "fromStore(selection:) receives each distinct item once, nested included", b9)
     run(10, "rename, delete and undo are Claims at the Gate's addresses; a replay writes nothing", b10)
@@ -1012,6 +1039,7 @@ def evaluate(root):
     run(18, "the typed consumer receives records", b18)
     run(19, "items --format selection piped into put /dev/stdin --name writes the named Selection", b19)
     run(20, "the run page's Pin, Release content and Restore content write the Claims they describe", b20)
+    run(21, "the items view's filtered call, run verbatim, stages exactly the items the page listed", b21)
     return results
 
 
@@ -1031,8 +1059,8 @@ def main(argv):
         return {"prepare": prepare, "check": check, "cli-args": cli_args}[argv[1]](argv[2])
     if len(argv) == 5 and argv[1] == "probe":
         return probe(argv[2], argv[3], argv[4])
-    if len(argv) == 6 and argv[1] == "consumer" and argv[3] in ("untyped", "typed"):
-        return consumer(argv[2], argv[3], argv[4], argv[5])
+    if len(argv) in (6, 7) and argv[1] == "consumer" and argv[3] in ("untyped", "typed"):
+        return consumer(*argv[2:])
     sys.stderr.write(__doc__)
     return 2
 

@@ -4,7 +4,7 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { readFileSync } from 'node:fs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
-import { block, blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, entryName, memberWithUnjoinedRun, rawCid } from './fixture.mjs'
 import { Float } from '../src/typed.js'
 import { attrRows } from '../src/metadata.js'
 import { claimState } from '../src/claims.js'
@@ -254,4 +254,20 @@ test('concurrent queries share one closure per stale run, so progress counts eac
   // R2's closure has two items and R3's one: three steps, however many queries asked.
   assert.deepEqual(seen.map(String).sort(), ['1,1', '1,2', '2,2'])
   assert.equal(fetchFn.asked.filter(c => c === member.item.C).length, 1)
+})
+
+test('runIdentity names a run from its blocks alone, once per run, and asks again after a failure (P2)', async () => {
+  const { ex, ids } = await memberWithUnjoinedRun(0)
+  const queries = []
+  const query = ex.db.query.bind(ex.db)
+  ex.db.query = (sql, params) => { queries.push(sql); return query(sql, params) }
+  const id = await ex.runIdentity(ids.completion)
+  assert.deepEqual({ ...id, config: undefined, manifest: undefined }, {
+    completion: ids.completion, manifest: undefined, pipeline: 'demo', run_name: 'R4', nf_run_hash: 'hash-R4', lid: 'lid://hash-R4',
+    revision: null, config: undefined, status: 'succeeded', possibly_incomplete: false })
+  assert.match(id.manifest, /^bafy/)
+  assert.deepEqual(queries, [], 'no snapshot query')
+  assert.equal(await ex.runIdentity(ids.completion), id)
+  await assert.rejects(ex.runIdentity('bafyreinotarealblockxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'))
+  assert.equal(ex.identities.size, 1)
 })

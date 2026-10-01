@@ -13,13 +13,16 @@ import { Tray, safeSessionStorage, trayNote } from './tray.js'
 import { writer } from './write.js'
 import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
 import { h, link } from './html.js'
-import * as views from './views.js'
+import * as views from './views/index.js'
 import { PAIRS_CSS } from './pairs.js'
+import { APP_CSS } from './styles.js'
+import { createPanel, useLabel } from './panel.js'
+import { createNav } from './nav.js'
 
 const ROUTES = [
   ['home', /^#?\/?$/, (ex) => views.home(ex)],
   ['idle', /^#\/idle$/, () => views.idle()],
-  ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0))],
+  ['pipeline', /^#\/pipeline\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.pipeline(ex, decodeURIComponent(m[1]), Number(m[2] ?? 0), ctx)],
   ['run', /^#\/run\/([^/]+)$/, (ex, m, ctx) => views.run(ex, m[1], ctx)],
   ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.collection(ex, m[1], Number(m[2] ?? 0), ctx)],
   ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m, ctx) => views.item(ex, m[1], m[2], ctx)],
@@ -32,15 +35,19 @@ const ROUTES = [
     return views.selections(ex, { offset: Number(q.get('offset') ?? 0), deleted: q.get('deleted') === '1' }, ctx)
   }],
   ['selection', /^#\/selection\/([^/?]+)$/, (ex, m, ctx) => views.selection(ex, m[1], ctx)],
-  ['compose', /^#\/compose$/, (ex, m, ctx) => views.compose(ex, ctx)],
+  ['compose', /^#\/compose$/, (ex, m, ctx) => { document.body.dataset.panel = 'open'; return views.home(ex, ctx) }],
 ]
 
 let explorer = null
 let sequence = 0
 let tray = null
+// Which run and output each collection is, recorded by the views that know both; the picked panel reads it instead of the snapshot.
+const sources = new Map()
 let write = null
 let store = null
 let busy = false
+let panel = null
+let nav = null
 // A partly failed save's banner, waiting for the saved Selection's page to render.
 let pendingBanner = null
 const OUTCOME_KEY = 'nf-blocks-write-outcome'
@@ -73,13 +80,20 @@ async function render() {
   const main = document.getElementById('main')
   const hash = location.hash || '#/'
   const route = ROUTES.find(([, pattern]) => pattern.test(hash))
+  const name = route ? route[0] : 'unknown'
   document.body.dataset.state = 'loading'
-  document.body.dataset.route = route ? route[0] : 'unknown'
+  document.body.dataset.route = name
   const progress = h('p', { id: 'progress', class: 'muted' })
   main.replaceChildren(h('p', { class: 'muted' }, 'Loading...'), progress)
+  let view = null
+  let rendered = false
   const ctx = {
     progress: (done, total) => { if (mine === sequence) progress.textContent = `fetched ${done} of ${total} blocks`; updateStale() },
-    tray, write, trayChanged: updateTray, rerender: render,
+    tray, write, sources, trayChanged: updateTray, rerender: render,
+    // What the view shows, for the panel (layout B spec §6); redrawn when it changes after the render.
+    use: (v) => { if (mine !== sequence) return; view = v; if (rendered) panel.draw({ route: name, view }) },
+    // Where the reader is, for the left column (plan P1: `expand` only from the run and pipeline views).
+    mark: (where) => { if (mine === sequence) nav.mark(where).catch(() => {}) },
   }
   try {
     if (!route) throw Object.assign(new Error(`there is no view for ${hash}`), { code: 'bad_route' })
@@ -90,11 +104,15 @@ async function render() {
       pendingBanner = null
     }
     main.replaceChildren(node)
+    rendered = true
+    await panel.draw({ route: name, view }).catch(() => {})
+    if (mine !== sequence) return
     updateStale()
     finish('ready')
   } catch (e) {
     if (mine !== sequence) return
     main.replaceChildren(views.errorNode(e))
+    await panel.draw({ route: 'error', view: null }).catch(() => {})
     finish('error')
   }
 }
@@ -110,10 +128,11 @@ function hrefIn(alias, hash) {
 function updateTray() {
   const el = document.getElementById('tray')
   el.dataset.count = String(tray.size)
-  el.textContent = `Tray (${tray.size})`
+  el.textContent = `Picked (${tray.size})`
   const note = document.getElementById('tray-unsaved')
   note.textContent = trayNote(tray)
   note.hidden = !note.textContent
+  panel?.draw()
 }
 
 function outcome(value) {
@@ -194,6 +213,7 @@ async function runWrite(status, attempt, button = null) {
     }
     try {
       await explorer.refreshTail(listLog)
+      await nav.reloadSelections().catch(() => {})
       pendingBanner = banner
       history.pushState(null, '', done.href)
       await render()
@@ -218,13 +238,13 @@ function renderMembers(store) {
   nav.replaceChildren(...store.members.map(m => {
     const url = new URL(location.href)
     url.searchParams.set('member', m.alias)
-    return h('a', { href: url.href, 'aria-current': m.alias === store.member ? 'page' : null, style: 'margin-right: .75rem' },
+    return h('a', { href: url.href, 'aria-current': m.alias === store.member ? 'page' : null },
       m.alias, m.writable ? ' (writable)' : '')
   }))
 }
 
 async function start() {
-  document.head.append(h('style', {}, PAIRS_CSS))
+  document.head.append(h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS))
   window.__nfBlocks = { verified: [] }
   try {
     store = await resolveStore(location.href)
@@ -264,11 +284,20 @@ async function start() {
     modeEl.dataset.mode = mode
     modeEl.textContent = mode === 'whole' ? 'snapshot downloaded whole: this server ignores Range' : 'snapshot read by range'
     updateStale()
+    panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, sources, trayChanged: updateTray },
+      onState: (s) => { document.getElementById('use-toggle').textContent = useLabel(s, tray) } })
+    nav = createNav(explorer, { el: document.getElementById('nav-body') })
+    // Before the first render, so its snapshot reads fall in the open phase (plan P1).
+    await nav.load()
   } catch (e) {
     document.getElementById('main').replaceChildren(views.errorNode(e))
     finish('error')
     return
   }
+  const toggle = (key) => { document.body.dataset[key] = document.body.dataset[key] === 'open' ? 'closed' : 'open' }
+  document.getElementById('nav-toggle').addEventListener('click', () => toggle('nav'))
+  document.getElementById('use-toggle').addEventListener('click', () => toggle('panel'))
+  window.addEventListener('hashchange', () => { document.body.dataset.nav = 'closed'; document.body.dataset.panel = 'closed' })
   window.addEventListener('hashchange', render)
   await render()
 }

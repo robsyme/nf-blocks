@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Gate browser tier B (block explorer spec section 1.3, assertions 8-20): the
+# Gate browser tier B (block explorer spec section 1.3, assertions 8-21): the
 # page composes, renames, deletes and undoes through nf-blocks:explore over a
 # copy of this Gate run's store; the Gate probes the write endpoint, fetches
 # the samplesheet, pipes nf-blocks:items into nf-blocks:put --name through the
 # real launcher, runs gate/selection and gate/selection-typed on the page's
-# own snippets, drives Pin, Release content and Restore content on the run
-# page, and checks it all with its own encoder.
+# own snippets and gate/selection on the items view's filtered call, drives
+# Pin, Release content and Restore content on the run page, and checks it
+# all with its own encoder.
 #
 #   gate/browser/tier_b.sh <GATE_ROOT>        # NEXTFLOW and NXF_PLUGINS_DIR from gate.sh
 #
@@ -88,6 +89,19 @@ run_consumer() {   # <untyped|typed> <gate dir> <launch dir> <store-out> <cache>
 run_consumer untyped "$REPO/gate/selection" "$GATE_ROOT/selection" "$B/store-out" "$B/cache-run" \
     --samplesheet "$B/samplesheet.csv"
 run_consumer typed "$REPO/gate/selection-typed" "$GATE_ROOT/selection-typed" "$B/store-typed" "$B/cache-typed"
+
+# B21 (layout B): the items view's filtered call (step B.where), run verbatim in the same consumer.
+where_launch="$GATE_ROOT/selection-where"
+rm -rf "${where_launch:?}" && mkdir -p "$where_launch" "$B/store-where" "$B/cache-where"
+where_status=0
+echo "--- browser tier B: selection-where (the items view's filtered untyped call)"
+if python3 "$REPO/gate/browser_b_assert.py" consumer "$GATE_ROOT" untyped "$REPO/gate/selection" "$where_launch" B.where; then
+    ( cd "$where_launch" && GATE_B_STORE="$B/store" GATE_B_OUT="$B/store-where" XDG_CACHE_HOME="$B/cache-where" \
+      "$NEXTFLOW" run . -name selection-where --selection unused --samplesheet "$B/samplesheet.csv" ) > "$B/selection-where.log" 2>&1 || where_status=$?
+else
+    where_status=no-snippet
+fi
+echo "$where_status" > "$B/selection-where.exit"
 
 echo
 python3 "$REPO/gate/browser_b_assert.py" check "$GATE_ROOT"

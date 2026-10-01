@@ -5,6 +5,7 @@
 // remembered per viewer in localStorage where the browser allows it. The
 // Gate runs these call lines verbatim (decision 14).
 import { h, copyOutcome } from './html.js'
+import { predicateRow } from './metadata.js'
 
 export const SNIPPET_KEY = 'nf-blocks.snippets'
 export const INCLUDE_LINE = "include { fromStore } from 'plugin/nf-blocks'"
@@ -27,6 +28,17 @@ export function snippetMode(storage = safeLocalStorage()) {
 // and every snippet and toggle drawn, redrawn when the mode changes.
 let chosen = null
 const live = new Set()
+const LIVE_LIMIT = 64
+/** How many snippets and toggles are tracked for a mode change (tests). */
+export const liveCount = () => live.size
+
+// A panel redraw builds new snippets and drops the old nodes; without this the
+// set would keep every one. Only past a limit, and only nodes the browser says
+// left the page, so the snippets of the draw in progress are never lost.
+function track(entry) {
+  if (live.size >= LIVE_LIMIT) for (const shown of live) if (shown.node.isConnected === false) live.delete(shown)
+  live.add(entry)
+}
 const current = () => chosen ?? snippetMode()
 
 /** Sets the mode for every snippet on the page and remembers it; storage that refuses loses only the memory. */
@@ -44,17 +56,55 @@ export function setSnippetMode(mode, storage = safeLocalStorage()) {
   }
 }
 
-const quote = (text) => `'${String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`
+// A Groovy single-quoted string: backslash, quote and line breaks escaped, so a call stays one line.
+const quote = (text) => `'${String(text).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`
+
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
+// Groovy's reserved words, quoted as map keys to be safe.
+const KEYWORDS = new Set(['abstract', 'as', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 'class', 'const', 'continue',
+  'def', 'default', 'do', 'double', 'else', 'enum', 'extends', 'false', 'final', 'finally', 'float', 'for', 'goto', 'if', 'implements',
+  'import', 'in', 'instanceof', 'int', 'interface', 'long', 'native', 'new', 'null', 'package', 'private', 'protected', 'public',
+  'return', 'short', 'static', 'strictfp', 'super', 'switch', 'synchronized', 'this', 'threadsafe', 'throw', 'throws', 'trait',
+  'transient', 'true', 'try', 'var', 'void', 'volatile', 'while', 'yields', 'record', 'sealed', 'permits', 'non-sealed'])
+
+/** A Meta Map path as a `where:` key: bare when it is a plain identifier, else quoted. */
+export const groovyKey = (path) => (IDENTIFIER.test(path) && !KEYWORDS.has(path) ? path : quote(path))
+
+/**
+ * A condition's value as the Groovy literal fromStore(where:) types back to the
+ * same item_attr row (MetadataView.scalar): a float gets `d`, since a BigDecimal
+ * literal's toString differs from Double's (P8).
+ */
+export function groovyValue(type, value) {
+  switch (type) {
+    case 'string': return quote(value)
+    case 'int': return predicateRow('', 'int', String(value)).value
+    case 'float': return `${predicateRow('', 'float', String(value)).value}d`
+    case 'bool': return String(value)
+    case 'null': return 'null'
+    default: throw new Error(`unknown type '${type}'`)
+  }
+}
+
+/** True when two conditions share a path: a Groovy map keeps one value per key, so `where:` cannot say it. */
+export const whereRepeatsPath = (where) => new Set((where ?? []).map(([p]) => p)).size < (where?.length ?? 0)
+
+/** `[k: v, ...]` for the chips, or null when there are none. */
+export const whereLiteral = (where) => (where?.length ? `[${where.map(([p, t, v]) => `${groovyKey(p)}: ${groovyValue(t, v)}`).join(', ')}]` : null)
 
 /** The two lines of a snippet: the include, and the call for `mode`. */
 export function snippetLines(spec, mode) {
-  const args = spec.kind === 'selection' ? `selection: ${quote(spec.cid)}` : `run: ${quote(spec.lid)}, output: ${quote(spec.output)}`
-  return { include: INCLUDE_LINE, call: mode === 'typed' ? `nextflow.Channel.fromStore(${args}, records: true)` : `channel.fromStore(${args})` }
+  const where = whereLiteral(spec.where)
+  const args = spec.kind === 'selection' ? `selection: ${quote(spec.cid)}`
+    : spec.kind === 'latest' ? `run: 'latest', pipeline: ${quote(spec.pipeline)}, output: ${quote(spec.output)}`
+      : `run: ${quote(spec.lid)}, output: ${quote(spec.output)}`
+  const full = where ? `${args}, where: ${where}` : args
+  return { include: INCLUDE_LINE, call: mode === 'typed' ? `nextflow.Channel.fromStore(${full}, records: true)` : `channel.fromStore(${full})` }
 }
 
 /** A snippet with a Copy button; its call line is `<code data-snippet="untyped"|"typed">`. */
 export function snippetBlock(spec) {
-  const call = h('code', {})
+  const call = h('code', spec.where?.length ? { 'data-where': JSON.stringify(spec.where) } : {})
   const copy = h('button', { type: 'button', onclick: async (event) => {
     const button = event.currentTarget
     button.textContent = await copyOutcome(navigator.clipboard, `${INCLUDE_LINE}\n${call.textContent}`)
@@ -66,7 +116,7 @@ export function snippetBlock(spec) {
     copy.textContent = 'Copy'
   }
   draw(current())
-  live.add({ node, draw })
+  track({ node, draw })
   return node
 }
 
@@ -76,6 +126,6 @@ export function snippetToggle() {
     title: mode === 'typed' ? 'For scripts with nextflow.enable.types: processes get records.' : 'For scripts without nextflow.enable.types.',
     onclick: () => setSnippetMode(mode) }, mode))
   const node = h('span', { class: 'snippet-toggle', role: 'group', 'aria-label': 'script kind' }, buttons[0], ' | ', buttons[1])
-  live.add({ node, draw: (mode) => buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.snippetMode === mode))) })
+  track({ node, draw: (mode) => buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.snippetMode === mode))) })
   return node
 }

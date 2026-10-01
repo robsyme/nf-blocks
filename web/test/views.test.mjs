@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
+import { collection, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, selections, undoNote } from '../src/views/index.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
@@ -142,7 +142,7 @@ test('a query result row: label, file chips, pills linking to query 3 with the p
   const all = node.querySelector('[data-pick-all]')
   assert.equal(all.dataset.via, 'coll')
   assert.equal(all.dataset.count, '2')
-  assert.equal(all.textContent, 'Add all 2 to the tray')
+  assert.equal(all.textContent, 'Pick all 2')
 })
 
 test('an item with no Meta Map has an empty pills container and is labelled by its files', async () => {
@@ -166,7 +166,7 @@ test('Add all on a collection page reads every item, adds them with the collecti
   assert.equal(ctx.tray.size, 5)
   assert.deepEqual(ctx.tray.entries().map(e => e.via), every.map(() => ['coll']))
   assert.deepEqual(ctx.changed, [5], 'trayChanged after the items are in, so #tray[data-count] shows them')
-  assert.ok(node.querySelectorAll('[data-pick]').every(b => b.disabled && b.textContent === 'In the tray'))
+  assert.ok(node.querySelectorAll('[data-pick]').every(b => b.disabled && b.textContent === 'Picked'))
 })
 
 test('Add all into a tray the browser cannot save says so next to the count added', async () => {
@@ -178,8 +178,8 @@ test('Add all into a tray the browser cannot save says so next to the count adde
   const node = itemRows(ex, ctx, { items: every, collectionCid: 'coll', previews: new Previews(ex) })
   await node.querySelector('[data-pick-all]').click()
   assert.equal(ctx.tray.size, 3)
-  const status = node.querySelector('.row-actions').querySelectorAll('span').find(s => s.textContent.startsWith('Added'))
-  assert.equal(status.textContent, `Added 3 to the tray. ${UNSAVED_NOTE}`)
+  const status = node.querySelector('.row-actions').querySelectorAll('span').find(s => s.textContent.startsWith('Picked'))
+  assert.equal(status.textContent, `Picked 3. ${UNSAVED_NOTE}`)
 })
 
 test('Add checked adds only the checked rows, with the collection as via', async () => {
@@ -190,27 +190,10 @@ test('Add checked adds only the checked rows, with the collection as via', async
   const boxes = node.querySelectorAll('input[type=checkbox]')
   boxes[0].checked = true; await boxes[0].fire('change')
   boxes[2].checked = true; await boxes[2].fire('change')
-  const add = node.querySelectorAll('button').find(b => b.textContent === 'Add checked (2)')
+  const add = node.querySelectorAll('button').find(b => b.textContent === 'Pick checked (2)')
   await add.click()
   assert.deepEqual(ctx.tray.entries(), [{ address: 'i1', kind: 'item', via: ['coll'] }, { address: 'i3', kind: 'item', via: ['coll'] }])
   assert.deepEqual(ctx.changed, [2])
-})
-
-test('the compose tray counts only item entries toward the preview cap, so a Selection entry does not push an item past it', async () => {
-  installDom()
-  const ex = rowModel()
-  const tray = new Tray(null)
-  tray.add({ address: 'a-selection', kind: 'selection' })
-  const items = Array.from({ length: 100 }, (_, i) => `i${String(i).padStart(3, '0')}`)
-  tray.addMany(items.map(address => ({ address, via: ['coll'] })))
-  const node = compose(ex, rowCtx(tray))
-  assert.equal(node.querySelectorAll('[data-tray-entry]').length, 101)
-  const shows = node.querySelectorAll('button').filter(b => b.textContent === 'show details')
-  assert.equal(shows.length, 0, 'the 100 items are the first 100 item rows')
-  await frame()
-  assert.equal(ex.asked.length, 100)
-  const via = node.querySelector('[data-tray-entry=i000]').querySelector('.row-via')
-  assert.match(via.textContent, /^picked from cold \/ aligned/)
 })
 
 test('a run that published nothing says so under Outputs, with no snippet toggle and no empty list', async () => {
@@ -250,7 +233,7 @@ test('a collection whose index was never written says so', async () => {
 test('the run page counts unjoined publishes', async () => {
   const { ex, ids } = await memberWithUnjoinedRun(2)
   const page = await render(run(ex, ids.completion, ctx()))
-  assert.match(page.textContent, /unjoined 2/)
+  assert.match(page.textContent, /2 published files that are in no output/)
 })
 
 // Task 11: release/restore on a run, pin/unpin on any subject (ticket 21
@@ -291,6 +274,7 @@ function fixture({ runClaims = [], collectionClaims = [], itemClaims = [], conte
       state: claimState(collectionClaims) }),
     item: async () => ({ collection: COLLECTION, cid: ITEM, value: null, view: null, leaves: [], state: claimState(itemClaims) }),
     selectionsHolding: async () => [],
+    latestSuccessfulRun: async () => null, runIdentity: async () => ({}), blocks: { urlFor: (a) => a },
     runLabel: async () => null,
     producersOf: async () => [],
     claimStates: async (cids) => new Map(cids.map(c => [c, claimState(contentClaims)])),
@@ -394,4 +378,15 @@ test('a content page shows a pin and can be unpinned', async () => {
   node.querySelector(`button[data-unpin="${C1}"]`).click()
   await settle()
   assert.deepEqual(calls, [['unpin', CONTENT, C1]])
+})
+
+test('selections: a row with conflicting names or conflicting deletion says so', async () => {
+  installDom()
+  const state = (over) => ({ names: ['a'], deletion: 'current', nameConflicted: false, ...over })
+  const ex = { selectionPage: async () => ({ hiddenCount: 0, first: 1, last: 2, total: 2, prev: null, next: null, rows: [
+    { cid: 'sel1', source: 'x', state: state({ nameConflicted: true }) },
+    { cid: 'sel2', source: 'x', state: state({ deletion: 'conflicted' }) }] }) }
+  const node = await selections(ex, {}, {})
+  assert.match(node.textContent, /\(names in conflict\)/)
+  assert.match(node.textContent, /\(deletion in conflict\)/)
 })

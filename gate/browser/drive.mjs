@@ -72,6 +72,10 @@ const EXTRACT_B = () => ({
     via: e.dataset.via ?? null })),
   pickAll: [...document.querySelectorAll('[data-pick-all]')].map((e) => ({ via: e.dataset.via ?? null, count: e.dataset.count ?? null })),
   snippets: Object.fromEntries(['untyped', 'typed'].map((m) => [m, document.querySelector(`[data-snippet="${m}"]`)?.textContent ?? null])),
+  // Layout B (DESIGN.md §16): the panel's state, the chips its call carries, and the rows the items view listed.
+  panel: document.querySelector('[data-panel-state]')?.dataset.panelState ?? null,
+  where: document.querySelector('[data-snippet][data-where]')?.dataset.where ?? null,
+  results: [...document.querySelectorAll('[data-item-result]')].map((e) => e.dataset.itemResult),
 })
 
 const writeSeq = (page) => page.evaluate(() => Number(document.body.dataset.writeSeq ?? 0))
