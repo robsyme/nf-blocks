@@ -48,6 +48,7 @@ export class Explorer {
     this.closing = new Map()
     this.fetchesForQuery = 0
     this.runLabels = new Map()
+    this.identities = new Map()
   }
 
   static async open({ base, openDb, blocks, listFn, now = () => Date.now() }) {
@@ -218,6 +219,28 @@ export class Explorer {
   }
 
   async completionOf(cid) { return (await this.blocks.ofKind(cid, 'RunCompletion')).value }
+
+  /**
+   * A run's name, lineage ID and pipeline from its RunCompletion and
+   * RunManifest blocks, with no snapshot query, so the panel and breadcrumbs
+   * add nothing to query 3's measured cost (Gate assertion 2; layout B plan P2).
+   * One lookup per run; a failure is asked again next time.
+   */
+  runIdentity(completionCid) {
+    if (!this.identities.has(completionCid)) {
+      const lookup = (async () => {
+        const completion = await this.completionOf(completionCid)
+        const manifestCid = text(completion.run)
+        const manifest = (await this.blocks.ofKind(manifestCid, 'RunManifest')).value
+        return { completion: completionCid, manifest: manifestCid, pipeline: manifest.pipeline ?? null, run_name: manifest.run_name ?? null,
+          nf_run_hash: manifest.nf_run_hash ?? null, lid: manifest.nf_run_hash ? `lid://${manifest.nf_run_hash}` : null,
+          revision: manifest.revision ?? null, config: manifest.config ?? null,
+          status: completion.status, possibly_incomplete: !!completion.possibly_incomplete }
+      })()
+      this.identities.set(completionCid, lookup.catch((e) => { this.identities.delete(completionCid); throw e }))
+    }
+    return this.identities.get(completionCid)
+  }
 
   async run(cid) {
     const row = await this.runRow(cid)
