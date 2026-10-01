@@ -77,3 +77,41 @@ test('home links each pipeline to its latest good run', async () => {
   await frame()
   assert.ok(page.querySelectorAll('a').some(a => a.getAttribute('href') === '#/run/bafyrun' && a.textContent === 'high_jang'))
 })
+
+test('home: a failing runIdentity shows ? and nothing is left unhandled', async () => {
+  installDom()
+  const seen = []
+  const on = (e) => seen.push(e)
+  process.on('unhandledRejection', on)
+  const ex = { pipelines: async () => [{ pipeline: 'p', runs: 1, latest: null }], stale: [],
+    latestSuccessfulRun: async () => 'bafyrun', runIdentity: async () => { throw new Error('x') } }
+  const page = await home(ex, ctx())
+  await frame(); await new Promise(r => setTimeout(r, 20))
+  process.off('unhandledRejection', on)
+  assert.equal(seen.length, 0)
+  assert.ok(page.textContent.includes('?'))
+  assert.ok(!page.textContent.includes('…'))
+})
+
+const itemEx = (over) => ({
+  item: async () => ({ view: { id: 'A', meta: { id: 'A' } }, state: claimState([]), leaves: [{ name: 'a.bam', size: 1, address: 'bafybam' }] }),
+  producersOf: async () => [{ collection_cid: 'c1', completion_cid: 'r1' }, { collection_cid: 'c2', completion_cid: 'r2' }],
+  selectionsHolding: async () => [], runLabel: async (c) => ({ run_name: c === 'c1' ? 'one' : 'two', output: 'o', completion: c === 'c1' ? 'r1' : 'r2' }),
+  runIdentity: async () => ({}), blocks: { urlFor: (a) => a }, ...over })
+
+test('item with no collection lists every producing run and the query note', async () => {
+  installDom()
+  const page = await item(itemEx({}), '-', 'bafyitem', ctx())
+  await frame()
+  assert.match(page.textContent, /one/)
+  assert.match(page.textContent, /two/)
+  assert.match(page.textContent, /Picked by a query across runs\./)
+})
+
+test('item whose runLabel rejects lists its producers without the query note', async () => {
+  installDom()
+  const page = await item(itemEx({ runLabel: async () => { throw new Error('no') } }), 'c1', 'bafyitem', ctx())
+  await frame()
+  assert.ok(page.querySelectorAll('a').some(a => a.getAttribute('href') === '#/run/r1'))
+  assert.ok(!page.textContent.includes('Picked by a query'))
+})

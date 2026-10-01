@@ -16,8 +16,8 @@ export async function home(ex, ctx) {
       if (!best) { good.textContent = 'none'; return }
       const id = await ex.runIdentity(best)
       good.classList.remove('muted')
-      good.replaceChildren(link(`#/run/${best}`, id.run_name ?? best))
-    }, () => { good.textContent = '?' })
+      good.replaceChildren(link(`#/run/${best}`, id?.run_name ?? 'unnamed run'))
+    }).catch(() => { good.textContent = '?' })
   }
   return h('section', {},
     h('h1', {}, 'Pipelines'),

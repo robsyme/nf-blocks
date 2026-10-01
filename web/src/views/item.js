@@ -46,7 +46,9 @@ export async function item(ex, collectionCid, itemCid, ctx) {
     from ? h('p', {}, from.completion ? link(`#/run/${from.completion}`, `${from.run_name ?? 'this run'}`) : from.run_name ?? 'this run',
       elsewhere.length ? [h('span', { class: 'muted' }, ' · same files also in: '),
         elsewhere.map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)])] : null)
-      : h('p', { class: 'muted' }, 'Picked by a query across runs.'),
+      : [runs.size ? h('p', {}, [...runs].map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)]))
+          : h('p', { class: 'muted' }, 'No run in this member produced it.'),
+        collectionCid === '-' ? h('p', { class: 'muted' }, 'Picked by a query across runs.') : null],
     holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, link(`#/selection/${s}`, cid(s)))))] : null,
     fold(`storage:${itemCid}`, 'Storage', retentionPanel(itemCid, it.state, ctx, { kind: 'item', href: ctx.write.hrefFor(`#/item/${collectionCid}/${itemCid}`) })),
     fold(`details:${itemCid}`, 'Details',
