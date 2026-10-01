@@ -1549,7 +1549,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.4.0-beta.1'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.5.0-beta.1'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -2160,6 +2160,8 @@ the include is optional, and a "one of" condition in the page and in
 `fromStore(where:)`.
 
 ### Layout B (2026-09-30)
+
+*Status: merged to main at `fc4f001` (PR #2) and released as 0.5.0-beta.1.*
 
 Spec `docs/superpowers/specs/2026-09-30-explorer-layout-b-design.md`, plan
 `docs/plans/2026-09-30-explorer-layout-b.md`. The page has three regions: a
