@@ -40,6 +40,7 @@ export function createPanel({ el, ex, ctx }) {
   let modeKey = null
   let note = null
   let saving = false
+  let statusHash // the page the status was written on; it goes when the reader moves on
   // Made once and re-appended on every picked draw, so a redraw never detaches
   // the save feedback or loses the typed name.
   const name = h('input', { id: 'compose-name', placeholder: 'A name, e.g. treated BAMs' })
@@ -58,6 +59,7 @@ export function createPanel({ el, ex, ctx }) {
       // A save that navigated leaves stale "Saving..." text; one that could not
       // refresh leaves its message, which must outlive the picked state.
       if (globalThis.location?.hash !== hash) status.replaceChildren()
+      statusHash = globalThis.location?.hash
       await draw()
     }
   }
@@ -65,6 +67,7 @@ export function createPanel({ el, ex, ctx }) {
   async function draw(input = last) {
     last = input
     if (saving) return
+    if (status.childNodes.length && globalThis.location?.hash !== statusHash) status.replaceChildren()
     const mine = ++drawn
     const s = panelState({ ...input, picked: ctx.tray.size })
     const key = s.completion ? `${s.completion}/${s.output}` : null

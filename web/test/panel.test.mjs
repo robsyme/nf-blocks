@@ -260,3 +260,36 @@ test('a save that navigated empties the stale status', async () => {
     assert.doesNotMatch(w.el.textContent, /Saving/)
   } finally { globalThis.location = saved }
 })
+
+test('a kept status goes when the hash changes, and stays on the same hash', async () => {
+  const saved = globalThis.location
+  globalThis.location = { hash: '#/compose' }
+  try {
+    const w = world()
+    w.tray.add({ address: 'i1', via: ['coll'] })
+    await w.panel.draw({ route: 'compose', view: null })
+    w.ctx.write.run = async (st) => { st.textContent = 'Could not save: boom' }
+    await w.el.querySelector('#compose-save').click()
+    await tick()
+    await w.panel.draw()
+    assert.match(w.el.textContent, /Could not save: boom/)
+    globalThis.location.hash = '#/items/other'
+    await w.panel.draw({ route: 'items', view: ITEMS })
+    assert.doesNotMatch(w.el.textContent, /Could not save/)
+    assert.equal(w.el.querySelector('#write-status').childNodes.length, 0)
+  } finally { globalThis.location = saved }
+})
+
+test('when write.run returns without running the attempt, saving clears and the panel draws', async () => {
+  const w = world()
+  w.tray.add({ address: 'i1', via: ['coll'] })
+  await w.panel.draw({ route: 'compose', view: null })
+  w.ctx.write.run = async () => {}
+  await w.el.querySelector('#compose-save').click()
+  await tick()
+  await w.panel.draw({ route: 'items', view: ITEMS })
+  assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'picked')
+  w.tray.clear()
+  await w.panel.draw({ route: 'items', view: ITEMS })
+  assert.equal(w.el.querySelector('[data-panel-state]').dataset.panelState, 'whole')
+})
