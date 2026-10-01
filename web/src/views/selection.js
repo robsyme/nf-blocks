@@ -5,7 +5,7 @@ import { Previews } from '../previews.js'
 import { saveChoice } from '../save-choice.js'
 import { saveSequence, retryRestore } from '../save-flow.js'
 import { snippetBlock, snippetToggle } from '../snippets.js'
-import { copyText, errorNode, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
+import { copyText, errorNode, flag, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
 
 /** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
 function undoUnavailableNote(ctx) {

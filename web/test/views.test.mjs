@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views/index.js'
+import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, selections, undoNote } from '../src/views/index.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
@@ -394,4 +394,15 @@ test('a content page shows a pin and can be unpinned', async () => {
   node.querySelector(`button[data-unpin="${C1}"]`).click()
   await settle()
   assert.deepEqual(calls, [['unpin', CONTENT, C1]])
+})
+
+test('selections: a row with conflicting names or conflicting deletion says so', async () => {
+  installDom()
+  const state = (over) => ({ names: ['a'], deletion: 'current', nameConflicted: false, ...over })
+  const ex = { selectionPage: async () => ({ hiddenCount: 0, first: 1, last: 2, total: 2, prev: null, next: null, rows: [
+    { cid: 'sel1', source: 'x', state: state({ nameConflicted: true }) },
+    { cid: 'sel2', source: 'x', state: state({ deletion: 'conflicted' }) }] }) }
+  const node = await selections(ex, {}, {})
+  assert.match(node.textContent, /\(names in conflict\)/)
+  assert.match(node.textContent, /\(deletion in conflict\)/)
 })
