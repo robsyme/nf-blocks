@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, selections, undoNote } from '../src/views/index.js'
+import { collection, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, selections, undoNote } from '../src/views/index.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
@@ -194,23 +194,6 @@ test('Add checked adds only the checked rows, with the collection as via', async
   await add.click()
   assert.deepEqual(ctx.tray.entries(), [{ address: 'i1', kind: 'item', via: ['coll'] }, { address: 'i3', kind: 'item', via: ['coll'] }])
   assert.deepEqual(ctx.changed, [2])
-})
-
-test('the compose tray counts only item entries toward the preview cap, so a Selection entry does not push an item past it', async () => {
-  installDom()
-  const ex = rowModel()
-  const tray = new Tray(null)
-  tray.add({ address: 'a-selection', kind: 'selection' })
-  const items = Array.from({ length: 100 }, (_, i) => `i${String(i).padStart(3, '0')}`)
-  tray.addMany(items.map(address => ({ address, via: ['coll'] })))
-  const node = compose(ex, rowCtx(tray))
-  assert.equal(node.querySelectorAll('[data-tray-entry]').length, 101)
-  const shows = node.querySelectorAll('button').filter(b => b.textContent === 'show details')
-  assert.equal(shows.length, 0, 'the 100 items are the first 100 item rows')
-  await frame()
-  assert.equal(ex.asked.length, 100)
-  const via = node.querySelector('[data-tray-entry=i000]').querySelector('.row-via')
-  assert.match(via.textContent, /^picked from cold \/ aligned/)
 })
 
 test('a run that published nothing says so under Outputs, with no snippet toggle and no empty list', async () => {

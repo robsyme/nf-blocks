@@ -2,8 +2,7 @@
 // #/selections, #/selection/<cid> and the tray composer (DESIGN.md §15).
 import { h, link, cid, copyOutcome } from '../html.js'
 import { Previews } from '../previews.js'
-import { saveChoice } from '../save-choice.js'
-import { saveSequence, retryRestore } from '../save-flow.js'
+import { retryRestore } from '../save-flow.js'
 import { snippetBlock, snippetToggle } from '../snippets.js'
 import { copyText, errorNode, flag, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
 
@@ -157,69 +156,4 @@ export function failureBanner(address, failures, ctx) {
         await retryRestore(ctx.write.writer, address, f.retry)
         return { address, href: `#/selection/${address}` }
       }, e.currentTarget) }, 'Retry restore'), status) : null)))
-}
-
-const deletedNote = (deletion, where) => deletion === 'deleted' ? ` It is deleted ${where}.`
-  : deletion === 'conflicted' ? ` Its deletion is in conflict ${where}.` : ''
-
-export function compose(ex, ctx) {
-  const entries = ctx.tray.entries()
-  const status = h('div', { id: 'write-status' })
-  const name = h('input', { id: 'compose-name', placeholder: 'A name for this Selection' })
-  const blocked = !ctx.write.available || entries.length === 0 || ctx.tray.onlyOneSelection()
-  const save = h('button', { type: 'button', id: 'compose-save', disabled: blocked, onclick: (event) => ctx.write.run(status, async () => {
-    const members = ctx.tray.toMembers()
-    const saveAndName = async (choice) => {
-      const { address, failures } = await saveSequence(ctx.write.writer, members, choice, name.value,
-        { onSaved: () => { ctx.tray.clear(); ctx.trayChanged() } })
-      return { address, href: `#/selection/${address}`, failures }
-    }
-    const dry = await ctx.write.writer.selection(members, { dryRun: true })
-    const choice = saveChoice(dry)
-    const cancel = h('button', { type: 'button', onclick: () => status.replaceChildren() }, 'cancel')
-    if (choice.state === 'here') {
-      const named = dry.names.length === 0 ? ', unnamed'
-        : dry.names.length === 1 ? ` as ${dry.names[0]}` : ` as ${dry.names.join(', ')} (in conflict)`
-      status.replaceChildren(h('p', { 'data-exists': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(dry.names) },
-        `This Selection already exists${named}.${deletedNote(choice.deletion, 'in this composition')} `,
-        link(ctx.write.hrefFor(`#/selection/${dry.address}`), 'Open it to rename it'),
-        choice.restore.length ? [', ', h('button', { type: 'button', id: 'exists-restore', onclick: (e) => ctx.write.run(status, async () => {
-          await ctx.write.writer.undo(dry.address, choice.restore)
-          return { address: dry.address, href: `#/selection/${dry.address}` }
-        }, e.currentTarget) }, 'Restore')] : null,
-        ' or ', cancel, '.'))
-      return { outcome: 'exists' }
-    }
-    if (choice.state === 'elsewhere') {
-      if (!name.value.trim() && choice.prefill) name.value = choice.prefill
-      const named = choice.names.length === 0 ? ', unnamed'
-        : choice.names.length === 1 ? ` as ${choice.names[0]}` : ` as ${choice.names.join(', ')} (in conflict)`
-      status.replaceChildren(h('p', { 'data-held-elsewhere': dry.address, 'data-deletion': choice.deletion, 'data-names': JSON.stringify(choice.names) },
-        `This Selection is already held in another member${named}.${deletedNote(choice.deletion, 'in this composition')} `,
-        h('button', { type: 'button', id: 'compose-copy', onclick: (e) => ctx.write.run(status, () => saveAndName(choice), e.currentTarget) },
-          choice.restore.length ? 'Restore a copy here' : 'Save a copy here'), ' or ', cancel, '.'))
-      return { outcome: 'elsewhere' }
-    }
-    return saveAndName(choice)
-  }, event.currentTarget) }, 'Save')
-  const previews = new Previews(ex)
-  // As in the Selection view, a row's index counts item entries only.
-  let itemIndex = 0
-  const entryNodes = entries.map((e) => {
-    const remove = h('button', { type: 'button', onclick: () => { ctx.tray.remove(e.address); ctx.trayChanged(); ctx.rerender() } }, 'Remove')
-    return e.kind === 'selection'
-      ? h('li', { class: 'row', 'data-tray-entry': e.address, 'data-kind': e.kind },
-        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), link(`#/selection/${e.address}`, cid(e.address)), h('span', { class: 'row-action' }, remove)))
-      : itemRow(ex, ctx, { address: e.address, via: e.via, previews, index: itemIndex++, attrs: { 'data-tray-entry': e.address, 'data-kind': e.kind },
-        action: remove, viaLabel: 'picked from', noVia: 'a query' })
-  })
-  const entryList = h('ol', { class: 'rows' }, entryNodes)
-  watchRows(entryList, previews, entryNodes.filter((node, i) => entries[i].kind === 'item'))
-  return h('section', {},
-    h('h1', {}, 'Compose a Selection'),
-    ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
-    entries.length === 0 ? h('p', { class: 'muted' }, 'The tray is empty. Add items from a run, a collection, an item or a query.') : entryList,
-    ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only member is another Selection is legal, but the explorer does not make one: add an item too.') : null,
-    h('p', {}, name, ' ', save),
-    status)
 }
