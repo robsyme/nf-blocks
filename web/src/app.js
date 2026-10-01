@@ -13,7 +13,7 @@ import { Tray, safeSessionStorage, trayNote } from './tray.js'
 import { writer } from './write.js'
 import { bannerText, bannerFrom, refreshFailureLines } from './save-flow.js'
 import { h, link } from './html.js'
-import * as views from './views.js'
+import * as views from './views/index.js'
 import { PAIRS_CSS } from './pairs.js'
 
 const ROUTES = [

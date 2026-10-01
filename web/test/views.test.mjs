@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views.js'
+import { collection, compose, content, copyOutcome, copyText, item, itemRows, pickAll, run, runLabelText, undoNote } from '../src/views/index.js'
 import { Previews } from '../src/previews.js'
 import { frame, installDom } from './dom.mjs'
 import { Tray, UNSAVED_NOTE } from '../src/tray.js'
