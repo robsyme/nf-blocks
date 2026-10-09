@@ -463,7 +463,7 @@ class Store(object):
                     out.add(self.block_path(link.text))
         return sorted(out)
 
-    STORE_LOG_KINDS = ("run", "selection", "claim")
+    STORE_LOG_KINDS = ("run", "selection", "claim", "forget")
 
     def store_log(self):
         """[(reverse_ts, kind, cid)] from log/<rts>-<kind>-<cid>, newest first.

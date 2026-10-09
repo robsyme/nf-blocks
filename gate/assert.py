@@ -11,6 +11,8 @@
     python3 gate/assert.py <GATE_ROOT> --retention-age <days>
     python3 gate/assert.py <GATE_ROOT> --retention-checkpoint <name>
     python3 gate/assert.py <GATE_ROOT> --retention-untrash-pick
+    python3 gate/assert.py <GATE_ROOT> --coherence-refs     # COH_R1 for assertion 18
+    python3 gate/assert.py <GATE_ROOT> --coherence-age <days>
 
 Every address this file checks is derived here, with hashlib, from the bytes
 the pipeline actually produced in its work directory or from the bytes of a
@@ -2080,8 +2082,11 @@ def retention_checkpoint(gate, name):
     if os.path.isfile(store.path("sweep.lock")):
         with open(store.path("sweep.lock")) as fh:
             lock = fh.read()
+    # A deleting sweep writes Forget blocks (DESIGN §20 decision 6, plan decision 6):
+    # bookkeeping, not part of what assertion 9 judges.
+    forgets = _forget_blocks(store)
     data = {"name": name,
-            "blocks": sorted(cid for cid, _p in store.blocks()),
+            "blocks": sorted(cid for cid, _p in store.blocks() if cid not in forgets),
             "ledgers": _retention_ledgers(store),
             "lock": lock,
             "live": sorted(_listdir(store.path("live")))}
@@ -2093,6 +2098,19 @@ def retention_checkpoint(gate, name):
     with open(os.path.join(_retention_logs(gate), name + ".json"), "w") as fh:
         json.dump(data, fh, indent=1, sort_keys=True)
     return data
+
+
+def _forget_blocks(store):
+    """The cids of every dag-cbor block of `store` that decodes to a Forget."""
+    out = set()
+    for cid, _path in store.blocks("dagcbor"):
+        try:
+            block = store.read_block(cid)
+        except Exception:
+            continue
+        if isinstance(block, dict) and block.get("kind") == "Forget":
+            out.add(cid)
+    return out
 
 
 def retention_untrash_pick(gate):
@@ -2347,6 +2365,151 @@ def assertion_9(gate):
 
 
 # --------------------------------------------------------------------------
+# Assertions 17 and 18 (DESIGN §20): cache coherence. gate.sh drives a member
+# deleted and recreated at the same location (store-recreate), and a copy of
+# store-retention swept through one cache while two others look on
+# (store-coherence); its verbs' output lands in logs/coherence/. Run ids come
+# from the Store Log and the blocks; caches and snapshots are read read-only.
+# --------------------------------------------------------------------------
+
+COHERENCE_RECREATE = "store-recreate"
+COHERENCE_STORE = "store-coherence"
+
+
+def _coherence_logs(gate):
+    return os.path.join(gate.root, "logs", "coherence")
+
+
+def _cache_runs(cache_home):
+    return sorted(r["completion_cid"] for r in cas.Index.open(cache_home).query("SELECT completion_cid FROM run"))
+
+
+def _snapshot(store_root):
+    """(sorted run completion cids, meta store_id or None) of the member's index/v3.sqlite."""
+    path = os.path.join(store_root, "index", "v3.sqlite")
+    if not os.path.isfile(path):
+        raise cas.GateError("no Index Snapshot at %s" % path)
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        runs = sorted(r[0] for r in con.execute("SELECT completion_cid FROM run"))
+        meta = dict(con.execute("SELECT key, value FROM meta").fetchall())
+    finally:
+        con.close()
+    return runs, meta.get("store_id")
+
+
+def _store_id(store_root):
+    try:
+        with open(os.path.join(store_root, "store-id")) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def coherence_17_state(gate):
+    root = os.path.join(gate.root, COHERENCE_RECREATE)
+    store = cas.Store(root)
+    runs = [cid for _rts, kind, cid in store.store_log() if kind == "run"]
+    cache = os.path.join(gate.root, "cache-recreate")
+    index = cas.Index.open(cache)
+    snap_runs, snap_id = _snapshot(root)
+    logs = _coherence_logs(gate)
+    return {"new_run": runs[0] if len(runs) == 1 else None,
+            "cache_runs": _cache_runs(cache),
+            "store_id": _store_id(root),
+            "cache_store_ids": [r["value"] for r in index.query("SELECT value FROM meta WHERE key LIKE 'store_id:%'")],
+            "snapshot_runs": snap_runs, "snapshot_store_id": snap_id,
+            "cold_runs": _cache_runs(os.path.join(gate.root, "cache-recreate-c")),
+            "exits": {name: _verb_exit(logs, name) for name in ("recreate-1", "recreate-2", "snap-2", "cold")}}
+
+
+def coherence_17_problems(s):
+    problems = ["%s exited %s; see logs/coherence/" % (n, c) for n, c in sorted(s["exits"].items()) if c != 0]
+    if not s["new_run"]:
+        return problems + ["the recreated member's Store Log does not hold exactly one run"]
+    for label, runs in (("the cache", s["cache_runs"]), ("the member's snapshot", s["snapshot_runs"]),
+                        ("a cold cache seeded from it", s["cold_runs"])):
+        if runs != [s["new_run"]]:
+            problems.append("%s holds %s, not only the new run %s" % (label, runs, s["new_run"]))
+    if not s["store_id"]:
+        problems.append("the recreated member has no store-id")
+    elif s["cache_store_ids"] != [s["store_id"]]:
+        problems.append("the cache records store ids %s, the member's is %s" % (s["cache_store_ids"], s["store_id"]))
+    if s["snapshot_store_id"] != s["store_id"]:
+        problems.append("the snapshot's store_id is %s, the member's %s" % (s["snapshot_store_id"], s["store_id"]))
+    return problems
+
+
+def coherence_18_state(gate):
+    root = os.path.join(gate.root, COHERENCE_STORE)
+    store = cas.Store(root)
+    # store-coherence is a copy of store-retention, and the sweep deleted run a
+    # there (its block and its Store Log entry), so both runs are read from the
+    # original, which nothing after assertion 9 touches.
+    runs = retention_runs(retention_store(gate))
+    listed = []
+    for _rts, kind, cid in store.store_log():
+        if kind == "forget" and store.has(cid):
+            listed.extend(str(c) for c in store.read_block(cid).get("deleted") or [])
+    b = cas.Index.open(os.path.join(gate.root, "cache-coh-b"))
+    rows = []
+    for table, column in (("run", "completion_cid"), ("collection", "collection_cid"), ("item", "item_cid"),
+                          ("claim", "claim_cid"), ("log_entry", "cid")):
+        for cid in listed:
+            if b.scalar("SELECT count(*) FROM %s WHERE %s = ?" % (table, column), (cid,)):
+                rows.append((table, cid))
+    snap_runs, _ = _snapshot(root)
+    logs = _coherence_logs(gate)
+    return {"r1": runs["a"][0], "r2": runs["b"][0], "listed": listed,
+            "sweep_json": _verb_json(logs, "sweep-2") or {},
+            "b_rows": rows, "b_runs": _cache_runs(os.path.join(gate.root, "cache-coh-b")),
+            "snapshot_runs": snap_runs, "c_runs": _cache_runs(os.path.join(gate.root, "cache-coh-c")),
+            "exits": {name: _verb_exit(logs, name)
+                      for name in ("a-0", "b-0", "delete-r1", "sweep-1", "sweep-2", "b-1", "c-1")}}
+
+
+def coherence_18_problems(s):
+    problems = ["%s exited %s; see logs/coherence/" % (n, c) for n, c in sorted(s["exits"].items()) if c != 0]
+    if s["r1"] not in s["listed"]:
+        problems.append("no forget entry in the member's log lists run a's RunCompletion %s" % s["r1"])
+    if not s["sweep_json"].get("applied"):
+        problems.append("the deleting sweep did not apply")
+    if not str(s["sweep_json"].get("snapshot", "")).startswith("wrote"):
+        problems.append("the deleting sweep's snapshot rewrite said %r" % s["sweep_json"].get("snapshot"))
+    for table, cid in s["b_rows"]:
+        problems.append("cache B still has a %s row for %s, which a forget entry lists" % (table, cid))
+    for label, runs in (("cache B", s["b_runs"]), ("the member's snapshot", s["snapshot_runs"]),
+                        ("cold cache C", s["c_runs"])):
+        if s["r1"] in runs:
+            problems.append("%s still holds the swept run %s" % (label, s["r1"]))
+        if s["r2"] not in runs:
+            problems.append("%s lost the kept run %s" % (label, s["r2"]))
+    return problems
+
+
+@assertion(17, "a recreated member shows only its own runs")
+def assertion_17(gate):
+    try:
+        problems = coherence_17_problems(coherence_17_state(gate))
+    except Exception as exc:
+        return FAIL, "could not read the recreated member or its caches: %s: %s" % (type(exc).__name__, exc)
+    if problems:
+        return FAIL, "; ".join(problems[:5])
+    return PASS, "one run in the cache, the snapshot and a seeded cache; ids agree"
+
+
+@assertion(18, "a sweep reaches every cache")
+def assertion_18(gate):
+    try:
+        problems = coherence_18_problems(coherence_18_state(gate))
+    except Exception as exc:
+        return FAIL, "could not read store-coherence or its caches: %s: %s" % (type(exc).__name__, exc)
+    if problems:
+        return FAIL, "; ".join(problems[:5])
+    return PASS, "run a forgotten by caches A, B and C and by the snapshot; run b kept"
+
+
+# --------------------------------------------------------------------------
 # Out of the Walking Skeleton: reported, never run
 # --------------------------------------------------------------------------
 
@@ -2420,7 +2583,8 @@ def main(argv):
     flags = {a for a in argv[1:] if a.startswith("--")}
     known = {"--offline", "--refs", "--snapshot", "--seeding-before",
              "--delete-consumer-cache", "--seeding-lock", "--retention-refs",
-             "--retention-age", "--retention-checkpoint", "--retention-untrash-pick"}
+             "--retention-age", "--retention-checkpoint", "--retention-untrash-pick",
+             "--coherence-refs", "--coherence-age"}
     if not args or flags - known:
         sys.stderr.write(__doc__)
         return 2
@@ -2458,6 +2622,26 @@ def main(argv):
             refs = {}
         for key in ("RET_A", "RET_B", "RET_PIN_ITEM", "RET_RELEASE", "RET_RESTORE"):
             print("%s=%s" % (key, _shquote(refs.get(key, ""))))
+        return 0
+    if "--coherence-refs" in flags:
+        try:                                      # COH_R1 still set on failure: gate.sh runs set -u
+            runs = retention_runs(cas.Store(os.path.join(root, COHERENCE_STORE)))
+            print("COH_R1=%s" % _shquote(runs["a"][0]))
+        except Exception as exc:
+            sys.stderr.write("coherence-refs: %s: %s\n" % (type(exc).__name__, exc))
+            print("COH_R1=''")
+        return 0
+    if "--coherence-age" in flags:
+        if len(args) != 2:
+            sys.stderr.write("--coherence-age needs a number of days\n")
+            return 2
+        import time
+        when = time.time() - float(args[1]) * 86400
+        count = 0
+        for _cid, path in cas.Store(os.path.join(root, COHERENCE_STORE)).blocks():
+            os.utime(path, (when, when))
+            count += 1
+        print("    backdated %d block(s) of %s by %s days" % (count, COHERENCE_STORE, args[1]))
         return 0
     if "--retention-age" in flags or "--retention-checkpoint" in flags:
         if len(args) != 2:
