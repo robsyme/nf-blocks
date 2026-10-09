@@ -1218,7 +1218,8 @@ class RetentionAssertionTest(unittest.TestCase):
 class CoherenceJudges(unittest.TestCase):
 
     def state17(self, **over):
-        s = {"new_run": "bafyNEW", "cache_runs": ["bafyNEW"], "store_id": "a" * 32,
+        s = {"new_run": "bafyNEW", "old_run": "bafyOLD", "before_runs": ["bafyOLD"],
+             "cache_runs": ["bafyNEW"], "store_id": "a" * 32,
              "cache_store_ids": ["a" * 32], "snapshot_runs": ["bafyNEW"], "snapshot_store_id": "a" * 32,
              "cold_runs": ["bafyNEW"], "exits": {"recreate-1": 0, "recreate-2": 0, "snap-2": 0, "cold": 0}}
         s.update(over)
@@ -1235,8 +1236,16 @@ class CoherenceJudges(unittest.TestCase):
         p = gate_assert.coherence_17_problems(self.state17(snapshot_store_id=None))
         self.assertTrue(any("store_id" in x for x in p))
 
+    def test_17_needs_the_cache_to_have_held_the_first_run(self):
+        p = gate_assert.coherence_17_problems(self.state17(before_runs=[]))
+        self.assertTrue(any("bafyOLD" in x and "never held" in x for x in p))
+
+    def test_17_needs_the_checkpoint_after_the_first_run(self):
+        p = gate_assert.coherence_17_problems(self.state17(before_runs=None))
+        self.assertTrue(any("after-recreate-1" in x for x in p))
+
     def state18(self, **over):
-        s = {"r1": "bafyR1", "r2": "bafyR2", "listed": ["bafyR1", "bafyCOLL"],
+        s = {"r1": "bafyR1", "r2": "bafyR2", "listed": ["bafyR1", "bafyCOLL"], "b_before": ["bafyR1", "bafyR2"],
              "sweep_json": {"applied": True, "snapshot": "wrote x (1 runs)"},
              "b_rows": [], "b_runs": ["bafyR2"], "snapshot_runs": ["bafyR2"], "c_runs": ["bafyR2"],
              "exits": {"sweep-2": 0, "b-1": 0, "c-1": 0}}
@@ -1257,6 +1266,14 @@ class CoherenceJudges(unittest.TestCase):
     def test_18_names_rows_cache_b_kept(self):
         p = gate_assert.coherence_18_problems(self.state18(b_rows=[("run", "bafyR1")]))
         self.assertTrue(any("bafyR1" in x for x in p))
+
+    def test_18_needs_cache_b_to_have_held_r1_before_the_sweep(self):
+        p = gate_assert.coherence_18_problems(self.state18(b_before=["bafyR2"]))
+        self.assertTrue(any("bafyR1" in x and "never held" in x for x in p))
+
+    def test_18_needs_the_checkpoint_of_cache_b(self):
+        p = gate_assert.coherence_18_problems(self.state18(b_before=None))
+        self.assertTrue(any("b-0" in x for x in p))
 
 
 if __name__ == "__main__":

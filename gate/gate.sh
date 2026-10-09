@@ -302,11 +302,15 @@ coh_run() {   # <step> <tag>: the retention pipeline into store-recreate with ca
         run "$RET" "$1" --tag "$2" -c "$REPO/gate/retention/overlay.config"
     cp "$GATE_ROOT/logs/$1/exit" "$GATE_ROOT/logs/coherence/$1.exit" || echo "    no exit code for $1"
 }
+coh_checkpoint() {   # <name> <cache dir>: the cache's run table now, in logs/coherence/<name>.json
+    python3 "$REPO/gate/assert.py" "$GATE_ROOT" --coherence-checkpoint "$1" "$2" || echo "    checkpoint $1 failed"
+}
 
 # 17: a member deleted and recreated at the same location, with the same cache.
 rm -rf "$GATE_ROOT/store-recreate" "$GATE_ROOT/store-recreate-old" "$GATE_ROOT"/cache-recreate*
 mkdir -p "$GATE_ROOT/store-recreate" "$GATE_ROOT/cache-recreate"
 coh_run recreate-1 r1
+coh_checkpoint after-recreate-1 cache-recreate
 mv "$GATE_ROOT/store-recreate" "$GATE_ROOT/store-recreate-old"
 mkdir -p "$GATE_ROOT/store-recreate"
 coh_run recreate-2 r2
@@ -319,6 +323,7 @@ cp -Rp "$GATE_ROOT/store-retention" "$GATE_ROOT/store-coherence"
 rm -rf "$GATE_ROOT/store-coherence/store-id" "$GATE_ROOT/store-coherence/index" "$GATE_ROOT/store-coherence/index.html"
 coh store-coherence cache-coh-a a-0 snapshot
 coh store-coherence cache-coh-b b-0 snapshot
+coh_checkpoint b-0 cache-coh-b
 eval "$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --coherence-refs)"
 printf '{"kind":"Claim","subject":{"/":"%s"},"verb":"delete","attribute":null,"value":null,"supersedes":[],"timestamp":"%s"}\n' \
     "$COH_R1" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$GATE_ROOT/logs/coherence/delete-r1.request"

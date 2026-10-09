@@ -13,6 +13,7 @@
     python3 gate/assert.py <GATE_ROOT> --retention-untrash-pick
     python3 gate/assert.py <GATE_ROOT> --coherence-refs     # COH_R1 for assertion 18
     python3 gate/assert.py <GATE_ROOT> --coherence-age <days>
+    python3 gate/assert.py <GATE_ROOT> --coherence-checkpoint <name> <cache dir>
 
 Every address this file checks is derived here, with hashlib, from the bytes
 the pipeline actually produced in its work directory or from the bytes of a
@@ -2047,17 +2048,22 @@ def retention_refs(gate):
     return cas.retention_refs(store, retention_runs(store))
 
 
-def retention_age(gate, days):
-    """Backdates every block of store-retention by `days`: a local member's
-    clock is its mtimes, so this is what makes the blocks older than the age
-    floor without waiting 14 days."""
+def _backdate(store, days):
+    """Backdates every block of `store` by `days`: a local member's clock is
+    its mtimes, so this is what makes the blocks older than the age floor
+    without waiting 14 days. Returns how many blocks it touched."""
     import time
     when = time.time() - float(days) * 86400
     count = 0
-    for _cid, path in retention_store(gate).blocks():
+    for _cid, path in store.blocks():
         os.utime(path, (when, when))
         count += 1
     return count
+
+
+def retention_age(gate, days):
+    """Backdates every block of store-retention by `days`."""
+    return _backdate(retention_store(gate), days)
 
 
 def _retention_ledgers(store):
@@ -2398,6 +2404,27 @@ def _snapshot(store_root):
     return runs, meta.get("store_id")
 
 
+def coherence_checkpoint(gate, name, cache):
+    """logs/coherence/<name>.json: the completion cids in the `run` table of
+    the cache under <GATE_ROOT>/<cache>, so a judge can see what a cache held
+    before a later step changed it."""
+    data = {"name": name, "cache": cache,
+            "runs": _cache_runs(os.path.join(gate.root, cache))}
+    os.makedirs(_coherence_logs(gate), exist_ok=True)
+    with open(os.path.join(_coherence_logs(gate), name + ".json"), "w") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True)
+    return data
+
+
+def _checkpoint_runs(gate, name):
+    """The `runs` a coherence checkpoint recorded, or None when it is missing."""
+    try:
+        with open(os.path.join(_coherence_logs(gate), name + ".json")) as fh:
+            return json.load(fh).get("runs")
+    except (OSError, ValueError):
+        return None
+
+
 def _store_id(store_root):
     try:
         with open(os.path.join(store_root, "store-id")) as fh:
@@ -2410,11 +2437,14 @@ def coherence_17_state(gate):
     root = os.path.join(gate.root, COHERENCE_RECREATE)
     store = cas.Store(root)
     runs = [cid for _rts, kind, cid in store.store_log() if kind == "run"]
+    old = [cid for _rts, kind, cid in cas.Store(root + "-old").store_log() if kind == "run"]
     cache = os.path.join(gate.root, "cache-recreate")
     index = cas.Index.open(cache)
     snap_runs, snap_id = _snapshot(root)
     logs = _coherence_logs(gate)
     return {"new_run": runs[0] if len(runs) == 1 else None,
+            "old_run": old[0] if len(old) == 1 else None,
+            "before_runs": _checkpoint_runs(gate, "after-recreate-1"),
             "cache_runs": _cache_runs(cache),
             "store_id": _store_id(root),
             "cache_store_ids": [r["value"] for r in index.query("SELECT value FROM meta WHERE key LIKE 'store_id:%'")],
@@ -2427,6 +2457,15 @@ def coherence_17_problems(s):
     problems = ["%s exited %s; see logs/coherence/" % (n, c) for n, c in sorted(s["exits"].items()) if c != 0]
     if not s["new_run"]:
         return problems + ["the recreated member's Store Log does not hold exactly one run"]
+    if not s["old_run"]:
+        problems.append("the first incarnation's Store Log (store-recreate-old) does not hold exactly one run")
+    elif s["old_run"] == s["new_run"]:
+        problems.append("both incarnations hold the same run %s; nothing tells them apart" % s["new_run"])
+    elif s["before_runs"] is None:
+        problems.append("no checkpoint logs/coherence/after-recreate-1.json of the cache after the first run")
+    elif s["old_run"] not in s["before_runs"]:
+        problems.append("the cache never held the first incarnation's run %s (after recreate-1 it held %s), "
+                        "so no reset was tested" % (s["old_run"], s["before_runs"]))
     for label, runs in (("the cache", s["cache_runs"]), ("the member's snapshot", s["snapshot_runs"]),
                         ("a cold cache seeded from it", s["cold_runs"])):
         if runs != [s["new_run"]]:
@@ -2461,6 +2500,7 @@ def coherence_18_state(gate):
     snap_runs, _ = _snapshot(root)
     logs = _coherence_logs(gate)
     return {"r1": runs["a"][0], "r2": runs["b"][0], "listed": listed,
+            "b_before": _checkpoint_runs(gate, "b-0"),
             "sweep_json": _verb_json(logs, "sweep-2") or {},
             "b_rows": rows, "b_runs": _cache_runs(os.path.join(gate.root, "cache-coh-b")),
             "snapshot_runs": snap_runs, "c_runs": _cache_runs(os.path.join(gate.root, "cache-coh-c")),
@@ -2470,6 +2510,11 @@ def coherence_18_state(gate):
 
 def coherence_18_problems(s):
     problems = ["%s exited %s; see logs/coherence/" % (n, c) for n, c in sorted(s["exits"].items()) if c != 0]
+    if s["b_before"] is None:
+        problems.append("no checkpoint logs/coherence/b-0.json of cache B before the sweep")
+    elif s["r1"] not in s["b_before"]:
+        problems.append("cache B never held run a's RunCompletion %s before the sweep (it held %s), "
+                        "so its forgetting was not tested" % (s["r1"], s["b_before"]))
     if s["r1"] not in s["listed"]:
         problems.append("no forget entry in the member's log lists run a's RunCompletion %s" % s["r1"])
     if not s["sweep_json"].get("applied"):
@@ -2584,7 +2629,7 @@ def main(argv):
     known = {"--offline", "--refs", "--snapshot", "--seeding-before",
              "--delete-consumer-cache", "--seeding-lock", "--retention-refs",
              "--retention-age", "--retention-checkpoint", "--retention-untrash-pick",
-             "--coherence-refs", "--coherence-age"}
+             "--coherence-refs", "--coherence-age", "--coherence-checkpoint"}
     if not args or flags - known:
         sys.stderr.write(__doc__)
         return 2
@@ -2635,13 +2680,15 @@ def main(argv):
         if len(args) != 2:
             sys.stderr.write("--coherence-age needs a number of days\n")
             return 2
-        import time
-        when = time.time() - float(args[1]) * 86400
-        count = 0
-        for _cid, path in cas.Store(os.path.join(root, COHERENCE_STORE)).blocks():
-            os.utime(path, (when, when))
-            count += 1
+        count = _backdate(cas.Store(os.path.join(root, COHERENCE_STORE)), float(args[1]))
         print("    backdated %d block(s) of %s by %s days" % (count, COHERENCE_STORE, args[1]))
+        return 0
+    if "--coherence-checkpoint" in flags:
+        if len(args) != 3:
+            sys.stderr.write("--coherence-checkpoint needs a name and a cache directory under GATE_ROOT\n")
+            return 2
+        data = coherence_checkpoint(gate, args[1], args[2])
+        print("    checkpoint %s: %s holds %d run(s)" % (args[1], args[2], len(data["runs"])))
         return 0
     if "--retention-age" in flags or "--retention-checkpoint" in flags:
         if len(args) != 2:
