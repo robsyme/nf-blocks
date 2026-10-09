@@ -1458,8 +1458,11 @@ write failure, naming how many of the planned releases it wrote first.
 holds `sweep.lock`, or when nothing named is in any Trash ledger. §19 has
 the full contract and plan decisions 6 and 8 to 13. `reindex` (§20 decision
 12) deletes this config's cache file and catches every member up cold, then
-writes the writable member's snapshot; it exits 1 when a member could not be
-caught up.
+writes the writable member's snapshot even when the stored one has a newer
+watermark or more runs (§20 build decision 19), printing both run counts; it
+exits 1 when a member could not be caught up. Blocks removed outside the
+plugin need `--seed false`, since the default seeds from the snapshot that
+still lists them.
 
 *Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
 `1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
@@ -2857,11 +2860,12 @@ caught by that re-check (plan decision 10, decision 11).
 
 ## 20. Cache coherence (2026-10-09)
 
-*Status: built on `design/cache-coherence` (2026-10-09). `./gradlew check`
-passes (1323 tests, 0 failures); `cd web && npm test` passes (281 tests, and
-the schema test still finds 24 types); `python3 -m unittest discover -s gate`
-runs 327 tests OK (1 skipped) and `gate/tier2` 53 OK. `make gate` on a fresh
-`GATE_ROOT` (commit 38a4c03): lineage tier 18 PASS, 0 FAIL, 5 SKIP; browser
+*Status: built on `design/cache-coherence` (2026-10-09), with the final
+review's fixes (build decisions 19 to 25). `./gradlew check` passes (1335
+tests, 0 failures); `cd web && npm test` passes (281 tests, and the schema
+test still finds 24 types); `python3 -m unittest discover -s gate` runs 327
+tests OK (1 skipped) and `gate/tier2` 53 OK. `make gate` on a fresh
+`GATE_ROOT` (commit 04c0121): lineage tier 18 PASS, 0 FAIL, 5 SKIP; browser
 tier A 5/5, tier B 14/14. Tier two (T7 included) was not run. Where the build
 differs from the decisions below, the decision carries an "Amended by" note
 and the reason is under Decisions made while building.*
@@ -2911,7 +2915,7 @@ scope: nothing finds them without listing every block, so the answer is the
    race is success; the writer then reads the winner's id. `sweep`, `put`,
    `snapshot` and `explore` create it the same way when they hold the member
    writable. A read-only member is never written; its id is read if present.
-3. *Refined by decisions 2 to 4 below.* The cache records `store_id:<member alias>` in `meta` the first time it
+3. *Amended by decisions 1 to 4 below.* The cache records `store_id:<member alias>` in `meta` the first time it
    catches up a member that has one. Every `catchUp` reads the member's
    `store-id` first (one small read per member per open; catch-up already
    lists the log, so the cost does not change in kind) and compares:
@@ -2962,9 +2966,9 @@ scope: nothing finds them without listing every block, so the answer is the
    without a read; content blocks and DirectoryManifests have no rows to drop
    (producer rows stay, §12) and are left out, so a content-only sweep, Gate
    assertion 9's, writes no `forget` entry.
-7. *Amended by decisions 7 and 8 below: the Store Log entries are deleted
-   once, after every batch, and the sweeper's cache forgets only what could
-   not be announced.* Order, per delete batch: delete the batch, then delete its Store Log
+7. *Amended by decisions 7, 8 and 24 below: the Store Log entries are
+   deleted once, after every batch, the sweeper's cache forgets only what
+   could not be announced, and a batch whose delete fails is announced whole.* Order, per delete batch: delete the batch, then delete its Store Log
    entries (§19 decision 7), then `putDagCbor` the batch's Forget block and
    append its `forget` entry, before the next batch's re-check. A sweep that
    stops between a batch and its entry leaves rows behind in other caches;
@@ -2972,9 +2976,10 @@ scope: nothing finds them without listing every block, so the answer is the
    `reindex` does (decision 12). The sweep's own `forget` call then reads
    from its own catch-up of these entries, not from the report, so the
    sweeper and every other cache take the same path.
-8. *Amended by decisions 9 and 15 below: a cid is kept when any member of
-   the composition holds it, and a `forget` entry whose block is gone is
-   dangling.* Catch-up ingests a `forget` entry from member `m` by reading its block
+8. *Amended by decisions 9, 15, 22 and 23 below: a cid is kept when any
+   member of the composition holds it or the lookup fails, only cids the
+   cache has rows for are looked up, and a `forget` entry whose block is gone
+   is dangling.* Catch-up ingests a `forget` entry from member `m` by reading its block
    and calling `Index.forget` on each listed cid that no other member of
    this cache holds (`has` on each other member; a one-member cache checks
    nothing). The entry goes into `log_entry` like any other, and is retried
@@ -2995,8 +3000,10 @@ scope: nothing finds them without listing every block, so the answer is the
    snapshot written from a stale cache, like the one in `scratch-workflow/`,
    names an entry from the old incarnation and fails it. A refused snapshot
    means the full scan, with the warning §12 already gives.
-10. *Amended by decisions 10 and 12 below: no `forgotten` table, and the
-    guards run in a fixed order.* A writer refuses to replace a snapshot when:
+10. *Amended by decisions 10, 12, 19 to 21 below: no `forgotten` table, the
+    guards run in a fixed order, a base from another incarnation is not
+    compared, and `reindex` and a sweep with unannounced deletes waive
+    `older_watermark` and `fewer_runs`.* A writer refuses to replace a snapshot when:
     - its cache's `store_id:<m>` differs from the member's `store-id` after
       its own catch-up (`stale_store`; it cannot happen after decision 3
       ran, so it guards a writer whose catch-up was skipped or failed);
@@ -3020,7 +3027,7 @@ scope: nothing finds them without listing every block, so the answer is the
 
 ### `reindex`
 
-12. *Built as written; see decision 14 below.* `nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]` deletes
+12. *Built as written, with the snapshot written as a rebuild; see decisions 14 and 19 below.* `nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]` deletes
     the cache file (and its `-wal`, `-shm`) for this config's members and
     catches up every member cold, seeding under decision 9 unless
     `--seed false`, then writes the writable member's snapshot. It is the
@@ -3123,7 +3130,8 @@ entries above. Each entry says what was built.
    not forgotten: it is still held elsewhere, or was written again since the
    sweep (an OutputItem a later run reproduced). This widens §20 decision 8's
    "other member" to the whole composition. It costs one `has` per listed
-   cid per cache, once.
+   cid per cache, once (changed by decision 22: only cids the cache has
+   rows for).
 10. No schema version bump (changes §20 decision 10). The forgotten-run
     counts live in `meta`; the `forgotten` table decision 10 named was not
     built. A new table changes `Index.ddl()`, which is also the snapshot's
@@ -3148,7 +3156,8 @@ entries above. Each entry says what was built.
 14. `reindex --seed false` passes no snapshot storage to the cold catch-up,
     so every member is scanned. `reindex` also removes a `-journal` sidecar
     beside the cache file, and prints `reindexed <cache file>` and then
-    either `wrote <snapshot> (<n> runs)` or `snapshot not rewritten: <reason>`.
+    either `wrote <snapshot> (<n> runs)` or `snapshot not rewritten: <reason>`
+    (changed by decision 19: `(<n> runs, was <m>)`).
 15. A `forget` entry whose Forget block is gone is dangling like any other
     root entry, and a sweep deletes it once it is past the age floor
     (changes §20 decision 8's "a sweep never deletes a `forget` entry as
@@ -3157,7 +3166,8 @@ entries above. Each entry says what was built.
     block.
 16. A Forget block that exists but does not decode as a Forget is warned
     once and recorded as applied with 0 runs, so it never fails a member's
-    catch-up (`Index.applyForget`).
+    catch-up (`Index.applyForget`). Decision 23 extends this to a block
+    that is there but of another kind or over the size cap.
 17. `Put`'s own catch-up asks the whole composition (`holders`) before
     forgetting, as `CasSession.catchUpIndex` does: the four-argument
     `Index.catchUp(store, storeLog, member, holders)`.
@@ -3167,3 +3177,57 @@ entries above. Each entry says what was built.
     sweep. An assertion fails when its precondition is missing, so a pass
     cannot come from a cache that never held the rows it is said to have
     forgotten.
+
+Decisions 19 to 25 come from the final review of the branch (2026-10-09).
+
+19. `reindex` writes the snapshot as a rebuild: `IndexSnapshot.write(...,
+    boolean rebuild)`, reached through `CasSession.snapshotWritable(...,
+    boolean rebuild)`, skips `older_watermark` and `fewer_runs`. It still
+    applies `stale_store`, `catch_up_failed` and `replaced_meanwhile`, and
+    `reindex` writes at any size, as before. Without the waiver, `--seed
+    false` got the cache right but the snapshot write was refused, so the
+    snapshot kept the dead runs and the next cold cache seeded them again.
+    The output line is `wrote <snapshot> (<n> runs, was <m>)`, where `<m>`
+    is the base's count, `none` without a base, or `uncounted`. The default
+    `--seed true` seeds from the snapshot, which still lists runs whose
+    blocks were removed by hand or by a lifecycle rule, and writes them back
+    (the output shows `<n>` equal to `<m>`); for those, the README says to
+    use `--seed false`. It also says to stop `explore` around a reindex: a
+    process with the cache open keeps writing to the old, unlinked file.
+20. A sweep with `SweepReport.unannounced` cids writes its snapshot as a
+    rebuild too (`RetentionCommands.forgetAndSnapshot`). Those runs were
+    deleted by this sweep but no `forget` entry counts them, so
+    `fewer_runs` cannot add them back and would refuse the write.
+21. A base whose `store_id` is set and differs from the member's is from
+    another incarnation of the member, so `older_watermark` and
+    `fewer_runs` are not judged against it (`IndexSnapshot.write`, when it
+    is given the member's id). Its watermark names an entry of the old log,
+    and its run count describes a store that no longer exists.
+22. `applyForget` looks up only the listed cids this cache has a row for:
+    a `run`, `collection`, `item` or `claim` row keyed by the cid, or its
+    `log_entry` (one SQLite query per cid). Forgetting any other cid is a
+    no-op, so DirectoryManifests and blocks the cache never indexed cost no
+    `has`. A `has` that throws anything (an S3 403 on a missing key without
+    `s3:ListBucket` is an unchecked SDK exception) counts as held: the
+    cid's rows stay, and one warning per `forget` entry gives the count of
+    cids it could not check. Before this, the exception escaped `catchUp`
+    before the watermark was set, on every catch-up.
+23. `applyForget` tells an absent Forget block from one that is there but
+    unusable. Absent (`has` is false) is `missing` and retried, as before.
+    A block that is there but does not decode, is of another kind, or is
+    over the size cap is warned once and recorded as applied with 0 runs,
+    as decision 16 does for a malformed Forget; before this it was recorded
+    `missing` and read again on every catch-up. An IO error while reading a
+    block that is there is still `missing` and retried, so a transient
+    failure never records an entry as applied.
+24. A batch whose `deleteBlocks` throws is announced whole (`Sweep.deleteDue`)
+    before the sweep stops. Which blocks went is unknown; catch-up asks the
+    composition before it forgets a cid, so the blocks that survived keep
+    their rows.
+25. Known limit, not fixed: a reset (decision 1) in one process can race a
+    catch-up of the same cache file in another process. The other process
+    can record its watermark after the reset has emptied the cache; the
+    cold catch-up that follows the reset then finds a watermark, skips the
+    seed and the scan, and reads only the log tail. The cache is missing
+    older rows until the next `reindex`. It takes a member replaced at the
+    moment another process is catching up the same composition.
