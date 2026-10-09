@@ -398,14 +398,15 @@ class Index implements Closeable {
      * `claim` entries are ingested; `forget` entries are applied.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member) {
-        catchUpTail(store, storeLog, member, store)
+        catchUp(store, storeLog, member, store)
     }
 
     /**
      * The 3-arg {@code catchUp}, with {@code holders} the store a `forget`
-     * entry asks whether a listed cid is still held (the whole composition).
+     * entry asks whether a listed cid is still held: the whole composition,
+     * so a cid another member holds is not forgotten (DESIGN.md §20 decision 8).
      */
-    private void catchUpTail(BlockStore store, StoreLog storeLog, String member, BlockStore holders) {
+    void catchUp(BlockStore store, StoreLog storeLog, String member, BlockStore holders) {
         // The watermark is per member: in a composition each member's log
         // advances independently (DESIGN.md §12).
         scanOnce(store, member)
@@ -480,7 +481,7 @@ class Index implements Closeable {
                 if( file != null ) Files.deleteIfExists(file)
             }
         }
-        catchUpTail(store, storeLog, member, holders)
+        catchUp(store, storeLog, member, holders)
     }
 
     /**
