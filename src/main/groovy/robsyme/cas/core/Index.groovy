@@ -395,13 +395,21 @@ class Index implements Closeable {
      * overlap window before the watermark (StoreLog.OVERLAP_MILLIS) so an entry
      * written behind it is not skipped, and skips runs already indexed so the
      * overlap costs a listing, never a block read. `run`, `selection` and
-     * `claim` entries are ingested.
+     * `claim` entries are ingested; `forget` entries are applied.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member) {
+        catchUpTail(store, storeLog, member, store)
+    }
+
+    /**
+     * The 3-arg {@code catchUp}, with {@code holders} the store a `forget`
+     * entry asks whether a listed cid is still held (the whole composition).
+     */
+    private void catchUpTail(BlockStore store, StoreLog storeLog, String member, BlockStore holders) {
         // The watermark is per member: in a composition each member's log
         // advances independently (DESIGN.md §12).
         scanOnce(store, member)
-        retryMissingLogged(store, member)
+        retryMissingLogged(store, member, holders)
         final String key = watermarkKey(member)
         final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
@@ -410,7 +418,7 @@ class Index implements Closeable {
         for( int i = entries.size() - 1; i >= 0; i-- ) {
             final StoreLogEntry entry = entries[i]
             recordLogEntry(entry, member)
-            ingestLogged(store, entry.kind, entry.cid, member)
+            ingestLogged(store, entry.kind, entry.cid, member, holders)
         }
         setMeta(key, entries[0].name)
     }
@@ -431,7 +439,7 @@ class Index implements Closeable {
      * warning when the member's Store Log is not empty.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
-        catchUp(store, storeLog, member, snapshots, tempDir, Collections.<String> emptySet())
+        catchUp(store, storeLog, member, snapshots, tempDir, Collections.<String> emptySet(), store)
     }
 
     /**
@@ -441,6 +449,16 @@ class Index implements Closeable {
      * does not warn (ticket 18, decision from the sarek measurement).
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir, Set<String> quietFor) {
+        catchUp(store, storeLog, member, snapshots, tempDir, quietFor, store)
+    }
+
+    /**
+     * As the 6-arg {@code catchUp}, with {@code holders} the store a `forget`
+     * entry asks whether a listed cid is still held: the whole composition, so
+     * a cid another member holds, or one written again since, is not forgotten
+     * (DESIGN.md §20 decision 8).
+     */
+    void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir, Set<String> quietFor, BlockStore holders) {
         // Ticket 04 decision 6: an absent watermark alone triggers seeding.
         if( snapshots != null && meta(watermarkKey(member)) == null ) {
             Path file = null
@@ -462,7 +480,7 @@ class Index implements Closeable {
                 if( file != null ) Files.deleteIfExists(file)
             }
         }
-        catchUp(store, storeLog, member)
+        catchUpTail(store, storeLog, member, holders)
     }
 
     /**
@@ -592,19 +610,23 @@ class Index implements Closeable {
      * Every catch-up, retry and scan path comes through here, so a new kind
      * is one branch. A block that cannot be read is recorded as `missing`.
      */
-    private void ingestLogged(BlockStore store, StoreLogKind kind, Cid cid, String member) {
+    private void ingestLogged(BlockStore store, StoreLogKind kind, Cid cid, String member, BlockStore holders) {
         switch( kind ) {
             case StoreLogKind.RUN:
                 if( !isRunIndexed(cid) )
-                    ingestTolerant(store, kind, cid, member)
+                    ingestTolerant(store, kind, cid, member, holders)
                 return
             case StoreLogKind.SELECTION:
                 if( !isSelectionIndexed(cid) )
-                    ingestTolerant(store, kind, cid, member)
+                    ingestTolerant(store, kind, cid, member, holders)
                 return
             case StoreLogKind.CLAIM:
                 if( !isClaimIndexed(cid) )
-                    ingestTolerant(store, kind, cid, member)
+                    ingestTolerant(store, kind, cid, member, holders)
+                return
+            case StoreLogKind.FORGET:
+                if( meta(forgetKey(member, cid)) == null )
+                    ingestTolerant(store, kind, cid, member, holders)
                 return
             default:
                 log.debug("store log entry for ${cid} is a ${kind.token}; not indexed by this build yet")
@@ -631,11 +653,11 @@ class Index implements Closeable {
             return
         }
         for( Cid completion : found.get(Records.RUN_COMPLETION) )
-            ingestLogged(store, StoreLogKind.RUN, completion, member)
+            ingestLogged(store, StoreLogKind.RUN, completion, member, store)
         for( Cid selection : found.get(Records.SELECTION) )
-            ingestLogged(store, StoreLogKind.SELECTION, selection, member)
+            ingestLogged(store, StoreLogKind.SELECTION, selection, member, store)
         for( Cid claim : found.get(Records.CLAIM) )
-            ingestLogged(store, StoreLogKind.CLAIM, claim, member)
+            ingestLogged(store, StoreLogKind.CLAIM, claim, member, store)
         setMeta(key, 'done')
     }
 
@@ -645,7 +667,7 @@ class Index implements Closeable {
      * overlap window has moved past its entry. A `missing` row with no
      * `log_entry` (a run found by the block scan, not the log) defaults to RUN.
      */
-    private void retryMissingLogged(BlockStore store, String member) {
+    private void retryMissingLogged(BlockStore store, String member, BlockStore holders) {
         final Map<Cid, StoreLogKind> waiting = new LinkedHashMap<Cid, StoreLogKind>()
         query('''SELECT DISTINCT m.needed_cid, l.kind FROM missing m
                  LEFT JOIN log_entry l ON l.cid = m.needed_cid
@@ -656,7 +678,7 @@ class Index implements Closeable {
         for( Map.Entry<Cid, StoreLogKind> each : waiting.entrySet() ) {
             try {
                 if( store.has(each.key) )
-                    ingestLogged(store, each.value, each.key, member)
+                    ingestLogged(store, each.value, each.key, member, holders)
             }
             catch( IOException | UncheckedIOException e ) {
                 warnOnce(each.key.toString(), "block ${each.key} is still unreachable (${e.message}); will retry")
@@ -669,12 +691,13 @@ class Index implements Closeable {
      * error, a stale network handle) is not an absence: it is recorded as
      * `missing` so later catch-ups retry it, and the rest of the member still ingests.
      */
-    private void ingestTolerant(BlockStore store, StoreLogKind kind, Cid cid, String member) {
+    private void ingestTolerant(BlockStore store, StoreLogKind kind, Cid cid, String member, BlockStore holders) {
         try {
             switch( kind ) {
                 case StoreLogKind.RUN: ingestRun(store, cid, member); break
                 case StoreLogKind.SELECTION: ingestSelection(store, cid, member); break
                 case StoreLogKind.CLAIM: ingestClaim(store, cid, member); break
+                case StoreLogKind.FORGET: applyForget(store, holders, cid, member); break
                 default: return
             }
         }
@@ -683,6 +706,66 @@ class Index implements Closeable {
             update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [cid.toString()])
             insertMissing(null, cid)
         }
+    }
+
+    private static String forgetKey(String member, Cid forget) { "forget:${member}:${forget}".toString() }
+
+    /**
+     * DESIGN.md §20 decision 8: forgets what one sweep batch deleted, except a
+     * cid some member holds now (still elsewhere, or written again since).
+     * Recorded per member, so the overlap re-read and a retry apply it once.
+     * A block of kind Forget that does not decode as one is skipped, recorded
+     * with 0 runs so it is not read again.
+     */
+    private void applyForget(BlockStore store, BlockStore holders, Cid forgetCid, String member) {
+        final Map block = readBlock(store, forgetCid, Records.FORGET)
+        if( block == null ) {
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [forgetCid.toString()])
+            insertMissing(null, forgetCid)
+            return
+        }
+        final StoreLogEntry entry = firstLogEntry(forgetCid, member)
+        final Forget parsed
+        try {
+            parsed = Forget.fromCbor(block)
+        }
+        catch( RuntimeException e ) {
+            warnOnce('forget-malformed:' + forgetCid, "forget ${forgetCid} is not a readable Forget block (${e.message}); it is skipped")
+            setMeta(forgetKey(member, forgetCid), "${entry?.name ?: ''} 0".toString())
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [forgetCid.toString()])
+            return
+        }
+        final List<Cid> gone = new ArrayList<Cid>()
+        for( Cid c : parsed.deleted )
+            if( !holders.has(c) )
+                gone.add(c)
+        int runs = 0
+        for( Cid c : gone )
+            if( isRunIndexed(c) )
+                runs++
+        forget(gone)
+        setMeta(forgetKey(member, forgetCid), "${entry?.name ?: ''} ${runs}".toString())
+        update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [forgetCid.toString()])
+    }
+
+    /**
+     * Runs that `forget` entries of {@code member} removed, counting only entries
+     * newer than {@code baseWatermark} (all of them when it is null): what the
+     * snapshot guard adds back before comparing run counts (§20 decision 10).
+     */
+    int forgottenRunsSince(String member, String baseWatermark) {
+        final String floor = baseWatermark == null ? null : StoreLog.parse(baseWatermark)?.reverseTs
+        final String prefix = "forget:${member}:".toString()
+        int n = 0
+        query('SELECT value FROM meta WHERE substr(key, 1, ?) = ?', [(Object) prefix.length(), prefix]) { ResultSet rs ->
+            final String[] parts = rs.getString(1).split(' ')
+            if( parts.length != 2 )
+                return
+            final String rts = parts[0] ? StoreLog.parse(parts[0])?.reverseTs : null
+            if( floor == null || (rts != null && rts < floor) )
+                n += parts[1] as int
+        }
+        return n
     }
 
     /** Keys already warned about, so a recurring condition warns once per JVM. */

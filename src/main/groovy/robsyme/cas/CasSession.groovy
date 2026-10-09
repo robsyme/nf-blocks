@@ -237,7 +237,7 @@ class CasSession {
         for( BlockStore member : members() ) {
             try {
                 final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
-                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir, quietFor)
+                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir, quietFor, store)
             }
             catch( Exception e ) {
                 failed.add(member.alias())
