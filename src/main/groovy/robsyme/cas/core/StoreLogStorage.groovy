@@ -12,4 +12,7 @@ interface StoreLogStorage {
 
     /** Every entry name, in no particular order. */
     List<String> listEntries()
+
+    /** Whether the entry is there now. */
+    boolean hasEntry(String name)
 }

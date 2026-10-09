@@ -46,5 +46,8 @@ class LocalStoreLogStorage implements StoreLogStorage {
     }
 
     @Override
+    boolean hasEntry(String name) { Files.isRegularFile(getDirectory().resolve(name)) }
+
+    @Override
     String toString() { "LocalStoreLogStorage[${getDirectory()}]" }
 }

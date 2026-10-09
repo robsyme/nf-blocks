@@ -35,4 +35,7 @@ class S3StoreLogStorage implements StoreLogStorage {
         }
         return names
     }
+
+    @Override
+    boolean hasEntry(String name) { ops.head(under + name) != null }
 }

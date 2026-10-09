@@ -61,4 +61,15 @@ class S3StoreLogStorageTest extends Specification {
         expect:
         new S3StoreLogStorage(s3, 'cas/').listEntries() as Set == ['one', 'two'] as Set
     }
+
+    def 'hasEntry is one HEAD on log/<name>'() {
+        given:
+        final MemoryS3Ops ops = new MemoryS3Ops('member')
+        final S3StoreLogStorage log = new S3StoreLogStorage(ops, 'cas/')
+        log.putEntry('9999999999998-run-x')
+
+        expect:
+        log.hasEntry('9999999999998-run-x')
+        !log.hasEntry('9999999999997-run-x')
+    }
 }

@@ -202,4 +202,16 @@ class StoreLogTest extends Specification {
         then:
         thrown(IllegalArgumentException)
     }
+
+    def 'has answers whether one entry name is in the log'() {
+        given:
+        final LocalBlockStore store = new LocalBlockStore(tempDir.resolve('has'), 'lab', true)
+        final Cid c = store.putDagCbor(Fixtures.runManifest())
+        StoreLog.append(store, StoreLogKind.RUN, c, 1_790_000_000_000L)
+        final String name = StoreLog.entryName(StoreLogKind.RUN, c, 1_790_000_000_000L)
+
+        expect:
+        StoreLog.of(store).has(name)
+        !StoreLog.of(store).has(StoreLog.entryName(StoreLogKind.RUN, c, 1_790_000_000_001L))
+    }
 }

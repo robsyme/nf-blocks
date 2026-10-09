@@ -71,6 +71,9 @@ class StoreLog {
         storage.putEntry(entryName(kind, cid, writtenAtMillis))
     }
 
+    /** Whether this exact entry is in the log now (DESIGN.md §20 decisions 3 and 9). */
+    boolean has(String name) { storage.hasEntry(name) }
+
     /** Every entry, newest first. Names that do not parse are ignored. */
     List<StoreLogEntry> read() {
         final List<StoreLogEntry> entries = new ArrayList<StoreLogEntry>()
