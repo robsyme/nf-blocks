@@ -248,4 +248,36 @@ class RetentionCommandsTest extends Specification {
         expect:
         run('untrash', ['--sweep', 'whatever']) == 1
     }
+
+    private List<String> runsIn(Path sqlite) {
+        return java.sql.DriverManager.getConnection("jdbc:sqlite:${sqlite}").withCloseable { c ->
+            final java.sql.ResultSet rs = c.createStatement().executeQuery('SELECT completion_cid FROM run ORDER BY 1')
+            final List<String> out = []
+            while( rs.next() ) out << rs.getString(1)
+            out
+        }
+    }
+
+    @spock.lang.PendingFeature(reason = 'Task 7: fewer_runs counts runs forget entries removed')
+    def 'a sweep that deletes a run rewrites an existing snapshot, and the cache forgets the run through its own catch-up'() {
+        given: 'runs a (deleted) and kept, a snapshot of both, a sweep that trashed a, its ledger expired'
+        final Map kept = f.run('kept', [[k: f.raw('k')]])
+        run('snapshot')
+        f.claim(theRun.completion, 'delete', null, null)
+        ageAll()
+        run('sweep', ['--apply', 'true'])
+        expireLedgers()
+        out.reset()
+
+        when:
+        final int status = run('sweep', ['--apply', 'true', '--format', 'json'])
+        final Map json = (Map) new JsonSlurper().parseText(out.toString())
+
+        then:
+        status == 0
+        ((String) json.snapshot).startsWith('wrote')
+        runsIn(store.resolve('index/v3.sqlite')) == [kept.completion.toString()]
+        runsIn(indexPath) == [kept.completion.toString()]
+        StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
+    }
 }

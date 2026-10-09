@@ -75,6 +75,7 @@ class Mark {
     private final Map<Cid, List<ClaimState.Row>> claimsOf = new HashMap<Cid, List<ClaimState.Row>>()
     private final Map<Cid, String> writableEntry = new HashMap<Cid, String>()
     private final Set<Cid> rooted = new HashSet<Cid>()
+    private final Set<Cid> forgets = new LinkedHashSet<Cid>()
     private final AtomicLong reads = new AtomicLong()
     /** Lazily created per `extend`, shut down when it returns (DESIGN.md §0 rule 2: no pool lives longer than it must). */
     private ExecutorService pool
@@ -135,6 +136,7 @@ class Mark {
             // into claimsOf twice would read a clean delete or release as CONFLICTED
             // (ruling 1).
             final Set<Cid> newClaims = new LinkedHashSet<Cid>()
+            final List<Visit> newForgets = new ArrayList<Visit>()
             for( MemberLog log : logs ) {
                 for( StoreLogEntry e : log.entries ) {
                     if( log.writable )
@@ -149,6 +151,11 @@ class Mark {
                         case StoreLogKind.CLAIM:
                             if( !claimSubject.containsKey(e.cid) )
                                 newClaims.add(e.cid)
+                            break
+                        case StoreLogKind.FORGET:
+                            // Rooted itself only (DESIGN.md §20 decision 8): its entry names it,
+                            // and a missing block makes the entry dangling.
+                            if( forgets.add(e.cid) ) newForgets.add(new Visit(e.cid, SELF, false, null))
                             break
                     }
                 }
@@ -186,6 +193,7 @@ class Mark {
                 touched.add(claim.subject)
             }
             root(touched)
+            walk(newForgets)
             keepClaims()
             keepClaimsHeldElsewhere()
             roots.claims = (int) claimSubject.keySet().count { Cid c -> liveSet.contains(c) }

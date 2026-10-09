@@ -671,4 +671,97 @@ class SweepTest extends Specification {
         r.deleted == []
         f.store.has(only)
     }
+
+    def 'each delete batch of metadata is announced by one forget entry'() {
+        given:
+        final Map gone = f.run('gone', [[g: f.raw('g')]])
+        f.claim(gone.completion, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+
+        when:
+        final SweepReport r = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.applied
+        r.forgets.size() >= 1
+        final List<StoreLogEntry> entries = StoreLog.read(f.store).findAll { it.kind == StoreLogKind.FORGET }
+        entries*.cid as Set == r.forgets as Set
+        final Set<Cid> listed = r.forgets.collectMany { Cid c ->
+            Forget.fromCbor((Map) DagCbor.decode(f.store.open(c).withCloseable { it.readAllBytes() })).deleted } as Set
+        listed.contains(gone.completion)
+        listed.every { Cid c -> c.isDagCbor() }
+        r.unannounced == []
+    }
+
+    def 'a sweep that deletes only raw content writes no forget entry'() {
+        given:
+        final Map b = f.run('b', [[u: f.raw('only')]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+
+        when:
+        final SweepReport r = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.applied
+        r.forgets == []
+        !StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
+    }
+
+    def 'a later sweep keeps the Forget blocks its entries name'() {
+        given:
+        final Map gone = f.run('gone', [[g: f.raw('g')]])
+        f.claim(gone.completion, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        final SweepReport first = sweep().apply(false, 0L, { -> false }, say, sleeper)
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        first.forgets.every { Cid c -> f.store.has(c) }
+    }
+
+    def 'a forget entry that cannot be written leaves its cids unannounced and warns'() {
+        given:
+        final Map gone = f.run('gone', [[g: f.raw('g')]])
+        f.claim(gone.completion, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+        sweep().apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        // The brief's alternative to a read-only log/: only the forget append fails, so the
+        // rest of the sweep (deleting log entries, rewriting ledgers) still works.
+        final StoreLogStorage logs = new LocalStoreLogStorage(root)
+        final StoreLogStorage refusing = new StoreLogStorage() {
+            void putEntry(String name) {
+                if( name.contains('-forget-') )
+                    throw new IOException('denied')
+                logs.putEntry(name)
+            }
+            List<String> listEntries() { logs.listEntries() }
+            boolean hasEntry(String name) { logs.hasEntry(name) }
+        }
+        final BlockStore store = new LocalBlockStore(root, 'lab', true) {
+            @Override
+            StoreLogStorage storeLogStorage() { refusing }
+        }
+
+        when:
+        final SweepReport r = new Sweep(store, SweepPolicy.defaults()).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.unannounced.contains(gone.completion)
+        r.warnings.any { it.contains('reindex') }
+        r.forgets == []
+        !StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
+    }
 }

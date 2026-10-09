@@ -58,7 +58,7 @@ class RetentionCommands {
         final SweepPolicy policy = policy(config, err)
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
         cas.checkClock()
-        final Sweep sweeper = new Sweep(cas.store, policy)
+        final Sweep sweeper = new Sweep(cas.store, policy, cas.assertedBy)
         if( !apply ) {
             final SweepReport r = sweeper.dryRun()
             out.println(format == 'json' ? JsonOutput.toJson(r.toJson()) : r.toText())
@@ -113,7 +113,7 @@ class RetentionCommands {
         final SnapshotBase base = cas.snapshotBase()
         final Index index = cas.openIndex()
         try {
-            index.forget(r.deleted)
+            index.forget(r.unannounced)
             final Set<String> failed = cas.catchUpIndex(index)
             final IndexSnapshot.Result s = cas.snapshotWritable(index, 0L, base, failed)
             return s.skipped ? "not rewritten: ${s.skipped}".toString() :

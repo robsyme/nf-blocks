@@ -29,12 +29,18 @@ class Sweep {
     private final BlockStore writable
     private final RetentionStorage storage
     private final SweepPolicy policy
+    /** Who the Forget blocks this sweep writes say asserted them (DESIGN.md §20 decision 7). */
+    private final String assertedBy
     /** Blocks per delete batch: {@link #BATCH}, smaller only in a test. */
     @groovy.transform.PackageScope int batchSize = BATCH
     /** The lock of the applied pass in progress, for {@link #abandon}; null otherwise. */
     private volatile SweepLock active
 
     Sweep(BlockStore store, SweepPolicy policy) {
+        this(store, policy, 'nf-blocks')
+    }
+
+    Sweep(BlockStore store, SweepPolicy policy, String assertedBy) {
         policy.validate()
         this.store = store
         this.writable = store instanceof CompositeStore ? ((CompositeStore) store).members[0] : store
@@ -42,6 +48,7 @@ class Sweep {
             throw new IllegalArgumentException("store member '${writable.alias()}' is not a writable member this build can sweep")
         this.storage = ((RetainedStore) writable).retentionStorage()
         this.policy = policy
+        this.assertedBy = assertedBy ?: 'nf-blocks'
     }
 
     private List<BlockStore> members() {
@@ -317,12 +324,34 @@ class Sweep {
                     deleted.add(s.cid)
                     r.deletedBytes += s.size
                 }
+            announce(r, batch*.cid.findAll { Cid c -> !failedSet.contains(c) } as List<Cid>)
             if( failed ) {
                 r.warnings.add("${failed.size()} block(s) could not be deleted and stay in Trash: ${failed.take(20).join(', ')}".toString())
                 clean = false
             }
         }
         return clean
+    }
+
+    /**
+     * DESIGN.md §20 decision 7 (plan decisions 6 to 8): one Forget block and
+     * one `forget` entry for the dag-cbor blocks a batch deleted, so every
+     * cache forgets their rows. Derived: a failure warns, and the caller's own
+     * cache forgets them directly.
+     */
+    private void announce(SweepReport r, List<Cid> went) {
+        final List<Cid> metadata = went.findAll { Cid c -> c.isDagCbor() } as List<Cid>
+        if( metadata.isEmpty() )
+            return
+        try {
+            final Cid block = writable.putDagCbor(new Forget(assertedBy, metadata).toCbor())
+            StoreLog.append(writable, StoreLogKind.FORGET, block, System.currentTimeMillis())
+            r.forgets.add(block)
+        }
+        catch( Exception e ) {
+            r.unannounced.addAll(metadata)
+            r.warnings.add("could not record what ${metadata.size()} deleted block(s) were (${e.message}); other caches keep their rows until `nextflow plugin nf-blocks:reindex`".toString())
+        }
     }
 
     /**

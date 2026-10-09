@@ -443,6 +443,22 @@ class MarkTest extends Specification {
         m.missingMetadata == []
     }
 
+
+    def 'a forget entry roots its block; an entry whose block is gone is dangling'() {
+        given:
+        final Cid kept = f.store.putDagCbor(new Forget('test', [Fixtures.cidOf([kind: 'X'])]).toCbor())
+        StoreLog.append(f.store, StoreLogKind.FORGET, kept, ++f.clock)
+        final Cid lost = Fixtures.cidOf(new Forget('test', [Fixtures.cidOf([kind: 'Y'])]).toCbor())
+        StoreLog.append(f.store, StoreLogKind.FORGET, lost, ++f.clock)
+
+        when:
+        final Mark m = Mark.of(f.store, f.logs(), 4)
+
+        then:
+        m.isLive(kept)
+        !m.isLive(lost)
+        m.danglingEntries.any { it.contains(lost.toString()) }
+    }
     private Set<Cid> leavesOf(Cid item) {
         return OutputItem.fromCbor((Map) DagCbor.decode(f.store.open(item).readAllBytes())).leaves()*.address as Set
     }

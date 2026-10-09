@@ -28,6 +28,10 @@ class SweepReport {
     int waiting
     int rescued
     List<Cid> deleted = []
+    /** The Forget blocks this sweep wrote, one per delete batch with metadata in it (DESIGN.md §20 decision 7). */
+    List<Cid> forgets = []
+    /** Deleted dag-cbor blocks no forget entry announces, because writing it failed (plan decision 8). */
+    List<Cid> unannounced = []
     long deletedBytes
     int scratch
     List<LiveRegistry.Registration> fresh = []
