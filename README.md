@@ -395,6 +395,12 @@ work: a browser will not fetch from `file://`, and the page says so
 (`file_protocol`). A member served straight from a bucket needs the bucket
 policy and CORS rule in `DESIGN.md` §15.
 
+`nextflow plugin nf-blocks:reindex` deletes this machine's cache index for the
+configured store and rebuilds it, seeding from each member's Index Snapshot
+(`--seed false` scans every block instead). The cache corrects itself when a
+member is deleted and recreated, or when a sweep deletes runs; reindex is for
+blocks removed by hand or by a bucket lifecycle rule.
+
 Until the plugin is published, `nextflow plugin` finds a local build only
 through `NXF_PLUGINS_TEST_REPOSITORY`. After `make install FORCE=1`, `make
 explore CONFIG=<config naming your cas stores> ARGS='--port 8123'` sets it and

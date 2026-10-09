@@ -227,6 +227,11 @@ class CasSession {
      * @return the aliases whose catch-up threw
      */
     Set<String> catchUpIndex(Index index) {
+        return catchUpIndex(index, true)
+    }
+
+    /** As {@link #catchUpIndex(Index)}; with {@code seed} false no member's Index Snapshot seeds the cache, so every block is scanned (reindex --seed false). */
+    Set<String> catchUpIndex(Index index, boolean seed) {
         final Set<String> failed = new LinkedHashSet<String>()
         try {
             index.reconcileStoreIds(memberStoreIds(), { String a, String w -> watermarkLogged(a, w) } as Closure<Boolean>)
@@ -237,7 +242,7 @@ class CasSession {
         for( BlockStore member : members() ) {
             try {
                 final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
-                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir, quietFor, store)
+                index.catchUp(member, StoreLog.of(member), member.alias(), seed ? snapshotsOf(member.alias()) : null, config.tmpDir, quietFor, store)
             }
             catch( Exception e ) {
                 failed.add(member.alias())

@@ -220,4 +220,36 @@ class CasCommandsTest extends Specification {
         err.toString().contains('no Nextflow config file')
         err.toString().contains('NXF_CONFIG_FILE')
     }
+
+    def 'reindex drops the cache and rebuilds it, forgetting rows the store no longer backs'() {
+        given: 'a cache holding a run whose blocks were then removed by hand'
+        final Cid completion = logRun()
+        run('snapshot')
+        final LocalBlockStore store = new LocalBlockStore(tempDir.resolve('store'), 'lab', true)
+        Files.delete(store.blockPath(completion))
+        Files.list(tempDir.resolve('store/log')).withCloseable { it.toList() }.each { Files.delete(it) }
+        out.reset()
+
+        when:
+        final int status = run('reindex', ['--seed', 'false'])
+
+        then:
+        status == 0
+        out.toString().contains('reindexed')
+        DriverManager.getConnection("jdbc:sqlite:${tempDir.resolve('cache/index.sqlite')}").withCloseable { c ->
+            c.createStatement().executeQuery('SELECT count(*) FROM run').with { next(); getInt(1) }
+        } == 0
+    }
+
+    def 'reindex takes only --seed, as true or false'() {
+        expect:
+        run('reindex', ['--seed', 'maybe']) == 2
+        run('reindex', ['extra']) == 2
+    }
+
+    def 'the usage lists reindex'() {
+        expect:
+        run('frobnicate') == 2
+        err.toString().contains('reindex [--seed false]')
+    }
 }
