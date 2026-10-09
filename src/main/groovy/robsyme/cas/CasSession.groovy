@@ -26,6 +26,7 @@ import robsyme.cas.core.ClockSkew
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.LocalCoordinateTree
+import robsyme.cas.core.IdentifiedStore
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
@@ -37,6 +38,7 @@ import robsyme.cas.core.Put
 import robsyme.cas.core.RetainedStore
 import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.SnapshotStorage
+import robsyme.cas.core.StoreIds
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
 import robsyme.cas.nio.PublishAddresser
@@ -226,6 +228,12 @@ class CasSession {
      */
     Set<String> catchUpIndex(Index index) {
         final Set<String> failed = new LinkedHashSet<String>()
+        try {
+            index.reconcileStoreIds(memberStoreIds(), { String a, String w -> watermarkLogged(a, w) } as Closure<Boolean>)
+        }
+        catch( Exception e ) {
+            log.warn("could not compare this cache with the store's ids; it is derived: ${e.message}", e)
+        }
         for( BlockStore member : members() ) {
             try {
                 final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
@@ -237,6 +245,67 @@ class CasSession {
             }
         }
         return failed
+    }
+
+    private volatile String writableId
+
+    /**
+     * The writable member's store-id, created when absent (DESIGN.md §20
+     * decision 2, plan decision 5). Null when the member keeps none or it could
+     * not be written; derived, so a failure warns once and the caller goes on.
+     */
+    String writableStoreId() {
+        if( writableId != null )
+            return writableId
+        final BlockStore writable = members()[0]
+        if( !(writable instanceof IdentifiedStore) || !writable.isWritable() )
+            return null
+        try {
+            writableId = StoreIds.ensure(((IdentifiedStore) writable).storeIdStorage())
+        }
+        catch( Exception e ) {
+            warnOnce("could not create the store-id of '${writable.alias()}'; caches cannot tell if it is replaced: ${e.message}".toString())
+        }
+        return writableId
+    }
+
+    /**
+     * Every member's id now (null when it has none); a member whose id could not
+     * be read is left out (plan decision 3), and so is the writable member when
+     * its id could not be created, which would otherwise read as "the id vanished".
+     */
+    private Map<String, String> memberStoreIds() {
+        final Map<String, String> ids = new LinkedHashMap<String, String>()
+        for( BlockStore member : members() ) {
+            if( !(member instanceof IdentifiedStore) )
+                continue
+            if( member.alias() == config.writableAlias && member.isWritable() ) {
+                final String id = writableStoreId()
+                if( id != null )
+                    ids.put(member.alias(), id)
+                continue
+            }
+            try {
+                ids.put(member.alias(), StoreIds.read(member))
+            }
+            catch( Exception e ) {
+                log.debug("could not read the store-id of '${member.alias()}': ${e.message}")
+            }
+        }
+        return ids
+    }
+
+    private Boolean watermarkLogged(String alias, String watermark) {
+        final BlockStore member = members().find { BlockStore m -> m.alias() == alias }
+        if( member == null )
+            return null
+        try {
+            return StoreLog.of(member).has(watermark)
+        }
+        catch( Exception e ) {
+            log.debug("could not look for ${watermark} in the Store Log of '${alias}': ${e.message}")
+            return null
+        }
     }
 
     /** The store's members, writable first; a single-store session has one. */

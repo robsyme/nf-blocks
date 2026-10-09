@@ -185,6 +185,7 @@ class ItemsCommandTest extends Specification {
         given:
         final int entries = StoreLog.read(store).size()
         final long blocks = Files.walk(tempDir.resolve('store')).count()
+        final boolean hadStoreId = Files.exists(tempDir.resolve('store/store-id'))
 
         when:
         final int status = run(['greetings', '--run', 'lid://hash1,lid://hash2', '--format', 'selection'])
@@ -192,7 +193,9 @@ class ItemsCommandTest extends Specification {
         then:
         status == 0
         StoreLog.read(store).size() == entries
-        Files.walk(tempDir.resolve('store')).count() == blocks
+        // the one write allowed: the writable member's store-id, created on first catch-up (§20 decision 2, plan decision 5)
+        Files.walk(tempDir.resolve('store')).count() == blocks + (hadStoreId ? 0 : 1)
+        Files.exists(tempDir.resolve('store/store-id'))
         !Files.exists(tempDir.resolve('store/index'))
     }
 

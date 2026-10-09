@@ -88,6 +88,7 @@ class Index implements Closeable {
     private static final String META_SCANNED = 'block_scan'
     private static final String META_STALE = 'stale'
     private static final String META_SEEDED = 'seeded_from'
+    private static final String META_STORE_ID = 'store_id'
     private static final org.slf4j.Logger CONSOLE = org.slf4j.LoggerFactory.getLogger('nextflow.cas')
 
     /** A metadata block far larger than this is not one of ours; refuse to hold it. */
@@ -858,6 +859,65 @@ class Index implements Closeable {
     /** The member's Store Log watermark, the newest entry name catch-up has read, or null. */
     String watermark(String member) {
         return meta(watermarkKey(member))
+    }
+
+    /** The member's store-id as this cache last recorded it, or null (DESIGN.md §20 decision 3). */
+    String storeIdOf(String member) { meta(META_STORE_ID + ':' + member) }
+
+    /** Empties every table but schema_version, meta included: a cold cache (plan decision 1). */
+    void reset() {
+        withTransaction {
+            for( String sql : ddl() ) {
+                final java.util.regex.Matcher m = sql =~ /^CREATE TABLE (\w+)\(/
+                if( m.find() && m.group(1) != 'schema_version' )
+                    update("DELETE FROM ${m.group(1)}".toString(), [])
+            }
+        }
+    }
+
+    /**
+     * DESIGN.md §20 decision 3 and plan decisions 1 to 4. {@code ids}: alias to
+     * the member's id now, null when it has none; a member whose id could not be
+     * read is left out. {@code watermarkLogged(alias, watermark)} answers whether
+     * that entry is still in the member's log, or null when it could not tell.
+     * Resets the whole cache when any member was replaced, then records every
+     * id it may. Returns why it reset, or null.
+     */
+    String reconcileStoreIds(Map<String, String> ids, Closure<Boolean> watermarkLogged) {
+        String reason = null
+        final Map<String, String> record = new LinkedHashMap<String, String>()
+        for( Map.Entry<String, String> e : ids.entrySet() ) {
+            final String alias = e.key
+            final String now = e.value
+            final String cached = storeIdOf(alias)
+            if( cached != null ) {
+                if( now != cached && reason == null )
+                    reason = "store member '${alias}' was replaced (store-id ${cached} is now ${now ?: 'absent'})".toString()
+                if( now != null ) record.put(alias, now)
+                continue
+            }
+            if( now == null )
+                continue
+            final String wm = watermark(alias)
+            final boolean holdsNothing = wm == null && meta(META_SCANNED + ':' + alias) == null
+            if( holdsNothing ) {
+                record.put(alias, now)
+                continue
+            }
+            final Boolean logged = wm == null ? Boolean.FALSE : watermarkLogged.call(alias, wm)
+            if( logged == null )
+                continue
+            if( !logged && reason == null )
+                reason = "store member '${alias}' has a store-id this cache never saw, and its rows cannot be shown to be from it (watermark ${wm ?: 'none'} is not in its Store Log)".toString()
+            record.put(alias, now)
+        }
+        if( reason != null ) {
+            CONSOLE.info("rebuilding the cache index ${file}: ${reason}")
+            reset()
+        }
+        for( Map.Entry<String, String> e : record.entrySet() )
+            setMeta(META_STORE_ID + ':' + e.key, e.value)
+        return reason
     }
 
     /**
