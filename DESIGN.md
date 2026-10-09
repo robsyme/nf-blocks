@@ -42,7 +42,9 @@ artifacts only.
    adds none; `sweep`, `prune`, `untrash`, `bundle`, `merge`, `verify` and
    `project` wait for their milestones. *Landed 2026-09-30 (milestone 6):*
    `sweep`, `prune` and `untrash` land with Gate assertion 9 (§14, §15, §19);
-   `bundle`, `merge`, `verify` and `project` still wait. `sweep` and `prune`
+   `bundle`, `merge`, `verify` and `project` still wait. *Landed 2026-10-09
+   (§20):* `reindex`, which rebuilds the cache index from the store and
+   writes no block, entry or Claim. `sweep` and `prune`
    are dry runs unless `--apply true`; `untrash` acts on its first call.
    `put` stays the only way to write a pin or a `retain` Claim by hand:
    `sweep` writes Trash ledgers and index rows, and `prune --apply` writes
@@ -287,7 +289,7 @@ live/<session>          A run's Live Writer registration, one file per session, 
 trash/<deadline>-<id>   A Trash ledger: the addresses one sweep trashed, JSON, plan decision 14. Blocks
                         named in a ledger stay in place and readable until a later sweep, past the
                         deadline and still dead in its own fresh mark, deletes them.
-store-id                Proposed 2026-10-09 (§20): one line, 32 hex characters, the id of this
+store-id                Since 2026-10-09 (§20): one line, 32 hex characters, the id of this
                         incarnation of the member. Created once, never rewritten, not a block.
 ```
 
@@ -1251,10 +1253,10 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   shows who produced it). A sweep calls it with the cids it deleted, then
   recomputes the writable member's Index Snapshot, so a cold reader is not
   seeded with runs whose blocks are gone (plan decision 7, §19).
-  *Proposed 2026-10-09 (§20):* the cache records each member's `store-id`
-  and drops the member's rows when it changes, and catch-up applies the
-  `forget` entries a sweep writes, so every cache forgets what any sweep
-  deleted, not only the sweeper's.
+  *Since 2026-10-09 (§20):* the cache records each member's `store-id`
+  and resets (every table emptied, `meta` cleared) when one changes, and
+  catch-up applies the `forget` entries a sweep writes, so every cache
+  forgets what any sweep deleted, not only the sweeper's.
 - *Amended 2026-09-25:* the three load-bearing queries' SQL is held in public
   constants (`Index.SQL_PRODUCERS_OF`, `SQL_LATEST_SUCCESSFUL_RUN`,
   `SQL_ITEMS_BASE`, `SQL_ITEMS_PREDICATE`, `SQL_ITEMS_PREDICATE_NULL`,
@@ -1338,8 +1340,15 @@ snapshot moved aside too), with `XDG_CACHE_HOME` and the store under a fresh
 temp directory, then runs `gate/assert.py` (Python 3 standard library only:
 `hashlib`, `sqlite3`, `json`, plus a small DAG-CBOR decoder and CID encoder
 of its own). Exit non-zero on any failed assertion. The Gate config overlay
-lives at `gate/gate.config`. Lineage tier: 16 PASS, 0 FAIL, 5 SKIP.
-Proposed 2026-10-09: assertions 17 and 18 (§20).
+lives at `gate/gate.config`. Lineage tier: 18 PASS, 0 FAIL, 5 SKIP.
+Assertion 17, since 2026-10-09 (§20): a member deleted and written again at
+the same location, with the same cache, leaves the cache, the member's
+snapshot and a cache seeded from it holding only the new run, with one
+`store-id` in all three. Assertion 18, since 2026-10-09 (§20): after a sweep
+deletes a run's metadata through one cache, a second cache that had indexed
+the run holds no row keyed by any cid in the sweep's `forget` entry and keeps
+the other run whole, and a cold cache seeded from the rewritten snapshot
+holds the kept run and not the swept one.
 Assertion 9, since milestone 6 (§19, ticket 21 answer 7): a dry-run sweep
 right after a run reports an empty dead set; after `set retain "lineage"` on
 one run, a real sweep trashes exactly its unshared content and none of its
@@ -1383,8 +1392,10 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
   rows; the page shows it as held elsewhere.
 - Same DDL as the cache index (`Index.ddl()`), same `schema_version`.
 - `meta` holds exactly `store_log_watermark` (the member's watermark in the
-  cache index, a Store Log entry name; absent when the member has no log) and
-  `snapshot_written_at` (ISO-8601 UTC, milliseconds).
+  cache index, a Store Log entry name; absent when the member has no log),
+  `snapshot_written_at` (ISO-8601 UTC, milliseconds) and, since 2026-10-09
+  (§20), `store_id` (the member's `store-id`; absent when the member has
+  none).
 - Written by inserting into a fresh database, `PRAGMA page_size=4096`, then
   `VACUUM INTO` a temp file. One rollback-journal file, no sidecars.
   *Amended 2026-09-28:* the build is local (`IndexSnapshot.build`, in
@@ -1403,7 +1414,7 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
   only), when the new one has fewer `run` rows than the old (`fewer_runs`; an
   S3 snapshot without `x-amz-meta-runs` is downloaded once and counted), when
   another writer replaced it (`replaced_meanwhile`), or when the writable
-  member's catch-up failed (`catch_up_failed`). *Proposed 2026-10-09
+  member's catch-up failed (`catch_up_failed`). *Since 2026-10-09
   (§20):* `meta` gains `store_id`; seeding and the guard check it, the guard
   adds `stale_store` and `older_watermark`, and `fewer_runs` counts runs a
   `forget` entry removed. Locally `replace` does not
@@ -1432,6 +1443,7 @@ nextflow [-c <config>] plugin nf-blocks:items <output> [<path>=<value> ...] --ru
 nextflow [-c <config>] plugin nf-blocks:sweep [--apply true] [--wait true] [--budget <size>] [--format text|json]
 nextflow [-c <config>] plugin nf-blocks:prune --keep-last <n> | --keep-newer <period> [--pipeline <id>] [--apply true]
 nextflow [-c <config>] plugin nf-blocks:untrash <cid> [<cid> ...] | --sweep <id>
+nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]
 ```
 
 `sweep` and `prune` default to a dry run; `--apply true` acts. `sweep
@@ -1444,7 +1456,10 @@ trashed, not when it is deleted. `prune --apply` exits 1 only on a Claim
 write failure, naming how many of the planned releases it wrote first.
 `untrash` always acts (there is no dry run) and exits 1 when another sweep
 holds `sweep.lock`, or when nothing named is in any Trash ledger. §19 has
-the full contract and plan decisions 6 and 8 to 13.
+the full contract and plan decisions 6 and 8 to 13. `reindex` (§20 decision
+12) deletes this config's cache file and catches every member up cold, then
+writes the writable member's snapshot; it exits 1 when a member could not be
+caught up.
 
 *Amended 2026-09-30 (patch 0.3.0-beta.2):* Nextflow 26.08.0-edge (nextflow
 `1dc8cf68f`, "Separate CLI from runtime", #5971) changed the interface to
@@ -2842,7 +2857,14 @@ caught by that re-check (plan decision 10, decision 11).
 
 ## 20. Cache coherence (2026-10-09)
 
-*Status: proposed 2026-10-09, not built. Branch `design/cache-coherence`.*
+*Status: built on `design/cache-coherence` (2026-10-09). `./gradlew check`
+passes (1323 tests, 0 failures); `cd web && npm test` passes (281 tests, and
+the schema test still finds 24 types); `python3 -m unittest discover -s gate`
+runs 327 tests OK (1 skipped) and `gate/tier2` 53 OK. `make gate` on a fresh
+`GATE_ROOT` (commit 38a4c03): lineage tier 18 PASS, 0 FAIL, 5 SKIP; browser
+tier A 5/5, tier B 14/14. Tier two (T7 included) was not run. Where the build
+differs from the decisions below, the decision carries an "Amended by" note
+and the reason is under Decisions made while building.*
 
 The cache index (§12) is per user and lives outside the store, and catch-up
 only ever adds: it reads the Store Log past its watermark and ingests what
@@ -2889,7 +2911,7 @@ scope: nothing finds them without listing every block, so the answer is the
    race is success; the writer then reads the winner's id. `sweep`, `put`,
    `snapshot` and `explore` create it the same way when they hold the member
    writable. A read-only member is never written; its id is read if present.
-3. The cache records `store_id:<member alias>` in `meta` the first time it
+3. *Refined by decisions 2 to 4 below.* The cache records `store_id:<member alias>` in `meta` the first time it
    catches up a member that has one. Every `catchUp` reads the member's
    `store-id` first (one small read per member per open; catch-up already
    lists the log, so the cost does not change in kind) and compares:
@@ -2906,7 +2928,8 @@ scope: nothing finds them without listing every block, so the answer is the
      never a wrong answer;
    - neither holds one (a read-only member nobody has written since the
      upgrade): catch up as now. This is the one case left unprotected.
-4. Dropping a member's rows reuses `Index.forget`: the cids of every `run`
+4. *Amended by decision 1 below: a changed id resets the whole cache, not
+   only the member's rows.* Dropping a member's rows reuses `Index.forget`: the cids of every `run`
    with `run.member` = the alias and every Selection and Claim whose only
    `log_entry` row names the member, and the member's `log_entry` rows, then
    `store_log_watermark:<m>`, `block_scan:<m>`, `seeded_from:<m>` and
@@ -2919,7 +2942,8 @@ scope: nothing finds them without listing every block, so the answer is the
 
 ### Forget entries
 
-6. New Store Log kind `forget`: `log/<rts>-forget-<cid>`, the cid of a new
+6. *Amended by decision 6 below: `deleted` lists every dag-cbor block, and a
+   sweep of raw blocks only writes no entry.* New Store Log kind `forget`: `log/<rts>-forget-<cid>`, the cid of a new
    block kind, written to the writable member only by a sweep:
 
    ```
@@ -2938,7 +2962,9 @@ scope: nothing finds them without listing every block, so the answer is the
    without a read; content blocks and DirectoryManifests have no rows to drop
    (producer rows stay, §12) and are left out, so a content-only sweep, Gate
    assertion 9's, writes no `forget` entry.
-7. Order, per delete batch: delete the batch, then delete its Store Log
+7. *Amended by decisions 7 and 8 below: the Store Log entries are deleted
+   once, after every batch, and the sweeper's cache forgets only what could
+   not be announced.* Order, per delete batch: delete the batch, then delete its Store Log
    entries (§19 decision 7), then `putDagCbor` the batch's Forget block and
    append its `forget` entry, before the next batch's re-check. A sweep that
    stops between a batch and its entry leaves rows behind in other caches;
@@ -2946,7 +2972,9 @@ scope: nothing finds them without listing every block, so the answer is the
    `reindex` does (decision 12). The sweep's own `forget` call then reads
    from its own catch-up of these entries, not from the report, so the
    sweeper and every other cache take the same path.
-8. Catch-up ingests a `forget` entry from member `m` by reading its block
+8. *Amended by decisions 9 and 15 below: a cid is kept when any member of
+   the composition holds it, and a `forget` entry whose block is gone is
+   dangling.* Catch-up ingests a `forget` entry from member `m` by reading its block
    and calling `Index.forget` on each listed cid that no other member of
    this cache holds (`has` on each other member; a one-member cache checks
    nothing). The entry goes into `log_entry` like any other, and is retried
@@ -2967,7 +2995,8 @@ scope: nothing finds them without listing every block, so the answer is the
    snapshot written from a stale cache, like the one in `scratch-workflow/`,
    names an entry from the old incarnation and fails it. A refused snapshot
    means the full scan, with the warning §12 already gives.
-10. A writer refuses to replace a snapshot when:
+10. *Amended by decisions 10 and 12 below: no `forgotten` table, and the
+    guards run in a fixed order.* A writer refuses to replace a snapshot when:
     - its cache's `store_id:<m>` differs from the member's `store-id` after
       its own catch-up (`stale_store`; it cannot happen after decision 3
       ran, so it guards a writer whose catch-up was skipped or failed);
@@ -2984,14 +3013,14 @@ scope: nothing finds them without listing every block, so the answer is the
     them. With these, a sweep that deletes runs rewrites the snapshot, and a
     cache that missed a sweep cannot export the swept runs: its catch-up
     applies the `forget` entries before it builds.
-11. The page reads `store_id` from the snapshot's `meta` and shows nothing
+11. *See decision 13 below.* The page reads `store_id` from the snapshot's `meta` and shows nothing
     new; it is there for the guard and for a person reading the file.
     `web/schema-gen.mjs` regenerates for the Forget kind, and the page's
     block validation accepts it.
 
 ### `reindex`
 
-12. `nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]` deletes
+12. *Built as written; see decision 14 below.* `nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]` deletes
     the cache file (and its `-wal`, `-shm`) for this config's members and
     catches up every member cold, seeding under decision 9 unless
     `--seed false`, then writes the writable member's snapshot. It is the
@@ -3033,3 +3062,108 @@ scope: nothing finds them without listing every block, so the answer is the
     sweep role on S3 without `PutObject` on the member root; the hardening
     policy in §5 only restricts `blocks/*`, so it allows the write).
 17. Whether `reindex` belongs here or in the verify work §1 still lists.
+    Answered in part: the verb landed here (decision 12, built decision 14
+    below), because it is the only repair for the two cases §20 leaves out
+    of scope. Whether a later `verify` should also offer it is still open.
+
+### Decisions made while building
+
+Numbers here restart at 1; "decision N" in an "Amended by" note above points
+into this list, and "§20 decision N" below points back at the numbered
+entries above. Each entry says what was built.
+
+1. A changed store id resets the whole cache, not only that member's rows
+   (changes §20 decision 4). Dropping one member's rows needs the closure of
+   every run (collections, items, attrs, producers) minus the rows another
+   member still announces, and most tables have no per-member ownership. A
+   reset (every table emptied, `meta` cleared) followed by the usual cold
+   catch-up of every member is always right, and the other members reseed
+   from their snapshots. An id changes only when a member is deleted and
+   recreated, so the cost is rare.
+2. Ids are reconciled for every member before any member is caught up
+   (`CasSession.catchUpIndex`), so a reset triggered by the second member
+   never discards rows the first one has just caught up.
+3. A member whose `store-id` cannot be read (an S3 403, the network) is left
+   out of reconciliation for that call: no reset and no adoption. Failing to
+   look is not evidence that the member was replaced.
+4. The cache adopts an id only when it can show its rows came from this
+   incarnation: it holds nothing for the member (no watermark and no
+   `block_scan` mark), or its watermark entry is still in the member's log.
+   A cache with rows and no watermark (a member written before the Store
+   Log, then scanned) cannot show it, so it resets. When the log check
+   itself fails, the member is left out, as in decision 3.
+5. `CasSession.writableStoreId()` creates the writable member's id. It is
+   called from `catchUpIndex` and from `CasObserver.onFlowCreate` before the
+   Live Writer registration. Every verb that holds the member writable goes
+   through `catchUpIndex`, so §20 decision 2 needed no per-verb code. `items`
+   on a writable config therefore creates the id too. Its "read-only"
+   description (§0 rule 5) means it writes no block, entry, claim or
+   snapshot.
+6. A Forget block lists every deleted block whose CID codec is dag-cbor
+   (changes §20 decision 6). The deleted blocks are dead, so the mark never
+   decoded them and the sweep does not know their kinds without reading
+   each one. The codec filter costs nothing. It lets DirectoryManifests in;
+   they have no index rows, so forgetting them is a no-op. A sweep that
+   deletes only raw blocks writes no entry. Gate assertion 9 deletes
+   released DirectoryManifests, so it now writes `forget` entries, which
+   changes the last sentence of §20 decision 6; its checkpoints ignore
+   Forget blocks.
+7. Store Log entries of deleted blocks are still deleted once, after every
+   batch (changes §20 decision 7's per-batch order). Reading the whole log
+   per batch is a listing per batch on S3. The `forget` entry is written
+   right after its batch, which is the part other caches depend on.
+8. The sweeper's own cache forgets through catch-up, as §20 decision 7
+   says, except for cids whose `forget` entry could not be written
+   (`SweepReport.unannounced`). `RetentionCommands.forgetAndSnapshot`
+   forgets those directly, and the sweep warns that other caches need
+   `reindex`.
+9. Catch-up applies a `forget` entry once per member, recorded in `meta` as
+   `forget:<member>:<forget cid>` = `<entry name> <runs forgotten>`. A cid
+   that any member of the composition holds now (`CompositeStore.has`) is
+   not forgotten: it is still held elsewhere, or was written again since the
+   sweep (an OutputItem a later run reproduced). This widens §20 decision 8's
+   "other member" to the whole composition. It costs one `has` per listed
+   cid per cache, once.
+10. No schema version bump (changes §20 decision 10). The forgotten-run
+    counts live in `meta`; the `forgotten` table decision 10 named was not
+    built. A new table changes `Index.ddl()`, which is also the snapshot's
+    DDL, and would have forced `index/v4.sqlite` on the page and the Gate.
+    `fewer_runs` adds back the counts of the `forget:<member>:` entries
+    newer than the base snapshot's watermark (`Index.forgottenRunsSince`).
+11. `SnapshotBase` carries `storeId` and `watermark`, and
+    `SnapshotStorage.replace` takes a `SnapshotBase` describing what it
+    writes: `replace(Path built, SnapshotBase written, SnapshotBase base)`.
+    On S3 they ride as `x-amz-meta-store-id` and `x-amz-meta-watermark`
+    beside `x-amz-meta-runs`. An object without `runs` is still downloaded
+    once, and then all three are read from the file.
+12. The snapshot guards run in this order: `over_cap` (base), `stale_store`,
+    then the build, `over_cap` (built), `older_watermark`, `fewer_runs`,
+    `replaced_meanwhile`. Watermarks compare by their 13-digit reverse
+    timestamp: a smaller one is newer, and equal is not newer. A base with a
+    watermark beats a build with none.
+13. The page does not apply `forget` entries. Its Store Log regex keeps
+    ignoring unknown kinds, and it reads the snapshot, which the sweep and
+    every later writer rebuild after applying them. Only
+    `web/src/generated/schema.json` changed (24 types).
+14. `reindex --seed false` passes no snapshot storage to the cold catch-up,
+    so every member is scanned. `reindex` also removes a `-journal` sidecar
+    beside the cache file, and prints `reindexed <cache file>` and then
+    either `wrote <snapshot> (<n> runs)` or `snapshot not rewritten: <reason>`.
+15. A `forget` entry whose Forget block is gone is dangling like any other
+    root entry, and a sweep deletes it once it is past the age floor
+    (changes §20 decision 8's "a sweep never deletes a `forget` entry as
+    dangling"). The block is written before its entry, so this happens only
+    after an external delete, and no cache can apply an entry without its
+    block.
+16. A Forget block that exists but does not decode as a Forget is warned
+    once and recorded as applied with 0 runs, so it never fails a member's
+    catch-up (`Index.applyForget`).
+17. `Put`'s own catch-up asks the whole composition (`holders`) before
+    forgetting, as `CasSession.catchUpIndex` does: the four-argument
+    `Index.catchUp(store, storeLog, member, holders)`.
+18. Gate assertions 17 and 18 record their preconditions through
+    `assert.py --coherence-checkpoint`: the cache held the first
+    incarnation's run after `recreate-1`, and cache B held run a before the
+    sweep. An assertion fails when its precondition is missing, so a pass
+    cannot come from a cache that never held the rows it is said to have
+    forgotten.
