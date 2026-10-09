@@ -314,7 +314,10 @@ class Sweep {
             }
             catch( Exception e ) {
                 // Which of the batch went is unknown: record none. A later sweep drops what is
-                // gone from its ledger and clears its log entries as dangling.
+                // gone from its ledger and clears its log entries as dangling. Announce the whole
+                // batch all the same: catch-up asks the composition before it forgets a cid, so
+                // the blocks that survived keep their rows.
+                announce(r, batch*.cid as List<Cid>)
                 r.stopped = "deleting a batch of ${batch.size()} block(s) failed: ${e.message}".toString()
                 return false
             }

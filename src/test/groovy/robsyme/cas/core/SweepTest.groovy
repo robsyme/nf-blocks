@@ -764,4 +764,49 @@ class SweepTest extends Specification {
         r.forgets == []
         !StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
     }
+
+    /** Local retention storage whose deleteBlocks deletes all but the given blocks, then throws. */
+    static class DeletesThenThrows implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['deleteBlocks']) final RetentionStorage inner
+        final Set<Cid> keep
+        DeletesThenThrows(RetentionStorage inner, Set<Cid> keep) { this.inner = inner; this.keep = keep }
+        List<Cid> deleteBlocks(Collection<Cid> cids) {
+            inner.deleteBlocks(cids.findAll { !keep.contains(it) })
+            throw new IOException('connection reset mid-batch')
+        }
+    }
+
+    def 'a batch whose delete throws is still announced, and a cache keeps the rows of what survived'() {
+        given: 'a cache caught up on a hidden run that is due, and a delete that removes all but its RunCompletion, then fails'
+        Map gone = hiddenRunDue()
+        Cid completion = (Cid) gone.completion
+        Cid collection = (Cid) gone.collection
+        Index index = Index.open(root.resolve('../cache-' + root.fileName + '.sqlite'))
+        index.catchUp(f.store, StoreLog.of(f.store), 'lab')
+        LocalBlockStore flaky = storeWith(new DeletesThenThrows(f.store.retentionStorage(), [completion] as Set))
+
+        when:
+        SweepReport r = new Sweep(flaky, SweepPolicy.defaults()).apply(false, 0L, { -> false }, say, sleeper)
+
+        then: 'the sweep stopped, and one forget entry lists the whole batch'
+        r.stopped.contains('connection reset mid-batch')
+        r.forgets.size() == 1
+        r.unannounced == []
+        List<Cid> listed = Forget.fromCbor((Map) DagCbor.decode(f.store.open(r.forgets[0]).withCloseable { it.readAllBytes() })).deleted
+        listed.contains(completion)
+        listed.contains(collection)
+        StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET && it.cid == r.forgets[0] }
+
+        when: 'the cache catches up'
+        index.catchUp(f.store, StoreLog.of(f.store), 'lab')
+
+        then: 'the RunCompletion that survived keeps its row; the deleted collection is forgotten'
+        f.store.has(completion)
+        !f.store.has(collection)
+        index.isRunIndexed(completion)
+        index.countRows('collection') == 0
+
+        cleanup:
+        index?.close()
+    }
 }
