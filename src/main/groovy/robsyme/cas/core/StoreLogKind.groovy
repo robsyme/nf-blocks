@@ -5,7 +5,7 @@ import groovy.transform.CompileStatic
 /** What a Store Log entry announces (block explorer spec section 3). */
 @CompileStatic
 enum StoreLogKind {
-    RUN('run'), SELECTION('selection'), CLAIM('claim')
+    RUN('run'), SELECTION('selection'), CLAIM('claim'), FORGET('forget')
 
     final String token
 

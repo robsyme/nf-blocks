@@ -214,4 +214,14 @@ class StoreLogTest extends Specification {
         StoreLog.of(store).has(name)
         !StoreLog.of(store).has(StoreLog.entryName(StoreLogKind.RUN, c, 1_790_000_000_001L))
     }
+
+    def 'a forget entry parses with its kind'() {
+        given:
+        final Cid c = Fixtures.cidOf([kind: 'Forget', n: 1])
+        final String name = StoreLog.entryName(StoreLogKind.FORGET, c, 1_790_000_000_000L)
+
+        expect:
+        name.contains('-forget-')
+        StoreLog.parse(name).kind == StoreLogKind.FORGET
+    }
 }

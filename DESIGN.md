@@ -391,6 +391,7 @@ type Block union {
   | RunCompletion "RunCompletion"
   | Selection "Selection"
   | Claim "Claim"
+  | Forget "Forget"
 } representation inline {
   discriminantKey "kind"
 }
@@ -550,6 +551,12 @@ type ClaimVerb enum {
   | add
   | del
   | delete
+}
+
+type Forget struct {
+  schema Int
+  asserted_by String
+  deleted [&Any]                # sorted by cid string, no duplicates (§20)
 }
 ```
 

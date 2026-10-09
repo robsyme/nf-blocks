@@ -6,9 +6,9 @@ import { validBlock, validLeaf, validLeafV1 } from '../src/schema.js'
 import { buildMember } from './fixture.mjs'
 import * as dagCbor from '@ipld/dag-cbor'
 
-test('DESIGN.md §6 parses to 23 types', () => {
+test('DESIGN.md §6 parses to 24 types', () => {
   const schema = extractSchema(readFileSync(new URL('../../DESIGN.md', import.meta.url), 'utf8'))
-  assert.equal(Object.keys(schema.types).length, 23)
+  assert.equal(Object.keys(schema.types).length, 24)
 })
 
 test('every fixture block is valid, and broken ones are not', async () => {
@@ -54,4 +54,12 @@ test('a RunCompletion anomalies map may carry unjoined, and still validates with
   const completion = m.valueOfKind('RunCompletion')
   assert.equal(validBlock(completion), true)
   assert.equal(validBlock({ ...completion, anomalies: { ...completion.anomalies, unjoined: 2 } }), true)
+})
+
+test('a Forget block validates, and one without deleted does not', async () => {
+  const { blocks } = await buildMember()
+  const { CID } = await import('multiformats/cid')
+  const cids = [...blocks.keys()].slice(0, 2).map(k => CID.parse(k))
+  assert.equal(validBlock({ kind: 'Forget', schema: 1, asserted_by: 'lab', deleted: cids }), true)
+  assert.equal(validBlock({ kind: 'Forget', schema: 1, asserted_by: 'lab' }), false)
 })
