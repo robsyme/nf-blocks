@@ -389,7 +389,7 @@ class CasSession {
         if( failed?.contains(config.writableAlias) )
             return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
         final SnapshotStorage storage = snapshotsOf(config.writableAlias)
-        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir)
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId())
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )

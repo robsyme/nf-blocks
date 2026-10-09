@@ -40,6 +40,8 @@ class IndexSnapshot {
     static final String FEWER_RUNS = 'fewer_runs'
     static final String REPLACED_MEANWHILE = 'replaced_meanwhile'
     static final String CATCH_UP_FAILED = 'catch_up_failed'
+    static final String STALE_STORE = 'stale_store'
+    static final String OLDER_WATERMARK = 'older_watermark'
 
     private static final SecureRandom RANDOM = new SecureRandom()
     private static final DateTimeFormatter MILLIS =
@@ -96,7 +98,7 @@ class IndexSnapshot {
         final long bytes
         final int runs
         final String watermark
-        /** Null when written; otherwise the guard that kept the old snapshot (OVER_CAP, FEWER_RUNS, REPLACED_MEANWHILE, CATCH_UP_FAILED). */
+        /** Null when written; otherwise the guard that kept the old snapshot (OVER_CAP, STALE_STORE, OLDER_WATERMARK, FEWER_RUNS, REPLACED_MEANWHILE, CATCH_UP_FAILED). */
         final String skipped
 
         Result(boolean written, Path path, long bytes, int runs, String watermark, String skipped) {
@@ -146,21 +148,35 @@ class IndexSnapshot {
         }
     }
 
+    /** As the 7-argument write, without a store-id check. */
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) {
+        return write(index, member, storage, maxBytes, base, tempDir, null)
+    }
+
     /**
      * Writes the member's snapshot into storage unless a guard keeps the old
-     * one (DESIGN.md §15, ticket 04 decision 3): the cap (maxBytes > 0), fewer
-     * run rows than base, or another writer's version in place of base.
+     * one (DESIGN.md §15, ticket 04 decision 3, §20 decision 10), in this
+     * order: the cap on base (maxBytes > 0); a cache that does not hold
+     * memberStoreId (when given) for the member; the cap on the build; a base
+     * whose watermark is newer than the build's; fewer run rows than base once
+     * the runs forget entries removed since base are added back; another
+     * writer's version in place of base.
      */
-    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) {
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId) {
         if( maxBytes > 0 && base != null && base.bytes >= maxBytes )
             return new Result(false, null, base.bytes, -1, null, OVER_CAP)
+        if( memberStoreId != null && index.storeIdOf(member) != memberStoreId )
+            return new Result(false, null, 0L, -1, index.watermark(member), STALE_STORE)
         final Built built = build(index, member, tempDir)
         try {
             if( maxBytes > 0 && built.bytes > maxBytes )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, OVER_CAP)
-            if( base != null && base.runs > built.runs )
+            if( base != null && newer(base.watermark, built.watermark) )
+                return new Result(false, null, built.bytes, built.runs, built.watermark, OLDER_WATERMARK)
+            if( base != null && base.runs > built.runs + index.forgottenRunsSince(member, base.watermark) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, FEWER_RUNS)
-            if( !storage.replace(built.file, built.runs, base) )
+            final SnapshotBase written = new SnapshotBase(null, built.bytes, built.runs, built.storeId, built.watermark)
+            if( !storage.replace(built.file, written, base) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, REPLACED_MEANWHILE)
             return new Result(true, null, built.bytes, built.runs, built.watermark, null)
         }
@@ -175,6 +191,32 @@ class IndexSnapshot {
         final Path temp = pathIn(memberRoot).parent
         final Result r = write(index, member, storage, maxBytes, storage.base(temp), temp)
         return new Result(r.written, pathIn(memberRoot), r.bytes, r.runs, r.watermark, r.skipped)
+    }
+
+    /** True when Store Log entry name a is newer than b (smaller reverse timestamp); a non-null name is newer than none. */
+    static boolean newer(String a, String b) {
+        if( a == null || a.length() < 13 ) return false
+        if( b == null || b.length() < 13 ) return true
+        return a.substring(0, 13) < b.substring(0, 13)
+    }
+
+    /** What a snapshot file says of itself: run rows (-1 when uncountable), store_id and watermark when its meta has them. */
+    static SnapshotBase baseOf(Path sqlite, String tag, long bytes) {
+        final int runs = countRuns(sqlite)
+        String storeId = null, watermark = null
+        try {
+            DriverManager.getConnection("jdbc:sqlite:file:${sqlite.toAbsolutePath()}?mode=ro".toString()).withCloseable { Connection c ->
+                final ResultSet rs = c.createStatement().executeQuery('SELECT key, value FROM meta')
+                while( rs.next() ) {
+                    if( rs.getString(1) == STORE_ID_KEY ) storeId = rs.getString(2)
+                    if( rs.getString(1) == WATERMARK_KEY ) watermark = rs.getString(2)
+                }
+            }
+        }
+        catch( SQLException e ) {
+            // No meta table: a snapshot from before §15's meta, or a hand-made one.
+        }
+        return new SnapshotBase(tag, bytes, runs, storeId, watermark)
     }
 
     static int countRuns(Path sqlite) {

@@ -48,9 +48,10 @@ class SnapshotGuardTest extends Specification {
         final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
         IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
         final Index fresh = Index.open(tmp.resolve('fresh.sqlite'))
+        final SnapshotBase b = storage.base(tmp)
 
-        when: 'a cache that saw only an empty log'
-        final IndexSnapshot.Result r = IndexSnapshot.write(fresh, 'lab', storage, 0L, storage.base(tmp), tmp)
+        when: 'a cache that saw only an empty log, against a base that records no watermark (older_watermark would answer first otherwise)'
+        final IndexSnapshot.Result r = IndexSnapshot.write(fresh, 'lab', storage, 0L, new SnapshotBase(b.tag, b.bytes, b.runs), tmp)
 
         then:
         !r.written
@@ -81,5 +82,77 @@ class SnapshotGuardTest extends Specification {
         then:
         Files.list(store.root.resolve('index')).toList()*.fileName*.toString() == ['v3.sqlite']
         Files.list(tmp.resolve('t')).count() == 0
+    }
+
+    def 'a cache that does not hold the member\'s current store-id does not replace the snapshot (stale_store)'() {
+        given:
+        addRun('r1')
+        index.reconcileStoreIds([lab: 'a' * 32], { a, w -> true } as Closure<Boolean>)
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+
+        expect:
+        IndexSnapshot.write(index, 'lab', storage, 0L, storage.base(tmp), tmp, 'b' * 32).skipped == IndexSnapshot.STALE_STORE
+        IndexSnapshot.write(index, 'lab', storage, 0L, storage.base(tmp), tmp, 'a' * 32).written
+    }
+
+    def 'a cache behind the stored snapshot\'s watermark does not replace it (older_watermark)'() {
+        given: 'a cache that saw r1 only, and a snapshot written after r2'
+        addRun('r1')
+        final Index behind = Index.open(tmp.resolve('behind.sqlite'))
+        behind.catchUp(store, StoreLog.of(store), 'lab')
+        Thread.sleep(2)
+        addRun('r2')
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+
+        expect:
+        storage.base(tmp).watermark == index.watermark('lab')
+        IndexSnapshot.write(behind, 'lab', storage, 0L, storage.base(tmp), tmp).skipped == IndexSnapshot.OLDER_WATERMARK
+
+        cleanup:
+        behind.close()
+    }
+
+    def 'runs a forget entry removed since the base are added back before fewer_runs is judged'() {
+        given:
+        final RetentionFixture rf = new RetentionFixture(store)
+        final Map gone = rf.run('gone', [[g: rf.raw('g')]])
+        rf.run('kept', [[k: rf.raw('k')]])
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+        final SnapshotBase base = storage.base(tmp)
+        java.nio.file.Files.delete(store.blockPath((Cid) gone.completion))
+        final Cid f = store.putDagCbor(new Forget('test', [(Cid) gone.completion]).toCbor())
+        StoreLog.append(store, StoreLogKind.FORGET, f, System.currentTimeMillis() + 1)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+
+        expect:
+        base.runs == 2
+        IndexSnapshot.write(index, 'lab', storage, 0L, base, tmp).written
+        storage.base(tmp).runs == 1
+    }
+
+    def 'a base read from a file without meta still counts its runs'() {
+        given:
+        final java.nio.file.Path file = tmp.resolve('bare.sqlite')
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${file}").withCloseable { c ->
+            c.createStatement().withCloseable { st ->
+                st.executeUpdate('CREATE TABLE run (id INTEGER PRIMARY KEY)')
+                st.executeUpdate('INSERT INTO run VALUES (1), (2)')
+            }
+        }
+
+        expect:
+        IndexSnapshot.baseOf(file, 't', 1L) == new SnapshotBase('t', 1L, 2, null, null)
+    }
+
+    def 'newer compares by reverse timestamp, and anything beats nothing'() {
+        expect:
+        IndexSnapshot.newer('9999999999990-run-x', '9999999999991-run-y')
+        !IndexSnapshot.newer('9999999999991-run-y', '9999999999990-run-x')
+        !IndexSnapshot.newer('9999999999990-run-x', '9999999999990-claim-z')
+        IndexSnapshot.newer('9999999999990-run-x', null)
+        !IndexSnapshot.newer(null, '9999999999990-run-x')
     }
 }

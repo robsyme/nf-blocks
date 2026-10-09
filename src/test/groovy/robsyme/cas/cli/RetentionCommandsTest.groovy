@@ -258,7 +258,6 @@ class RetentionCommandsTest extends Specification {
         }
     }
 
-    @spock.lang.PendingFeature(reason = 'Task 7: fewer_runs counts runs forget entries removed')
     def 'a sweep that deletes a run rewrites an existing snapshot, and the cache forgets the run through its own catch-up'() {
         given: 'runs a (deleted) and kept, a snapshot of both, a sweep that trashed a, its ledger expired'
         final Map kept = f.run('kept', [[k: f.raw('k')]])

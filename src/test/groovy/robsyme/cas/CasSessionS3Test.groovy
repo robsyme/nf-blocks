@@ -100,7 +100,8 @@ class CasSessionS3Test extends Specification {
         final Index index = s.openIndex()
 
         when:
-        IndexSnapshot.Result r = s.snapshotWritable(index, 0L, s.snapshotBase(), [] as Set)
+        final SnapshotBase base = s.snapshotBase()
+        IndexSnapshot.Result r = s.snapshotWritable(index, 0L, base, s.catchUpIndex(index))
 
         then:
         noExceptionThrown()
