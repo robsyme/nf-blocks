@@ -133,6 +133,82 @@ class SnapshotGuardTest extends Specification {
         storage.base(tmp).runs == 1
     }
 
+    def 'fewer_runs against a base with a watermark the cache has reached, not counting a forget entry older than the base'() {
+        given: 'runs one, two and three; a forget entry removing one; then run four, so the forget entry is older than the watermark'
+        final RetentionFixture rf = new RetentionFixture(store)
+        final Map one = rf.run('one', [[a: rf.raw('one-a')]])
+        rf.run('two', [[b: rf.raw('two-b')]])
+        rf.run('three', [[c: rf.raw('three-c')]])
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        Files.delete(store.blockPath((Cid) one.completion))
+        final Cid f = store.putDagCbor(new Forget('test', [(Cid) one.completion]).toCbor())
+        StoreLog.append(store, StoreLogKind.FORGET, f, ++rf.clock)
+        rf.run('four', [[d: rf.raw('four-d')]])
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+        final SnapshotBase written = storage.base(tmp)
+
+        when: 'a base at the cache\'s own watermark that counts one run more than the cache holds'
+        final SnapshotBase base = new SnapshotBase(written.tag, written.bytes, written.runs + 1, written.storeId, index.watermark('lab'))
+        final IndexSnapshot.Result r = IndexSnapshot.write(index, 'lab', storage, 0L, base, tmp)
+
+        then: 'the forget entry is older than the base, so its run is not added back'
+        written.runs == 3
+        index.forgottenRunsSince('lab', null) == 1
+        index.forgottenRunsSince('lab', base.watermark) == 0
+        r.skipped == IndexSnapshot.FEWER_RUNS
+    }
+
+    def 'a base written for another incarnation of the member is not judged by watermark or run count'() {
+        given: 'a cache holding the member\'s id, and a base from another id that is newer and counts more runs'
+        addRun('r1')
+        index.reconcileStoreIds([lab: 'a' * 32], { a, w -> true } as Closure<Boolean>)
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+        final SnapshotBase b = storage.base(tmp)
+        final SnapshotBase other = new SnapshotBase(b.tag, b.bytes, 9, 'c' * 32, '0000000000000-run-x')
+
+        expect:
+        IndexSnapshot.write(index, 'lab', storage, 0L, other, tmp, 'a' * 32).written
+        storage.base(tmp).storeId == 'a' * 32
+    }
+
+    def 'a base of the same incarnation is still judged by watermark and run count'() {
+        given:
+        addRun('r1')
+        index.reconcileStoreIds([lab: 'a' * 32], { a, w -> true } as Closure<Boolean>)
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+        final SnapshotBase b = storage.base(tmp)
+
+        expect:
+        IndexSnapshot.write(index, 'lab', storage, 0L, new SnapshotBase(b.tag, b.bytes, 9, 'a' * 32, '0000000000000-run-x'), tmp, 'a' * 32).skipped == IndexSnapshot.OLDER_WATERMARK
+        IndexSnapshot.write(index, 'lab', storage, 0L, new SnapshotBase(b.tag, b.bytes, 9, 'a' * 32, b.watermark), tmp, 'a' * 32).skipped == IndexSnapshot.FEWER_RUNS
+    }
+
+    /** Storage another writer always got to first. */
+    static class ReplacedMeanwhile implements SnapshotStorage {
+        @Delegate(excludes = ['replace']) final SnapshotStorage inner
+        ReplacedMeanwhile(SnapshotStorage inner) { this.inner = inner }
+        boolean replace(Path built, SnapshotBase written, SnapshotBase base) { false }
+    }
+
+    def 'a rebuild waives older_watermark and fewer_runs, and keeps stale_store and replaced_meanwhile'() {
+        given:
+        addRun('r1')
+        index.reconcileStoreIds([lab: 'a' * 32], { a, w -> true } as Closure<Boolean>)
+        final LocalSnapshotStorage storage = new LocalSnapshotStorage(store.root)
+        IndexSnapshot.write(index, 'lab', storage, 0L, null, tmp)
+        final SnapshotBase b = storage.base(tmp)
+
+        expect:
+        IndexSnapshot.write(index, 'lab', storage, 0L, new SnapshotBase(b.tag, b.bytes, 9, 'a' * 32, '0000000000000-run-x'), tmp, 'b' * 32, true).skipped == IndexSnapshot.STALE_STORE
+        IndexSnapshot.write(index, 'lab', new ReplacedMeanwhile(storage), 0L, new SnapshotBase(b.tag, b.bytes, 9, 'a' * 32, '0000000000000-run-x'), tmp, 'a' * 32, true).skipped == IndexSnapshot.REPLACED_MEANWHILE
+        IndexSnapshot.write(index, 'lab', storage, 0L, new SnapshotBase(b.tag, b.bytes, 9, 'a' * 32, '0000000000000-run-x'), tmp, 'a' * 32, true).written
+        storage.base(tmp).runs == 1
+    }
+
     def 'a base read from a file without meta still counts its runs'() {
         given:
         final java.nio.file.Path file = tmp.resolve('bare.sqlite')

@@ -279,4 +279,22 @@ class RetentionCommandsTest extends Specification {
         runsIn(indexPath) == [kept.completion.toString()]
         StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
     }
+
+    def 'a sweep whose forget entry could not be written still rewrites the snapshot without the runs it deleted'() {
+        given: 'runs a and kept in a snapshot; a\'s blocks deleted by a sweep that could not log a forget entry'
+        final Map kept = f.run('kept', [[k: f.raw('k')]])
+        run('snapshot')
+        final List<Cid> gone = [(Cid) theRun.completion, (Cid) theRun.collection] + (List<Cid>) theRun.items
+        gone.each { Cid c -> Files.delete(f.store.blockPath(c)) }
+        final robsyme.cas.core.SweepReport r = new robsyme.cas.core.SweepReport(deleted: gone, unannounced: gone)
+        final robsyme.cas.CasSession cas = new robsyme.cas.CasSession(robsyme.cas.CasConfig.fromSession(config()))
+
+        when:
+        final String line = RetentionCommands.forgetAndSnapshot(cas, r)
+
+        then:
+        line.startsWith('wrote')
+        runsIn(store.resolve('index/v3.sqlite')) == [kept.completion.toString()]
+        runsIn(indexPath) == [kept.completion.toString()]
+    }
 }

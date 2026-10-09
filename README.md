@@ -397,9 +397,14 @@ policy and CORS rule in `DESIGN.md` §15.
 
 `nextflow plugin nf-blocks:reindex` deletes this machine's cache index for the
 configured store and rebuilds it, seeding from each member's Index Snapshot
-(`--seed false` scans every block instead). The cache corrects itself when a
-member is deleted and recreated, or when a sweep deletes runs; reindex is for
-blocks removed by hand or by a bucket lifecycle rule.
+(`--seed false` scans every block instead), then rewrites the writable member's
+snapshot even when it shrinks. It prints the snapshot's run count before and
+after. The cache corrects itself when a member is deleted and recreated, or
+when a sweep deletes runs; reindex is for blocks removed by hand or by a bucket
+lifecycle rule. Use `reindex --seed false` for those: the default seeds from the
+snapshot, which still lists the removed runs, and writes them back. Stop
+`explore` before a reindex and start it again after: a process that has the
+cache open keeps writing to the old file, which reindex has unlinked.
 
 Until the plugin is published, `nextflow plugin` finds a local build only
 through `NXF_PLUGINS_TEST_REPOSITORY`. After `make install FORCE=1`, `make

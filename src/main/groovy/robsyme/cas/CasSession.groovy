@@ -391,10 +391,19 @@ class CasSession {
      * ({@code catch_up_failed}). {@code maxBytes <= 0} writes at any size.
      */
     IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed) {
+        return snapshotWritable(index, maxBytes, base, failed, false)
+    }
+
+    /**
+     * As the 4-arg {@code snapshotWritable}; with {@code rebuild} the
+     * snapshot replaces base even when base has a newer watermark or more
+     * runs (`reindex`, and a sweep whose deletes no forget entry announces).
+     */
+    IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed, boolean rebuild) {
         if( failed?.contains(config.writableAlias) )
             return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
         final SnapshotStorage storage = snapshotsOf(config.writableAlias)
-        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId())
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId(), rebuild)
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )

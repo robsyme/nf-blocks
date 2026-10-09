@@ -304,7 +304,8 @@ class CasCommands {
 
     /**
      * DESIGN.md §20 decision 12: deletes the cache file of this composition and
-     * catches every member up cold, then rewrites the writable member's snapshot.
+     * catches every member up cold, then rewrites the writable member's snapshot
+     * as a rebuild: a base with a newer watermark or more runs does not keep it.
      */
     private static int reindex(Options options, Map config, PrintStream out) {
         if( options.positionals )
@@ -320,10 +321,11 @@ class CasCommands {
         final Index index = cas.openIndex()
         try {
             final Set<String> failed = cas.catchUpIndex(index, seed != 'false')
-            final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed)
+            final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed, true)
             out.println("reindexed ${file}${failed ? '; could not catch up ' + failed.join(', ') : ''}")
+            final String was = base == null ? 'none' : base.runs < 0 ? 'uncounted' : base.runs.toString()
             out.println(result.skipped ? "snapshot not rewritten: ${result.skipped}" :
-                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.runs} runs)")
+                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.runs} runs, was ${was})")
             return failed ? 1 : 0
         }
         finally {

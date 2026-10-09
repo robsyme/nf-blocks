@@ -153,6 +153,11 @@ class IndexSnapshot {
         return write(index, member, storage, maxBytes, base, tempDir, null)
     }
 
+    /** As the 8-argument write, guarding against base as usual (not a rebuild). */
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId) {
+        return write(index, member, storage, maxBytes, base, tempDir, memberStoreId, false)
+    }
+
     /**
      * Writes the member's snapshot into storage unless a guard keeps the old
      * one (DESIGN.md §15, ticket 04 decision 3, §20 decision 10), in this
@@ -161,19 +166,27 @@ class IndexSnapshot {
      * whose watermark is newer than the build's; fewer run rows than base once
      * the runs forget entries removed since base are added back; another
      * writer's version in place of base.
+     *
+     * The watermark and run-count guards are skipped for a base written for
+     * another incarnation of the member (its store id is not memberStoreId),
+     * and when {@code rebuild} is set: an operator's `reindex`, or a sweep
+     * whose deletes no forget entry announces, whose snapshot has fewer runs
+     * than base because those runs are really gone.
      */
-    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId) {
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId, boolean rebuild) {
         if( maxBytes > 0 && base != null && base.bytes >= maxBytes )
             return new Result(false, null, base.bytes, -1, null, OVER_CAP)
         if( memberStoreId != null && index.storeIdOf(member) != memberStoreId )
             return new Result(false, null, 0L, -1, index.watermark(member), STALE_STORE)
+        final boolean otherIncarnation = memberStoreId != null && base?.storeId != null && base.storeId != memberStoreId
+        final boolean judgeBase = base != null && !rebuild && !otherIncarnation
         final Built built = build(index, member, tempDir)
         try {
             if( maxBytes > 0 && built.bytes > maxBytes )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, OVER_CAP)
-            if( base != null && newer(base.watermark, built.watermark) )
+            if( judgeBase && newer(base.watermark, built.watermark) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, OLDER_WATERMARK)
-            if( base != null && base.runs > built.runs + index.forgottenRunsSince(member, base.watermark) )
+            if( judgeBase && base.runs > built.runs + index.forgottenRunsSince(member, base.watermark) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, FEWER_RUNS)
             final SnapshotBase written = new SnapshotBase(null, built.bytes, built.runs, built.storeId, built.watermark)
             if( !storage.replace(built.file, written, base) )
