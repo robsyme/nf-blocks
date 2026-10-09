@@ -30,6 +30,7 @@ class IndexSnapshot {
     static final long DEFAULT_MAX_BYTES = 64L * 1024 * 1024
     static final int PAGE_SIZE = 4096
     static final String WATERMARK_KEY = 'store_log_watermark'
+    static final String STORE_ID_KEY = 'store_id'
     static final String WRITTEN_AT_KEY = 'snapshot_written_at'
     static final String PAGE_NAME = 'index.html'
     static final String PAGE_RESOURCE = '/robsyme/cas/explorer/index.html'
@@ -117,8 +118,10 @@ class IndexSnapshot {
 
     @CompileStatic
     static final class Built {
-        final Path file; final long bytes; final int runs; final String watermark
-        Built(Path file, long bytes, int runs, String watermark) { this.file = file; this.bytes = bytes; this.runs = runs; this.watermark = watermark }
+        final Path file; final long bytes; final int runs; final String watermark; final String storeId
+        Built(Path file, long bytes, int runs, String watermark, String storeId) {
+            this.file = file; this.bytes = bytes; this.runs = runs; this.watermark = watermark; this.storeId = storeId
+        }
     }
 
     /** The member's snapshot as a local file in tempDir; the caller deletes it. */
@@ -129,8 +132,9 @@ class IndexSnapshot {
         final Path vacuumed = tempDir.resolve("nf-blocks-snapshot-${token}.sqlite")
         try {
             final String watermark = index.watermark(member)
-            final int runs = buildAndVacuum(buildFile, vacuumed, index.file, member, watermark)
-            return new Built(vacuumed, Files.size(vacuumed), runs, watermark)
+            final String storeId = index.storeIdOf(member)
+            final int runs = buildAndVacuum(buildFile, vacuumed, index.file, member, watermark, storeId)
+            return new Built(vacuumed, Files.size(vacuumed), runs, watermark, storeId)
         }
         catch( Throwable e ) {
             Files.deleteIfExists(vacuumed)
@@ -184,7 +188,7 @@ class IndexSnapshot {
         }
     }
 
-    private static int buildAndVacuum(Path build, Path out, Path cacheFile, String member, String watermark) {
+    private static int buildAndVacuum(Path build, Path out, Path cacheFile, String member, String watermark, String storeId) {
         final Connection c = DriverManager.getConnection("jdbc:sqlite:${build.toAbsolutePath()}".toString())
         try {
             exec(c, "PRAGMA page_size=${PAGE_SIZE}".toString())
@@ -206,6 +210,8 @@ class IndexSnapshot {
             exec(c, COPY_CLAIMS[1])
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
+            if( storeId != null )
+                update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) STORE_ID_KEY, storeId])
             update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WRITTEN_AT_KEY, MILLIS.format(Instant.now())])
             c.commit()
             c.setAutoCommit(true)

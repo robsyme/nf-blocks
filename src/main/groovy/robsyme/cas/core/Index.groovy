@@ -447,7 +447,7 @@ class Index implements Closeable {
             try {
                 file = snapshots.fetch(tempDir)
                 if( file == null ) throw new SnapshotUnusable('absent')
-                seedFrom(file, member)
+                seedFrom(file, member, storeLog)
             }
             catch( SnapshotUnusable e ) {
                 warnUnusable(storeLog, member, e.reason, quietFor)
@@ -518,6 +518,16 @@ class Index implements Closeable {
      * recomputed for every seeded subject (decision 9). True when it seeded.
      */
     boolean seedFrom(Path snapshotFile, String member) throws SnapshotUnusable {
+        return seedFrom(snapshotFile, member, null)
+    }
+
+    /**
+     * As the 2-arg {@code seedFrom}, and refusing a snapshot written for another
+     * incarnation of the member (DESIGN.md §20 decisions 5, 9): its store_id
+     * differs from the cache's, or it has none and its watermark entry is not
+     * in the member's Store Log (checked only when storeLog is given).
+     */
+    boolean seedFrom(Path snapshotFile, String member, StoreLog storeLog) throws SnapshotUnusable {
         try {
             update('ATTACH DATABASE ? AS snap', [(Object) "file:${snapshotFile.toAbsolutePath()}?mode=ro".toString()])
         }
@@ -537,6 +547,18 @@ class Index implements Closeable {
             final Map<String, String> snapMeta = [:]
             try {
                 query('SELECT key, value FROM snap.meta', []) { ResultSet rs -> snapMeta.put(rs.getString(1), rs.getString(2)) }
+            }
+            catch( IllegalStateException | SQLException e ) {
+                throw new SnapshotUnusable('unreadable', e)
+            }
+            final String snapId = snapMeta[IndexSnapshot.STORE_ID_KEY]
+            final String memberId = storeIdOf(member)
+            if( snapId != null && memberId != null && snapId != memberId )
+                throw new SnapshotUnusable("written for another incarnation of the member (store_id ${snapId}, the member's is ${memberId})")
+            final String snapWatermark = snapMeta[IndexSnapshot.WATERMARK_KEY]
+            if( snapId == null && snapWatermark != null && storeLog != null && !storeLog.has(snapWatermark) )
+                throw new SnapshotUnusable("its watermark ${snapWatermark} is not in the member's Store Log, so it may be from an earlier incarnation")
+            try {
                 withTransaction {
                     for( String sql : SEED )
                         update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])

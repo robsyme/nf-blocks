@@ -380,4 +380,74 @@ class IndexSeedTest extends Specification {
         cleanup:
         cold?.close()
     }
+
+    private static Closure<Boolean> logged(Boolean answer) { { String a, String w -> answer } as Closure<Boolean> }
+
+    /** A snapshot of `lab` written by a cache that recorded `id` (or none). */
+    private void snapshotWith(String id) {
+        run('r1', 'A', System.currentTimeMillis() - 1000)
+        final Index source = producer()
+        if( id != null )
+            source.reconcileStoreIds([lab: id], logged(true))
+        IndexSnapshot.write(source, 'lab', new LocalSnapshotStorage(lab.root), 0L, null, tmp.resolve('t'))
+        source.close()
+    }
+
+    private String snapshotMeta(String key) {
+        return DriverManager.getConnection("jdbc:sqlite:${IndexSnapshot.pathIn(lab.root)}").withCloseable { Connection c ->
+            final java.sql.PreparedStatement s = c.prepareStatement('SELECT value FROM meta WHERE key = ?')
+            s.setString(1, key)
+            final java.sql.ResultSet rs = s.executeQuery()
+            rs.next() ? rs.getString(1) : null
+        }
+    }
+
+    def 'a snapshot from another incarnation does not seed'() {
+        given:
+        snapshotWith('a' * 32)
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+        cold.reconcileStoreIds([lab: 'b' * 32], logged(true))
+
+        when:
+        cold.seedFrom(IndexSnapshot.pathIn(lab.root), 'lab', StoreLog.of(lab))
+
+        then:
+        final Index.SnapshotUnusable e = thrown()
+        e.reason.contains('another incarnation')
+
+        cleanup:
+        cold.close()
+    }
+
+    def 'a snapshot without store_id does not seed once its watermark entry is gone'() {
+        given:
+        snapshotWith(null)
+        final String wm = snapshotMeta(IndexSnapshot.WATERMARK_KEY)
+        Files.delete(lab.root.resolve('log').resolve(wm))
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.seedFrom(IndexSnapshot.pathIn(lab.root), 'lab', StoreLog.of(lab))
+
+        then:
+        final Index.SnapshotUnusable e = thrown()
+        e.reason.contains('watermark')
+
+        cleanup:
+        cold.close()
+    }
+
+    def 'a snapshot without store_id whose watermark is logged still seeds'() {
+        given:
+        snapshotWith(null)
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        expect:
+        snapshotMeta(IndexSnapshot.STORE_ID_KEY) == null
+        cold.seedFrom(IndexSnapshot.pathIn(lab.root), 'lab', StoreLog.of(lab))
+        cold.countRows('run') == 1
+
+        cleanup:
+        cold.close()
+    }
 }
