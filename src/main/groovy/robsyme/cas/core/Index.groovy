@@ -715,12 +715,14 @@ class Index implements Closeable {
      * DESIGN.md §20 decision 8: forgets what one sweep batch deleted, except a
      * cid some member holds now (still elsewhere, or written again since).
      * Recorded per member, so the overlap re-read and a retry apply it once.
-     * A block of kind Forget that does not decode as one is skipped, recorded
-     * with 0 runs so it is not read again.
+     * An absent Forget block is `missing` and retried; one that is there but
+     * does not read as a Forget is skipped, recorded with 0 runs so it is not
+     * read again. Only cids this cache has rows for are looked up, and a
+     * lookup that fails keeps the cid's rows.
      */
     private void applyForget(BlockStore store, BlockStore holders, Cid forgetCid, String member) {
-        final Map block = readBlock(store, forgetCid, Records.FORGET)
-        if( block == null ) {
+        final Map block = readBlock(store, forgetCid, Records.FORGET, true)
+        if( block == null && !store.has(forgetCid) ) {
             update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [forgetCid.toString()])
             insertMissing(null, forgetCid)
             return
@@ -728,6 +730,8 @@ class Index implements Closeable {
         final StoreLogEntry entry = firstLogEntry(forgetCid, member)
         final Forget parsed
         try {
+            if( block == null )
+                throw new IllegalArgumentException("not a ${Records.FORGET} block of at most ${MAX_BLOCK_BYTES} bytes")
             parsed = Forget.fromCbor(block)
         }
         catch( RuntimeException e ) {
@@ -737,9 +741,25 @@ class Index implements Closeable {
             return
         }
         final List<Cid> gone = new ArrayList<Cid>()
-        for( Cid c : parsed.deleted )
-            if( !holders.has(c) )
-                gone.add(c)
+        int unchecked = 0
+        String why = null
+        for( Cid c : parsed.deleted ) {
+            if( !hasRowsKeyedBy(c) )
+                continue
+            try {
+                if( !holders.has(c) )
+                    gone.add(c)
+            }
+            catch( Exception e ) {
+                // An SDK refusal (an S3 403) is unchecked too. Failing to look is
+                // not evidence the block went: keep its rows (review item 2).
+                unchecked++
+                why = why ?: e.message
+                log.debug("could not tell whether ${c} is still held", e)
+            }
+        }
+        if( unchecked )
+            warnOnce('forget-unchecked:' + forgetCid, "forget ${forgetCid}: could not tell whether ${unchecked} listed block(s) are still held (${why}); their rows are kept")
         int runs = 0
         for( Cid c : gone )
             if( isRunIndexed(c) )
@@ -777,6 +797,24 @@ class Index implements Closeable {
             log.warn(message)
         else
             log.debug(message)
+    }
+
+    /**
+     * True when this cache holds a row a forget of {@code cid} would remove:
+     * a run, collection, item or Claim keyed by it, or its Store Log entry.
+     * Anything else (a DirectoryManifest, a block this cache never indexed)
+     * is a no-op to forget, so it needs no `has` (review item 3).
+     */
+    private boolean hasRowsKeyedBy(Cid cid) {
+        final String t = cid.toString()
+        boolean found = false
+        query('''SELECT 1 FROM run WHERE completion_cid = ?
+                 UNION ALL SELECT 1 FROM collection WHERE collection_cid = ?
+                 UNION ALL SELECT 1 FROM item WHERE item_cid = ?
+                 UNION ALL SELECT 1 FROM claim WHERE claim_cid = ?
+                 UNION ALL SELECT 1 FROM log_entry WHERE cid = ?
+                 LIMIT 1''', [(Object) t, t, t, t, t]) { ResultSet rs -> found = true }
+        return found
     }
 
     /** True when a RunCompletion already has its `run` row. */
@@ -1390,6 +1428,16 @@ class Index implements Closeable {
      * null. Absence is a fact to record, never a failure to raise.
      */
     private static Map readBlock(BlockStore store, Cid cid, String expectedKind) {
+        return readBlock(store, cid, expectedKind, false)
+    }
+
+    /**
+     * As the 3-arg {@code readBlock}; with {@code ioFails} a read that fails
+     * (an IOException other than absence) is thrown, not returned as null, so
+     * the caller can tell a block that is there but unreadable for now from
+     * one that will never decode.
+     */
+    private static Map readBlock(BlockStore store, Cid cid, String expectedKind, boolean ioFails) {
         if( cid == null || !cid.isDagCbor() || !store.has(cid) )
             return null
         try {
@@ -1412,6 +1460,12 @@ class Index implements Closeable {
             return block.get('kind') == expectedKind ? block : null
         }
         catch( NoSuchBlockException e ) {
+            return null
+        }
+        catch( IOException | UncheckedIOException e ) {
+            if( ioFails )
+                throw e
+            log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
             return null
         }
         catch( Exception e ) {
