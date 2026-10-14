@@ -2867,7 +2867,9 @@ tests, 0 failures); `cd web && npm test` passes (281 tests, and the schema
 test still finds 24 types); `python3 -m unittest discover -s gate` runs 327
 tests OK (1 skipped) and `gate/tier2` 53 OK. `make gate` on a fresh
 `GATE_ROOT` (commit 04c0121): lineage tier 18 PASS, 0 FAIL, 5 SKIP; browser
-tier A 5/5, tier B 14/14. Tier two (T7 included) was not run. Where the build
+tier A 5/5, tier B 14/14. Tier two on 0.6.0-beta.1 (`8a75f5f`, 2026-10-14,
+`T2_TIMEOUT=3600`): 9 PASS, 0 FAIL, 0 SKIP (T1 to T7, T2b, TS; 93 Batch
+jobs), teardown clean. Where the build
 differs from the decisions below, the decision carries an "Amended by" note
 and the reason is under Decisions made while building.*
 
@@ -3232,3 +3234,16 @@ Decisions 19 to 25 come from the final review of the branch (2026-10-09).
     seed and the scan, and reads only the log tail. The cache is missing
     older rows until the next `reindex`. It takes a member replaced at the
     moment another process is catching up the same composition.
+26. Known limit, not fixed (found on 0.6.0-beta.1 in `scratch-workflow/`,
+    2026-10-14): decision 21 does not cover a base without `store_id`. A
+    snapshot that a build before this section wrote from a stale cache,
+    after the member was recreated, keeps its old runs: the cache resets
+    and declines to seed from it (decision 9), but the writer still judges
+    it, its watermark is newer than the rebuilt cache's, and
+    `older_watermark` refuses every rewrite. The page goes on showing the
+    old runs. `reindex --seed false` replaces it once; every snapshot
+    written since carries `store_id`, so it cannot recur unless
+    `writableStoreId()` fails to create the member's `store-id` (it warns).
+    The fix, if one is wanted, is decision 9's rule in the writer: a base
+    without `store_id` whose watermark entry is not in the member's Store
+    Log is another incarnation's.
