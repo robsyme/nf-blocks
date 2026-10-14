@@ -1584,7 +1584,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.5.0-beta.1'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.6.0-beta.1'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -2860,7 +2860,8 @@ caught by that re-check (plan decision 10, decision 11).
 
 ## 20. Cache coherence (2026-10-09)
 
-*Status: built on `design/cache-coherence` (2026-10-09), with the final
+*Status: merged to main at `4a3294f` (PR #3) and released as 0.6.0-beta.1.
+Built on `design/cache-coherence` (2026-10-09), with the final
 review's fixes (build decisions 19 to 25). `./gradlew check` passes (1335
 tests, 0 failures); `cd web && npm test` passes (281 tests, and the schema
 test still finds 24 types); `python3 -m unittest discover -s gate` runs 327
