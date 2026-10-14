@@ -24,7 +24,7 @@ function fakeEx() {
 const ctx = () => ({ tray: new Tray(null), trayChanged: () => {}, rerender: () => {},
   write: { available: false, reason: 'read only', hrefFor: (h) => h } })
 
-test('the run overview: status in words, outputs A–Z with counts, keys and file chips', async () => {
+test('the run overview: status in words, outputs A–Z with counts, fields and file suffixes', async () => {
   installDom()
   resetFolds()
   const marks = []
@@ -38,10 +38,36 @@ test('the run overview: status in words, outputs A–Z with counts, keys and fil
   const rows = page.querySelectorAll('[data-collection]')
   assert.deepEqual(rows.map(r => r.dataset.output), ['markdup', 'quant'])
   assert.equal(rows[0].querySelector('a').getAttribute('href'), '#/items/bafyrun/markdup')
+  assert.deepEqual([...page.querySelectorAll('th')].map(t => t.textContent), ['output', 'items', 'fields', 'files'])
   assert.match(rows[0].textContent, /5/)
-  assert.match(rows[0].textContent, /id/)
-  assert.match(rows[0].textContent, /\.bam/)
+  assert.equal(rows[0].querySelector('[data-fields]').textContent, 'id, single_end')
+  assert.deepEqual(rows[0].querySelector('[data-files]').querySelectorAll('.ext').map(c => c.textContent), ['.bai', '.bam'])
+  assert.doesNotMatch(page.textContent, /null|undefined/)
   assert.ok(!page.querySelector('[data-snippet]'), 'the panel shows the call, not the run page')
+})
+
+test('fields: at most three, then +N naming the rest; files: at most two suffixes, then +N, and the index link after them; nothing when there is nothing', async () => {
+  installDom()
+  resetFolds()
+  const ex = fakeEx()
+  ex.item = async (c, i) => c === 'cq'
+    ? { view: null, leaves: [{ name: `${i}.txt` }] }
+    : { view: { a: 1, b: 2, c: 3, d: i, e: 5 }, leaves: [{ name: `${i}.bam` }, { name: `${i}.bai` }, { name: `${i}.csv` }] }
+  const collection = ex.collection
+  ex.collection = async (cid) => ({ ...(await collection(cid)), index: cid === 'cq' ? { leaf: { address: 'bafyindex', name: 'quant.json' } } : null })
+  const page = await run(ex, 'bafyrun', ctx())
+  await frame(); await frame()
+  const [markdup, quant] = page.querySelectorAll('[data-collection]')
+  const fields = markdup.querySelector('[data-fields]')
+  assert.equal(fields.textContent, 'a, b, c +2')
+  assert.equal(fields.querySelector('[title]').getAttribute('title'), 'd, e')
+  assert.deepEqual(markdup.querySelector('[data-files]').querySelectorAll('.ext').map(c => c.textContent), ['.bai', '.bam', '+1'])
+  assert.equal(quant.querySelector('[data-fields]').textContent, '')
+  const index = quant.querySelector('[data-files]').querySelector('[data-output-index]')
+  assert.equal(index.textContent, 'index file', 'no space inside the link to underline')
+  assert.ok(index.classList.contains('index-link'))
+  assert.equal(quant.querySelector('[data-files]').textContent, '.txtindex file')
+  assert.doesNotMatch(page.textContent, /null|undefined/)
 })
 
 test('the lineage check speaks plainly and flags only what is worth a look', async () => {

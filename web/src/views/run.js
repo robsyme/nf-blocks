@@ -4,11 +4,13 @@
 import { h, link, cid } from '../html.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
-import { fileChips, itemTable } from '../table.js'
+import { fieldPaths, outputSuffixes } from '../table.js'
 import { anomalyLines, healthSummary, statusText, statusTone, whenText } from '../words.js'
 import { crumbs, enc, retentionPanel, table } from './common.js'
 
 const SAMPLE = 3
+const FIELDS = 3
+const SUFFIXES = 2
 
 export async function run(ex, completionCid, ctx) {
   const { row, completion, collections, state } = await ex.run(completionCid)
@@ -18,16 +20,18 @@ export async function run(ex, completionCid, ctx) {
   ex.latestSuccessfulRun?.(row.pipeline).then((best) => { if (best === completionCid) latestNote.textContent = ` · latest good run of ${row.pipeline}` }, () => {})
   const previews = new Previews(ex)
   const outputs = [...collections].sort((a, b) => (a.output < b.output ? -1 : a.output > b.output ? 1 : 0))
-  const rows = outputs.map(c => ({ c, count: h('td', { class: 'muted' }, '…'), keys: h('td', { class: 'muted' }), files: h('td', {}), items: [] }))
+  const rows = outputs.map(c => ({ c, count: h('td', { class: 'muted' }, '…'), fields: h('td', { class: 'muted', 'data-fields': '' }), files: h('td', { 'data-files': '' }), items: [] }))
   const redraw = () => {
     for (const r of rows) {
       const loaded = r.items.map(i => previews.get(i)).filter(p => p?.pairs)
       if (!loaded.length) continue
-      const { columns } = itemTable(loaded)
-      r.keys.textContent = columns.slice(0, 2).join(', ')
-      const chips = fileChips(loaded[0].files).chips
-      r.files.replaceChildren(...chips.slice(0, 2).map(t => h('span', { class: 'ext' }, t)),
-        chips.length > 2 ? h('span', { class: 'ext' }, `+${chips.length - 2}`) : null, r.indexLink ?? null)
+      const fields = fieldPaths(loaded)
+      r.fields.replaceChildren(fields.slice(0, FIELDS).join(', '),
+        ...(fields.length > FIELDS ? [' ', h('span', { class: 'muted', title: fields.slice(FIELDS).join(', ') }, `+${fields.length - FIELDS}`)] : []))
+      const suffixes = outputSuffixes(loaded)
+      r.files.replaceChildren(...suffixes.slice(0, SUFFIXES).map(t => h('span', { class: 'ext' }, t)),
+        ...(suffixes.length > SUFFIXES ? [h('span', { class: 'ext' }, `+${suffixes.length - SUFFIXES}`)] : []),
+        ...(r.indexLink ? [r.indexLink] : []))
     }
   }
   previews.onChange(redraw)
@@ -37,7 +41,7 @@ export async function run(ex, completionCid, ctx) {
       r.count.classList.remove('muted')
       r.items = coll.items
       if (coll.index?.leaf?.address) {
-        r.indexLink = h('a', { href: ex.blocks.urlFor(String(coll.index.leaf.address)), download: coll.index.leaf.name, 'data-output-index': String(coll.index.leaf.address) }, ' index file')
+        r.indexLink = h('a', { class: 'index-link', href: ex.blocks.urlFor(String(coll.index.leaf.address)), download: coll.index.leaf.name, 'data-output-index': String(coll.index.leaf.address) }, 'index file')
         r.files.append(r.indexLink)
       }
       for (const i of coll.items) previews.ask(r.c.cid, i)
@@ -60,8 +64,8 @@ export async function run(ex, completionCid, ctx) {
     completion.error ? h('p', { class: 'warn' }, completion.error) : null,
     h('h2', {}, 'Outputs'),
     collections.length === 0 ? h('p', { class: 'muted', 'data-no-outputs': '' }, 'This run published no outputs.')
-      : table(['output', 'items', 'keyed by', 'files'], rows.map(r => h('tr', { 'data-collection': r.c.cid, 'data-output': r.c.output },
-        h('td', {}, link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.keys, r.files))),
+      : table(['output', 'items', 'fields', 'files'], rows.map(r => h('tr', { 'data-collection': r.c.cid, 'data-output': r.c.output },
+        h('td', {}, link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.fields, r.files))),
     fold(`details:${completionCid}`, 'Run details', details),
     fold(`storage:${completionCid}`, 'Storage', retentionPanel(completionCid, state, ctx, { isRun: true, kind: 'run', href: ctx.write.hrefFor(`#/run/${completionCid}`) })),
     fold(`lineage:${completionCid}`, `Lineage check: ${healthSummary(completion.anomalies)}`,

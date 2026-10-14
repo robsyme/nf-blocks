@@ -53,6 +53,34 @@ export function itemTable(previews, { maxColumns = 6 } = {}) {
   return { columns, constant, duplicates }
 }
 
+/**
+ * The fields an output's items carry, for the run page: every path on any
+ * loaded item, sorted, with a key `itemTable` found at two paths listed once.
+ */
+export function fieldPaths(previews) {
+  const { duplicates } = itemTable(previews)
+  const paths = new Set()
+  for (const p of previews ?? []) for (const e of p?.pairs ?? []) if (!duplicates.has(e.path)) paths.add(e.path)
+  return [...paths].sort(byText)
+}
+
+const COMPRESSED = new Set(['gz', 'bgz', 'bz2', 'xz', 'zst'])
+
+/** A file name's suffix from its last '.', with the one before when that is a compression suffix; a name with no '.' after its first character is kept whole. */
+function suffixOf(name) {
+  const last = name.lastIndexOf('.')
+  if (last <= 0 || last === name.length - 1) return name
+  const prev = name.lastIndexOf('.', last - 1)
+  return COMPRESSED.has(name.slice(last + 1)) && prev > 0 ? name.slice(prev) : name.slice(last)
+}
+
+/** The distinct file suffixes over every loaded item, sorted: what kinds of file an output holds. */
+export function outputSuffixes(previews) {
+  const out = new Set()
+  for (const p of previews ?? []) for (const f of p?.files ?? []) out.add(suffixOf(f))
+  return [...out].sort(byText)
+}
+
 /** `pairs` without the paths `itemTable` found to repeat another. */
 export const withoutDuplicates = (pairs, duplicates) => (pairs ?? []).filter(e => !duplicates.has(e.path))
 

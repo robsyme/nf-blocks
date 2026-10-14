@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, fileChips, itemTable, withoutDuplicates } from '../src/table.js'
+import { cellOf, fieldPaths, fileChips, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -74,4 +74,23 @@ test('file chips drop the prefix an item\'s files share, up to its last dot (P9)
   assert.deepEqual(fileChips(['x.tsv', 'y.rds']), { prefix: '', chips: ['x.tsv', 'y.rds'] })
   assert.deepEqual(fileChips([]), { prefix: '', chips: [] })
   assert.deepEqual(fileChips(undefined), { prefix: '', chips: [] })
+})
+
+test('fieldPaths: every path on any loaded item, a repeated key once, sorted', () => {
+  assert.deepEqual(fieldPaths(MARKDUP),
+    ['has_genome_bam', 'has_transcriptome_bam', 'id', 'inferred_strandedness', 'single_end', 'strandedness'])
+  const person = (first, continent) => ({ pairs: [e('person.firstName', 'string', first), e('person.location.continent', 'string', continent)], files: [] })
+  assert.deepEqual(fieldPaths([person('Alice', 'Europe'), { pending: true }, person('Bob', 'Oceania')]),
+    ['person.firstName', 'person.location.continent'])
+  assert.deepEqual(fieldPaths([{ pairs: [], files: ['Asia.txt'] }]), [])
+  assert.deepEqual(fieldPaths([]), [])
+})
+
+test('outputSuffixes: each distinct suffix over every loaded item, sorted, a compression suffix with the one before', () => {
+  assert.deepEqual(outputSuffixes([{ files: ['Asia.txt'] }, { files: ['Europe.txt'] }]), ['.txt'])
+  assert.deepEqual(outputSuffixes(MARKDUP), ['.bai', '.bam', '.flagstat', '.idxstats', '.stats', '.txt'])
+  assert.deepEqual(outputSuffixes([{ files: ['A_R1.fastq.gz', 'A_R2.fastq.gz'] }, { files: ['B.vcf.bgz', 'README'] }]),
+    ['.fastq.gz', '.vcf.bgz', 'README'])
+  assert.deepEqual(outputSuffixes([{ files: ['.hidden', 'x.'] }]), ['.hidden', 'x.'])
+  assert.deepEqual(outputSuffixes([{ pending: true }, {}]), [])
 })
