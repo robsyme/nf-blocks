@@ -23,7 +23,7 @@ class LocalSnapshotStorage implements SnapshotStorage {
     SnapshotBase base(Path tempDir) {
         if( !Files.isRegularFile(target()) ) return null
         final BasicFileAttributes a = Files.readAttributes(target(), BasicFileAttributes)
-        return new SnapshotBase("${a.size()}:${a.lastModifiedTime().toMillis()}:${a.fileKey()}".toString(), a.size(), IndexSnapshot.countRuns(target()))
+        return IndexSnapshot.baseOf(target(), "${a.size()}:${a.lastModifiedTime().toMillis()}:${a.fileKey()}".toString(), a.size())
     }
 
     @Override
@@ -35,9 +35,9 @@ class LocalSnapshotStorage implements SnapshotStorage {
         return copy
     }
 
-    /** Locally the move is atomic and the count guard is the caller's; base is not re-checked. */
+    /** Locally the move is atomic and the guards are the caller's; base is not re-checked, and the file carries its own meta. */
     @Override
-    boolean replace(Path built, int runs, SnapshotBase base) {
+    boolean replace(Path built, SnapshotBase written, SnapshotBase base) {
         Files.createDirectories(target().parent)
         final Path staged = target().resolveSibling(".tmp-${UUID.randomUUID()}.sqlite")
         try {

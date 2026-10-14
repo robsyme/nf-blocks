@@ -281,6 +281,60 @@ verb sweep-4 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format
 checkpoint after-sweep-4
 
 # --------------------------------------------------------------------------
+# Assertions 17 and 18 (DESIGN §20): cache coherence
+# --------------------------------------------------------------------------
+
+mkdir -p "$GATE_ROOT/logs/coherence"
+coh() {   # <store dir> <cache dir> <step> [-c extra.config] <verb and args...>: never aborts
+    local store="$1" cache="$2" step="$3"; shift 3
+    local extra=()
+    if [[ "${1:-}" == "-c" ]]; then extra=(-c "$2"); shift 2; fi
+    local log="$GATE_ROOT/logs/coherence/$step" status=0
+    ( cd "$RET" && unset NXF_OFFLINE && export GATE_STORE="$GATE_ROOT/$store" \
+        NXF_PLUGINS_TEST_REPOSITORY="file://$ret_json" XDG_CACHE_HOME="$GATE_ROOT/$cache" \
+      && "$NEXTFLOW" -q -c "$REPO/gate/gate.config" -c "$REPO/gate/retention/overlay.config" "${extra[@]+"${extra[@]}"}" \
+           plugin "nf-blocks:$1" "${@:2}" ) > "$log.out" 2> "$log.err" || status=$?
+    echo "$status" > "$log.exit"
+    echo "    nf-blocks:$1 ($step) exit $status"
+}
+coh_run() {   # <step> <tag>: the retention pipeline into store-recreate with cache-recreate
+    GATE_STORE="$GATE_ROOT/store-recreate" XDG_CACHE_HOME="$GATE_ROOT/cache-recreate" \
+        run "$RET" "$1" --tag "$2" -c "$REPO/gate/retention/overlay.config"
+    cp "$GATE_ROOT/logs/$1/exit" "$GATE_ROOT/logs/coherence/$1.exit" || echo "    no exit code for $1"
+}
+coh_checkpoint() {   # <name> <cache dir>: the cache's run table now, in logs/coherence/<name>.json
+    python3 "$REPO/gate/assert.py" "$GATE_ROOT" --coherence-checkpoint "$1" "$2" || echo "    checkpoint $1 failed"
+}
+
+# 17: a member deleted and recreated at the same location, with the same cache.
+rm -rf "$GATE_ROOT/store-recreate" "$GATE_ROOT/store-recreate-old" "$GATE_ROOT"/cache-recreate*
+mkdir -p "$GATE_ROOT/store-recreate" "$GATE_ROOT/cache-recreate"
+coh_run recreate-1 r1
+coh_checkpoint after-recreate-1 cache-recreate
+mv "$GATE_ROOT/store-recreate" "$GATE_ROOT/store-recreate-old"
+mkdir -p "$GATE_ROOT/store-recreate"
+coh_run recreate-2 r2
+coh store-recreate cache-recreate snap-2 snapshot
+coh store-recreate cache-recreate-c cold snapshot
+
+# 18: a copy of store-retention as a fresh incarnation, two caches, a sweep through A.
+rm -rf "$GATE_ROOT/store-coherence" "$GATE_ROOT"/cache-coh-*
+cp -Rp "$GATE_ROOT/store-retention" "$GATE_ROOT/store-coherence"
+rm -rf "$GATE_ROOT/store-coherence/store-id" "$GATE_ROOT/store-coherence/index" "$GATE_ROOT/store-coherence/index.html"
+coh store-coherence cache-coh-a a-0 snapshot
+coh store-coherence cache-coh-b b-0 snapshot
+coh_checkpoint b-0 cache-coh-b
+eval "$(python3 "$REPO/gate/assert.py" "$GATE_ROOT" --coherence-refs)"
+printf '{"kind":"Claim","subject":{"/":"%s"},"verb":"delete","attribute":null,"value":null,"supersedes":[],"timestamp":"%s"}\n' \
+    "$COH_R1" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" > "$GATE_ROOT/logs/coherence/delete-r1.request"
+coh store-coherence cache-coh-a delete-r1 put "$GATE_ROOT/logs/coherence/delete-r1.request"
+python3 "$REPO/gate/assert.py" "$GATE_ROOT" --coherence-age 15 || echo "    backdating failed"
+coh store-coherence cache-coh-a sweep-1 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+coh store-coherence cache-coh-a sweep-2 -c "$REPO/gate/retention/grace0.config" sweep --apply true --format json
+coh store-coherence cache-coh-b b-1 snapshot
+coh store-coherence cache-coh-c c-1 snapshot
+
+# --------------------------------------------------------------------------
 # The consumer, reading back four ways
 # --------------------------------------------------------------------------
 

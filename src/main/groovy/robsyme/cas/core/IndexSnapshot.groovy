@@ -30,6 +30,7 @@ class IndexSnapshot {
     static final long DEFAULT_MAX_BYTES = 64L * 1024 * 1024
     static final int PAGE_SIZE = 4096
     static final String WATERMARK_KEY = 'store_log_watermark'
+    static final String STORE_ID_KEY = 'store_id'
     static final String WRITTEN_AT_KEY = 'snapshot_written_at'
     static final String PAGE_NAME = 'index.html'
     static final String PAGE_RESOURCE = '/robsyme/cas/explorer/index.html'
@@ -39,6 +40,8 @@ class IndexSnapshot {
     static final String FEWER_RUNS = 'fewer_runs'
     static final String REPLACED_MEANWHILE = 'replaced_meanwhile'
     static final String CATCH_UP_FAILED = 'catch_up_failed'
+    static final String STALE_STORE = 'stale_store'
+    static final String OLDER_WATERMARK = 'older_watermark'
 
     private static final SecureRandom RANDOM = new SecureRandom()
     private static final DateTimeFormatter MILLIS =
@@ -95,7 +98,7 @@ class IndexSnapshot {
         final long bytes
         final int runs
         final String watermark
-        /** Null when written; otherwise the guard that kept the old snapshot (OVER_CAP, FEWER_RUNS, REPLACED_MEANWHILE, CATCH_UP_FAILED). */
+        /** Null when written; otherwise the guard that kept the old snapshot (OVER_CAP, STALE_STORE, OLDER_WATERMARK, FEWER_RUNS, REPLACED_MEANWHILE, CATCH_UP_FAILED). */
         final String skipped
 
         Result(boolean written, Path path, long bytes, int runs, String watermark, String skipped) {
@@ -117,8 +120,10 @@ class IndexSnapshot {
 
     @CompileStatic
     static final class Built {
-        final Path file; final long bytes; final int runs; final String watermark
-        Built(Path file, long bytes, int runs, String watermark) { this.file = file; this.bytes = bytes; this.runs = runs; this.watermark = watermark }
+        final Path file; final long bytes; final int runs; final String watermark; final String storeId
+        Built(Path file, long bytes, int runs, String watermark, String storeId) {
+            this.file = file; this.bytes = bytes; this.runs = runs; this.watermark = watermark; this.storeId = storeId
+        }
     }
 
     /** The member's snapshot as a local file in tempDir; the caller deletes it. */
@@ -129,8 +134,9 @@ class IndexSnapshot {
         final Path vacuumed = tempDir.resolve("nf-blocks-snapshot-${token}.sqlite")
         try {
             final String watermark = index.watermark(member)
-            final int runs = buildAndVacuum(buildFile, vacuumed, index.file, member, watermark)
-            return new Built(vacuumed, Files.size(vacuumed), runs, watermark)
+            final String storeId = index.storeIdOf(member)
+            final int runs = buildAndVacuum(buildFile, vacuumed, index.file, member, watermark, storeId)
+            return new Built(vacuumed, Files.size(vacuumed), runs, watermark, storeId)
         }
         catch( Throwable e ) {
             Files.deleteIfExists(vacuumed)
@@ -142,21 +148,48 @@ class IndexSnapshot {
         }
     }
 
+    /** As the 7-argument write, without a store-id check. */
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) {
+        return write(index, member, storage, maxBytes, base, tempDir, null)
+    }
+
+    /** As the 8-argument write, guarding against base as usual (not a rebuild). */
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId) {
+        return write(index, member, storage, maxBytes, base, tempDir, memberStoreId, false)
+    }
+
     /**
      * Writes the member's snapshot into storage unless a guard keeps the old
-     * one (DESIGN.md §15, ticket 04 decision 3): the cap (maxBytes > 0), fewer
-     * run rows than base, or another writer's version in place of base.
+     * one (DESIGN.md §15, ticket 04 decision 3, §20 decision 10), in this
+     * order: the cap on base (maxBytes > 0); a cache that does not hold
+     * memberStoreId (when given) for the member; the cap on the build; a base
+     * whose watermark is newer than the build's; fewer run rows than base once
+     * the runs forget entries removed since base are added back; another
+     * writer's version in place of base.
+     *
+     * The watermark and run-count guards are skipped for a base written for
+     * another incarnation of the member (its store id is not memberStoreId),
+     * and when {@code rebuild} is set: an operator's `reindex`, or a sweep
+     * whose deletes no forget entry announces, whose snapshot has fewer runs
+     * than base because those runs are really gone.
      */
-    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir) {
+    static Result write(Index index, String member, SnapshotStorage storage, long maxBytes, SnapshotBase base, Path tempDir, String memberStoreId, boolean rebuild) {
         if( maxBytes > 0 && base != null && base.bytes >= maxBytes )
             return new Result(false, null, base.bytes, -1, null, OVER_CAP)
+        if( memberStoreId != null && index.storeIdOf(member) != memberStoreId )
+            return new Result(false, null, 0L, -1, index.watermark(member), STALE_STORE)
+        final boolean otherIncarnation = memberStoreId != null && base?.storeId != null && base.storeId != memberStoreId
+        final boolean judgeBase = base != null && !rebuild && !otherIncarnation
         final Built built = build(index, member, tempDir)
         try {
             if( maxBytes > 0 && built.bytes > maxBytes )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, OVER_CAP)
-            if( base != null && base.runs > built.runs )
+            if( judgeBase && newer(base.watermark, built.watermark) )
+                return new Result(false, null, built.bytes, built.runs, built.watermark, OLDER_WATERMARK)
+            if( judgeBase && base.runs > built.runs + index.forgottenRunsSince(member, base.watermark) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, FEWER_RUNS)
-            if( !storage.replace(built.file, built.runs, base) )
+            final SnapshotBase written = new SnapshotBase(null, built.bytes, built.runs, built.storeId, built.watermark)
+            if( !storage.replace(built.file, written, base) )
                 return new Result(false, null, built.bytes, built.runs, built.watermark, REPLACED_MEANWHILE)
             return new Result(true, null, built.bytes, built.runs, built.watermark, null)
         }
@@ -173,6 +206,32 @@ class IndexSnapshot {
         return new Result(r.written, pathIn(memberRoot), r.bytes, r.runs, r.watermark, r.skipped)
     }
 
+    /** True when Store Log entry name a is newer than b (smaller reverse timestamp); a non-null name is newer than none. */
+    static boolean newer(String a, String b) {
+        if( a == null || a.length() < 13 ) return false
+        if( b == null || b.length() < 13 ) return true
+        return a.substring(0, 13) < b.substring(0, 13)
+    }
+
+    /** What a snapshot file says of itself: run rows (-1 when uncountable), store_id and watermark when its meta has them. */
+    static SnapshotBase baseOf(Path sqlite, String tag, long bytes) {
+        final int runs = countRuns(sqlite)
+        String storeId = null, watermark = null
+        try {
+            DriverManager.getConnection("jdbc:sqlite:file:${sqlite.toAbsolutePath()}?mode=ro".toString()).withCloseable { Connection c ->
+                final ResultSet rs = c.createStatement().executeQuery('SELECT key, value FROM meta')
+                while( rs.next() ) {
+                    if( rs.getString(1) == STORE_ID_KEY ) storeId = rs.getString(2)
+                    if( rs.getString(1) == WATERMARK_KEY ) watermark = rs.getString(2)
+                }
+            }
+        }
+        catch( SQLException e ) {
+            // No meta table: a snapshot from before §15's meta, or a hand-made one.
+        }
+        return new SnapshotBase(tag, bytes, runs, storeId, watermark)
+    }
+
     static int countRuns(Path sqlite) {
         try {
             return DriverManager.getConnection("jdbc:sqlite:file:${sqlite.toAbsolutePath()}?mode=ro".toString()).withCloseable { c ->
@@ -184,7 +243,7 @@ class IndexSnapshot {
         }
     }
 
-    private static int buildAndVacuum(Path build, Path out, Path cacheFile, String member, String watermark) {
+    private static int buildAndVacuum(Path build, Path out, Path cacheFile, String member, String watermark, String storeId) {
         final Connection c = DriverManager.getConnection("jdbc:sqlite:${build.toAbsolutePath()}".toString())
         try {
             exec(c, "PRAGMA page_size=${PAGE_SIZE}".toString())
@@ -206,6 +265,8 @@ class IndexSnapshot {
             exec(c, COPY_CLAIMS[1])
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
+            if( storeId != null )
+                update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) STORE_ID_KEY, storeId])
             update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WRITTEN_AT_KEY, MILLIS.format(Instant.now())])
             c.commit()
             c.setAutoCommit(true)

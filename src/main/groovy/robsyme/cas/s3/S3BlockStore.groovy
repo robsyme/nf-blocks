@@ -16,11 +16,13 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.HashBufferPool
 import robsyme.cas.core.Hashing
+import robsyme.cas.core.IdentifiedStore
 import robsyme.cas.core.LoggedStore
 import robsyme.cas.core.NoSuchBlockException
 import robsyme.cas.core.Providers
 import robsyme.cas.core.RetainedStore
 import robsyme.cas.core.RetentionStorage
+import robsyme.cas.core.StoreIdStorage
 import robsyme.cas.core.StoreLogStorage
 
 /**
@@ -36,7 +38,7 @@ import robsyme.cas.core.StoreLogStorage
  */
 @Slf4j
 @CompileStatic
-class S3BlockStore implements BlockStore, LoggedStore, RetainedStore {
+class S3BlockStore implements BlockStore, LoggedStore, RetainedStore, IdentifiedStore {
 
     static final long SINGLE_REQUEST_MAX = 5L << 30
     static final long HEAD_FIRST_BYTES = 1L << 20
@@ -81,6 +83,7 @@ class S3BlockStore implements BlockStore, LoggedStore, RetainedStore {
     @Override boolean isWritable() { writable }
 
     @Override StoreLogStorage storeLogStorage() { new S3StoreLogStorage(ops, prefix) }
+    @Override StoreIdStorage storeIdStorage() { new S3StoreIdStorage(ops, prefix) }
 
     @Override RetentionStorage retentionStorage() { new S3RetentionStorage(ops, prefix) }
 

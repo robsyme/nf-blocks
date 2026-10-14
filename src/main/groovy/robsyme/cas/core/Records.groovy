@@ -30,6 +30,7 @@ class Records {
     static final String LEAF = 'Leaf'
     static final String CLAIM = 'Claim'
     static final String SELECTION = 'Selection'
+    static final String FORGET = 'Forget'
 
     static final String REDACTED_LOCATION = '[redacted-location]'
     static final String REDACTED_USER = '[redacted-user]'

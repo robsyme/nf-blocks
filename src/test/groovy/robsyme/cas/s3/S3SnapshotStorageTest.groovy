@@ -20,7 +20,7 @@ class S3SnapshotStorageTest extends Specification {
     def 'no snapshot: base is null and replace is If-None-Match, no-cache, with the run count'() {
         expect:
         storage.base(tmp) == null
-        storage.replace(built('one'), 3, null)
+        storage.replace(built('one'), new SnapshotBase(null, 0L, 3), null)
         s3.objects['cas/index/v3.sqlite'].cacheControl == 'no-cache'
         s3.objects['cas/index/v3.sqlite'].metadata == [runs: '3']
         storage.base(tmp).runs == 3
@@ -29,12 +29,12 @@ class S3SnapshotStorageTest extends Specification {
 
     def 'replace is conditional on the ETag it replaces; a stale one is refused and changes nothing'() {
         given:
-        storage.replace(built('one'), 1, null)
+        storage.replace(built('one'), new SnapshotBase(null, 0L, 1), null)
         final SnapshotBase stale = storage.base(tmp)
-        storage.replace(built('two'), 2, stale)
+        storage.replace(built('two'), new SnapshotBase(null, 0L, 2), stale)
 
         expect:
-        !storage.replace(built('three'), 3, stale)
+        !storage.replace(built('three'), new SnapshotBase(null, 0L, 3), stale)
         s3.objects['cas/index/v3.sqlite'].text() == 'two'
     }
 
@@ -69,10 +69,17 @@ class S3SnapshotStorageTest extends Specification {
         storage.fetch(tmp) == null
 
         when:
-        storage.replace(built('one'), 1, null)
+        storage.replace(built('one'), new SnapshotBase(null, 0L, 1), null)
         final Path f = storage.fetch(tmp)
 
         then:
         f.text == 'one'
+    }
+
+    def 'store id and watermark ride as metadata and come back in base'() {
+        expect:
+        storage.replace(built('one'), new SnapshotBase(null, 0L, 2, 'a' * 32, '9999999999990-run-x'), null)
+        s3.objects['cas/index/v3.sqlite'].metadata == [runs: '2', 'store-id': 'a' * 32, watermark: '9999999999990-run-x']
+        storage.base(tmp) == new SnapshotBase(s3.objects['cas/index/v3.sqlite'].etag, s3.objects['cas/index/v3.sqlite'].bytes.length, 2, 'a' * 32, '9999999999990-run-x')
     }
 }

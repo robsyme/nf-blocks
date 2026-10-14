@@ -220,4 +220,70 @@ class CasCommandsTest extends Specification {
         err.toString().contains('no Nextflow config file')
         err.toString().contains('NXF_CONFIG_FILE')
     }
+
+    def 'reindex drops the cache and rebuilds it, forgetting rows the store no longer backs'() {
+        given: 'a cache holding a run whose blocks were then removed by hand'
+        final Cid completion = logRun()
+        run('snapshot')
+        final LocalBlockStore store = new LocalBlockStore(tempDir.resolve('store'), 'lab', true)
+        Files.delete(store.blockPath(completion))
+        Files.list(tempDir.resolve('store/log')).withCloseable { it.toList() }.each { Files.delete(it) }
+        out.reset()
+
+        when:
+        final int status = run('reindex', ['--seed', 'false'])
+
+        then: 'the cache and the snapshot both lose the run, though the snapshot had a watermark and more runs'
+        status == 0
+        out.toString().contains('reindexed')
+        out.toString().contains("wrote ${tempDir.resolve('store/index/v3.sqlite')} (0 runs, was 1)")
+        runCount(tempDir.resolve('cache/index.sqlite')) == 0
+        runCount(tempDir.resolve('store/index/v3.sqlite')) == 0
+    }
+
+    private static int runCount(Path sqlite) {
+        return DriverManager.getConnection("jdbc:sqlite:${sqlite}").withCloseable { c ->
+            c.createStatement().executeQuery('SELECT count(*) FROM run').with { next(); getInt(1) }
+        }
+    }
+
+    def 'reindex seeds from the snapshot by default, so a block removed by hand needs --seed false'() {
+        given: 'a run whose RunCompletion was removed by hand; its Store Log entry stays, as after a lifecycle rule'
+        final Cid completion = logRun()
+        run('snapshot')
+        final LocalBlockStore store = new LocalBlockStore(tempDir.resolve('store'), 'lab', true)
+        Files.delete(store.blockPath(completion))
+        out.reset()
+
+        when: 'the default reseeds the run from the snapshot, and says so'
+        int status = run('reindex')
+
+        then:
+        status == 0
+        out.toString().contains('(1 runs, was 1)')
+        runCount(tempDir.resolve('cache/index.sqlite')) == 1
+        runCount(tempDir.resolve('store/index/v3.sqlite')) == 1
+
+        when: 'scanning instead of seeding drops it from the cache and the snapshot'
+        out.reset()
+        status = run('reindex', ['--seed', 'false'])
+
+        then:
+        status == 0
+        out.toString().contains('(0 runs, was 1)')
+        runCount(tempDir.resolve('cache/index.sqlite')) == 0
+        runCount(tempDir.resolve('store/index/v3.sqlite')) == 0
+    }
+
+    def 'reindex takes only --seed, as true or false'() {
+        expect:
+        run('reindex', ['--seed', 'maybe']) == 2
+        run('reindex', ['extra']) == 2
+    }
+
+    def 'the usage lists reindex'() {
+        expect:
+        run('frobnicate') == 2
+        err.toString().contains('reindex [--seed false]')
+    }
 }

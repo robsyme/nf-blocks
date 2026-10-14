@@ -17,18 +17,26 @@ interface SnapshotStorage {
     SnapshotBase base(Path tempDir)
     /** A local copy for reading, or null when there is none; the caller deletes it. */
     Path fetch(Path tempDir)
-    /** Puts built in place if the snapshot is still base (null: still absent); false when another writer got there first. */
-    boolean replace(Path built, int runs, SnapshotBase base)
+    /**
+     * Puts built in place if the snapshot is still base (null: still absent); false when another writer got there first.
+     * {@code written} describes the file: its runs, store id and watermark; its tag and bytes are ignored.
+     */
+    boolean replace(Path built, SnapshotBase written, SnapshotBase base)
     /** Writes the page when its bytes differ; true when it wrote. */
     boolean writePage(byte[] page)
     String describe()
 }
 
-/** A version of a snapshot: an opaque tag (an ETag, or size:mtime:inode), its size, its run rows (-1 when uncountable). */
+/**
+ * A version of a snapshot: an opaque tag (an ETag, or size:mtime:inode), its size, its run rows (-1 when uncountable),
+ * and the store id and Store Log watermark it was written with (null when unknown, §20 decision 10).
+ */
 @Canonical
 @CompileStatic
 class SnapshotBase {
     String tag
     long bytes
     int runs
+    String storeId
+    String watermark
 }

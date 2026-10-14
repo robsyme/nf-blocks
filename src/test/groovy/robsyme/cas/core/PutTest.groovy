@@ -189,6 +189,28 @@ class PutTest extends Specification {
         index.firstLogEntry(s, 'lab') != null
     }
 
+    def 'Put\'s own ingest does not forget a cid a read-only member still holds (DESIGN.md §20 decision 8)'() {
+        given: 'the run indexed from lab, then swept from lab while shared still holds its completion'
+        StoreLog.append(store, StoreLogKind.RUN, run, now - 2_000)
+        index.catchUp(store, StoreLog.of(store), 'lab')
+        assert index.isRunIndexed(run)
+        shared = new LocalBlockStore(tempDir.resolve('shared'), 'shared', false)
+        final Path to = shared.blockPath(run)
+        Files.createDirectories(to.parent)
+        Files.copy(store.blockPath(run), to)
+        Files.delete(store.blockPath(run))
+        final Cid forget = store.putDagCbor(new Forget('test', [run]).toCbor())
+        StoreLog.append(store, StoreLogKind.FORGET, forget, now - 1_000)
+        put = new Put(new CompositeStore([store, shared]), store, index, 'ada', { now }, { })   // only Put's own ingest catches up
+
+        when:
+        send(selection(item(itemA, [collA])))
+
+        then:
+        index.isRunIndexed(run)
+        index.metaValue("forget:lab:${forget}".toString())?.endsWith(' 0')
+    }
+
     def 'a dry run writes nothing and reports existence and current names'() {
         given:
         final String json = selection(item(itemA, [collA]))

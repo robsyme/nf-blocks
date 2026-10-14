@@ -87,6 +87,8 @@ class CasObserver implements TraceObserverV2 {
         validateOutputDir()
         // Ticket 03 decision 2: one HEAD on the writable S3 member, before any entry is stamped.
         cas.checkClock()
+        // DESIGN.md §20 decision 2: the member's id exists before anything else this run writes there.
+        cas.writableStoreId()
         // Ticket 20 answers 1 and 5: register as a Live Writer before any fromStore read or publish.
         final WorkflowMetadata meta = session.workflowMetadata
         cas.startLiveWriter(session.uniqueId.toString(), [

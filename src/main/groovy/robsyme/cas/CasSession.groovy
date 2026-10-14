@@ -26,6 +26,7 @@ import robsyme.cas.core.ClockSkew
 import robsyme.cas.core.CompositeStore
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.LocalCoordinateTree
+import robsyme.cas.core.IdentifiedStore
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
@@ -37,6 +38,7 @@ import robsyme.cas.core.Put
 import robsyme.cas.core.RetainedStore
 import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.SnapshotStorage
+import robsyme.cas.core.StoreIds
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreRef
 import robsyme.cas.nio.PublishAddresser
@@ -225,11 +227,22 @@ class CasSession {
      * @return the aliases whose catch-up threw
      */
     Set<String> catchUpIndex(Index index) {
+        return catchUpIndex(index, true)
+    }
+
+    /** As {@link #catchUpIndex(Index)}; with {@code seed} false no member's Index Snapshot seeds the cache, so every block is scanned (reindex --seed false). */
+    Set<String> catchUpIndex(Index index, boolean seed) {
         final Set<String> failed = new LinkedHashSet<String>()
+        try {
+            index.reconcileStoreIds(memberStoreIds(), { String a, String w -> watermarkLogged(a, w) } as Closure<Boolean>)
+        }
+        catch( Exception e ) {
+            log.warn("could not compare this cache with the store's ids; it is derived: ${e.message}", e)
+        }
         for( BlockStore member : members() ) {
             try {
                 final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
-                index.catchUp(member, StoreLog.of(member), member.alias(), snapshotsOf(member.alias()), config.tmpDir, quietFor)
+                index.catchUp(member, StoreLog.of(member), member.alias(), seed ? snapshotsOf(member.alias()) : null, config.tmpDir, quietFor, store)
             }
             catch( Exception e ) {
                 failed.add(member.alias())
@@ -237,6 +250,67 @@ class CasSession {
             }
         }
         return failed
+    }
+
+    private volatile String writableId
+
+    /**
+     * The writable member's store-id, created when absent (DESIGN.md §20
+     * decision 2, plan decision 5). Null when the member keeps none or it could
+     * not be written; derived, so a failure warns once and the caller goes on.
+     */
+    String writableStoreId() {
+        if( writableId != null )
+            return writableId
+        final BlockStore writable = members()[0]
+        if( !(writable instanceof IdentifiedStore) || !writable.isWritable() )
+            return null
+        try {
+            writableId = StoreIds.ensure(((IdentifiedStore) writable).storeIdStorage())
+        }
+        catch( Exception e ) {
+            warnOnce("could not create the store-id of '${writable.alias()}'; caches cannot tell if it is replaced: ${e.message}".toString())
+        }
+        return writableId
+    }
+
+    /**
+     * Every member's id now (null when it has none); a member whose id could not
+     * be read is left out (plan decision 3), and so is the writable member when
+     * its id could not be created, which would otherwise read as "the id vanished".
+     */
+    private Map<String, String> memberStoreIds() {
+        final Map<String, String> ids = new LinkedHashMap<String, String>()
+        for( BlockStore member : members() ) {
+            if( !(member instanceof IdentifiedStore) )
+                continue
+            if( member.alias() == config.writableAlias && member.isWritable() ) {
+                final String id = writableStoreId()
+                if( id != null )
+                    ids.put(member.alias(), id)
+                continue
+            }
+            try {
+                ids.put(member.alias(), StoreIds.read(member))
+            }
+            catch( Exception e ) {
+                log.debug("could not read the store-id of '${member.alias()}': ${e.message}")
+            }
+        }
+        return ids
+    }
+
+    private Boolean watermarkLogged(String alias, String watermark) {
+        final BlockStore member = members().find { BlockStore m -> m.alias() == alias }
+        if( member == null )
+            return null
+        try {
+            return StoreLog.of(member).has(watermark)
+        }
+        catch( Exception e ) {
+            log.debug("could not look for ${watermark} in the Store Log of '${alias}': ${e.message}")
+            return null
+        }
     }
 
     /** The store's members, writable first; a single-store session has one. */
@@ -317,10 +391,19 @@ class CasSession {
      * ({@code catch_up_failed}). {@code maxBytes <= 0} writes at any size.
      */
     IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed) {
+        return snapshotWritable(index, maxBytes, base, failed, false)
+    }
+
+    /**
+     * As the 4-arg {@code snapshotWritable}; with {@code rebuild} the
+     * snapshot replaces base even when base has a newer watermark or more
+     * runs (`reindex`, and a sweep whose deletes no forget entry announces).
+     */
+    IndexSnapshot.Result snapshotWritable(Index index, long maxBytes, SnapshotBase base, Set<String> failed, boolean rebuild) {
         if( failed?.contains(config.writableAlias) )
             return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
         final SnapshotStorage storage = snapshotsOf(config.writableAlias)
-        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir)
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId(), rebuild)
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )

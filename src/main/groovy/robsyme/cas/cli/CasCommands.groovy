@@ -1,5 +1,6 @@
 package robsyme.cas.cli
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -15,6 +16,7 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.Claim
 import robsyme.cas.core.DagJson
 import robsyme.cas.core.Index
+import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
 import robsyme.cas.core.PutError
@@ -32,7 +34,7 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'items', 'prune', 'put', 'snapshot', 'sweep', 'untrash']
+    static final List<String> VERBS = ['explore', 'items', 'prune', 'put', 'reindex', 'snapshot', 'sweep', 'untrash']
 
     /** The verb's clock, which stamps the name Claim of put --name; a test seam. */
     Closure<Long> clock = { -> System.currentTimeMillis() } as Closure<Long>
@@ -106,6 +108,8 @@ class CasCommands {
             switch( cmd ) {
                 case 'snapshot':
                     return snapshot(Options.parse(args, [] as Set), config, out)
+                case 'reindex':
+                    return reindex(Options.parse(args, ['seed'] as Set), config, out)
                 case 'explore':
                     return ExploreCommand.run(args, config, out, err)
                 case 'items':
@@ -142,6 +146,7 @@ class CasCommands {
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
             '                         nextflow -q plugin nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size\n' +
+            '  reindex [--seed false]  drop this composition\'s cache index and rebuild it from the store; --seed false scans every block\n' +
             '  sweep [--apply true] [--wait true] [--budget <size>] [--format text|json]\n' +
             '                         dry run unless --apply: roots, live, dead and Trash; --apply trashes the newly dead and deletes what is past its grace\n' +
             '  prune (--keep-last <n> | --keep-newer <period>) [--pipeline <id>] [--apply true]\n' +
@@ -291,6 +296,37 @@ class CasCommands {
             else
                 out.println("wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.bytes} bytes, ${result.runs} runs, watermark ${result.watermark ?: 'none'})")
             return 0
+        }
+        finally {
+            index.close()
+        }
+    }
+
+    /**
+     * DESIGN.md §20 decision 12: deletes the cache file of this composition and
+     * catches every member up cold, then rewrites the writable member's snapshot
+     * as a rebuild: a base with a newer watermark or more runs does not keep it.
+     */
+    private static int reindex(Options options, Map config, PrintStream out) {
+        if( options.positionals )
+            throw new UsageException("reindex takes no arguments, got ${options.positionals}")
+        final String seed = options.flag('seed')
+        if( !(seed in [null, 'true', 'false']) )
+            throw new UsageException("--seed is true or false, got '${seed}'")
+        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final Path file = IndexPaths.cachePath(cas.config.locationTexts(), cas.config.indexOverride)
+        for( String suffix : ['', '-wal', '-shm', '-journal'] )
+            Files.deleteIfExists(file.resolveSibling(file.fileName.toString() + suffix))
+        final SnapshotBase base = cas.snapshotBase()
+        final Index index = cas.openIndex()
+        try {
+            final Set<String> failed = cas.catchUpIndex(index, seed != 'false')
+            final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed, true)
+            out.println("reindexed ${file}${failed ? '; could not catch up ' + failed.join(', ') : ''}")
+            final String was = base == null ? 'none' : base.runs < 0 ? 'uncounted' : base.runs.toString()
+            out.println(result.skipped ? "snapshot not rewritten: ${result.skipped}" :
+                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.runs} runs, was ${was})")
+            return failed ? 1 : 0
         }
         finally {
             index.close()

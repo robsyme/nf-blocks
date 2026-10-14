@@ -373,7 +373,7 @@ class Put {
     /** The write is done; the index is derived, so a failure here only warns (DESIGN.md §0 rule 3). */
     private void ingest() {
         try {
-            index.catchUp(writable, StoreLog.of(writable), writable.alias())
+            index.catchUp(writable, StoreLog.of(writable), writable.alias(), store)
         }
         catch( Exception e ) {
             log.warn("the index could not ingest a block just written; it is derived and catches up later: ${e.message}")

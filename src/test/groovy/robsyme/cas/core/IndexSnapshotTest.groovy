@@ -303,4 +303,29 @@ class IndexSnapshotTest extends Specification {
             [itemA.toString(), itemB.toString()].sort()
         rows(file, "SELECT DISTINCT item_cid FROM item_attr ORDER BY item_cid")*.get(0) == [itemA.toString()]
     }
+
+    def 'the snapshot meta holds store_id when the cache knows the member\'s id'() {
+        given:
+        run(lab, 'a', ['A'])
+        catchUp()
+        index.reconcileStoreIds([lab: 'a' * 32], { String a, String w -> true } as Closure<Boolean>)
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, "SELECT value FROM meta WHERE key = 'store_id'") == [['a' * 32]]
+    }
+
+    def 'the snapshot meta has no store_id when the cache does not know the member\'s id'() {
+        given:
+        run(lab, 'a', ['A'])
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, "SELECT value FROM meta WHERE key = 'store_id'") == []
+    }
 }

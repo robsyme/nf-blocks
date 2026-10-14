@@ -13,7 +13,9 @@ import robsyme.cas.core.SnapshotStorage
 /**
  * The snapshot and page of an S3 member (ticket 02 decision 8, ticket 03
  * decision 1): one PutObject each, the snapshot `no-cache` with its run
- * count as x-amz-meta-runs and If-Match on the ETag it replaces (If-None-Match
+ * count as x-amz-meta-runs (and its store id and watermark as
+ * x-amz-meta-store-id and x-amz-meta-watermark, §20 decision 10) and
+ * If-Match on the ETag it replaces (If-None-Match
  * when there was none), the page `no-cache` and rewritten only when its
  * stored SHA-256 differs (an ETag is no MD5 under SSE-KMS or multipart).
  */
@@ -35,12 +37,13 @@ class S3SnapshotStorage implements SnapshotStorage {
     SnapshotBase base(Path tempDir) {
         final S3Head head = ops.head(snapshotKey)
         if( head == null ) return null
-        final String runs = head.metadata?.get('runs')
-        if( runs?.isInteger() ) return new SnapshotBase(head.etag, head.size, runs as int)
-        // Uploaded by something that does not record it (gate/cloud/s3tier.py): count it once.
+        final Map<String, String> meta = head.metadata ?: [:]
+        final String runs = meta.get('runs')
+        if( runs?.isInteger() ) return new SnapshotBase(head.etag, head.size, runs as int, meta.get('store-id'), meta.get('watermark'))
+        // Uploaded by something that does not record it (gate/cloud/s3tier.py): read it once.
         final Path copy = download(head.etag, tempDir)
         try {
-            return new SnapshotBase(head.etag, head.size, copy == null ? -1 : IndexSnapshot.countRuns(copy))
+            return copy == null ? new SnapshotBase(head.etag, head.size, -1) : IndexSnapshot.baseOf(copy, head.etag, head.size)
         }
         finally {
             if( copy != null ) Files.deleteIfExists(copy)
@@ -60,9 +63,11 @@ class S3SnapshotStorage implements SnapshotStorage {
     }
 
     @Override
-    boolean replace(Path built, int runs, SnapshotBase base) {
+    boolean replace(Path built, SnapshotBase written, SnapshotBase base) {
         final S3PutOptions o = S3PutOptions.create().sha256().cacheControl(NO_CACHE)
-            .contentType('application/vnd.sqlite3').meta('runs', String.valueOf(runs))
+            .contentType('application/vnd.sqlite3').meta('runs', String.valueOf(written.runs))
+        if( written.storeId != null ) o.meta('store-id', written.storeId)
+        if( written.watermark != null ) o.meta('watermark', written.watermark)
         if( base == null ) o.ifNoneMatch() else o.ifMatch(base.tag)
         final S3Written w = ops.put(snapshotKey, S3Body.ofFile(built, 0L, Files.size(built)), o)
         return w.status == S3Written.Status.WRITTEN

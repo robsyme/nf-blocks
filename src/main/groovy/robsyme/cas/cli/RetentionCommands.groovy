@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import nextflow.util.Duration
 import nextflow.util.MemoryUnit
 import robsyme.cas.CasConfig
@@ -58,7 +59,7 @@ class RetentionCommands {
         final SweepPolicy policy = policy(config, err)
         final CasSession cas = new CasSession(CasConfig.fromSession(config))
         cas.checkClock()
-        final Sweep sweeper = new Sweep(cas.store, policy)
+        final Sweep sweeper = new Sweep(cas.store, policy, cas.assertedBy)
         if( !apply ) {
             final SweepReport r = sweeper.dryRun()
             out.println(format == 'json' ? JsonOutput.toJson(r.toJson()) : r.toText())
@@ -108,14 +109,17 @@ class RetentionCommands {
      * Plan decision 7. Derived: a failure warns and the sweep's result stands.
      * Returns the one-line outcome ("wrote ..." or "not rewritten: ...") rather
      * than printing it, so the caller can fold it into a JSON report or a text one.
+     * Runs this sweep deleted without a forget entry are not added back to the
+     * base's count, so the snapshot is written as a rebuild when there are any.
      */
-    private static String forgetAndSnapshot(CasSession cas, SweepReport r) {
+    @PackageScope
+    static String forgetAndSnapshot(CasSession cas, SweepReport r) {
         final SnapshotBase base = cas.snapshotBase()
         final Index index = cas.openIndex()
         try {
-            index.forget(r.deleted)
+            index.forget(r.unannounced)
             final Set<String> failed = cas.catchUpIndex(index)
-            final IndexSnapshot.Result s = cas.snapshotWritable(index, 0L, base, failed)
+            final IndexSnapshot.Result s = cas.snapshotWritable(index, 0L, base, failed, !r.unannounced.isEmpty())
             return s.skipped ? "not rewritten: ${s.skipped}".toString() :
                 "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${s.runs} runs)".toString()
         }
