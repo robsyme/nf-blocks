@@ -2263,6 +2263,23 @@ Gate: tier B check 21 runs the items view's filtered call (step `B.where`,
 `gate/selection` and requires it to stage exactly the one item the page
 listed in `[data-item-result]`.
 
+### Stable references (2026-10-14)
+
+The page hands out addresses, never a name that a later run or another
+reader's config can point elsewhere. `run: 'latest'` stays, because the
+reader picks it knowing it moves.
+
+- The run page's outputs table has a "fields" column, every Meta Map path
+  on the sampled items (a key at two paths once; three, then +N), in place
+  of "keyed by"; "files" shows the distinct suffixes over the sampled items
+  rather than one item's file names.
+- The panel's "this run" call is `fromStore(run: 'cas://<RunCompletion>',
+  ...)`, not `run: 'lid://<hash>'` (amends milestone 3 decision 13 and the
+  layout B spec's run switch). A `lid://` is looked up in the reader's
+  composition, newest first (`Index.runByNextflowHash`); the RunCompletion
+  address names one run wherever it is read. A run with no lineage ID gets
+  the same call. The `lid://` stays under Run details.
+
 ## 17. Milestone 4: cloud (2026-09-28)
 
 *Status 2026-09-28: built on `feat/cloud-m4`. `./gradlew check`: 1,029
