@@ -93,3 +93,14 @@ test('urlFor is the URL load fetches: the member base, not the page (final revie
   await fetcher.get(cid)
   assert.deepEqual(urls, [fetcher.urlFor(cid)])
 })
+
+test('raw: the bytes of a raw block, hash-checked and not decoded', async () => {
+  const text = 'sample,bam\nA,cas://lab/aligned/A.bam\n'
+  const cid = rawCid(text).toString()
+  const blocks = new Map([[cid, new TextEncoder().encode(text)]])
+  const fetcher = new BlockFetcher('http://h/', { fetchFn: blockFetch(blocks) })
+  assert.equal(new TextDecoder().decode(await fetcher.raw(cid)), text)
+  const lying = new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map([[cid, new TextEncoder().encode('other')]])) })
+  await assert.rejects(lying.raw(cid), (e) => e.code === 'hash_mismatch')
+  await assert.rejects(new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map()) }).raw(cid), (e) => e.code === 'block_missing')
+})

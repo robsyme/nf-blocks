@@ -6,7 +6,7 @@ import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { fieldPaths, outputSuffixes } from '../table.js'
 import { anomalyLines, healthSummary, statusText, statusTone, whenText } from '../words.js'
-import { crumbs, enc, retentionPanel, table } from './common.js'
+import { crumbs, enc, retentionPanel, stableIndexControl, table } from './common.js'
 
 const SAMPLE = 3
 const FIELDS = 3
@@ -41,7 +41,7 @@ export async function run(ex, completionCid, ctx) {
       r.count.classList.remove('muted')
       r.items = coll.items
       if (coll.index?.leaf?.address) {
-        r.indexLink = h('a', { class: 'index-link', href: ex.blocks.urlFor(String(coll.index.leaf.address)), download: coll.index.leaf.name, 'data-output-index': String(coll.index.leaf.address) }, 'index file')
+        r.indexLink = h('span', {}, ...stableIndexControl(ex, ctx, r.c.cid, 'index file', 'link index-link'))
         r.files.append(r.indexLink)
       }
       for (const i of coll.items) previews.ask(r.c.cid, i)

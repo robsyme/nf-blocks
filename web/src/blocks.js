@@ -67,7 +67,25 @@ export class BlockFetcher {
     return block
   }
 
+  /** A block's bytes, hash-checked and not decoded: for a raw block, such as an Output Index File. Not cached. */
+  raw(cidText) {
+    return this.fetchVerified(cidText)
+  }
+
   async load(cidText) {
+    const bytes = await this.fetchVerified(cidText)
+    let value
+    try {
+      value = dagCbor.decode(bytes)
+    } catch (e) {
+      throw new BlockError('schema_invalid', cidText, `block ${cidText} is not DAG-CBOR: ${e.message}`)
+    }
+    if (!validBlock(value) || !validKind(value))
+      throw new BlockError('schema_invalid', cidText, `block ${cidText} does not match the ${value?.kind ?? 'Block'} schema (DESIGN.md §6)`)
+    return { cid: cidText, bytes, value }
+  }
+
+  async fetchVerified(cidText) {
     // A Store Log name can match the entry pattern and still not be a CID.
     try {
       CID.parse(cidText)
@@ -88,14 +106,6 @@ export class BlockFetcher {
     if (!verifies(cidText, bytes))
       throw new BlockError('hash_mismatch', cidText, `block ${cidText} does not hash to its address; it was refused`)
     this.verified.push(cidText)
-    let value
-    try {
-      value = dagCbor.decode(bytes)
-    } catch (e) {
-      throw new BlockError('schema_invalid', cidText, `block ${cidText} is not DAG-CBOR: ${e.message}`)
-    }
-    if (!validBlock(value) || !validKind(value))
-      throw new BlockError('schema_invalid', cidText, `block ${cidText} does not match the ${value?.kind ?? 'Block'} schema (DESIGN.md §6)`)
-    return { cid: cidText, bytes, value }
+    return bytes
   }
 }

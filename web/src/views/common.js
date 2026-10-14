@@ -2,7 +2,7 @@
 // What more than one view draws (DESIGN.md §15–16): errors, tables, pagers,
 // the retention panel, picks, item rows, breadcrumbs. The data-* attributes
 // are the contract the Gate reads; the rest is for people.
-import { h, link, cid, copyOutcome } from '../html.js'
+import { h, link, cid, copyOutcome, saveText } from '../html.js'
 import { Previews } from '../previews.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { trayNote } from '../tray.js'
@@ -326,4 +326,29 @@ export function runCrumbs(ex, completionCid, tail = []) {
       { text: id.run_name ?? 'run', href: `#/run/${completionCid}` }, ...tail).childNodes)
   }, () => {})
   return node
+}
+
+/**
+ * A collection's Output Index File with each Publish Coordinate replaced by
+ * its address (Explorer.stableIndex), built and saved on click: the button,
+ * then `[data-index-status]` saying what was left as Nextflow wrote it.
+ * `ctx.download(name, text)` stands in for the browser's save in tests.
+ */
+export function stableIndexControl(ex, ctx, collectionCid, label, className = 'link') {
+  const status = h('span', { class: 'muted', 'data-index-status': '' })
+  const button = h('button', { type: 'button', class: className, 'data-index-stable': '',
+    title: 'Each file named by its address, as fromStore gives it',
+    onclick: async () => {
+      status.className = 'muted'
+      status.textContent = ' preparing…'
+      try {
+        const r = await ex.stableIndex(collectionCid)
+        ;(ctx.download ?? saveText)(r.name, r.text)
+        status.textContent = r.unmatched ? ` ${r.unmatched} ${r.unmatched === 1 ? 'path' : 'paths'} left as Nextflow wrote ${r.unmatched === 1 ? 'it' : 'them'}` : ''
+      } catch (e) {
+        status.className = 'warn'
+        status.textContent = ` Could not prepare the index file: ${e?.message ?? e}`
+      }
+    } }, label)
+  return [button, status]
 }

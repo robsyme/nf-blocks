@@ -3,12 +3,13 @@
 // verified blocks (spec sections 5.3 to 5.5).
 import * as dagJson from '@ipld/dag-json'
 import SQL from './queries.json' with { type: 'json' }
-import { CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STALE_RUNS_NOTICE } from './config.js'
+import { CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STABLE_INDEX_CONCURRENCY, STALE_RUNS_NOTICE } from './config.js'
 import { BlockError } from './blocks.js'
 import { entriesSince } from './storelog.js'
 import { typedDecode } from './typed.js'
 import { attrRows, leavesOf, matches, metadataView, predicateRow } from './metadata.js'
 import { DELETED, claimState } from './claims.js'
+import { addressesByPath, rewriteIndex } from './outputindex.js'
 
 const byNewest = (a, b) => (a.finished_at > b.finished_at ? -1 : a.finished_at < b.finished_at ? 1
   : a.completion_cid < b.completion_cid ? -1 : a.completion_cid > b.completion_cid ? 1 : 0)
@@ -279,6 +280,33 @@ export class Explorer {
     const items = all.slice(offset, offset + limit)
     return { cid, output: block.name, completion, items, index: block.index ?? null, state,
       ...span({ offset, limit, shown: items.length, count: all.length }) }
+  }
+
+  /**
+   * The collection's Output Index File with each Publish Coordinate replaced
+   * by the address fromStore emits for that leaf (outputindex.js):
+   * `{ name, text, replaced, unmatched }`. Reads every item of the
+   * collection; an item this member does not hold leaves its paths unmatched.
+   */
+  async stableIndex(collectionCid) {
+    const collection = (await this.blocks.ofKind(collectionCid, 'OutputCollection')).value
+    const leaf = collection.index?.leaf
+    if (!leaf?.address) throw new BlockError('not_found', collectionCid, `collection ${collectionCid} has no Output Index File`)
+    const bytes = await this.blocks.raw(text(leaf.address))
+    const values = new Map()
+    const queue = collection.items.filter(Boolean).map(text)
+    const worker = async () => {
+      for (let c = queue.shift(); c !== undefined; c = queue.shift()) {
+        try {
+          values.set(c, (await this.blocks.ofKind(c, 'OutputItem')).value.value)
+        } catch (e) {
+          if (!(e instanceof BlockError)) throw e
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: STABLE_INDEX_CONCURRENCY }, worker))
+    const rewritten = rewriteIndex(new TextDecoder().decode(bytes), addressesByPath(collection, values))
+    return { name: leaf.name, ...rewritten }
   }
 
   /** An item's block. `view` is read from the typed decoding, so its pairs type floats as the index does (metadata.js). */

@@ -1740,7 +1740,8 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
-| `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26) |
+| `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26); since 2026-10-14 under the collection page's Details, as Nextflow wrote it |
+| `[data-index-stable]` | the button that saves a collection's Output Index File with each Publish Coordinate replaced by its address (run page and collection page, 2026-10-14); `[data-index-status]` beside it says how many paths were left as written, or why it failed |
 | `[data-output-index-missing]` | a collection's Output Index File, when it was never written: `data-output-index-missing` the publish path it was to have (ticket 26) |
 | `[data-page]` | on the pipeline, collection and Selections views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
@@ -2279,6 +2280,23 @@ reader picks it knowing it moves.
   composition, newest first (`Index.runByNextflowHash`); the RunCompletion
   address names one run wherever it is read. A run with no lineage ID gets
   the same call. The `lid://` stays under Run details.
+- An Output Index File names each file by its Publish Coordinate,
+  `cas://<alias>/<path>` (§7), which the next run to that path overwrites.
+  "index file" on the run page and the collection page saves it with each
+  coordinate replaced by the address `fromStore` emits for that leaf (§13):
+  `cas://<cid>/<name>` for a file, the Item Leaf for a directory
+  (`web/src/outputindex.js`). The page reads every item of the collection,
+  matches a coordinate to a publish path in `paths` at a segment boundary,
+  so an `outputDir` below the alias still matches, and changes nothing else
+  in the text. A coordinate it cannot match is left and counted. Nextflow's
+  own file stays under the collection page's Details.
+- `OutputCollection.paths[i]` is in the order `Join.build` walked the
+  channel item, a `LinkedHashMap`'s, while a stored map comes back in
+  canonical key order (§4), so for an item with leaves under two or more
+  map keys `paths[i]` and the decoded item's leaves can disagree by
+  position. Nothing in the plugin reads `paths`; the page pairs a path with
+  a leaf by file name within the item, or directly when the item has one
+  path and one addressed leaf. A path two items claim pairs with neither.
 
 ## 17. Milestone 4: cloud (2026-09-28)
 

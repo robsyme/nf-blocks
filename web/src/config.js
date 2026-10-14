@@ -21,3 +21,5 @@ export const SELECTIONS_PAGE = 50
 export const PREVIEW_CAP = 100
 /** OutputItem fetches for previews in flight at once (DESIGN.md §16 milestone 3 decision 10). */
 export const PREVIEW_CONCURRENCY = 6
+/** Item blocks fetched at once while rewriting an Output Index File to addresses (outputindex.js). */
+export const STABLE_INDEX_CONCURRENCY = 8

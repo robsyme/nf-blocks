@@ -4,7 +4,7 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { readFileSync } from 'node:fs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
-import { block, blockFetch, buildMember, entryName, memberWithUnjoinedRun, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, entryName, memberWithIndexedCollection, memberWithUnjoinedRun, rawCid } from './fixture.mjs'
 import { Float } from '../src/typed.js'
 import { attrRows } from '../src/metadata.js'
 import { claimState } from '../src/claims.js'
@@ -270,4 +270,14 @@ test('runIdentity names a run from its blocks alone, once per run, and asks agai
   assert.equal(await ex.runIdentity(ids.completion), id)
   await assert.rejects(ex.runIdentity('bafyreinotarealblockxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'))
   assert.equal(ex.identities.size, 1)
+})
+
+test('stableIndex: the Output Index File with each coordinate replaced by the address fromStore emits', async () => {
+  const indexText = 'sample,bam\nA,cas://lab/aligned/A.bam\nB,cas://lab/aligned/B.bam\nZ,cas://lab/aligned/Z.bam\n'
+  const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.csv', indexPath: 'index.csv', indexText })
+  assert.deepEqual(await ex.stableIndex(ids.collection), {
+    name: 'index.csv',
+    text: `sample,bam\nA,cas://${ids.content.A}/A.bam\nB,cas://${ids.content.B}/B.bam\nZ,cas://lab/aligned/Z.bam\n`,
+    replaced: 2, unmatched: 1,
+  })
 })

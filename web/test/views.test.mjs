@@ -223,6 +223,21 @@ test('a collection with an Output Index File offers it as a download', async () 
   assert.match(p.textContent, /Nextflow's index/)
 })
 
+test('a collection with an Output Index File offers it with addresses, and Nextflow\'s own under Details', async () => {
+  const indexText = 'sample,bam\nA,cas://lab/aligned/A.bam\nB,cas://lab/aligned/B.bam\n'
+  const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.csv', indexPath: 'index.csv', indexText })
+  const saved = []
+  const page = await render(collection(ex, ids.collection, 0, { ...ctx(), download: (name, text) => saved.push([name, text]) }))
+  const button = page.querySelector('[data-index-stable]')
+  assert.equal(button.textContent, 'index.csv')
+  await button.click()
+  await new Promise(r => setTimeout(r, 0))
+  assert.deepEqual(saved, [['index.csv', `sample,bam\nA,cas://${ids.content.A}/A.bam\nB,cas://${ids.content.B}/B.bam\n`]])
+  const details = page.querySelector('[data-fold="details"]')
+  assert.ok(details.querySelector('[data-output-index]'), "Nextflow's own file is under Details")
+  assert.match(details.querySelector('[data-output-index]').textContent, /later run/)
+})
+
 test('a collection whose index was never written says so', async () => {
   const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.csv', indexPath: 'bad/index.csv', neverPublished: true })
   const page = await render(collection(ex, ids.collection, 0, ctx()))

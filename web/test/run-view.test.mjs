@@ -63,11 +63,34 @@ test('fields: at most three, then +N naming the rest; files: at most two suffixe
   assert.equal(fields.querySelector('[title]').getAttribute('title'), 'd, e')
   assert.deepEqual(markdup.querySelector('[data-files]').querySelectorAll('.ext').map(c => c.textContent), ['.bai', '.bam', '+1'])
   assert.equal(quant.querySelector('[data-fields]').textContent, '')
-  const index = quant.querySelector('[data-files]').querySelector('[data-output-index]')
+  const index = quant.querySelector('[data-files]').querySelector('[data-index-stable]')
   assert.equal(index.textContent, 'index file', 'no space inside the link to underline')
   assert.ok(index.classList.contains('index-link'))
   assert.equal(quant.querySelector('[data-files]').textContent, '.txtindex file')
   assert.doesNotMatch(page.textContent, /null|undefined/)
+})
+
+test('index file: downloads the index with addresses in place of Publish Coordinates', async () => {
+  installDom()
+  resetFolds()
+  const ex = fakeEx()
+  const collection = ex.collection
+  ex.collection = async (cid) => ({ ...(await collection(cid)), index: cid === 'cq' ? { leaf: { address: 'bafyindex', name: 'quant.json' } } : null })
+  const asked = []
+  ex.stableIndex = async (cid) => { asked.push(cid); return { name: 'quant.json', text: '[cas://bafkfile/q1.bam]', replaced: 2, unmatched: 1 } }
+  const saved = []
+  const page = await run(ex, 'bafyrun', { ...ctx(), download: (name, text) => saved.push([name, text]) })
+  await frame(); await frame()
+  const cell = page.querySelectorAll('[data-collection]')[1].querySelector('[data-files]')
+  await cell.querySelector('[data-index-stable]').click()
+  await frame()
+  assert.deepEqual(asked, ['cq'])
+  assert.deepEqual(saved, [['quant.json', '[cas://bafkfile/q1.bam]']])
+  assert.match(cell.querySelector('[data-index-status]').textContent, /1 path left as Nextflow wrote it/)
+  ex.stableIndex = async () => { throw new Error('block bafyindex is not in this member') }
+  await cell.querySelector('[data-index-stable]').click()
+  await frame()
+  assert.match(cell.querySelector('[data-index-status]').textContent, /Could not prepare the index file: block bafyindex/)
 })
 
 test('the lineage check speaks plainly and flags only what is worth a look', async () => {

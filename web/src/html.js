@@ -25,3 +25,13 @@ export async function copyOutcome(clipboard, text) {
     return 'Copy failed'
   }
 }
+
+/** Hands the viewer `text` as a file named `name`, built in the page rather than fetched. */
+export function saveText(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
+  const a = h('a', { href: url, download: name })
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
