@@ -28,6 +28,7 @@ const ROUTES = [
   ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.collection(ex, m[1], Number(m[2] ?? 0), ctx)],
   ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m, ctx) => views.item(ex, m[1], m[2], ctx)],
   ['content', /^#\/content\/([^/]+)$/, (ex, m, ctx) => views.content(ex, m[1], ctx)],
+  ['block', /^#\/block\/([^/?]+)$/, (ex, m, ctx) => views.block(ex, m[1], ctx)],
   ['latest', /^#\/latest\/([^/]+)$/, (ex, m) => views.latest(ex, decodeURIComponent(m[1]))],
   ['items', /^#\/items\/([^/]+)\/([^/?]+)(?:\?where=(.*))?$/, (ex, m, ctx) =>
     views.items(ex, m[1], decodeURIComponent(m[2]), m[3] ? decodeURIComponent(m[3]) : '[]', ctx)],
@@ -95,6 +96,9 @@ async function render() {
     use: (v) => { if (mine !== sequence) return; view = v; if (rendered) panel.draw({ route: name, view }) },
     // Where the reader is, for the left column (plan P1: `expand` only from the run and pipeline views).
     mark: (where) => { if (mine === sequence) nav.mark(where).catch(() => {}) },
+    // Which store the page reads, and the same page in the others (the block page, visual language spec §4.5).
+    store: { label: store.member ?? store.base,
+      others: (hash) => (store.members ?? []).filter(m => m.alias !== store.member).map(m => ({ alias: m.alias, href: hrefIn(m.alias, hash) })) },
   }
   try {
     if (!route) throw Object.assign(new Error(`there is no view for ${hash}`), { code: 'bad_route' })

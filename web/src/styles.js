@@ -62,4 +62,7 @@ export const APP_CSS = `
     #panel-inner { position: static; }
     body[data-panel=open] #panel { display: block; } #use-toggle { display: inline-block; }
   }
+  .block-cid { font-size: 1rem; display: flex; gap: .4rem; align-items: baseline; flex-wrap: wrap; } .block-cid code { overflow-wrap: anywhere; }
+  .block-parts { display: grid; grid-template-columns: auto 1fr; gap: .1rem .8rem; } .block-parts dt { color: var(--muted); } .block-parts dd { margin: 0; }
+  .ok { color: var(--good); } pre.dag-json { background: var(--code); border-radius: 5px; padding: .5rem .7rem; overflow-x: auto; }
 `
