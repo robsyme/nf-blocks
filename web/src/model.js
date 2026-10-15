@@ -1,10 +1,12 @@
 // The explorer's answers: the snapshot's rows through the plugin's own SQL,
 // and, for runs newer than the snapshot, the same answers computed from their
 // verified blocks (spec sections 5.3 to 5.5).
+import * as dagCbor from '@ipld/dag-cbor'
 import * as dagJson from '@ipld/dag-json'
 import SQL from './queries.json' with { type: 'json' }
-import { CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STABLE_INDEX_CONCURRENCY, STALE_RUNS_NOTICE } from './config.js'
+import { BLOCK_PAGE_PREVIEW, BLOCK_PAGE_RAW_CAP, CLOSURE_FETCH_NOTICE, SELECTIONS_PAGE, SNAPSHOT_PATH, STABLE_INDEX_CONCURRENCY, STALE_RUNS_NOTICE } from './config.js'
 import { BlockError } from './blocks.js'
+import { cidParts, friendlyOf } from './blockinfo.js'
 import { entriesSince } from './storelog.js'
 import { typedDecode } from './typed.js'
 import { attrRows, leavesOf, matches, metadataView, predicateRow } from './metadata.js'
@@ -307,6 +309,53 @@ export class Explorer {
     await Promise.all(Array.from({ length: STABLE_INDEX_CONCURRENCY }, worker))
     const rewritten = rewriteIndex(new TextDecoder().decode(bytes), addressesByPath(collection, values))
     return { name: leaf.name, ...rewritten }
+  }
+
+  /**
+   * One block for the block page (visual language spec §4): its CID
+   * decoded, the check the browser made, and its value or bytes. A raw block
+   * over `rawCap` is previewed by Range and left unchecked; a structured
+   * block that fails the schema is still decoded, with the reason. A
+   * missing or refused block is reported, not thrown.
+   */
+  async block(cidText, { rawCap = BLOCK_PAGE_RAW_CAP, previewBytes = BLOCK_PAGE_PREVIEW } = {}) {
+    const parts = cidParts(cidText)
+    const out = { cid: cidText, parts, check: null, size: null, value: null, schemaError: null, bytes: null, preview: null, friendly: null, message: null }
+    try {
+      if (parts.codec === 'raw') {
+        const head = await this.blocks.partial(cidText, previewBytes)
+        out.size = head.size
+        if (head.size !== null && head.size <= rawCap) {
+          out.bytes = await this.blocks.raw(cidText)
+          out.size = out.bytes.length
+          out.check = 'verified'
+        } else {
+          out.preview = head.bytes
+          out.check = 'unchecked'
+        }
+        out.friendly = { kind: 'file', text: "a file's bytes", label: 'Who produced it', href: `#/content/${cidText}` }
+      } else {
+        try {
+          const b = await this.blocks.get(cidText)
+          out.bytes = b.bytes
+          out.value = b.value
+        } catch (e) {
+          if (!(e instanceof BlockError) || e.code !== 'schema_invalid') throw e
+          out.bytes = await this.blocks.raw(cidText)
+          out.schemaError = e.message
+          try { out.value = dagCbor.decode(out.bytes) } catch { out.value = null }
+        }
+        out.size = out.bytes.length
+        out.check = 'verified'
+        out.friendly = friendlyOf(cidText, out.value, this.stale)
+      }
+    } catch (e) {
+      if (!(e instanceof BlockError)) throw e
+      if (e.code === 'hash_mismatch') Object.assign(out, { check: 'refused', bytes: null, value: null, preview: null, message: e.message })
+      else if (e.code === 'block_missing') Object.assign(out, { check: 'missing', message: e.message })
+      else throw e
+    }
+    return out
   }
 
   /** An item's block. `view` is read from the typed decoding, so its pairs type floats as the index does (metadata.js). */

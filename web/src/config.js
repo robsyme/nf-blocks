@@ -23,3 +23,7 @@ export const PREVIEW_CAP = 100
 export const PREVIEW_CONCURRENCY = 6
 /** Item blocks fetched at once while rewriting an Output Index File to addresses (outputindex.js). */
 export const STABLE_INDEX_CONCURRENCY = 8
+/** The largest raw block the block page reads whole and hash-checks (visual language spec §4.3). */
+export const BLOCK_PAGE_RAW_CAP = 1048576
+/** The bytes of a raw block the block page previews. */
+export const BLOCK_PAGE_PREVIEW = 4096

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as dagCbor from '@ipld/dag-cbor'
 import { BlockFetcher } from '../src/blocks.js'
-import { block, blockFetch, buildMember, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, rangedFetch, rawCid } from './fixture.mjs'
 
 const served = (...values) => {
   const blocks = new Map(values.map(v => { const b = block(v); return [b.cid.toString(), b.bytes] }))
@@ -103,4 +103,25 @@ test('raw: the bytes of a raw block, hash-checked and not decoded', async () => 
   const lying = new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map([[cid, new TextEncoder().encode('other')]])) })
   await assert.rejects(lying.raw(cid), (e) => e.code === 'hash_mismatch')
   await assert.rejects(new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map()) }).raw(cid), (e) => e.code === 'block_missing')
+})
+
+test('partial: the first n bytes and the whole size by Range, never recorded as verified', async () => {
+  const text = 'x'.repeat(10000)
+  const cid = rawCid(text).toString()
+  const fetcher = new BlockFetcher('http://h/', { fetchFn: rangedFetch(new Map([[cid, new TextEncoder().encode(text)]])) })
+  const { bytes, size } = await fetcher.partial(cid, 4096)
+  assert.equal(bytes.length, 4096)
+  assert.equal(size, 10000)
+  assert.equal(fetcher.partialFetches, 1)
+  assert.deepEqual(fetcher.verified, [])
+})
+
+test('partial: a server that ignores Range gives no bytes, only the size it states (Review Focus 1)', async () => {
+  const cid = rawCid('whole').toString()
+  let cancelled = false
+  const fetchFn = async () => ({ status: 200, ok: true, headers: new Headers({ 'Content-Length': '5' }), body: { cancel: () => { cancelled = true } } })
+  const { bytes, size } = await new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096)
+  assert.equal(bytes, null)
+  assert.equal(size, 5)
+  assert.ok(cancelled, 'the whole body is not read')
 })

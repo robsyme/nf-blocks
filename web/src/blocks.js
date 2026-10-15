@@ -47,6 +47,7 @@ export class BlockFetcher {
     this.cache = new Map()
     this.verified = []
     this.fetches = 0
+    this.partialFetches = 0
   }
 
   /** The URL this fetcher loads the block from. */
@@ -70,6 +71,36 @@ export class BlockFetcher {
   /** A block's bytes, hash-checked and not decoded: for a raw block, such as an Output Index File. Not cached. */
   raw(cidText) {
     return this.fetchVerified(cidText)
+  }
+
+  /**
+   * The first `n` bytes of a block by Range, and its whole size from
+   * Content-Range: `{ bytes, size }`. Not verified, since checking needs
+   * every byte, so never recorded in `verified`; counted in `partialFetches`.
+   * A server that ignores Range answers 200 with the whole body, which is not
+   * read: `bytes` is null and `size` is its Content-Length, or null.
+   */
+  async partial(cidText, n) {
+    try {
+      CID.parse(cidText)
+    } catch (e) {
+      throw new BlockError('schema_invalid', cidText, `${cidText} is not a CID: ${e.message}`)
+    }
+    let res
+    try {
+      res = await this.fetchFn(this.urlFor(cidText), { headers: { Range: `bytes=0-${n - 1}` } })
+    } catch (e) {
+      throw new BlockError('fetch_failed', cidText, `could not fetch block ${cidText}: ${e.message}`)
+    }
+    this.partialFetches++
+    if (res.status === 404 || res.status === 403)
+      throw new BlockError('block_missing', cidText, `block ${cidText} is not in this member; it may be held in another one`)
+    if (res.status !== 206) {
+      try { await res.body?.cancel?.() } catch { /* already closed */ }
+      return { bytes: null, size: Number(res.headers.get('Content-Length')) || null }
+    }
+    const size = Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || null
+    return { bytes: new Uint8Array(await res.arrayBuffer()), size }
   }
 
   async load(cidText) {

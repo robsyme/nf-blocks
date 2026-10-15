@@ -190,3 +190,17 @@ export async function memberWithUnjoinedRun(n) {
   })
   return { ex: await explorerOf(member, now), ids }
 }
+
+/** A fetch over the fixture's blocks that honours `Range: bytes=0-<n>` with a 206, as serve.py and explore do. */
+export function rangedFetch(blocks) {
+  const fn = async (url, init = {}) => {
+    const cid = String(url).split('/').pop()
+    const bytes = blocks.get(cid)
+    if (!bytes) return new Response('no such block', { status: 404 })
+    const m = /^bytes=0-(\d+)$/.exec(init.headers?.Range ?? '')
+    if (!m) return new Response(bytes, { headers: { 'Content-Length': String(bytes.length) } })
+    const part = bytes.slice(0, Number(m[1]) + 1)
+    return new Response(part, { status: 206, headers: { 'Content-Range': `bytes 0-${part.length - 1}/${bytes.length}` } })
+  }
+  return fn
+}
