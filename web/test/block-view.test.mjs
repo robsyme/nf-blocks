@@ -87,3 +87,9 @@ test('an address this store would not write is marked', async () => {
   const page = await blockView(exWith(structured({ parts: { ...parts('dag-cbor'), hash: '0x13', standard: false } })), item.cid.toString(), ctx())
   assert.match(page.textContent, /Not an address this store writes/)
 })
+
+test('a large bytes field is drawn without overflowing the call stack', async () => {
+  installDom()
+  const page = await blockView(exWith(structured({ value: { kind: 'OutputItem', blob: new Uint8Array(300000).fill(7) } })), item.cid.toString(), ctx())
+  assert.ok(page.querySelector('pre').textContent.includes('{"/": {"bytes": "'))
+})

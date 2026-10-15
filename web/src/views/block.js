@@ -85,13 +85,20 @@ function preview(bytes, truncated) {
   return h('p', { class: 'muted' }, `binary, ${bytes.length} bytes`)
 }
 
+/** Base64 in chunks: spreading a large array as call arguments overflows the stack. */
+function base64(bytes) {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
+}
+
 /** DAG-JSON drawn from the decoded value, each link an address; an array past ARRAY_SHOWN is cut with a count. */
 function json(value, depth) {
   const pad = '  '.repeat(depth + 1)
   const end = '  '.repeat(depth)
   const cid = CID.asCID(value)
   if (cid) return ['{"/": ', address(cid.toString()), '}']
-  if (value instanceof Uint8Array) return [`{"/": {"bytes": "${btoa(String.fromCharCode(...value))}"}}`]
+  if (value instanceof Uint8Array) return [`{"/": {"bytes": "${base64(value)}"}}`]
   if (Array.isArray(value)) {
     if (!value.length) return ['[]']
     const shown = value.slice(0, ARRAY_SHOWN)
