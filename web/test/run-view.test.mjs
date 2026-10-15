@@ -105,3 +105,12 @@ test('the lineage check speaks plainly and flags only what is worth a look', asy
   assert.ok(page.querySelector('[data-fold="storage"]').querySelector('[data-retention]'))
   assert.match(page.querySelector('[data-fold="details"]').textContent, /lid:\/\/abc/)
 })
+
+test('the run page names its kinds: the run icon in the heading, the output icon per output', async () => {
+  installDom()
+  resetFolds()
+  const page = await run(fakeEx(), 'bafyrun', ctx())
+  await frame()
+  assert.equal(page.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'run')
+  for (const row of page.querySelectorAll('[data-collection]')) assert.equal(row.querySelector('[data-icon]').dataset.icon, 'output')
+})

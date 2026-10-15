@@ -1,7 +1,9 @@
 // web/src/views/item.js
 // #/item/<collection>/<item> (explorer layout B spec §5.5).
 import { h, link } from '../html.js'
-import { address, ref, shortCid } from '../icons.js'
+import { CID } from 'multiformats/cid'
+import { DAG_CBOR } from '../cid.js'
+import { address, icon, ref, shortCid } from '../icons.js'
 import { fold } from '../folds.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { itemTable, withoutDuplicates } from '../table.js'
@@ -32,20 +34,20 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   return h('section', {},
     from?.completion ? runCrumbs(ex, from.completion, [{ text: from.output, href: `#/items/${from.completion}/${encodeURIComponent(from.output)}?where=%5B%5D` }, { text: title }])
       : crumbs({ text: title }),
-    h('h1', {}, title),
+    h('h1', {}, icon('item'), title),
     pairs.length ? h('div', {}, pairsNode(pairs.slice(0, SHOWN_PAIRS), target, { size: 'page' }),
       pairs.length > SHOWN_PAIRS ? fold(`meta:${itemCid}`, `+${pairs.length - SHOWN_PAIRS} more`, pairsNode(pairs.slice(SHOWN_PAIRS), target, { size: 'page' })) : null)
       : h('p', { class: 'muted' }, 'No Meta Map.'),
     h('h2', {}, 'Files'),
     table(['file', 'size', ''], it.leaves.map(l => h('tr', {},
-      h('td', {}, h('code', {}, l.name ?? '')),
+      h('td', {}, ref(CID.asCID(l.address)?.code === DAG_CBOR ? 'directory' : 'file', h('code', {}, l.name ?? ''))),
       h('td', {}, humanBytes(l.size)),
       h('td', {}, l.address
         ? [h('a', { href: ex.blocks.urlFor(String(l.address)), download: l.name ?? '' }, 'Download'), ' ', link(`#/content/${l.address}`, 'where else')]
         : h('span', { class: 'muted' }, leafReasonText(l.reason)))))),
     h('p', {}, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })),
     h('h2', {}, 'Produced by'),
-    from ? h('p', {}, from.completion ? link(`#/run/${from.completion}`, `${from.run_name ?? 'this run'}`) : from.run_name ?? 'this run',
+    from ? h('p', {}, from.completion ? ref('run', from.run_name ?? 'this run', `#/run/${from.completion}`) : from.run_name ?? 'this run',
       elsewhere.length ? [h('span', { class: 'muted' }, ' · same files also in: '),
         elsewhere.map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)])] : null)
       : [runs.size ? h('p', {}, [...runs].map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)]))

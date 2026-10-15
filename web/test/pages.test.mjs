@@ -32,6 +32,8 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
   const page = await item(ex, 'coll', 'bafyitem', c)
   await frame()
   assert.equal(page.querySelector('h1').textContent, 'WT_REP1')
+  assert.equal(page.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'item')
+  assert.ok(page.querySelectorAll('td').some(td => td.querySelector('[data-icon=file]')))
   assert.match(page.textContent, /412 MB/)
   assert.equal(page.querySelector('a[download]').getAttribute('href'), 'blocks/bafybam')
   assert.match(page.textContent, /not stored here \(such as an input file\)/)
@@ -160,4 +162,19 @@ test('the Selection page: icon and name, one quiet line naming who named it and 
   assert.match(nested.textContent, /lagos/)
   assert.equal(nested.querySelector('[data-address]').dataset.address, 'bafyinner')
   assert.ok(page.querySelector('[data-unavailable]'))
+})
+
+test('home, pipeline and item pages name their kinds with icons', async () => {
+  installDom()
+  const homeEx = { pipelines: async () => [{ pipeline: 'p', runs: 2, latest: '2026-09-30T21:10:38.345Z' }], stale: [],
+    latestSuccessfulRun: async () => 'bafyrun', runIdentity: async () => ({ run_name: 'high_jang' }) }
+  const homePage = await home(homeEx, ctx())
+  await frame()
+  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline', 'run'])
+  const pipeEx = { runPage: async () => ({ rows: [{ completion_cid: 'bafyrun', pipeline: 'p', run_name: 'high_jang', status: 'succeeded', possibly_incomplete: 0,
+    finished_at: '2026-09-30T21:10:38.345Z', source: 'snapshot' }], hidden: 0, first: 1, last: 1, total: 1, prev: null, next: null }),
+    completionOf: async () => ({ anomalies: {} }), stale: [] }
+  const pipePage = await pipeline(pipeEx, 'p', 0, ctx())
+  assert.equal(pipePage.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'pipeline')
+  assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
 })

@@ -2,7 +2,7 @@
 // #/run/<completion> (explorer layout B spec §5.3): what the run made, A–Z,
 // and its details, storage and lineage check folded away beneath.
 import { h, link } from '../html.js'
-import { address } from '../icons.js'
+import { address, icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { fieldPaths, outputSuffixes } from '../table.js'
@@ -59,14 +59,14 @@ export async function run(ex, completionCid, ctx) {
   const lines = anomalyLines(completion.anomalies)
   return h('section', {},
     crumbs({ text: row.pipeline, href: `#/pipeline/${enc(row.pipeline)}` }, { text: row.run_name ?? 'run' }),
-    h('h1', {}, row.run_name ?? 'run'),
+    h('h1', {}, icon('run'), row.run_name ?? 'run'),
     h('p', {}, h('span', { class: `dot-${statusTone({ status: completion.status, possibly_incomplete: completion.possibly_incomplete })}` }, '● '),
       statusText(completion), ' · finished ', whenText(completion.finished_at), latestNote),
     completion.error ? h('p', { class: 'warn' }, completion.error) : null,
     h('h2', {}, 'Outputs'),
     collections.length === 0 ? h('p', { class: 'muted', 'data-no-outputs': '' }, 'This run published no outputs.')
       : table(['output', 'items', 'fields', 'files'], rows.map(r => h('tr', { 'data-collection': r.c.cid, 'data-output': r.c.output },
-        h('td', {}, link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.fields, r.files))),
+        h('td', {}, icon('output'), link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.fields, r.files))),
     fold(`details:${completionCid}`, 'Run details', details),
     fold(`storage:${completionCid}`, 'Storage', retentionPanel(completionCid, state, ctx, { isRun: true, kind: 'run', href: ctx.write.hrefFor(`#/run/${completionCid}`) })),
     fold(`lineage:${completionCid}`, `Lineage check: ${healthSummary(completion.anomalies)}`,

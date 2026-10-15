@@ -1,7 +1,7 @@
 // web/src/views/collection.js
 // #/collection/<cid> and #/content/<cid> (DESIGN.md §15).
 import { h, link } from '../html.js'
-import { address, ref, shortCid } from '../icons.js'
+import { address, icon, ref, shortCid } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { crumbs, itemRows, pager, runCrumbs, retentionPanel, stableIndexControl, table } from './common.js'
@@ -33,7 +33,7 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
   if (c.completion) ctx.use?.({ completion: c.completion, output: c.output, where: [], count: c.total })
   return h('section', {},
     c.completion ? runCrumbs(ex, c.completion, [{ text: c.output }]) : crumbs({ text: c.output }),
-    h('h1', {}, c.output),
+    h('h1', {}, icon('output'), c.output),
     fold(`storage:${collectionCid}`, 'Storage', retentionPanel(collectionCid, c.state, ctx, { kind: 'collection', href: ctx.write.hrefFor(`#/collection/${collectionCid}`) })),
     c.completion ? h('p', {}, 'Output of ', link(`#/run/${c.completion}`, 'this run')) : null,
     indexLine(ex, ctx, collectionCid, c.index),
@@ -51,7 +51,7 @@ export async function content(ex, contentCid, ctx) {
   const state = (await ex.claimStates([contentCid])).get(contentCid)
   return h('section', {},
     crumbs({ text: 'File' }),
-    h('h1', {}, 'Every run that produced this file'), address(contentCid),
+    h('h1', {}, icon('file'), 'Every run that produced this file'), address(contentCid),
     fold(`storage:${contentCid}`, 'Storage', retentionPanel(contentCid, state, ctx, { kind: 'content', href: ctx.write.hrefFor(`#/content/${contentCid}`) })),
     rows.length === 0 ? h('p', { class: 'muted' }, 'No run in this member produced it.')
       : table(['file', 'item', 'run'], rows.map(p => h('tr', {
