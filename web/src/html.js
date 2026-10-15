@@ -13,7 +13,6 @@ export function h(tag, attrs = {}, ...children) {
 }
 
 export const link = (href, ...children) => h('a', { href }, ...children)
-export const cid = (text) => h('code', { class: 'cid', title: text }, text)
 
 /** What the Copy button should say after `clipboard.writeText(text)`; a missing clipboard counts as a rejection (page minors, ticket 11). */
 export async function copyOutcome(clipboard, text) {

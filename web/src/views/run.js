@@ -1,7 +1,8 @@
 // web/src/views/run.js
 // #/run/<completion> (explorer layout B spec §5.3): what the run made, A–Z,
 // and its details, storage and lineage check folded away beneath.
-import { h, link, cid } from '../html.js'
+import { h, link } from '../html.js'
+import { address } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { fieldPaths, outputSuffixes } from '../table.js'
@@ -49,8 +50,8 @@ export async function run(ex, completionCid, ctx) {
   }
   const details = h('div', {},
     lid ? h('p', {}, 'Run reference: ', h('code', {}, lid)) : null,
-    h('p', {}, 'RunCompletion: ', cid(completionCid)),
-    row.manifest_cid ? h('p', {}, 'RunManifest: ', cid(row.manifest_cid)) : null)
+    h('p', {}, 'RunCompletion: ', address(completionCid)),
+    row.manifest_cid ? h('p', {}, 'RunManifest: ', address(row.manifest_cid)) : null)
   ex.runIdentity?.(completionCid).then((id) => {
     if (id.revision) details.prepend(h('p', {}, 'Revision: ', h('code', {}, id.revision)))
     if (id.config) details.append(fold(`config:${completionCid}`, 'Configuration', h('pre', { class: 'scroll' }, id.config)))

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { installDom } from './dom.mjs'
-import { ICON_CSS, KINDS, icon, ref } from '../src/icons.js'
+import { ICON_CSS, KINDS, address, icon, ref, shortCid } from '../src/icons.js'
 
 test('every kind has an icon span naming its kind, and a CSS rule drawing it', () => {
   installDom()
@@ -34,4 +34,18 @@ test('ref: the icon, then the label, linked when given an href', () => {
   const plain = ref('file', 'Tarik_Benali.dat')
   assert.equal(plain.querySelector('a'), null)
   assert.equal(plain.textContent, 'Tarik_Benali.dat')
+})
+
+test('address: the address icon and the short CID, a quiet link to its block page', () => {
+  installDom()
+  const cid = 'bafyreian3sfv6mv6jh2en6g3ryqo2p2lde4nh3zxaysbhs5g574uac6uye'
+  const a = address(cid)
+  assert.equal(a.tagName, 'A')
+  assert.ok(a.classList.contains('address'))
+  assert.equal(a.getAttribute('href'), `#/block/${cid}`)
+  assert.equal(a.getAttribute('title'), cid)
+  assert.equal(a.dataset.address, cid)
+  assert.equal(a.querySelector('[data-icon]').dataset.icon, 'address')
+  assert.equal(a.textContent, 'bafyreian3...ac6uye')
+  assert.equal(shortCid('short'), 'short')
 })

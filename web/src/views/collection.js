@@ -1,6 +1,7 @@
 // web/src/views/collection.js
 // #/collection/<cid> and #/content/<cid> (DESIGN.md §15).
-import { h, link, cid } from '../html.js'
+import { h, link } from '../html.js'
+import { address, ref, shortCid } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { crumbs, itemRows, pager, runCrumbs, retentionPanel, stableIndexControl, table } from './common.js'
@@ -40,7 +41,7 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
     c.total === 0 ? h('p', { class: 'muted' }, 'This collection has no items.')
       : itemRows(ex, ctx, { items: c.items, total: c.total, collectionCid, completion: c.completion, output: c.output, where: [],
         previews: new Previews(ex) }),
-    fold(`details:${collectionCid}`, 'Details', h('p', {}, cid(collectionCid)), indexAsWritten(ex, c.index)))
+    fold(`details:${collectionCid}`, 'Details', h('p', {}, address(collectionCid)), indexAsWritten(ex, c.index)))
 }
 
 export async function content(ex, contentCid, ctx) {
@@ -50,12 +51,12 @@ export async function content(ex, contentCid, ctx) {
   const state = (await ex.claimStates([contentCid])).get(contentCid)
   return h('section', {},
     crumbs({ text: 'File' }),
-    h('h1', {}, 'Every run that produced this file'), cid(contentCid),
+    h('h1', {}, 'Every run that produced this file'), address(contentCid),
     fold(`storage:${contentCid}`, 'Storage', retentionPanel(contentCid, state, ctx, { kind: 'content', href: ctx.write.hrefFor(`#/content/${contentCid}`) })),
     rows.length === 0 ? h('p', { class: 'muted' }, 'No run in this member produced it.')
       : table(['file', 'item', 'run'], rows.map(p => h('tr', {
         'data-producer': '', 'data-content': p.content_cid, 'data-item': p.item_cid, 'data-collection': p.collection_cid,
         'data-completion': p.completion_cid, 'data-filename': p.filename },
-      h('td', {}, p.filename ?? ''), h('td', {}, link(`#/item/${p.collection_cid}/${p.item_cid}`, cid(p.item_cid))),
-      h('td', {}, link(`#/run/${p.completion_cid}`, cid(p.completion_cid)))))))
+      h('td', {}, p.filename ?? ''), h('td', {}, ref('item', shortCid(p.item_cid), `#/item/${p.collection_cid}/${p.item_cid}`)),
+      h('td', {}, ref('run', shortCid(p.completion_cid), `#/run/${p.completion_cid}`))))))
 }

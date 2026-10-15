@@ -40,3 +40,10 @@ export function icon(kind) {
 export function ref(kind, label, href = null) {
   return h('span', { class: 'ref' }, icon(kind), href ? link(href, label) : label)
 }
+
+export const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
+
+/** A block's address (spec §3): quiet, always present, a link to the block page. */
+export function address(cidText) {
+  return h('a', { class: 'address', href: `#/block/${cidText}`, title: cidText, 'data-address': cidText }, icon('address'), shortCid(cidText))
+}

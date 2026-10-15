@@ -1,6 +1,7 @@
 // web/src/views/item.js
 // #/item/<collection>/<item> (explorer layout B spec §5.5).
-import { h, link, cid } from '../html.js'
+import { h, link } from '../html.js'
+import { address, ref, shortCid } from '../icons.js'
 import { fold } from '../folds.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { itemTable, withoutDuplicates } from '../table.js'
@@ -50,10 +51,11 @@ export async function item(ex, collectionCid, itemCid, ctx) {
       : [runs.size ? h('p', {}, [...runs].map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)]))
           : h('p', { class: 'muted' }, 'No run in this member produced it.'),
         collectionCid === '-' ? h('p', { class: 'muted' }, 'Picked by a query across runs.') : null],
-    holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, link(`#/selection/${s}`, cid(s)))))] : null,
+    holding.length ? [h('h2', {}, 'In Selections'), h('ul', {}, holding.map(s => h('li', {}, ref('selection', shortCid(s), `#/selection/${s}`))))] : null,
     fold(`storage:${itemCid}`, 'Storage', retentionPanel(itemCid, it.state, ctx, { kind: 'item', href: ctx.write.hrefFor(`#/item/${collectionCid}/${itemCid}`) })),
     fold(`details:${itemCid}`, 'Details',
-      h('p', {}, 'Address: ', collectionCid !== '-' ? cid(`cas://${collectionCid}/${itemCid}`) : cid(itemCid)),
-      h('ul', {}, it.leaves.filter(l => l.address).map(l => h('li', {}, l.name ?? '', ': ', cid(String(l.address))))),
+      h('p', {}, 'Address: ', address(itemCid),
+        collectionCid !== '-' ? [' · as it appeared in its output: ', h('code', {}, `cas://${collectionCid}/${itemCid}`)] : null),
+      h('ul', {}, it.leaves.filter(l => l.address).map(l => h('li', {}, l.name ?? '', ': ', address(String(l.address))))),
       pairsNode(all, target, { size: 'row' })))
 }

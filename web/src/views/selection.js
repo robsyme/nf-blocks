@@ -1,6 +1,7 @@
 // web/src/views/selection.js
 // #/selections, #/selection/<cid> and the tray composer (DESIGN.md §15).
-import { h, link, cid, copyOutcome } from '../html.js'
+import { h, link, copyOutcome } from '../html.js'
+import { address } from '../icons.js'
 import { Previews } from '../previews.js'
 import { retryRestore } from '../save-flow.js'
 import { fold } from '../folds.js'
@@ -70,7 +71,7 @@ export async function selection(ex, selectionCid, ctx) {
     const held = h('span', { 'data-held-for': m.address, class: 'muted' }, '...')
     const node = m.kind === 'selection'
       ? h('li', { class: 'row', 'data-member': m.address, 'data-kind': m.kind },
-        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), link(`#/selection/${m.address}`, cid(m.address)), h('span', { class: 'row-action' }, held)))
+        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), address(m.address), h('span', { class: 'row-action' }, held)))
       : itemRow(ex, ctx, { address: m.address, via: m.via, previews, index: itemIndex++, attrs: { 'data-member': m.address, 'data-kind': m.kind },
         action: held, viaLabel: 'via', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
     return { m, held, node }
@@ -104,7 +105,7 @@ export async function selection(ex, selectionCid, ctx) {
         : 'Deletion in conflict: these Claims are all current, so it stays visible.'),
       h('ul', {}, st.deletionClaims.map(c => byCid.get(c)).map(c => h('li', { 'data-deletion-claim': c.cid, 'data-verb': c.verb },
         `${c.verb} by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
-    fold(`details:${selectionCid}`, 'Details', h('p', {}, cid(selectionCid)),
+    fold(`details:${selectionCid}`, 'Details', h('p', {}, address(selectionCid)),
       h('dl', {}, h('dt', {}, 'first seen in this member'), h('dd', {}, s.firstSeen ?? 'unknown'),
         h('dt', {}, 'assembled by'), h('dd', {}, s.block.asserted_by))),
     actions(selectionCid, st, ctx, status),

@@ -1,6 +1,7 @@
 // web/src/views/pipeline.js
 // #/pipeline/<name> and the latest-run redirect (DESIGN.md §15).
-import { h, link, cid } from '../html.js'
+import { h, link } from '../html.js'
+import { ref, shortCid } from '../icons.js'
 import { healthText, statusText, whenText } from '../words.js'
 import { crumbs, enc, errorNode, pager, table, unreadableRuns } from './common.js'
 
@@ -37,5 +38,5 @@ export async function latest(ex, pipelineName) {
   return h('section', {},
     crumbs({ text: pipelineName, href: `#/pipeline/${enc(pipelineName)}` }, { text: 'latest good run' }),
     h('h1', {}, `Latest successful run of ${pipelineName}`),
-    h('p', { 'data-latest': best ?? '' }, best ? link(`#/run/${best}`, cid(best)) : 'None: no run of this pipeline succeeded without being possibly incomplete.'))
+    h('p', { 'data-latest': best ?? '' }, best ? ref('run', shortCid(best), `#/run/${best}`) : 'None: no run of this pipeline succeeded without being possibly incomplete.'))
 }

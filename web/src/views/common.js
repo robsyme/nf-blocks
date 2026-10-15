@@ -2,7 +2,8 @@
 // What more than one view draws (DESIGN.md §15–16): errors, tables, pagers,
 // the retention panel, picks, item rows, breadcrumbs. The data-* attributes
 // are the contract the Gate reads; the rest is for people.
-import { h, link, cid, copyOutcome, saveText } from '../html.js'
+import { h, link, copyOutcome, saveText } from '../html.js'
+import { shortCid } from '../icons.js'
 import { Previews } from '../previews.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { trayNote } from '../tray.js'
@@ -120,7 +121,7 @@ export function pickButton(ctx, { address, via = [], kind = 'item' }) {
     } }, inTray ? 'Picked' : kind === 'selection' ? 'Add this Selection to picked' : 'Add to picked')
 }
 
-export const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
+export { shortCid } from '../icons.js'
 
 /** `<run_name> / <output>` (DESIGN.md §16 milestone 3 decision 11), or the collection CID when this member does not know its run. */
 export const runLabelText = (label, collectionCid) => (label ? `${label.run_name ?? 'unnamed run'} / ${label.output}` : collectionCid)

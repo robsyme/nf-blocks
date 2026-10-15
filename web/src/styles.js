@@ -37,6 +37,8 @@ export const APP_CSS = `
   th { color: var(--muted); font-weight: 500; font-size: 12px; } .scroll { overflow-x: auto; }
   .chip { display: inline-block; background: var(--chip); border-radius: 4px; padding: 0 5px; margin: 0 2px 2px 0; font-size: 12px; }
   .ext { display: inline-block; background: var(--code); border-radius: 3px; padding: 0 4px; margin-right: 2px; font: 11px ui-monospace, monospace; } .index-link { margin-left: .35rem; } button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
+  .address { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration-color: var(--line); white-space: nowrap; }
+  .address .icon { margin-right: 2px; }
   .constant { font-size: 12px; } .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: .05rem .6rem; font-size: 12px; margin-right: .35rem; }
   details.fold { border-top: 1px solid var(--line); padding: .4rem 0; } details.fold > summary { cursor: pointer; font-weight: 600; }
   form { display: grid; gap: .5rem; margin: 1rem 0; } fieldset { border: 1px solid var(--line); }
