@@ -3,9 +3,9 @@
 // the retention panel, picks, item rows, breadcrumbs. The data-* attributes
 // are the contract the Gate reads; the rest is for people.
 import { h, link, copyOutcome, saveText } from '../html.js'
-import { shortCid } from '../icons.js'
+import { address, icon, ref, shortCid } from '../icons.js'
 import { Previews } from '../previews.js'
-import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
+import { labelPaths, labelText } from '../pairs.js'
 import { trayNote } from '../tray.js'
 import { itemTable, withoutDuplicates } from '../table.js'
 
@@ -136,8 +136,10 @@ export function runLabelNode(ex, collectionCid, completionCid = null) {
   const node = h('span', { title: collectionCid }, completionCid ? link(`#/run/${completionCid}`, placeholder) : placeholder)
   ex.runLabel(collectionCid).then((label) => {
     if (!label) return
-    const text = runLabelText(label, collectionCid)
-    node.replaceChildren(label.completion ? link(`#/run/${label.completion}`, text) : text)
+    const c = label.completion
+    node.replaceChildren(
+      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null), ' / ',
+      ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null))
   }, () => {})
   return node
 }
@@ -182,42 +184,39 @@ export function nextFrame(fn) {
 const rowOf = new WeakMap()
 
 /**
- * One item row (DESIGN.md §16 milestone 3 decision 9): `lead` (a checkbox) and the label,
- * file-name chips, `action` at the right; the Meta Map pills beneath in
- * `[data-preview-for]`; a via line when `viaLabel` is set, each via named by
- * its run with `perVia(via)` after it; the short CID last, linking to the
- * item page. The preview is drawn by `watchRows`; a row at `index` past
- * `previews.cap` waits for "show details".
+ * One item row (visual language spec 5.1): `lead` (a checkbox), the item
+ * icon and its label, which links to the item page once the preview
+ * arrives, `action` at the right; beneath, its files, a from line when
+ * `fromLabel` is set (each via named by its run and output, `perVia(via)`
+ * after it), and the item's address. The preview is drawn by `watchRows`; a
+ * row at `index` past `previews.cap` waits for "show details".
  */
-export function itemRow(ex, ctx, { address, via = [], previews, target = null, index = 0, attrs = {}, lead = null, action = null,
-  viaLabel = null, noVia = 'a query', perVia = () => null }) {
+export function itemRow(ex, ctx, { address: itemCid, via = [], previews, target = null, index = 0, attrs = {}, lead = null, action = null,
+  fromLabel = null, noVia = 'a query', perVia = () => null }) {
   const collection = via[0] ?? null
-  const row = { address, collection, target, drawn: undefined,
-    label: h('strong', { class: 'row-label' }), files: h('span', { class: 'row-files' }),
-    pairs: h('div', { class: 'row-pairs', 'data-preview-for': address }) }
+  const row = { address: itemCid, collection, target, drawn: undefined, href: `#/item/${collection ?? '-'}/${itemCid}`,
+    label: h('strong', { class: 'row-label' }), files: h('span', { class: 'row-files' }) }
   const loading = () => h('span', { class: 'muted' }, 'loading...')
   row.label.append(index < previews.cap ? loading()
-    : h('button', { type: 'button', onclick: () => { row.label.replaceChildren(loading()); previews.ask(collection, address) } }, 'show details'))
-  const viaLine = viaLabel === null ? null : h('div', { class: 'row-via muted' }, `${viaLabel} `,
+    : h('button', { type: 'button', onclick: () => { row.label.replaceChildren(loading()); previews.ask(collection, itemCid) } }, 'show details'))
+  const fromLine = fromLabel === null ? null : h('span', { class: 'row-via muted' }, ` ${fromLabel} `,
     via.length ? via.map((v, i) => [i ? '; ' : null, runLabelNode(ex, v), ' ', perVia(v)]) : [noVia, ' ', perVia('-')])
   const li = h('li', { class: 'row', ...attrs },
-    h('div', { class: 'row-head' }, lead, row.label, row.files, h('span', { class: 'row-action' }, action)),
-    row.pairs, viaLine,
-    h('div', { class: 'row-cid' }, link(`#/item/${collection ?? '-'}/${address}`, h('code', { class: 'cid', title: address }, shortCid(address)))))
+    h('div', { class: 'row-head' }, lead, icon('item'), row.label, h('span', { class: 'row-action' }, action)),
+    h('div', { class: 'row-sub' }, row.files, fromLine, ' ', address(itemCid)))
   rowOf.set(li, row)
   return li
 }
 
-export function fillRow(row, preview, paths, duplicates = new Set()) {
+export function fillRow(row, preview, paths) {
   if (preview.error) {
     row.label.replaceChildren(h('span', { class: 'muted', title: preview.message ?? '' },
-      preview.error === 'block_missing' ? 'not held in this member' : `no preview (${preview.error})`))
+      preview.error === 'block_missing' ? 'not in this store' : `no preview (${preview.error})`))
     return
   }
-  row.label.replaceChildren(labelText(preview, paths) || h('span', { class: 'muted' }, 'no Meta Map'))
-  row.files.replaceChildren(...preview.files.map(f => h('span', { class: 'chip' }, f)))
-  const pills = pairsNode(withoutDuplicates(preview.pairs, duplicates), row.target, { size: 'row' })
-  row.pairs.replaceChildren(...(pills ? [pills] : []))
+  row.label.replaceChildren(link(row.href, labelText(preview, paths) || h('span', { class: 'muted' }, 'no Meta Map')))
+  const dirs = new Set(preview.dirs ?? [])
+  row.files.replaceChildren(...preview.files.flatMap((f, i) => [...(i ? [' '] : []), ref(dirs.has(f) ? 'directory' : 'file', h('code', {}, f))]))
 }
 
 /**
@@ -244,7 +243,7 @@ export function watchRows(list, previews, lis) {
       const p = previews.get(r.address)
       if (p === undefined || (p === r.drawn && !relabel)) continue
       r.drawn = p
-      fillRow(r, p, paths, duplicates)
+      fillRow(r, p, paths)
     }
   })
   const off = previews.onChange(redraw)

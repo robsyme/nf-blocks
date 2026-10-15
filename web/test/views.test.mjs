@@ -119,38 +119,33 @@ function render(promise) { installDom(); return promise }
 /** A ctx for a view under test that touches no write path (Task 4's collection/run tests). */
 const ctx = () => rowCtx()
 
-test('a query result row: label, file chips, pills linking to query 3 with the pair added, the pick carrying its collection (decision 9, 12)', async () => {
+test('an item row: the item label linking to its page, its files, the pick carrying its collection, its address; no pills (decision 12)', async () => {
   installDom()
   const ex = rowModel()
   const ctx = rowCtx()
-  const where = [['lane', 'int', '2']]
-  const node = itemRows(ex, ctx, { items: ['i1', 'i2'], collectionCid: 'coll', completion: 'run1', output: 'aligned', where,
+  const node = itemRows(ex, ctx, { items: ['i1', 'i2'], collectionCid: 'coll', completion: 'run1', output: 'aligned', where: [],
     previews: new Previews(ex), results: true })
   await frame()
   assert.deepEqual(node.querySelectorAll('[data-item-result]').map(li => li.dataset.itemResult), ['i1', 'i2'])
   const row = node.querySelector('[data-item-result=i1]')
   assert.equal(row.querySelector('.row-label').textContent, 'S-i1 · 2 · true')
-  assert.deepEqual(row.querySelectorAll('.chip').map(c => c.textContent), ['i1.bam'])
-  const pills = row.querySelector('[data-preview-for=i1]')
-  assert.deepEqual(pills.querySelectorAll('.pill-key').map(k => k.textContent), ['lane', 'ok', 'sample'])
-  const sample = pills.querySelectorAll('a.pill-val').find(a => a.textContent === 'S-i1')
-  assert.equal(sample.getAttribute('href'),
-    `#/items/run1/aligned?where=${encodeURIComponent(JSON.stringify([['lane', 'int', '2'], ['sample', 'string', 'S-i1']]))}`)
-  assert.ok(pills.querySelector('.pv-true'), 'a bool value is coloured by its value')
+  assert.equal(row.querySelector('.row-label').querySelector('a').getAttribute('href'), '#/item/coll/i1')
+  assert.equal(row.querySelector('.row-head').querySelector('[data-icon]').dataset.icon, 'item')
+  assert.deepEqual(row.querySelector('.row-files').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['file'])
+  assert.equal(row.querySelector('.row-files').textContent, 'i1.bam')
+  assert.equal(row.querySelector('[data-preview-for]'), null, 'no pills in a row')
+  assert.equal(row.querySelector('[data-address]').dataset.address, 'i1')
   assert.equal(row.querySelector('[data-pick]').dataset.via, 'coll')
-  assert.equal(row.querySelector('.row-cid').querySelector('a').getAttribute('href'), '#/item/coll/i1')
   const all = node.querySelector('[data-pick-all]')
   assert.equal(all.dataset.via, 'coll')
-  assert.equal(all.dataset.count, '2')
   assert.equal(all.textContent, 'Pick all 2')
 })
 
-test('an item with no Meta Map has an empty pills container and is labelled by its files', async () => {
+test('an item with no Meta Map is labelled by its files', async () => {
   installDom()
   const ex = { ...rowModel(), item: async () => ({ view: null, leaves: [{ name: 'A.bam' }] }) }
   const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex) })
   await frame()
-  assert.equal(node.querySelector('[data-preview-for=i1]').children.length, 0)
   assert.equal(node.querySelector('.row-label').textContent, 'A.bam')
 })
 

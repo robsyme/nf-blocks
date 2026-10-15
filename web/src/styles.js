@@ -44,7 +44,8 @@ export const APP_CSS = `
   form { display: grid; gap: .5rem; margin: 1rem 0; } fieldset { border: 1px solid var(--line); }
   .rows { list-style: none; padding: 0; margin: .5rem 0; } .row { padding: .4rem 0; border-bottom: 1px solid var(--line); }
   .row-head { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; } .row-action { margin-left: auto; }
-  .row-pairs, .row-via, .row-cid { margin: .15rem 0 0 1.6rem; } .row-pairs:empty { display: none; }
+  .row-sub { margin: .15rem 0 0 1.6rem; color: var(--muted); } .row-sub code { color: var(--fg); }
+  button.quiet { font-size: 12px; padding: 0 .35rem; }
   .row-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: baseline; }
   .snippet { display: flex; gap: .5rem; align-items: flex-start; margin: .35rem 0; }
   .snippet pre { margin: 0; padding: .4rem .6rem; border: 1px solid var(--line); background: var(--bg); flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }

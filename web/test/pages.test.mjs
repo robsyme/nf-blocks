@@ -115,3 +115,21 @@ test('item whose runLabel rejects lists its producers without the query note', a
   assert.ok(page.querySelectorAll('a').some(a => a.getAttribute('href') === '#/run/r1'))
   assert.ok(!page.textContent.includes('Picked by a query'))
 })
+
+test('a Selection row says "from" its run and output, and where it is held only when that is not here', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'i1', via: ['coll'] }, { kind: 'item', address: 'i2', via: ['coll'] }],
+    firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async (kind, a) => (a === 'i1' ? 'here' : 'elsewhere'),
+    item: async (c, i) => ({ view: { firstName: i }, leaves: [{ name: `${i}.dat` }] }),
+    runLabel: async () => ({ run_name: 'boring_yalow', output: 'people', completion: 'bafyrun' }) }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const [here, away] = page.querySelectorAll('[data-member]')
+  assert.equal(here.dataset.held, 'here')
+  assert.equal(here.querySelector('.row-action').textContent, '')
+  assert.equal(away.querySelector('.row-action').textContent, 'not in this store')
+  assert.match(here.querySelector('.row-via').textContent, /^ ?from boring_yalow \/ people/)
+  assert.deepEqual(here.querySelector('.row-via').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['run', 'output'])
+})

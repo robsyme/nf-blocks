@@ -42,7 +42,7 @@ test('at most six previews are fetched at once; the rest wait their turn (ticket
   assert.equal(f.most(), 6)
   assert.deepEqual(p.get('i3'), {
     pairs: [{ path: 'lane', type: 'int', values: ['1'], types: ['int'] }, { path: 'sample', type: 'string', values: ['i3'], types: ['string'] }],
-    files: ['i3.bam'] })
+    files: ['i3.bam'], dirs: [] })
 })
 
 test('askFirst asks for the first hundred rows only; the rest wait for a click (ticket 03 Q3)', async () => {

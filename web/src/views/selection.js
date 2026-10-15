@@ -57,7 +57,7 @@ export async function selection(ex, selectionCid, ctx) {
   const status = h('div', { id: 'write-status' })
   const byCid = new Map(st.current.map(c => [c.cid, c]))
   const previews = new Previews(ex)
-  const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
+  const copy = (text) => h('button', { type: 'button', class: 'quiet', title: `Copy ${text}`, onclick: async (event) => {
     event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
   } }, 'Copy')
   // A Selection may have thousands of members: the list renders at once and
@@ -68,19 +68,19 @@ export async function selection(ex, selectionCid, ctx) {
   // members only, so the preview cap and "show details" agree with watchRows.
   let itemIndex = 0
   const members = s.members.map((m) => {
-    const held = h('span', { 'data-held-for': m.address, class: 'muted' }, '...')
+    const held = h('span', { 'data-held-for': m.address, class: 'muted' })
     const node = m.kind === 'selection'
       ? h('li', { class: 'row', 'data-member': m.address, 'data-kind': m.kind },
         h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), address(m.address), h('span', { class: 'row-action' }, held)))
       : itemRow(ex, ctx, { address: m.address, via: m.via, previews, index: itemIndex++, attrs: { 'data-member': m.address, 'data-kind': m.kind },
-        action: held, viaLabel: 'via', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
+        action: held, fromLabel: 'from', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
     return { m, held, node }
   })
   for (const { m, held, node } of members) {
     ex.held(m.kind, m.address).then(
       (state) => {
         node.dataset.held = state
-        held.textContent = state === 'here' ? 'held in this member' : 'held in another member'
+        held.textContent = state === 'here' ? '' : 'not in this store'
         held.classList.remove('muted')
       },
       (e) => {
