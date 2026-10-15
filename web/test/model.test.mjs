@@ -350,3 +350,11 @@ test('block: a URL that is not a CID is schema_invalid (Review Focus 2)', async 
   const { ex } = await openRanged()
   await assert.rejects(ex.block('not-a-cid'), (e) => e.code === 'schema_invalid')
 })
+
+test('block: an empty raw block is verified with size 0', async () => {
+  const cid = rawCid('').toString()
+  const { ex } = await openRanged([[cid, new Uint8Array(0)]])
+  const b = await ex.block(cid)
+  assert.equal(b.check, 'verified')
+  assert.equal(b.size, 0)
+})

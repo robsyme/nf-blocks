@@ -48,7 +48,8 @@ const FRIENDLY = {
 }
 
 export function friendlyOf(cidText, value, stale = []) {
-  const make = Object.hasOwn(FRIENDLY, value?.kind) ? FRIENDLY[value.kind] : null
+  const kind = typeof value?.kind === 'string' ? value.kind : null
+  const make = kind !== null && Object.hasOwn(FRIENDLY, kind) ? FRIENDLY[kind] : null
   if (make) return make(cidText, value, stale)
-  return { kind: 'address', text: value ? `a block of kind ${value.kind ?? 'unknown'}` : 'a block that does not decode', label: null, href: null }
+  return { kind: 'address', text: value ? `a block of kind ${kind ?? 'unknown'}` : 'a block that does not decode', label: null, href: null }
 }

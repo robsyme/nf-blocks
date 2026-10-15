@@ -53,3 +53,12 @@ test('friendlyOf: a kind that names an Object.prototype member gets the generic 
     assert.equal(f.href, null)
   }
 })
+
+test('friendlyOf: a kind that is not a string gets the generic answer, not a throw', () => {
+  for (const kind of [{ toString: 1 }, 7]) {
+    const f = friendlyOf('bafyx', { kind })
+    assert.equal(f.kind, 'address')
+    assert.equal(f.href, null)
+    assert.match(f.text, /unknown/)
+  }
+})

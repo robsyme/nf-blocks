@@ -131,3 +131,21 @@ test('partial: a status that is neither a partial nor a whole body is fetch_fail
   const fetchFn = async () => ({ status: 500, ok: false, headers: new Headers() })
   await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === 'fetch_failed')
 })
+
+test('partial: a 416 is a range past the end, so an empty block has no bytes and size 0', async () => {
+  const cid = rawCid('').toString()
+  const fetchFn = async () => ({ status: 416, ok: false, headers: new Headers({ 'Content-Range': 'bytes */0' }), body: { cancel() {} } })
+  const r = await new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096)
+  assert.equal(r.bytes.length, 0)
+  assert.equal(r.size, 0)
+})
+
+test('partial: the body is cancelled before a failure or a missing block is thrown', async () => {
+  const cid = rawCid('boom').toString()
+  for (const [status, code] of [[500, 'fetch_failed'], [404, 'block_missing']]) {
+    let cancelled = false
+    const fetchFn = async () => ({ status, ok: false, headers: new Headers(), body: { cancel: () => { cancelled = true } } })
+    await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === code)
+    assert.ok(cancelled, `${status} body cancelled`)
+  }
+})

@@ -93,13 +93,23 @@ export class BlockFetcher {
       throw new BlockError('fetch_failed', cidText, `could not fetch block ${cidText}: ${e.message}`)
     }
     this.partialFetches++
-    if (res.status === 404 || res.status === 403)
+    const drop = async () => { try { await res.body?.cancel?.() } catch { /* already closed */ } }
+    if (res.status === 404 || res.status === 403) {
+      await drop()
       throw new BlockError('block_missing', cidText, `block ${cidText} is not in this member; it may be held in another one`)
+    }
     if (res.status === 200) {
-      try { await res.body?.cancel?.() } catch { /* already closed */ }
+      await drop()
       return { bytes: null, size: Number(res.headers.get('Content-Length')) || null }
     }
-    if (res.status !== 206) throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
+    if (res.status === 416) {
+      await drop()
+      return { bytes: new Uint8Array(0), size: Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || 0 }
+    }
+    if (res.status !== 206) {
+      await drop()
+      throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
+    }
     const size = Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || null
     return { bytes: new Uint8Array(await res.arrayBuffer()), size }
   }
