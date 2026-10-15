@@ -59,7 +59,8 @@ export async function buildMember({ now = Date.now(), extra = null } = {}) {
     runs[name] = { manifest: m.toString(), collection: coll.toString(), completion: comp.toString(), samples, status, finished }
   }
   const at = { R0: now - 3 * 3600_000, R1: now - 3600_000, R2: now - 1800_000, R2again: now - 1500_000, R3: now - 1200_000 }
-  const more = extra ? extra({ put, runs, item, content, at }) : { log: [], rows: null }
+  const putRaw = (text) => { const c = rawCid(text); blocks.set(c.toString(), new TextEncoder().encode(text)); return c }
+  const more = extra ? extra({ put, putRaw, runs, item, content, at }) : { log: [], rows: null }
   const log = [
     entryName(at.R0, 'run', runs.R1.completion.replace(/.$/, 'q')),     // outside the overlap, never looked at
     entryName(at.R1, 'run', runs.R1.completion),
@@ -146,20 +147,24 @@ async function explorerOf(member, now) {
  * address, or `null` when `neverPublished` leaves it unwritten (`reason:
  * 'never_published'`, `address` and `size` both null, DESIGN.md §6 Leaf).
  */
-export async function memberWithIndexedCollection({ indexName, indexPath, neverPublished = false } = {}) {
+export async function memberWithIndexedCollection({ indexName, indexPath, neverPublished = false, indexText = null } = {}) {
   const now = Date.now()
   let ids
   const member = await buildMember({
     now,
-    extra: ({ put, at }) => {
+    extra: ({ put, putRaw, item, content, at }) => {
       const m = put(manifest('R4'))
-      const address = neverPublished ? null : rawCid(`index-content-${indexPath}`)
+      // With indexText, the collection holds items A and B at aligned/<s>.bam and the index file is stored.
+      const address = neverPublished ? null : indexText ? putRaw(indexText) : rawCid(`index-content-${indexPath}`)
       const leaf = { kind: 'Leaf', name: indexName, address, size: neverPublished ? null : 42,
         reason: neverPublished ? 'never_published' : null }
+      const items = indexText ? [item.A, item.B].sort((a, b) => (a.toString() < b.toString() ? -1 : 1)) : []
+      const paths = items.map(i => [`aligned/${i.equals(item.A) ? 'A' : 'B'}.bam`])
       const coll = put({ kind: 'OutputCollection', schema: 1, asserted_by: 'test', run: m, name: 'aligned',
-        items: [], paths: [], index: { leaf, path: indexPath } })
+        items, paths, index: { leaf, path: indexPath } })
       const comp = put(completion(m, [coll], 'succeeded', '2026-09-04T10:00:00.000Z'))
-      ids = { collection: coll.toString(), completion: comp.toString(), indexFile: address ? address.toString() : null }
+      ids = { collection: coll.toString(), completion: comp.toString(), indexFile: address ? address.toString() : null,
+        content: { A: content.A.toString(), B: content.B.toString() } }
       return { log: [entryName(at.R3 + 2000, 'run', comp.toString())], rows: null }
     },
   })
@@ -184,4 +189,19 @@ export async function memberWithUnjoinedRun(n) {
     },
   })
   return { ex: await explorerOf(member, now), ids }
+}
+
+/** A fetch over the fixture's blocks that honours `Range: bytes=0-<n>` with a 206, as serve.py and explore do. */
+export function rangedFetch(blocks) {
+  const fn = async (url, init = {}) => {
+    const cid = String(url).split('/').pop()
+    const bytes = blocks.get(cid)
+    if (!bytes) return new Response('no such block', { status: 404 })
+    const m = /^bytes=0-(\d+)$/.exec(init.headers?.Range ?? '')
+    if (m && bytes.length === 0) return new Response(null, { status: 416, headers: { 'Content-Range': 'bytes */0' } })
+    if (!m) return new Response(bytes, { headers: { 'Content-Length': String(bytes.length) } })
+    const part = bytes.slice(0, Number(m[1]) + 1)
+    return new Response(part, { status: 206, headers: { 'Content-Range': `bytes 0-${part.length - 1}/${bytes.length}` } })
+  }
+  return fn
 }

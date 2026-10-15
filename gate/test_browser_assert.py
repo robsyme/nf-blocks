@@ -345,5 +345,43 @@ class CloudCheckTest(unittest.TestCase):
         self.assertIn("A6.producers", out)
 
 
+class BlockWalkTest(unittest.TestCase):
+    ITEM = "bafyreiitem" + "a" * 48
+    LEAF = "bafkreileaf" + "b" * 48
+    WALK = {"collection": "bafyreicoll", "items": [ITEM], "item": ITEM, "leaf": LEAF, "leaf_size": 37, "leaf_hashes": True}
+
+    def pages(self, **kw):
+        collection = step(addresses=[self.ITEM])
+        item = step(block=self.ITEM, blockCheck="verified", addresses=[self.LEAF])
+        leaf = step(block=self.LEAF, blockCheck="verified", addresses=[])
+        for key, value in kw.items():
+            {"collection": collection, "item": item, "leaf": leaf}[key.split("_")[0]][key.split("_", 1)[1]] = value
+        return collection, item, leaf
+
+    def test_a_walk_that_reaches_both_blocks_passes(self):
+        self.assertEqual(B.block_walk(self.WALK, *self.pages()), [])
+
+    def test_a_collection_page_without_the_item_address_fails(self):
+        problems = B.block_walk(self.WALK, *self.pages(collection_addresses=[]))
+        self.assertTrue(any("links no address for item" in p for p in problems))
+
+    def test_an_unverified_item_block_fails(self):
+        problems = B.block_walk(self.WALK, *self.pages(item_blockCheck="refused"))
+        self.assertTrue(any("item's block page" in p for p in problems))
+
+    def test_an_item_page_without_the_leaf_link_fails(self):
+        problems = B.block_walk(self.WALK, *self.pages(item_addresses=[]))
+        self.assertTrue(any("for its file" in p for p in problems))
+
+    def test_a_large_leaf_is_expected_unchecked(self):
+        walk = dict(self.WALK, leaf_size=B.BLOCK_PAGE_RAW_CAP + 1)
+        self.assertTrue(B.block_walk(walk, *self.pages()))
+        self.assertEqual(B.block_walk(walk, *self.pages(leaf_blockCheck="unchecked")), [])
+
+    def test_bytes_that_do_not_hash_to_the_leaf_fail(self):
+        problems = B.block_walk(dict(self.WALK, leaf_hashes=False), *self.pages())
+        self.assertTrue(any("do not hash" in p for p in problems))
+
+
 if __name__ == "__main__":
     unittest.main()

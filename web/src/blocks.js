@@ -47,6 +47,7 @@ export class BlockFetcher {
     this.cache = new Map()
     this.verified = []
     this.fetches = 0
+    this.partialFetches = 0
   }
 
   /** The URL this fetcher loads the block from. */
@@ -67,7 +68,66 @@ export class BlockFetcher {
     return block
   }
 
+  /** A block's bytes, hash-checked and not decoded: for a raw block, such as an Output Index File. Not cached. */
+  raw(cidText) {
+    return this.fetchVerified(cidText)
+  }
+
+  /**
+   * The first `n` bytes of a block by Range, and its whole size from
+   * Content-Range: `{ bytes, size }`. Not verified, since checking needs
+   * every byte, so never recorded in `verified`; counted in `partialFetches`.
+   * A server that ignores Range answers 200 with the whole body, which is not
+   * read: `bytes` is null and `size` is its Content-Length, or null.
+   */
+  async partial(cidText, n) {
+    try {
+      CID.parse(cidText)
+    } catch (e) {
+      throw new BlockError('schema_invalid', cidText, `${cidText} is not a CID: ${e.message}`)
+    }
+    let res
+    try {
+      res = await this.fetchFn(this.urlFor(cidText), { headers: { Range: `bytes=0-${n - 1}` } })
+    } catch (e) {
+      throw new BlockError('fetch_failed', cidText, `could not fetch block ${cidText}: ${e.message}`)
+    }
+    this.partialFetches++
+    const drop = async () => { try { await res.body?.cancel?.() } catch { /* already closed */ } }
+    if (res.status === 404 || res.status === 403) {
+      await drop()
+      throw new BlockError('block_missing', cidText, `block ${cidText} is not in this member; it may be held in another one`)
+    }
+    if (res.status === 200) {
+      await drop()
+      return { bytes: null, size: Number(res.headers.get('Content-Length')) || null }
+    }
+    if (res.status === 416) {
+      await drop()
+      return { bytes: new Uint8Array(0), size: Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || 0 }
+    }
+    if (res.status !== 206) {
+      await drop()
+      throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
+    }
+    const size = Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || null
+    return { bytes: new Uint8Array(await res.arrayBuffer()), size }
+  }
+
   async load(cidText) {
+    const bytes = await this.fetchVerified(cidText)
+    let value
+    try {
+      value = dagCbor.decode(bytes)
+    } catch (e) {
+      throw new BlockError('schema_invalid', cidText, `block ${cidText} is not DAG-CBOR: ${e.message}`)
+    }
+    if (!validBlock(value) || !validKind(value))
+      throw new BlockError('schema_invalid', cidText, `block ${cidText} does not match the ${value?.kind ?? 'Block'} schema (DESIGN.md §6)`)
+    return { cid: cidText, bytes, value }
+  }
+
+  async fetchVerified(cidText) {
     // A Store Log name can match the entry pattern and still not be a CID.
     try {
       CID.parse(cidText)
@@ -88,14 +148,6 @@ export class BlockFetcher {
     if (!verifies(cidText, bytes))
       throw new BlockError('hash_mismatch', cidText, `block ${cidText} does not hash to its address; it was refused`)
     this.verified.push(cidText)
-    let value
-    try {
-      value = dagCbor.decode(bytes)
-    } catch (e) {
-      throw new BlockError('schema_invalid', cidText, `block ${cidText} is not DAG-CBOR: ${e.message}`)
-    }
-    if (!validBlock(value) || !validKind(value))
-      throw new BlockError('schema_invalid', cidText, `block ${cidText} does not match the ${value?.kind ?? 'Block'} schema (DESIGN.md §6)`)
-    return { cid: cidText, bytes, value }
+    return bytes
   }
 }

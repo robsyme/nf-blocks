@@ -117,13 +117,14 @@ export function createPanel({ el, ex, ctx, onState = null }) {
     }
     const what = s.state === 'filtered' ? `${counted(s.count ?? 0, 'item')} of ${s.output}, where ${whereText(s.where)}`
       : s.count === null ? `Every item of ${s.output}` : `All ${counted(s.count, 'item')} of ${s.output}`
+    // This run by its RunCompletion address, not its lid://: a lid:// is looked
+    // up in the reader's composition and the newest run carrying it wins.
     const spec = mode === 'latest' ? { kind: 'latest', pipeline: id.pipeline, output: s.output, where: s.where }
-      : id.lid ? { kind: 'run', lid: id.lid, output: s.output, where: s.where } : null
+      : { kind: 'run', run: `cas://${s.completion}`, output: s.output, where: s.where }
     return [
       h('p', {}, what),
       id.pipeline ? runSwitch(id) : null,
-      spec ? [snippetBlock(spec), h('p', { class: 'muted' }, 'Script kind: ', snippetToggle())]
-        : h('p', { class: 'muted' }, 'This run has no lineage ID; read it as the latest good run instead.'),
+      snippetBlock(spec), h('p', { class: 'muted' }, 'Script kind: ', snippetToggle()),
       mode === 'latest' ? h('p', { class: 'muted' }, '"latest" may match different items after the next run.') : null,
       note ? h('p', { class: 'muted' }, note) : null,
       s.partial ? h('p', {}, `${s.partial.checked} of ${s.partial.count} checked. `,
@@ -160,7 +161,7 @@ export function createPanel({ el, ex, ctx, onState = null }) {
   function saved(s, view) {
     const name = view?.names?.length ? `Selection "${view.names.join(' / ')}"` : 'This Selection'
     return [
-      h('p', {}, name, s.members === null ? '' : ` · ${counted(s.members, 'member')}`),
+      h('p', {}, name, s.members === null ? '' : ` · ${counted(s.members, 'item')}`),
       snippetBlock({ kind: 'selection', cid: s.selection }),
       h('p', { class: 'muted' }, 'Script kind: ', snippetToggle()),
       ctx.write.served ? h('p', {}, 'Samplesheet: ',
@@ -202,7 +203,7 @@ export function createPanel({ el, ex, ctx, onState = null }) {
       h('p', {}, `Picked: ${counted(entries.length, 'item')}`),
       list,
       trayNote(ctx.tray) ? h('p', { class: 'warn' }, trayNote(ctx.tray)) : null,
-      ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only member is another Selection is legal, but the explorer does not make one: add an item too.') : null,
+      ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only entry is another Selection is legal, but the explorer does not make one: add an item too.') : null,
       h('p', { class: 'muted' }, 'A filter cannot describe these, so save them as a Selection: a fixed list of these exact items.'),
       ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
       h('p', {}, name), h('p', {}, save, ' ', clear),

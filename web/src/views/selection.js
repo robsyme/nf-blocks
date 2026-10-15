@@ -1,10 +1,14 @@
 // web/src/views/selection.js
 // #/selections, #/selection/<cid> and the tray composer (DESIGN.md §15).
-import { h, link, cid, copyOutcome } from '../html.js'
+import { h, link, copyOutcome } from '../html.js'
+import { address, icon, ref } from '../icons.js'
 import { Previews } from '../previews.js'
 import { retryRestore } from '../save-flow.js'
 import { fold } from '../folds.js'
+import { whenText } from '../words.js'
 import { copyText, crumbs, errorNode, flag, itemRow, pager, pickButton, table, undoNote, unavailableNote, watchRows } from './common.js'
+
+const when = (iso) => (iso ? h('span', { title: iso }, whenText(iso)) : 'an unknown time')
 
 /** Why Undo is unavailable on the deleted list, mirroring the Selection view's `actions()`; null renders nothing. */
 function undoUnavailableNote(ctx) {
@@ -56,7 +60,7 @@ export async function selection(ex, selectionCid, ctx) {
   const status = h('div', { id: 'write-status' })
   const byCid = new Map(st.current.map(c => [c.cid, c]))
   const previews = new Previews(ex)
-  const copy = (text) => h('button', { type: 'button', onclick: async (event) => {
+  const copy = (text) => h('button', { type: 'button', class: 'quiet', title: `Copy ${text}`, onclick: async (event) => {
     event.currentTarget.textContent = await copyOutcome(navigator.clipboard, text)
   } }, 'Copy')
   // A Selection may have thousands of members: the list renders at once and
@@ -67,19 +71,18 @@ export async function selection(ex, selectionCid, ctx) {
   // members only, so the preview cap and "show details" agree with watchRows.
   let itemIndex = 0
   const members = s.members.map((m) => {
-    const held = h('span', { 'data-held-for': m.address, class: 'muted' }, '...')
+    const held = h('span', { 'data-held-for': m.address, class: 'muted' })
     const node = m.kind === 'selection'
-      ? h('li', { class: 'row', 'data-member': m.address, 'data-kind': m.kind },
-        h('div', { class: 'row-head' }, h('strong', {}, 'Selection'), link(`#/selection/${m.address}`, cid(m.address)), h('span', { class: 'row-action' }, held)))
+      ? nestedRow(ex, m, held)
       : itemRow(ex, ctx, { address: m.address, via: m.via, previews, index: itemIndex++, attrs: { 'data-member': m.address, 'data-kind': m.kind },
-        action: held, viaLabel: 'via', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
+        action: held, fromLabel: 'from', noVia: 'no run (picked by a query across runs)', perVia: (v) => copy(copyText(m.address, v)) })
     return { m, held, node }
   })
   for (const { m, held, node } of members) {
     ex.held(m.kind, m.address).then(
       (state) => {
         node.dataset.held = state
-        held.textContent = state === 'here' ? 'held in this member' : 'held in another member'
+        held.textContent = state === 'here' ? '' : 'not in this store'
         held.classList.remove('muted')
       },
       (e) => {
@@ -94,23 +97,34 @@ export async function selection(ex, selectionCid, ctx) {
   ctx.use?.({ selection: selectionCid, members: s.members.length, names: st.names })
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
     crumbs({ text: 'Selections', href: '#/selections' }, { text: st.names.length ? st.names.join(' / ') : 'Unnamed Selection' }),
-    h('h1', {}, st.names.length ? st.names.join(' / ') : 'Unnamed Selection'),
+    h('h1', {}, icon('selection'), st.names.length ? st.names.join(' / ') : 'Unnamed Selection'),
     st.nameConflicted ? h('p', { class: 'warn' }, 'More than one name is current. Renaming supersedes them all.') : null,
-    h('ul', {}, st.nameClaims.map(c => byCid.get(c)).filter(c => c.verb === 'set').map(c => h('li', {
-      'data-name': c.value, 'data-claim': c.cid, 'data-conflicted': c.conflicted ? '' : null },
-    String(c.value), ' ', h('span', { class: 'muted' }, `named by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
+    h('p', { class: 'selection-meta muted' },
+      st.nameClaims.map(c => byCid.get(c)).filter(c => c.verb === 'set').map((c, i) => h('span', {
+        'data-name': c.value, 'data-claim': c.cid, 'data-conflicted': c.conflicted ? '' : null },
+      i ? ' · ' : null, icon('claim'), st.names.length > 1 ? `${c.value}: ` : '', `named by ${c.asserted_by ?? 'unknown'} · `, when(c.timestamp))),
+      ' ', address(selectionCid)),
     st.deletion === 'none' ? null : h('div', { class: 'warn' },
       h('p', {}, st.deletion === 'deleted' ? 'Deleted: hidden from the list of Selections until undone.'
         : 'Deletion in conflict: these Claims are all current, so it stays visible.'),
       h('ul', {}, st.deletionClaims.map(c => byCid.get(c)).map(c => h('li', { 'data-deletion-claim': c.cid, 'data-verb': c.verb },
-        `${c.verb} by ${c.asserted_by ?? 'unknown'} at ${c.timestamp ?? 'unknown'}`)))),
-    fold(`details:${selectionCid}`, 'Details', h('p', {}, cid(selectionCid)),
-      h('dl', {}, h('dt', {}, 'first seen in this member'), h('dd', {}, s.firstSeen ?? 'unknown'),
+        `${c.verb} by ${c.asserted_by ?? 'unknown'}, `, when(c.timestamp))))),
+    fold(`details:${selectionCid}`, 'Details',
+      h('dl', {}, h('dt', {}, 'first seen in this store'), h('dd', {}, s.firstSeen ? when(s.firstSeen) : 'unknown'),
         h('dt', {}, 'assembled by'), h('dd', {}, s.block.asserted_by))),
     actions(selectionCid, st, ctx, status),
     status,
-    h('h2', {}, `Members (${s.members.length})`),
+    h('h2', {}, `${s.members.some(m => m.kind === 'selection') ? 'Items and Selections' : 'Items'} (${s.members.length})`),
     memberList)
+}
+
+/** A nested Selection as a row: its icon and name (read lazily), where it is held, its address. */
+function nestedRow(ex, m, held) {
+  const name = h('span', {}, 'Selection')
+  ex.selection(m.address).then((s) => { name.textContent = s.state.names.length ? s.state.names.join(' / ') : 'unnamed Selection' }, () => {})
+  return h('li', { class: 'row', 'data-member': m.address, 'data-kind': m.kind },
+    h('div', { class: 'row-head' }, ref('selection', name, `#/selection/${m.address}`), h('span', { class: 'row-action' }, held)),
+    h('div', { class: 'row-sub' }, address(m.address)))
 }
 
 function actions(selectionCid, st, ctx, status) {

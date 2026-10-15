@@ -4,7 +4,7 @@ import { installDom } from './dom.mjs'
 import { INCLUDE_LINE, SNIPPET_KEY, groovyKey, groovyValue, setSnippetMode, snippetLines, snippetMode, snippetBlock, snippetToggle, liveCount, whereLiteral, whereRepeatsPath } from '../src/snippets.js'
 
 const SELECTION = 'bafyreib7lhx4cekrw4appaxcfb5r4yxk5amw2p6yrnnv2evci3niqplcbu'
-const LID = 'lid://4f1b2c3d4e5f60718293a4b5c6d7e8f9'
+const RUN = 'cas://bafyreibzvyocjhlwf7uo6tltbuvyqmtybeq7p54ndnnh52rspsebr7aegy'
 
 function memoryStorage() {
   const m = new Map()
@@ -19,16 +19,16 @@ test('the Selection snippet, untyped and typed (decision 13)', () => {
     { include: INCLUDE_LINE, call: `nextflow.Channel.fromStore(selection: '${SELECTION}', records: true)` })
 })
 
-test('the run snippet names the run by its lid:// and the output by name (decision 13)', () => {
-  assert.equal(snippetLines({ kind: 'run', lid: LID, output: 'aligned' }, 'untyped').call,
-    `channel.fromStore(run: '${LID}', output: 'aligned')`)
-  assert.equal(snippetLines({ kind: 'run', lid: LID, output: 'aligned' }, 'typed').call,
-    `nextflow.Channel.fromStore(run: '${LID}', output: 'aligned', records: true)`)
+test('the run snippet names the run by its RunCompletion address and the output by name (decision 13, amended)', () => {
+  assert.equal(snippetLines({ kind: 'run', run: RUN, output: 'aligned' }, 'untyped').call,
+    `channel.fromStore(run: '${RUN}', output: 'aligned')`)
+  assert.equal(snippetLines({ kind: 'run', run: RUN, output: 'aligned' }, 'typed').call,
+    `nextflow.Channel.fromStore(run: '${RUN}', output: 'aligned', records: true)`)
 })
 
 test('a quote or a backslash in an output name stays inside its Groovy string', () => {
-  assert.equal(snippetLines({ kind: 'run', lid: LID, output: "it's\\here" }, 'untyped').call,
-    `channel.fromStore(run: '${LID}', output: 'it\\'s\\\\here')`)
+  assert.equal(snippetLines({ kind: 'run', run: RUN, output: "it's\\here" }, 'untyped').call,
+    `channel.fromStore(run: '${RUN}', output: 'it\\'s\\\\here')`)
 })
 
 test('the mode is untyped unless the viewer chose typed', () => {
@@ -57,10 +57,10 @@ test('storage that refuses every call costs only the memory, and another mode is
 })
 
 test('where: one condition per chip, in chip order, as a Groovy map literal', () => {
-  assert.equal(snippetLines({ kind: 'run', lid: LID, output: 'markdup', where: [['single_end', 'bool', 'false'], ['id', 'string', 'WT_REP1']] }, 'untyped').call,
-    `channel.fromStore(run: '${LID}', output: 'markdup', where: [single_end: false, id: 'WT_REP1'])`)
-  assert.equal(snippetLines({ kind: 'run', lid: LID, output: 'markdup', where: [] }, 'untyped').call,
-    `channel.fromStore(run: '${LID}', output: 'markdup')`)
+  assert.equal(snippetLines({ kind: 'run', run: RUN, output: 'markdup', where: [['single_end', 'bool', 'false'], ['id', 'string', 'WT_REP1']] }, 'untyped').call,
+    `channel.fromStore(run: '${RUN}', output: 'markdup', where: [single_end: false, id: 'WT_REP1'])`)
+  assert.equal(snippetLines({ kind: 'run', run: RUN, output: 'markdup', where: [] }, 'untyped').call,
+    `channel.fromStore(run: '${RUN}', output: 'markdup')`)
 })
 
 test('latest good run names the pipeline instead of the run', () => {
@@ -101,7 +101,7 @@ test('whereLiteral', () => {
 test('every call is one line, whatever the filter holds (the Gate substitutes it into one line)', () => {
   const where = [['a\nb', 'string', 'line\nbreak'], ['c', 'string', 'tab\there']]
   for (const mode of ['untyped', 'typed']) {
-    const { call } = snippetLines({ kind: 'run', lid: LID, output: 'o', where }, mode)
+    const { call } = snippetLines({ kind: 'run', run: RUN, output: 'o', where }, mode)
     assert.ok(!call.includes('\n'), call)
   }
   assert.equal(groovyValue('string', 'line\nbreak'), "'line\\nbreak'")

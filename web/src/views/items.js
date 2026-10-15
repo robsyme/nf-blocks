@@ -3,6 +3,7 @@
 // as a table whose columns are the Meta Map keys that tell items apart.
 // Nothing here reads the snapshot but Explorer.items (Gate assertion 2).
 import { h, link } from '../html.js'
+import { address, icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { cellOf, fileChips, itemTable } from '../table.js'
@@ -113,19 +114,19 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     if (p === undefined) {
       const wait = r.index < previews.cap ? h('span', { class: 'muted' }, 'loading...')
         : h('button', { type: 'button', onclick: () => previews.ask(via[0] ?? null, r.address) }, 'show details')
-      r.tr.replaceChildren(h('td', {}, r.box), h('td', { colspan: String(Math.max(1, shape.columns.length + 1)) }, wait), h('td', {}, open, ' ', pick))
+      r.tr.replaceChildren(h('td', {}, r.box), h('td', { colspan: String(Math.max(1, shape.columns.length + 1)) }, wait), h('td', {}, open, ' ', address(r.address), ' ', pick))
       return
     }
     if (p.error) {
       r.tr.replaceChildren(h('td', {}, r.box), h('td', { class: 'muted', colspan: String(Math.max(1, shape.columns.length + 1)) },
-        p.error === 'block_missing' ? 'not held in this member' : `no preview (${p.error})`), h('td', {}, open, ' ', pick))
+        p.error === 'block_missing' ? 'not in this store' : `no preview (${p.error})`), h('td', {}, open, ' ', address(r.address), ' ', pick))
       return
     }
     const { chips } = fileChips(p.files)
     r.tr.replaceChildren(h('td', {}, r.box),
       ...shape.columns.map(path => h('td', {}, valueNode(cellOf(p, path), target))),
-      h('td', {}, chips.slice(0, 3).map(t => h('span', { class: 'ext' }, t)), chips.length > 3 ? h('span', { class: 'ext' }, `+${chips.length - 3}`) : null),
-      h('td', {}, open, ' ', pick))
+      h('td', {}, chips.length ? icon('file') : null, chips.slice(0, 3).map(t => h('span', { class: 'ext' }, t)), chips.length > 3 ? h('span', { class: 'ext' }, `+${chips.length - 3}`) : null),
+      h('td', {}, open, ' ', address(r.address), ' ', pick))
   }
   const redraw = nextFrame(() => {
     const next = itemTable(rows.map(r => previews.get(r.address)))

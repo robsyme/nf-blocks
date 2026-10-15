@@ -32,6 +32,8 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
   const page = await item(ex, 'coll', 'bafyitem', c)
   await frame()
   assert.equal(page.querySelector('h1').textContent, 'WT_REP1')
+  assert.equal(page.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'item')
+  assert.ok(page.querySelectorAll('td').some(td => td.querySelector('[data-icon=file]')))
   assert.match(page.textContent, /412 MB/)
   assert.equal(page.querySelector('a[download]').getAttribute('href'), 'blocks/bafybam')
   assert.match(page.textContent, /not stored here \(such as an input file\)/)
@@ -114,4 +116,87 @@ test('item whose runLabel rejects lists its producers without the query note', a
   await frame()
   assert.ok(page.querySelectorAll('a').some(a => a.getAttribute('href') === '#/run/r1'))
   assert.ok(!page.textContent.includes('Picked by a query'))
+})
+
+test('a Selection row says "from" its run and output, and where it is held only when that is not here', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'i1', via: ['coll'] }, { kind: 'item', address: 'i2', via: ['coll'] }],
+    firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async (kind, a) => (a === 'i1' ? 'here' : 'elsewhere'),
+    item: async (c, i) => ({ view: { firstName: i }, leaves: [{ name: `${i}.dat` }] }),
+    runLabel: async () => ({ run_name: 'boring_yalow', output: 'people', completion: 'bafyrun' }) }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const [here, away] = page.querySelectorAll('[data-member]')
+  assert.equal(here.dataset.held, 'here')
+  assert.equal(here.querySelector('.row-action').textContent, '')
+  assert.equal(away.querySelector('.row-action').textContent, 'not in this store')
+  assert.match(here.querySelector('.row-via').textContent, /^ ?from boring_yalow \/ people/)
+  assert.deepEqual(here.querySelector('.row-via').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['run', 'output'])
+})
+
+test('the Selection page: icon and name, one quiet line naming who named it and when, "Items", a nested Selection by its name', async () => {
+  installDom()
+  const claim = { cid: 'bafyname', verb: 'set', value: 'africans', asserted_by: 'anonymous', timestamp: '2026-10-14T20:07:44.417Z', conflicted: false }
+  const st = { names: ['africans'], nameClaims: ['bafyname'], current: [claim], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = {
+    selection: async (cid) => (cid === 'bafysel'
+      ? { state: st, members: [{ kind: 'item', address: 'i1', via: ['coll'] }, { kind: 'selection', address: 'bafyinner' }], firstSeen: '2026-10-14T20:07:44.412Z', block: { asserted_by: 'anonymous' } }
+      : { state: { ...st, names: ['lagos'] }, members: [], firstSeen: null, block: { asserted_by: 'x' } }),
+    held: async () => 'here', item: async () => ({ view: { id: 'A' }, leaves: [] }), runLabel: async () => null,
+  }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const h1 = page.querySelector('h1')
+  assert.equal(h1.querySelector('[data-icon]').dataset.icon, 'selection')
+  assert.equal(h1.textContent, 'africans')
+  const name = page.querySelector('[data-name]')
+  assert.equal(name.dataset.claim, 'bafyname')
+  assert.match(name.textContent, /named by anonymous · /)
+  assert.equal(name.querySelectorAll('[title]').find(e => !e.dataset.icon).getAttribute('title'), '2026-10-14T20:07:44.417Z')
+  assert.equal(page.querySelector('.selection-meta').querySelector('[data-address]').dataset.address, 'bafysel')
+  assert.ok(page.querySelectorAll('h2').some(e => e.textContent === 'Items and Selections (2)'))
+  const nested = page.querySelector('[data-member=bafyinner]')
+  assert.equal(nested.querySelector('[data-icon]').dataset.icon, 'selection')
+  assert.match(nested.textContent, /lagos/)
+  assert.equal(nested.querySelector('[data-address]').dataset.address, 'bafyinner')
+  assert.ok(page.querySelector('[data-unavailable]'))
+})
+
+test('home, pipeline and item pages name their kinds with icons', async () => {
+  installDom()
+  const homeEx = { pipelines: async () => [{ pipeline: 'p', runs: 2, latest: '2026-09-30T21:10:38.345Z' }], stale: [],
+    latestSuccessfulRun: async () => 'bafyrun', runIdentity: async () => ({ run_name: 'high_jang' }) }
+  const homePage = await home(homeEx, ctx())
+  await frame()
+  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline', 'run'])
+  const pipeEx = { runPage: async () => ({ rows: [{ completion_cid: 'bafyrun', pipeline: 'p', run_name: 'high_jang', status: 'succeeded', possibly_incomplete: 0,
+    finished_at: '2026-09-30T21:10:38.345Z', source: 'snapshot' }], hidden: 0, first: 1, last: 1, total: 1, prev: null, next: null }),
+    completionOf: async () => ({ anomalies: {} }), stale: [] }
+  const pipePage = await pipeline(pipeEx, 'p', 0, ctx())
+  assert.equal(pipePage.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'pipeline')
+  assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
+})
+
+test('a Selection row whose collection this store does not know shows the collection as an address', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'i1', via: ['bafyunknowncoll'] }], firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async () => 'here', item: async () => ({ view: { firstName: 'x' }, leaves: [] }), runLabel: async () => null }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  assert.equal(page.querySelector('[data-member]').querySelector('.row-via').querySelector('[data-address]').dataset.address, 'bafyunknowncoll')
+})
+
+test('an item this store does not hold says "not in this store" once, and its label is the short address', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const gone = Object.assign(new Error('block i1 is not in this store'), { code: 'block_missing' })
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'bafyitemmissing1234567890', via: ['coll'] }], firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async () => 'elsewhere', item: async () => { throw gone }, runLabel: async () => null }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const row = page.querySelector('[data-member]')
+  assert.equal(row.textContent.split('not in this store').length - 1, 1)
 })

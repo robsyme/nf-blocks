@@ -43,6 +43,9 @@ const EXTRACT = () => {
     items: [...document.querySelectorAll('[data-item-result]')].map((e) => e.dataset.itemResult),
     errors: data('[data-error]', ['error', 'cid']),
     verified: [...(window.__nfBlocks?.verified ?? [])],
+    block: document.querySelector('[data-block]')?.dataset.block ?? null,
+    blockCheck: document.querySelector('[data-block]')?.dataset.blockCheck ?? null,
+    addresses: [...document.querySelectorAll('[data-address]')].map((e) => e.dataset.address),
   }
 }
 

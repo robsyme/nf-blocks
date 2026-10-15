@@ -97,7 +97,7 @@ export function snippetLines(spec, mode) {
   const where = whereLiteral(spec.where)
   const args = spec.kind === 'selection' ? `selection: ${quote(spec.cid)}`
     : spec.kind === 'latest' ? `run: 'latest', pipeline: ${quote(spec.pipeline)}, output: ${quote(spec.output)}`
-      : `run: ${quote(spec.lid)}, output: ${quote(spec.output)}`
+      : `run: ${quote(spec.run)}, output: ${quote(spec.output)}`
   const full = where ? `${args}, where: ${where}` : args
   return { include: INCLUDE_LINE, call: mode === 'typed' ? `nextflow.Channel.fromStore(${full}, records: true)` : `channel.fromStore(${full})` }
 }

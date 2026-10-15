@@ -4,7 +4,7 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { readFileSync } from 'node:fs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
-import { block, blockFetch, buildMember, entryName, memberWithUnjoinedRun, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, entryName, memberWithIndexedCollection, memberWithUnjoinedRun, rangedFetch, rawCid } from './fixture.mjs'
 import { Float } from '../src/typed.js'
 import { attrRows } from '../src/metadata.js'
 import { claimState } from '../src/claims.js'
@@ -270,4 +270,91 @@ test('runIdentity names a run from its blocks alone, once per run, and asks agai
   assert.equal(await ex.runIdentity(ids.completion), id)
   await assert.rejects(ex.runIdentity('bafyreinotarealblockxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'))
   assert.equal(ex.identities.size, 1)
+})
+
+test('stableIndex: the Output Index File with each coordinate replaced by the address fromStore emits', async () => {
+  const indexText = 'sample,bam\nA,cas://lab/aligned/A.bam\nB,cas://lab/aligned/B.bam\nZ,cas://lab/aligned/Z.bam\n'
+  const { ex, ids } = await memberWithIndexedCollection({ indexName: 'index.csv', indexPath: 'index.csv', indexText })
+  assert.deepEqual(await ex.stableIndex(ids.collection), {
+    name: 'index.csv',
+    text: `sample,bam\nA,cas://${ids.content.A}/A.bam\nB,cas://${ids.content.B}/B.bam\nZ,cas://lab/aligned/Z.bam\n`,
+    replaced: 2, unmatched: 1,
+  })
+})
+
+async function openRanged(extraBlocks = []) {
+  const now = Date.now()
+  const member = await buildMember({ now })
+  for (const [cid, bytes] of extraBlocks) member.blocks.set(cid, bytes)
+  const blocks = new BlockFetcher('http://h/m/lab/', { fetchFn: rangedFetch(member.blocks) })
+  const ex = await Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(member.snapshot), blocks,
+    listFn: async () => ({ names: member.log, readable: true }), now: () => now })
+  return { ex, member, blocks }
+}
+
+test('block: a structured block, verified, with its kind and friendly link', async () => {
+  const { ex, member } = await openRanged()
+  const b = await ex.block(member.runs.R1.completion)
+  assert.equal(b.check, 'verified')
+  assert.equal(b.parts.codec, 'dag-cbor')
+  assert.equal(b.value.kind, 'RunCompletion')
+  assert.equal(b.size, b.bytes.length)
+  assert.equal(b.friendly.href, `#/run/${member.runs.R1.completion}`)
+})
+
+test('block: a small raw block is read whole and verified; a large one is previewed and unchecked', async () => {
+  const small = new TextEncoder().encode('Tarik Benali from Casablanca, Africa\n')
+  const large = new TextEncoder().encode('y'.repeat(6000))
+  const smallCid = rawCid('Tarik Benali from Casablanca, Africa\n').toString()
+  const largeCid = rawCid('y'.repeat(6000)).toString()
+  const { ex, blocks } = await openRanged([[smallCid, small], [largeCid, large]])
+  const s = await ex.block(smallCid)
+  assert.equal(s.check, 'verified')
+  assert.equal(new TextDecoder().decode(s.bytes), 'Tarik Benali from Casablanca, Africa\n')
+  assert.equal(s.friendly.href, `#/content/${smallCid}`)
+  const l = await ex.block(largeCid, { rawCap: 5000 })
+  assert.equal(l.check, 'unchecked')
+  assert.equal(l.size, 6000)
+  assert.equal(l.preview.length, 4096)
+  assert.equal(l.bytes, null)
+  assert.ok(!blocks.verified.includes(largeCid))
+})
+
+test('block: missing, refused, and a block that fails the schema is still shown with its reason', async () => {
+  const tampered = rawCid('real').toString()
+  const odd = block({ kind: 'OutputItem' })   // no schema, no value: decodes, fails validBlock
+  const { ex } = await openRanged([[tampered, new TextEncoder().encode('fake')], [odd.cid.toString(), odd.bytes]])
+  assert.equal((await ex.block(rawCid('absent').toString())).check, 'missing')
+  const refused = await ex.block(tampered)
+  assert.equal(refused.check, 'refused')
+  assert.equal(refused.bytes, null)
+  const shown = await ex.block(odd.cid.toString())
+  assert.equal(shown.check, 'verified')
+  assert.equal(shown.value.kind, 'OutputItem')
+  assert.match(shown.schemaError, /schema/)
+})
+
+test('block: a large raw block on a server without Range is never read whole (Review Focus 1)', async () => {
+  const big = new TextEncoder().encode('z'.repeat(6000))
+  const cid = rawCid('z'.repeat(6000)).toString()
+  const { ex, blocks } = await openRanged([[cid, big]])
+  blocks.fetchFn = async () => ({ status: 200, ok: true, headers: new Headers({ 'Content-Length': '6000' }), body: { cancel() {} } })
+  const before = blocks.fetches   // opening the Explorer already fetched the tail's blocks
+  const b = await ex.block(cid, { rawCap: 5000 })
+  assert.equal(b.check, 'unchecked')
+  assert.equal(b.preview, null)
+  assert.equal(blocks.fetches, before, 'raw() was never called')
+})
+
+test('block: a URL that is not a CID is schema_invalid (Review Focus 2)', async () => {
+  const { ex } = await openRanged()
+  await assert.rejects(ex.block('not-a-cid'), (e) => e.code === 'schema_invalid')
+})
+
+test('block: an empty raw block is verified with size 0', async () => {
+  const cid = rawCid('').toString()
+  const { ex } = await openRanged([[cid, new Uint8Array(0)]])
+  const b = await ex.block(cid)
+  assert.equal(b.check, 'verified')
+  assert.equal(b.size, 0)
 })

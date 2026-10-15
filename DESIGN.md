@@ -1684,7 +1684,8 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
 - Routes (location hash): `#/` home, `#/idle` (opens the snapshot and does
   nothing else), `#/pipeline/<name>[?offset=<n>]`, `#/run/<completion>`,
   `#/collection/<collection>[?offset=<n>]`, `#/item/<collection>/<item>`,
-  `#/content/<cid>` (query 1), `#/latest/<pipeline>` (query 2),
+  `#/content/<cid>` (query 1), `#/block/<cid>` (any block by its address),
+  `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
   (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`),
   `#/item/-/<item>` (an item with no collection, such as a Selection member
@@ -1740,13 +1741,18 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
-| `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26) |
+| `[data-block]` | the block page; its value the CID (2026-10-14) |
+| `[data-block-check]` | on the block page: `verified`, `unchecked` (a raw block over 1 MiB), `refused` (hash mismatch) or `missing` |
+| `[data-address]` | an address link to `#/block/<cid>`; its value the CID |
+| `[data-icon]` | a kind's icon; its value the kind |
+| `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26); since 2026-10-14 under the collection page's Details, as Nextflow wrote it |
+| `[data-index-stable]` | the button that saves a collection's Output Index File with each Publish Coordinate replaced by its address (run page and collection page, 2026-10-14); `[data-index-status]` beside it says how many paths were left as written, or why it failed |
 | `[data-output-index-missing]` | a collection's Output Index File, when it was never written: `data-output-index-missing` the publish path it was to have (ticket 26) |
 | `[data-page]` | on the pipeline, collection and Selections views, when the list is not empty: `data-first` and `data-last` (1-based, inclusive; `data-first` is 0 on a page past the end) and `data-total`; `[data-page-next]` and `[data-page-prev]` link to the pages either side |
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
-| `[data-preview-for]` | the items table row, or an item row's pills container: `data-preview-for` the item cid. A pills container is empty (no pills) when the item has no Meta Map (milestone 3; the table row since layout B) |
+| `[data-preview-for]` | the items table row: `data-preview-for` the item cid (item rows dropped their pills on 2026-10-14) |
 | `[data-pick-all]` | "Pick all N" on query results and collection pages: `data-via` the collection, `data-count` N; adds every item of the query or collection, not only the page (milestone 3; labelled "Add all N to the tray" before layout B) |
 | `body[data-write]` | `available` or `unavailable` |
 | `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |
@@ -2262,6 +2268,82 @@ Gate: tier B check 21 runs the items view's filtered call (step `B.where`,
 `[data-panel-state=filtered]`, `[data-snippet][data-where]`) verbatim in
 `gate/selection` and requires it to stage exactly the one item the page
 listed in `[data-item-result]`.
+
+### Stable references (2026-10-14)
+
+The page hands out addresses, never a name that a later run or another
+reader's config can point elsewhere. `run: 'latest'` stays, because the
+reader picks it knowing it moves.
+
+- The run page's outputs table has a "fields" column, every Meta Map path
+  on the sampled items (a key at two paths once; three, then +N), in place
+  of "keyed by"; "files" shows the distinct suffixes over the sampled items
+  rather than one item's file names.
+- The panel's "this run" call is `fromStore(run: 'cas://<RunCompletion>',
+  ...)`, not `run: 'lid://<hash>'` (amends milestone 3 decision 13 and the
+  layout B spec's run switch). A `lid://` is looked up in the reader's
+  composition, newest first (`Index.runByNextflowHash`); the RunCompletion
+  address names one run wherever it is read. A run with no lineage ID gets
+  the same call. The `lid://` stays under Run details.
+- An Output Index File names each file by its Publish Coordinate,
+  `cas://<alias>/<path>` (§7), which the next run to that path overwrites.
+  "index file" on the run page and the collection page saves it with each
+  coordinate replaced by the address `fromStore` emits for that leaf (§13):
+  `cas://<cid>/<name>` for a file, the Item Leaf for a directory
+  (`web/src/outputindex.js`). The page reads every item of the collection,
+  matches a coordinate to a publish path in `paths` at a segment boundary,
+  so an `outputDir` below the alias still matches, and changes nothing else
+  in the text. A coordinate it cannot match is left and counted. Nextflow's
+  own file stays under the collection page's Details.
+- `OutputCollection.paths[i]` is in the order `Join.build` walked the
+  channel item, a `LinkedHashMap`'s, while a stored map comes back in
+  canonical key order (§4), so for an item with leaves under two or more
+  map keys `paths[i]` and the decoded item's leaves can disagree by
+  position. Nothing in the plugin reads `paths`; the page pairs a path with
+  a leaf by file name within the item, or directly when the item has one
+  path and one addressed leaf. A path two items claim pairs with neither.
+
+### Visual language and the block page (2026-10-14)
+
+Spec `docs/superpowers/specs/2026-10-14-explorer-visual-language-design.md`,
+plan `docs/superpowers/plans/2026-10-14-explorer-visual-language.md`.
+
+- One grey icon per kind (`web/src/icons.js`): pipeline, run, output, item,
+  file, directory, Selection, Claim, address, store. An icon is a span
+  painted by a CSS mask (`ICON_CSS`), so the test DOM needs no SVG.
+  `ref(kind, label, href)` names a thing with its icon.
+- `address(cid)` (in `icons.js`, since it draws an icon; the spec placed it
+  in `html.js`) replaces `cid()`: a quiet link to `#/block/<cid>`. The short
+  form is `shortCid`'s first 10 and last 6 characters, such as
+  `bafyreian3...ac6uye`.
+- `#/block/<cid>` shows any block: its CID decoded, the browser's hash
+  check, its kind with a link to its friendly page, and its contents as
+  DAG-JSON with each link an address. `[data-block-check]` takes four values:
+  `verified`, `unchecked`, `refused` and `missing`. A RunManifest links to
+  its run only when the Store Log tail names the run: the snapshot has no
+  query by manifest, and adding one would change `Index.groovy`'s mirror.
+- Block reads: `BlockFetcher.partial` reads the first 4 KiB by Range. A
+  server that ignores Range answers 200 and the body is cancelled, unread.
+  HTTP 416 means the block is empty (the size comes from
+  `Content-Range: bytes */n`), and any other error status is `fetch_failed`.
+  An empty raw block is `verified` with size 0. A raw block over 1 MiB is
+  previewed by Range and left unchecked; `partial` never records it as
+  verified, so A4 holds.
+- `friendlyOf` trusts a string `kind` only when it is an own key of its
+  table. Any other string kind, `__proto__` included, gets the generic line
+  "a block of kind <kind>" with no link; a `kind` that is not a string gets
+  "a block of kind unknown".
+- Directory leaves are recognised by a dag-cbor address, read from a CID
+  object or from its text.
+- Item rows are two lines: the item and its label, then its files, "from"
+  its run and output, and its address. Pills are on the item page and the
+  items table only. A row says "not in this store" for an item held
+  elsewhere and nothing when it is held here: the page knows only here or
+  elsewhere, not which other store.
+- The Selection page leads with its name, one quiet line of who named it
+  and when and its address, and lists "Items".
+- Gate tier A check A8 walks from a collection page to an item's block and
+  on to its file's block.
 
 ## 17. Milestone 4: cloud (2026-09-28)
 

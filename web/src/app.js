@@ -16,6 +16,7 @@ import { h, link } from './html.js'
 import * as views from './views/index.js'
 import { PAIRS_CSS } from './pairs.js'
 import { APP_CSS } from './styles.js'
+import { ICON_CSS } from './icons.js'
 import { createPanel, useLabel } from './panel.js'
 import { createNav } from './nav.js'
 
@@ -27,6 +28,7 @@ const ROUTES = [
   ['collection', /^#\/collection\/([^/?]+)(?:\?offset=(\d+))?$/, (ex, m, ctx) => views.collection(ex, m[1], Number(m[2] ?? 0), ctx)],
   ['item', /^#\/item\/([^/]+)\/([^/]+)$/, (ex, m, ctx) => views.item(ex, m[1], m[2], ctx)],
   ['content', /^#\/content\/([^/]+)$/, (ex, m, ctx) => views.content(ex, m[1], ctx)],
+  ['block', /^#\/block\/([^/?]+)$/, (ex, m, ctx) => views.block(ex, m[1], ctx)],
   ['latest', /^#\/latest\/([^/]+)$/, (ex, m) => views.latest(ex, decodeURIComponent(m[1]))],
   ['items', /^#\/items\/([^/]+)\/([^/?]+)(?:\?where=(.*))?$/, (ex, m, ctx) =>
     views.items(ex, m[1], decodeURIComponent(m[2]), m[3] ? decodeURIComponent(m[3]) : '[]', ctx)],
@@ -94,6 +96,9 @@ async function render() {
     use: (v) => { if (mine !== sequence) return; view = v; if (rendered) panel.draw({ route: name, view }) },
     // Where the reader is, for the left column (plan P1: `expand` only from the run and pipeline views).
     mark: (where) => { if (mine === sequence) nav.mark(where).catch(() => {}) },
+    // Which store the page reads, and the same page in the others (the block page, visual language spec §4.5).
+    store: { label: store.member ?? store.base,
+      others: (hash) => (store.members ?? []).filter(m => m.alias !== store.member).map(m => ({ alias: m.alias, href: hrefIn(m.alias, hash) })) },
   }
   try {
     if (!route) throw Object.assign(new Error(`there is no view for ${hash}`), { code: 'bad_route' })
@@ -244,7 +249,7 @@ function renderMembers(store) {
 }
 
 async function start() {
-  document.head.append(h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS))
+  document.head.append(h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS), h('style', {}, ICON_CSS))
   window.__nfBlocks = { verified: [] }
   try {
     store = await resolveStore(location.href)
@@ -255,7 +260,7 @@ async function start() {
     tray = new Tray()
     const token = new URL(location.href).searchParams.get('token')
     const writable = store.members?.find(m => m.writable)?.alias ?? null
-    const reason = !store.members ? 'Composing, rename and delete need this page opened through `nextflow plugin nf-blocks:explore`, which holds the write endpoint.'
+    const reason = !store.members ? 'Read only here: writing needs this page opened through `nextflow plugin nf-blocks:explore`.'
       : !store.write || !writable ? 'This explore server has no writable member.'
       : !token ? 'Open this page with the URL nf-blocks:explore printed; it carries the write token.'
       : null

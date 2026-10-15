@@ -42,11 +42,11 @@ function world({ lid = 'lid://hash-R4', latest = 'bafyrun', write = { available:
   return { el, tray, ex, ctx, panel, asked }
 }
 
-test('whole: the run/output call, with no snapshot query (P2)', async () => {
+test('whole: the run/output call names the run by its RunCompletion address, with no snapshot query (P2)', async () => {
   const { el, panel, asked } = world()
   await panel.draw({ route: 'items', view: ITEMS })
   assert.equal(el.querySelector('[data-panel-state]').dataset.panelState, 'whole')
-  assert.equal(el.querySelector('[data-snippet="untyped"]').textContent, "channel.fromStore(run: 'lid://hash-R4', output: 'markdup')")
+  assert.equal(el.querySelector('[data-snippet="untyped"]').textContent, "channel.fromStore(run: 'cas://bafyrun', output: 'markdup')")
   assert.match(el.textContent, /All 5 items of markdup/)
   assert.equal(el.querySelector('[data-run-mode]').dataset.runMode, 'this')
   assert.deepEqual(asked, [['runIdentity', 'bafyrun']])
@@ -57,7 +57,7 @@ test('filtered: where: from the chips, and data-where for the driver', async () 
   const where = [['single_end', 'bool', 'false']]
   await panel.draw({ route: 'items', view: { ...ITEMS, where, count: 3, checked: 3 } })
   const call = el.querySelector('[data-snippet="untyped"]')
-  assert.equal(call.textContent, "channel.fromStore(run: 'lid://hash-R4', output: 'markdup', where: [single_end: false])")
+  assert.equal(call.textContent, "channel.fromStore(run: 'cas://bafyrun', output: 'markdup', where: [single_end: false])")
   assert.deepEqual(JSON.parse(call.dataset.where), where)
   assert.match(el.textContent, /3 items of markdup, where single_end = false/)
 })
@@ -141,6 +141,8 @@ test('saved: the Selection call and its samplesheets', async () => {
   assert.equal(el.querySelector('[data-snippet="untyped"]').textContent, "channel.fromStore(selection: 'bafysel')")
   assert.ok(el.querySelector('[data-samplesheet="csv"]'))
   assert.match(el.textContent, /treated BAMs/)
+  assert.match(el.textContent, /4 items/)
+  assert.doesNotMatch(el.textContent, /member/)
 })
 
 test('the panel never carries [data-error], [data-run] or [data-selection] (P14, Review Focus 4)', async () => {
@@ -160,7 +162,14 @@ test('a slower draw that finishes after a newer one does not overwrite it', asyn
   await panel.draw({ route: 'items', view: { ...ITEMS, completion: 'fast' } })
   release()
   await slow
-  assert.match(el.querySelector('[data-snippet="untyped"]').textContent, /lid:\/\/fast/)
+  assert.match(el.querySelector('[data-snippet="untyped"]').textContent, /cas:\/\/fast/)
+})
+
+test('a run with no lineage ID still gets a call for this run, by its address', async () => {
+  const { el, panel } = world({ lid: null })
+  await panel.draw({ route: 'items', view: ITEMS })
+  assert.equal(el.querySelector('[data-snippet="untyped"]').textContent, "channel.fromStore(run: 'cas://bafyrun', output: 'markdup')")
+  assert.doesNotMatch(el.textContent, /lineage ID/)
 })
 
 const tick = () => new Promise(r => setTimeout(r, 0))

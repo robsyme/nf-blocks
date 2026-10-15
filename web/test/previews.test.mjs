@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Previews } from '../src/previews.js'
 import { BlockError } from '../src/blocks.js'
+import { block, rawCid } from './fixture.mjs'
 
 const tick = () => new Promise((resolve) => setImmediate(resolve))
 
@@ -42,7 +43,7 @@ test('at most six previews are fetched at once; the rest wait their turn (ticket
   assert.equal(f.most(), 6)
   assert.deepEqual(p.get('i3'), {
     pairs: [{ path: 'lane', type: 'int', values: ['1'], types: ['int'] }, { path: 'sample', type: 'string', values: ['i3'], types: ['string'] }],
-    files: ['i3.bam'] })
+    files: ['i3.bam'], dirs: [] })
 })
 
 test('askFirst asks for the first hundred rows only; the rest wait for a click (ticket 03 Q3)', async () => {
@@ -104,4 +105,16 @@ test('cancel drops the queue and keeps what is in flight; an unsubscribed listen
   assert.equal(p.get('i7'), undefined)
   p.ask('coll', 'i7')
   assert.equal(p.stats.inFlight, 1)
+})
+
+test('dirs names the leaves whose address is a dag-cbor CID, given as an object or as text', async () => {
+  const dir = block({ kind: 'DirectoryManifest' }).cid
+  for (const given of [dir, dir.toString()]) {
+    const ex = { item: async () => ({ view: null, leaves: [{ name: 'A_qc', address: given }, { name: 'A.bam', address: rawCid('a') }, { name: 'B' }] }) }
+    const p = new Previews(ex)
+    p.ask('coll', 'i1')
+    await tick()
+    assert.deepEqual(p.get('i1').dirs, ['A_qc'])
+    assert.deepEqual(p.get('i1').files, ['A_qc', 'A.bam', 'B'])
+  }
 })

@@ -6,6 +6,7 @@
 // 3's measured cost stays the query's own (Gate assertion 2, plan P1). Its
 // attributes are data-nav-*, never the Gate's data-run or data-selection.
 import { h, link } from './html.js'
+import { icon } from './icons.js'
 import { statusTone, whenText } from './words.js'
 
 const NAV_RUNS = 10
@@ -56,12 +57,12 @@ export function createNav(ex, { el }) {
               if (open.has(p.pipeline)) open.delete(p.pipeline)
               else { open.add(p.pipeline); readRuns(p.pipeline).then(draw) }
               draw()
-            } }, open.has(p.pipeline) ? '▾ ' : '▸ ', p.pipeline, ' ', h('span', { class: 'muted' }, String(p.runs))),
+            } }, open.has(p.pipeline) ? '▾ ' : '▸ ', icon('pipeline'), p.pipeline, ' ', h('span', { class: 'muted' }, String(p.runs))),
             open.has(p.pipeline) ? runList(p.pipeline) : null))),
       h('h2', { class: 'nav-head' }, 'Selections'),
       selectionsError ? warn('Could not list Selections', selectionsError)
         : h('ul', { class: 'nav-selections' },
-          selections.map(s => h('li', {}, h('a', { href: `#/selection/${s.cid}`, 'data-nav-selection': s.cid },
+          selections.map(s => h('li', {}, h('a', { href: `#/selection/${s.cid}`, 'data-nav-selection': s.cid }, icon('selection'),
             s.state?.names?.length ? s.state.names.join(' / ') : 'unnamed'))),
           h('li', {}, link('#/selections', 'all selections…'))))
   }

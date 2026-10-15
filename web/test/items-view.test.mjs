@@ -42,6 +42,7 @@ test('rows, columns from the loaded previews, the constant line, file chips; no 
   assert.ok(!rows[0].textContent.includes('WT_REP1.markdup.sorted'))
   assert.equal(rows[0].querySelector('[data-pick]').dataset.pick, 'i1')
   assert.equal(rows[0].querySelector('[data-pick]').dataset.via, 'coll')
+  assert.ok(rows[0].querySelector('[data-address]'))
   assert.equal(c.used.at(-1).count, 3)
   assert.deepEqual(c.marked, [{ run: 'bafyrun' }])
 })

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as dagCbor from '@ipld/dag-cbor'
 import { BlockFetcher } from '../src/blocks.js'
-import { block, blockFetch, buildMember, rawCid } from './fixture.mjs'
+import { block, blockFetch, buildMember, rangedFetch, rawCid } from './fixture.mjs'
 
 const served = (...values) => {
   const blocks = new Map(values.map(v => { const b = block(v); return [b.cid.toString(), b.bytes] }))
@@ -92,4 +92,60 @@ test('urlFor is the URL load fetches: the member base, not the page (final revie
   assert.equal(fetcher.urlFor(cid), `http://h/m/lab/blocks/${cid.slice(-2)}/${cid}`)
   await fetcher.get(cid)
   assert.deepEqual(urls, [fetcher.urlFor(cid)])
+})
+
+test('raw: the bytes of a raw block, hash-checked and not decoded', async () => {
+  const text = 'sample,bam\nA,cas://lab/aligned/A.bam\n'
+  const cid = rawCid(text).toString()
+  const blocks = new Map([[cid, new TextEncoder().encode(text)]])
+  const fetcher = new BlockFetcher('http://h/', { fetchFn: blockFetch(blocks) })
+  assert.equal(new TextDecoder().decode(await fetcher.raw(cid)), text)
+  const lying = new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map([[cid, new TextEncoder().encode('other')]])) })
+  await assert.rejects(lying.raw(cid), (e) => e.code === 'hash_mismatch')
+  await assert.rejects(new BlockFetcher('http://h/', { fetchFn: blockFetch(new Map()) }).raw(cid), (e) => e.code === 'block_missing')
+})
+
+test('partial: the first n bytes and the whole size by Range, never recorded as verified', async () => {
+  const text = 'x'.repeat(10000)
+  const cid = rawCid(text).toString()
+  const fetcher = new BlockFetcher('http://h/', { fetchFn: rangedFetch(new Map([[cid, new TextEncoder().encode(text)]])) })
+  const { bytes, size } = await fetcher.partial(cid, 4096)
+  assert.equal(bytes.length, 4096)
+  assert.equal(size, 10000)
+  assert.equal(fetcher.partialFetches, 1)
+  assert.deepEqual(fetcher.verified, [])
+})
+
+test('partial: a server that ignores Range gives no bytes, only the size it states (Review Focus 1)', async () => {
+  const cid = rawCid('whole').toString()
+  let cancelled = false
+  const fetchFn = async () => ({ status: 200, ok: true, headers: new Headers({ 'Content-Length': '5' }), body: { cancel: () => { cancelled = true } } })
+  const { bytes, size } = await new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096)
+  assert.equal(bytes, null)
+  assert.equal(size, 5)
+  assert.ok(cancelled, 'the whole body is not read')
+})
+
+test('partial: a status that is neither a partial nor a whole body is fetch_failed', async () => {
+  const cid = rawCid('boom').toString()
+  const fetchFn = async () => ({ status: 500, ok: false, headers: new Headers() })
+  await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === 'fetch_failed')
+})
+
+test('partial: a 416 is a range past the end, so an empty block has no bytes and size 0', async () => {
+  const cid = rawCid('').toString()
+  const fetchFn = async () => ({ status: 416, ok: false, headers: new Headers({ 'Content-Range': 'bytes */0' }), body: { cancel() {} } })
+  const r = await new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096)
+  assert.equal(r.bytes.length, 0)
+  assert.equal(r.size, 0)
+})
+
+test('partial: the body is cancelled before a failure or a missing block is thrown', async () => {
+  const cid = rawCid('boom').toString()
+  for (const [status, code] of [[500, 'fetch_failed'], [404, 'block_missing']]) {
+    let cancelled = false
+    const fetchFn = async () => ({ status, ok: false, headers: new Headers(), body: { cancel: () => { cancelled = true } } })
+    await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === code)
+    assert.ok(cancelled, `${status} body cancelled`)
+  }
 })

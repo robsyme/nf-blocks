@@ -13,7 +13,6 @@ export function h(tag, attrs = {}, ...children) {
 }
 
 export const link = (href, ...children) => h('a', { href }, ...children)
-export const cid = (text) => h('code', { class: 'cid', title: text }, text)
 
 /** What the Copy button should say after `clipboard.writeText(text)`; a missing clipboard counts as a rejection (page minors, ticket 11). */
 export async function copyOutcome(clipboard, text) {
@@ -24,4 +23,14 @@ export async function copyOutcome(clipboard, text) {
   } catch {
     return 'Copy failed'
   }
+}
+
+/** Hands the viewer `text` as a file named `name`, built in the page rather than fetched. */
+export function saveText(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
+  const a = h('a', { href: url, download: name })
+  document.body.append(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
