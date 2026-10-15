@@ -13,6 +13,7 @@ import { Tray, UNSAVED_NOTE } from '../src/tray.js'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { claimState } from '../src/claims.js'
+import { block, rawCid } from './fixture.mjs'
 import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 import { memberWithIndexedCollection, memberWithUnjoinedRun } from './fixture.mjs'
 
@@ -147,6 +148,15 @@ test('an item with no Meta Map is labelled by its files', async () => {
   const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex) })
   await frame()
   assert.equal(node.querySelector('.row-label').textContent, 'A.bam')
+})
+
+test('a directory leaf gets the directory icon and a file leaf the file icon, in leaf order', async () => {
+  installDom()
+  const leaves = [{ name: 'A_qc', address: block({ kind: 'DirectoryManifest' }).cid }, { name: 'A.bam', address: rawCid('a') }]
+  const ex = { ...rowModel(), item: async () => ({ view: null, leaves }) }
+  const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex) })
+  await frame()
+  assert.deepEqual(node.querySelector('.row-files').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['directory', 'file'])
 })
 
 test('Add all on a collection page reads every item, adds them with the collection, then updates the tray count once', async () => {
