@@ -56,7 +56,7 @@ directory, pipeline or Selection, in place of plain text or a bare link.
 
 `address(cid)` replaces `cid()` in `html.js` (13 uses across six files
 today). It draws the address icon and the CID shortened by the existing
-`shortCid` (first 10 and last 6 characters, `bafyreian3s...ac6uye`), as a link to `#/block/<cid>` in
+`shortCid` (first 10 and last 6 characters, `bafyreian3...ac6uye`), as a link to `#/block/<cid>` in
 `--muted` with a light underline, its `title` the full CID, carrying
 `data-address="<cid>"`. Copy is not on the address itself; the block page
 has it. An address is never a page's headline: it ends a line or sits in a
@@ -105,7 +105,7 @@ A CID of another version, codec or hash than the store writes (DESIGN.md
 
 ### 4.3 Checked
 
-`data-block-check` carries `verified`, `unchecked` or `refused`.
+`data-block-check` carries `verified`, `unchecked`, `refused` or `missing`.
 
 - A `dag-cbor` block is fetched through `BlockFetcher.get`, which verifies
   it. The line reads "Read N bytes from <member>; their SHA-256 matches the
@@ -218,10 +218,10 @@ Every selector in DESIGN.md §15 keeps its element and meaning. New ones:
 | selector | meaning |
 |---|---|
 | `[data-block]` | the block page; its value the CID |
-| `[data-block-check]` | `verified`, `unchecked` or `refused` |
+| `[data-block-check]` | `verified`, `unchecked`, `refused` or `missing` |
 | `[data-address]` | an address link; its value the CID |
 
-Gate browser tier A gains A6: from a Selection's item row, follow the
+Gate browser tier A gains A8: from a Selection's item row, follow the
 item's `[data-address]` to its block page; require `data-block-check` to be
 `verified`; follow the Leaf address in its contents to the file's block
 page; require that page's bytes, fetched by the Gate itself, to hash to the
@@ -253,7 +253,7 @@ Unit tests under `web/test/`, written before the code:
   read-only line.
 - Existing tests whose text changes ("via" to "from") change with it.
 
-Then `npm test`, `./gradlew check`, `make gate` (with A6), and a look at
+Then `npm test`, `./gradlew check`, `make gate` (with A8), and a look at
 the scratch-workflow store through the static loop
 (`gate/browser/serve.py` and `?store=`).
 

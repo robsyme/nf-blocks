@@ -40,6 +40,10 @@ POINT_LIMIT = (8, 65536)          # requests, bytes: spec section 1.3 assertion 
 QUERY3_LIMIT = (50, 524288)
 YEAR_RUNS = 5 * 365
 
+# The block page reads a raw block whole, and hash-checks it, up to this size
+# (web/src/config.js BLOCK_PAGE_RAW_CAP, visual language spec section 4.3).
+BLOCK_PAGE_RAW_CAP = 1024 * 1024
+
 # The index's SQL, copied from Index.groovy so the Gate's year answers come from
 # sqlite3, not from the page's queries.json.
 YEAR_SQL = {
@@ -173,6 +177,28 @@ def where(key, value):
     return "?where=" + urllib.parse.quote(json.dumps([[key, "string", value]], separators=(",", ":")), safe="")
 
 
+def block_walk(walk, collection, item, leaf):
+    """Problems with A8's walk: a collection page links each item's address,
+    the item's block page is verified and links its file's address, and the
+    file's block page shows the check its size calls for."""
+    problems = []
+    missing = sorted(set(walk["items"]) - set(collection.get("addresses") or []))
+    if missing:
+        problems.append("the collection page links no address for item(s) %s" % [m[:16] for m in missing])
+    if item.get("block") != walk["item"] or item.get("blockCheck") != "verified":
+        problems.append("the item's block page shows %s (check %s), expected %s, verified"
+                        % (item.get("block"), item.get("blockCheck"), walk["item"][:16]))
+    if walk["leaf"] not in (item.get("addresses") or []):
+        problems.append("the item's block page links no address %s for its file" % walk["leaf"][:16])
+    want = "verified" if walk["leaf_size"] <= BLOCK_PAGE_RAW_CAP else "unchecked"
+    if leaf.get("block") != walk["leaf"] or leaf.get("blockCheck") != want:
+        problems.append("the file's block page shows %s (check %s), expected %s, %s"
+                        % (leaf.get("block"), leaf.get("blockCheck"), walk["leaf"][:16], want))
+    if not walk["leaf_hashes"]:
+        problems.append("the file block's bytes do not hash to %s by the Gate's own reckoning" % walk["leaf"][:16])
+    return problems
+
+
 def prepare(root):
     gate = A.Gate(root)
     out = os.path.join(root, "browser")
@@ -199,6 +225,12 @@ def prepare(root):
     if not bams:
         raise cas.GateError("no A.bam under pipeline-a/work to hash")
     content = cas.cid_of_file(bams[0])
+    coll_cid, coll_block = cold.collections(gate)["aligned"]
+    item_cids = sorted(link.text for link in coll_block.get("items") or [] if link is not None)
+    walk_item = item_cids[0]
+    walk_leaf = next(A._address_text(l.get("address")) for l in A._leaves((gate.block(walk_item) or {}).get("value"))
+                     if A._address_text(l.get("address")))
+    leaf_path = os.path.join(store, "blocks", walk_leaf[-2:], walk_leaf)
     y = year_answers(year)
     expected = {
         "content": content,
@@ -210,6 +242,8 @@ def prepare(root):
         "stale_items": items(gate, elsewhere, "aligned", "sample", "B"),
         "tampered": elsewhere.completion_cid,
         "year": y,
+        "walk": {"collection": coll_cid, "items": item_cids, "item": walk_item, "leaf": walk_leaf,
+                 "leaf_size": os.path.getsize(leaf_path), "leaf_hashes": cas.cid_of_file(leaf_path) == walk_leaf},
     }
     p = y["params"]
     year_query = "?store={range}/stores/year/"
@@ -237,6 +271,9 @@ def prepare(root):
         {"id": "A5.whole", "server": "plain", "path": "stores/current/index.html", "hash": "#/content/%s" % content},
         {"id": "A5.over-cap", "server": "plain", "path": "stores/current/index.html",
          "query": "?store={plain}/stores/year/", "hash": "#/idle"},
+        {"id": "A8.collection", "server": "range", "path": "stores/current/index.html", "hash": "#/collection/%s" % coll_cid},
+        {"id": "A8.item", "server": "range", "path": "stores/current/index.html", "hash": "#/block/%s" % walk_item},
+        {"id": "A8.file", "server": "range", "path": "stores/current/index.html", "hash": "#/block/%s" % walk_leaf},
     ]
     with open(os.path.join(out, "expected.json"), "w") as fh:
         json.dump(expected, fh, indent=1)
@@ -388,11 +425,17 @@ def check(root):
         return (FAIL, "; ".join(problems)) if problems else (PASS, "without Range the snapshot is downloaded whole under the cap "
                                                                    "and refused over it, with the reason shown")
 
+    def a8():
+        problems = block_walk(expected["walk"], seen("A8.collection"), seen("A8.item"), seen("A8.file"))
+        return (FAIL, "; ".join(problems)) if problems else (PASS, "the collection page links every item's address; the item's block "
+                                                                   "page is hash-checked and links its file, whose block page is too")
+
     run(1, "the page answers the three load-bearing queries", a1)
     run(2, "year-scale cold queries within the request and byte limits", a2)
     run(3, "a snapshot two runs stale", a3)
     run(4, "every fetched block is hash-verified in the browser", a4)
     run(5, "whole-file fallback without Range, refused over the cap", a5)
+    run(8, "an address walks to its block, and on to the blocks it names", a8)
 
     width = max(len(r[2]) for r in results)
     for status, number, title, message in results:

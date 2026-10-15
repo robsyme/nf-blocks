@@ -157,6 +157,8 @@ from the Gate's own hashes and block reads, and `sqlite3` for the year file:
   the tampered block is refused with `hash_mismatch`.
 - A5: against `plain`, the page downloads a snapshot under the cap whole and
   refuses one over it with `no_range_over_cap` shown.
+- A8: an item's address on a collection page opens its block page,
+  hash-checked, and its file's address opens the file's block page.
 
 A failing line: read `browser/observed.json` for that step and
 `browser/drive.log`. Assertions 6 and 7 are the cloud part.
