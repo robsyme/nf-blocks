@@ -95,10 +95,11 @@ export class BlockFetcher {
     this.partialFetches++
     if (res.status === 404 || res.status === 403)
       throw new BlockError('block_missing', cidText, `block ${cidText} is not in this member; it may be held in another one`)
-    if (res.status !== 206) {
+    if (res.status === 200) {
       try { await res.body?.cancel?.() } catch { /* already closed */ }
       return { bytes: null, size: Number(res.headers.get('Content-Length')) || null }
     }
+    if (res.status !== 206) throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
     const size = Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || null
     return { bytes: new Uint8Array(await res.arrayBuffer()), size }
   }

@@ -125,3 +125,9 @@ test('partial: a server that ignores Range gives no bytes, only the size it stat
   assert.equal(size, 5)
   assert.ok(cancelled, 'the whole body is not read')
 })
+
+test('partial: a status that is neither a partial nor a whole body is fetch_failed', async () => {
+  const cid = rawCid('boom').toString()
+  const fetchFn = async () => ({ status: 500, ok: false, headers: new Headers() })
+  await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === 'fetch_failed')
+})

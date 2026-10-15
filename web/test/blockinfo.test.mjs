@@ -45,3 +45,11 @@ test('friendlyOf: a RunManifest links to its run when the Store Log tail names i
   assert.equal(friendlyOf(manifest.toString(), { kind: 'RunManifest' }, stale).href, '#/run/bafycompletion')
   assert.equal(friendlyOf(manifest.toString(), { kind: 'RunManifest' }, []).href, null)
 })
+
+test('friendlyOf: a kind that names an Object.prototype member gets the generic answer, not a throw', () => {
+  for (const kind of ['__proto__', 'constructor', 'toString']) {
+    const f = friendlyOf('bafyx', { kind })
+    assert.equal(f.kind, 'address')
+    assert.equal(f.href, null)
+  }
+})
