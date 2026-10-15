@@ -30,7 +30,7 @@ export async function block(ex, cidText, ctx) {
 function kindLine(b) {
   if (!b.friendly) return h('p', { class: 'muted' }, 'Not read, so what it holds is unknown.')
   const f = b.friendly
-  return h('p', { 'data-block-kind': b.value?.kind ?? b.parts.codec }, icon(f.kind), `This is ${f.text}.`, f.href ? [' ', link(f.href, f.label)] : null)
+  return h('p', { 'data-block-kind': typeof b.value?.kind === 'string' ? b.value.kind : b.parts.codec }, icon(f.kind), `This is ${f.text}.`, f.href ? [' ', link(f.href, f.label)] : null)
 }
 
 function partsList(b) {
@@ -62,7 +62,7 @@ function contents(ex, b, ctx) {
     const bytes = b.bytes ?? b.preview
     return [
       bytes ? preview(bytes, b.bytes === null) : h('p', { class: 'muted' }, 'No preview: this server ignores Range.'),
-      h('p', { class: 'muted' }, b.bytes ? '' : `The first ${bytes?.length ?? 0} bytes. `, h('a', { href: ex.blocks.urlFor(b.cid), download: '' }, 'Download')),
+      h('p', { class: 'muted' }, b.bytes || !b.preview ? '' : `The first ${b.preview.length} bytes. `, h('a', { href: ex.blocks.urlFor(b.cid), download: '' }, 'Download')),
     ]
   }
   if (b.value === null) return h('p', { class: 'warn' }, b.schemaError ?? 'These bytes do not decode as DAG-CBOR.')

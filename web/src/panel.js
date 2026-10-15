@@ -161,7 +161,7 @@ export function createPanel({ el, ex, ctx, onState = null }) {
   function saved(s, view) {
     const name = view?.names?.length ? `Selection "${view.names.join(' / ')}"` : 'This Selection'
     return [
-      h('p', {}, name, s.members === null ? '' : ` · ${counted(s.members, 'member')}`),
+      h('p', {}, name, s.members === null ? '' : ` · ${counted(s.members, 'item')}`),
       snippetBlock({ kind: 'selection', cid: s.selection }),
       h('p', { class: 'muted' }, 'Script kind: ', snippetToggle()),
       ctx.write.served ? h('p', {}, 'Samplesheet: ',
@@ -203,7 +203,7 @@ export function createPanel({ el, ex, ctx, onState = null }) {
       h('p', {}, `Picked: ${counted(entries.length, 'item')}`),
       list,
       trayNote(ctx.tray) ? h('p', { class: 'warn' }, trayNote(ctx.tray)) : null,
-      ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only member is another Selection is legal, but the explorer does not make one: add an item too.') : null,
+      ctx.tray.onlyOneSelection() ? h('p', { class: 'muted' }, 'A Selection whose only entry is another Selection is legal, but the explorer does not make one: add an item too.') : null,
       h('p', { class: 'muted' }, 'A filter cannot describe these, so save them as a Selection: a fixed list of these exact items.'),
       ctx.write.available ? null : h('p', { 'data-unavailable': '', class: 'muted' }, ctx.write.reason),
       h('p', {}, name), h('p', {}, save, ' ', clear),

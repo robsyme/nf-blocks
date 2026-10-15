@@ -221,8 +221,8 @@ Every selector in DESIGN.md §15 keeps its element and meaning. New ones:
 | `[data-block-check]` | `verified`, `unchecked`, `refused` or `missing` |
 | `[data-address]` | an address link; its value the CID |
 
-Gate browser tier A gains A8: from a Selection's item row, follow the
-item's `[data-address]` to its block page; require `data-block-check` to be
+Gate browser tier A gains A8: from a collection page (tier A has no
+Selections), follow an item row's `[data-address]` to its block page; require `data-block-check` to be
 `verified`; follow the Leaf address in its contents to the file's block
 page; require that page's bytes, fetched by the Gate itself, to hash to the
 CID the item block names.

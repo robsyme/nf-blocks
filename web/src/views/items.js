@@ -119,7 +119,7 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     }
     if (p.error) {
       r.tr.replaceChildren(h('td', {}, r.box), h('td', { class: 'muted', colspan: String(Math.max(1, shape.columns.length + 1)) },
-        p.error === 'block_missing' ? 'not held in this member' : `no preview (${p.error})`), h('td', {}, open, ' ', address(r.address), ' ', pick))
+        p.error === 'block_missing' ? 'not in this store' : `no preview (${p.error})`), h('td', {}, open, ' ', address(r.address), ' ', pick))
       return
     }
     const { chips } = fileChips(p.files)

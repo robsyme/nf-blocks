@@ -1752,7 +1752,7 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `[data-producer]` | one query 1 row: `data-content`, `data-item`, `data-collection`, `data-completion`, `data-filename` |
 | `[data-latest]` | query 2's answer, a completion cid or empty |
 | `[data-item-result]` | one query 3 item cid |
-| `[data-preview-for]` | the items table row, or an item row's pills container: `data-preview-for` the item cid. A pills container is empty (no pills) when the item has no Meta Map (milestone 3; the table row since layout B) |
+| `[data-preview-for]` | the items table row: `data-preview-for` the item cid (item rows dropped their pills on 2026-10-14) |
 | `[data-pick-all]` | "Pick all N" on query results and collection pages: `data-via` the collection, `data-count` N; adds every item of the query or collection, not only the page (milestone 3; labelled "Add all N to the tray" before layout B) |
 | `body[data-write]` | `available` or `unavailable` |
 | `body[data-write-seq]`, `body[data-write-outcome]` | a counter bumped when a write attempt ends, and how: `written`, `exists`, `elsewhere`, or an error code; a save whose naming or restoring failed after the Selection saved records `written` (decision 23) |

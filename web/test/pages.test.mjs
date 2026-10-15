@@ -178,3 +178,25 @@ test('home, pipeline and item pages name their kinds with icons', async () => {
   assert.equal(pipePage.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'pipeline')
   assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
 })
+
+test('a Selection row whose collection this store does not know shows the collection as an address', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'i1', via: ['bafyunknowncoll'] }], firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async () => 'here', item: async () => ({ view: { firstName: 'x' }, leaves: [] }), runLabel: async () => null }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  assert.equal(page.querySelector('[data-member]').querySelector('.row-via').querySelector('[data-address]').dataset.address, 'bafyunknowncoll')
+})
+
+test('an item this store does not hold says "not in this store" once, and its label is the short address', async () => {
+  installDom()
+  const st = { names: ['africans'], nameClaims: [], current: [], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const gone = Object.assign(new Error('block i1 is not in this store'), { code: 'block_missing' })
+  const ex = { selection: async () => ({ state: st, members: [{ kind: 'item', address: 'bafyitemmissing1234567890', via: ['coll'] }], firstSeen: null, block: { asserted_by: 'rob' } }),
+    held: async () => 'elsewhere', item: async () => { throw gone }, runLabel: async () => null }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const row = page.querySelector('[data-member]')
+  assert.equal(row.textContent.split('not in this store').length - 1, 1)
+})

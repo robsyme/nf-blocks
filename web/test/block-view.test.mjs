@@ -93,3 +93,19 @@ test('a large bytes field is drawn without overflowing the call stack', async ()
   const page = await blockView(exWith(structured({ value: { kind: 'OutputItem', blob: new Uint8Array(300000).fill(7) } })), item.cid.toString(), ctx())
   assert.ok(page.querySelector('pre').textContent.includes('{"/": {"bytes": "'))
 })
+
+test('a raw block with neither bytes nor preview says so, offers Download, and does not count 0 bytes', async () => {
+  installDom()
+  const raw = { cid: leaf.toString(), parts: parts('raw'), check: 'unchecked', size: null, value: null, schemaError: null, bytes: null, preview: null,
+    friendly: { kind: 'file', text: "a file's bytes", label: 'Who produced it', href: `#/content/${leaf}` }, message: null }
+  const page = await blockView(exWith(raw), leaf.toString(), ctx())
+  assert.match(page.textContent, /No preview: this server ignores Range\./)
+  assert.ok(page.querySelector('a[download]'))
+  assert.doesNotMatch(page.textContent, /first 0 bytes/)
+})
+
+test('a kind that is not a string falls back to the codec', async () => {
+  installDom()
+  const page = await blockView(exWith(structured({ value: { kind: { a: 1 } } })), item.cid.toString(), ctx())
+  assert.equal(page.querySelector('[data-block-kind]').dataset.blockKind, 'dag-cbor')
+})

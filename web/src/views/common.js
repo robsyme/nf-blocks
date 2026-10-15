@@ -132,8 +132,9 @@ export const runLabelText = (label, collectionCid) => (label ? `${label.run_name
  * CID in `title`. With `completionCid` the placeholder already links there.
  */
 export function runLabelNode(ex, collectionCid, completionCid = null) {
-  const placeholder = h('code', { class: 'cid' }, shortCid(completionCid ?? collectionCid))
-  const node = h('span', { title: collectionCid }, completionCid ? link(`#/run/${completionCid}`, placeholder) : placeholder)
+  const node = h('span', { title: collectionCid }, completionCid
+    ? link(`#/run/${completionCid}`, h('code', { class: 'cid' }, shortCid(completionCid)))
+    : address(collectionCid))
   ex.runLabel(collectionCid).then((label) => {
     if (!label) return
     const c = label.completion
@@ -202,7 +203,7 @@ export function itemRow(ex, ctx, { address: itemCid, via = [], previews, target 
   const fromLine = fromLabel === null ? null : h('span', { class: 'row-via muted' }, ` ${fromLabel} `,
     via.length ? via.map((v, i) => [i ? '; ' : null, runLabelNode(ex, v), ' ', perVia(v)]) : [noVia, ' ', perVia('-')])
   const li = h('li', { class: 'row', ...attrs },
-    h('div', { class: 'row-head' }, lead, icon('item'), row.label, h('span', { class: 'row-action' }, action)),
+    h('div', { class: 'row-head' }, lead, h('a', { href: row.href, class: 'row-open', title: 'Open the item' }, icon('item')), row.label, h('span', { class: 'row-action' }, action)),
     h('div', { class: 'row-sub' }, row.files, fromLine, ' ', address(itemCid)))
   rowOf.set(li, row)
   return li
@@ -211,7 +212,7 @@ export function itemRow(ex, ctx, { address: itemCid, via = [], previews, target 
 export function fillRow(row, preview, paths) {
   if (preview.error) {
     row.label.replaceChildren(h('span', { class: 'muted', title: preview.message ?? '' },
-      preview.error === 'block_missing' ? 'not in this store' : `no preview (${preview.error})`))
+      preview.error === 'block_missing' ? shortCid(row.address) : `no preview (${preview.error})`))
     return
   }
   row.label.replaceChildren(link(row.href, labelText(preview, paths) || h('span', { class: 'muted' }, 'no Meta Map')))

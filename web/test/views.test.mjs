@@ -139,7 +139,17 @@ test('an item row: the item label linking to its page, its files, the pick carry
   assert.equal(row.querySelector('[data-pick]').dataset.via, 'coll')
   const all = node.querySelector('[data-pick-all]')
   assert.equal(all.dataset.via, 'coll')
+  assert.equal(all.dataset.count, '2')
   assert.equal(all.textContent, 'Pick all 2')
+})
+
+test('a row past the preview cap still links to its item page from its icon', async () => {
+  installDom()
+  const ex = rowModel()
+  const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex, { cap: 0 }), results: true })
+  await frame()
+  const row = node.querySelector('[data-item-result=i1]')
+  assert.equal(row.querySelector('.row-head').querySelector('a').getAttribute('href'), '#/item/coll/i1')
 })
 
 test('an item with no Meta Map is labelled by its files', async () => {

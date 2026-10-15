@@ -141,6 +141,8 @@ test('saved: the Selection call and its samplesheets', async () => {
   assert.equal(el.querySelector('[data-snippet="untyped"]').textContent, "channel.fromStore(selection: 'bafysel')")
   assert.ok(el.querySelector('[data-samplesheet="csv"]'))
   assert.match(el.textContent, /treated BAMs/)
+  assert.match(el.textContent, /4 items/)
+  assert.doesNotMatch(el.textContent, /member/)
 })
 
 test('the panel never carries [data-error], [data-run] or [data-selection] (P14, Review Focus 4)', async () => {
