@@ -260,7 +260,7 @@ async function start() {
     tray = new Tray()
     const token = new URL(location.href).searchParams.get('token')
     const writable = store.members?.find(m => m.writable)?.alias ?? null
-    const reason = !store.members ? 'Composing, rename and delete need this page opened through `nextflow plugin nf-blocks:explore`, which holds the write endpoint.'
+    const reason = !store.members ? 'Read only here: writing needs this page opened through `nextflow plugin nf-blocks:explore`.'
       : !store.write || !writable ? 'This explore server has no writable member.'
       : !token ? 'Open this page with the URL nf-blocks:explore printed; it carries the write token.'
       : null

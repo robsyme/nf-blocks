@@ -133,3 +133,31 @@ test('a Selection row says "from" its run and output, and where it is held only 
   assert.match(here.querySelector('.row-via').textContent, /^ ?from boring_yalow \/ people/)
   assert.deepEqual(here.querySelector('.row-via').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['run', 'output'])
 })
+
+test('the Selection page: icon and name, one quiet line naming who named it and when, "Items", a nested Selection by its name', async () => {
+  installDom()
+  const claim = { cid: 'bafyname', verb: 'set', value: 'africans', asserted_by: 'anonymous', timestamp: '2026-10-14T20:07:44.417Z', conflicted: false }
+  const st = { names: ['africans'], nameClaims: ['bafyname'], current: [claim], nameConflicted: false, deletion: 'none', deletionClaims: [] }
+  const ex = {
+    selection: async (cid) => (cid === 'bafysel'
+      ? { state: st, members: [{ kind: 'item', address: 'i1', via: ['coll'] }, { kind: 'selection', address: 'bafyinner' }], firstSeen: '2026-10-14T20:07:44.412Z', block: { asserted_by: 'anonymous' } }
+      : { state: { ...st, names: ['lagos'] }, members: [], firstSeen: null, block: { asserted_by: 'x' } }),
+    held: async () => 'here', item: async () => ({ view: { id: 'A' }, leaves: [] }), runLabel: async () => null,
+  }
+  const page = await selection(ex, 'bafysel', ctx())
+  await frame()
+  const h1 = page.querySelector('h1')
+  assert.equal(h1.querySelector('[data-icon]').dataset.icon, 'selection')
+  assert.equal(h1.textContent, 'africans')
+  const name = page.querySelector('[data-name]')
+  assert.equal(name.dataset.claim, 'bafyname')
+  assert.match(name.textContent, /named by anonymous · /)
+  assert.equal(name.querySelectorAll('[title]').find(e => !e.dataset.icon).getAttribute('title'), '2026-10-14T20:07:44.417Z')
+  assert.equal(page.querySelector('.selection-meta').querySelector('[data-address]').dataset.address, 'bafysel')
+  assert.ok(page.querySelectorAll('h2').some(e => e.textContent === 'Items and Selections (2)'))
+  const nested = page.querySelector('[data-member=bafyinner]')
+  assert.equal(nested.querySelector('[data-icon]').dataset.icon, 'selection')
+  assert.match(nested.textContent, /lagos/)
+  assert.equal(nested.querySelector('[data-address]').dataset.address, 'bafyinner')
+  assert.ok(page.querySelector('[data-unavailable]'))
+})
