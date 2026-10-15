@@ -1794,8 +1794,10 @@ Error codes: `no_snapshot`, `no_range_over_cap`, `cors_headers`,
 `fetch_failed`, `query_failed`, `worker_failed`, `snapshot_changed`, `hash_mismatch`,
 `schema_invalid`, `block_missing`, `not_found`, `bad_route`, `bad_predicate`,
 `file_protocol` (the store resolved to a `file://` URL, which a browser will
-not fetch from: the page must be served, by any static server or `explore`).
-A write can also show, in its status and in `body[data-write-outcome]`, the
+not fetch from: the page must be served, by any static server or `explore`),
+`server_gone` (a read or write failed and the server that served the page no
+longer answers a `HEAD /`, as when `explore` is stopped; it replaces whatever
+code the failure had). A write can also show, in its status and in `body[data-write-outcome]`, the
 transport refusals `forbidden` (`403`), `unsupported_media_type` (`415`),
 `too_large` (`413`) and `write_failed` (the server could not be reached, or
 answered with a status and body it does not document), and every `PutError`

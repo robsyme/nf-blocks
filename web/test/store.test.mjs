@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveStore } from '../src/store.js'
+import { explainFailure, resolveStore } from '../src/store.js'
 
 const members = { members: [{ alias: 'lab', writable: true, base: 'm/lab/' }, { alias: 'priv', writable: false, base: 'm/priv/' }] }
 const explore = async () => new Response(JSON.stringify(members), { headers: { 'Content-Type': 'application/json' } })
@@ -33,4 +33,28 @@ test('a page opened from file:// is refused with file_protocol, before any fetch
 test('a file:// page may still name an http store', async () => {
   const s = await resolveStore('file:///Users/me/index.html?store=https://b.s3.amazonaws.com/x/', { fetchFn: nothing })
   assert.equal(s.base, 'https://b.s3.amazonaws.com/x/')
+})
+
+test('a failure while the page server is down is explained as server_gone, naming explore and the origin', async () => {
+  const down = async () => { throw new TypeError('Load failed') }
+  const failure = new Error('could not fetch http://127.0.0.1:54905/index/v3.sqlite: Load failed')
+  const e = await explainFailure(failure, 'http://127.0.0.1:54905/?member=lab&token=t#/run/x', { fetchFn: down })
+  assert.equal(e.code, 'server_gone')
+  assert.match(e.message, /http:\/\/127\.0\.0\.1:54905 is not answering/)
+  assert.match(e.message, /nextflow plugin nf-blocks:explore/)
+  assert.doesNotMatch(e.message, /token/)
+})
+
+test('a failure while the page server answers is left as it was, whatever the answer', async () => {
+  const failure = new Error('could not fetch block x: Load failed')
+  assert.equal(await explainFailure(failure, 'http://127.0.0.1:9/#/', { fetchFn: explore }), failure)
+  assert.equal(await explainFailure(failure, 'http://127.0.0.1:9/#/', { fetchFn: nothing }), failure)
+})
+
+test('a file:// page never asks', async () => {
+  let asked = 0
+  const counting = async () => { asked++; throw new TypeError('Failed to fetch') }
+  const local = Object.assign(new Error('x'), { code: 'fetch_failed' })
+  assert.equal(await explainFailure(local, 'file:///Users/me/index.html', { fetchFn: counting }), local)
+  assert.equal(asked, 0)
 })

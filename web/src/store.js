@@ -29,3 +29,22 @@ export async function resolveStore(href, { fetchFn = (...a) => fetch(...a) } = {
   }
   return { base: new URL('.', url).href, members: null, member: null, write: false }
 }
+
+/**
+ * `e` as the page should show it. A stopped server fails every read with the
+ * browser's own words ("Load failed", "Failed to fetch", a NetworkError), so
+ * ask the server that served this page whether it still answers: when it
+ * does not, say that instead. Any answer, even a 404, means it is up.
+ */
+export async function explainFailure(e, href, { fetchFn = (...a) => fetch(...a) } = {}) {
+  const url = new URL(href)
+  if (url.protocol === 'file:') return e
+  try {
+    await fetchFn(new URL('/', url).href, { method: 'HEAD', cache: 'no-store' })
+    return e
+  } catch {
+    return Object.assign(new Error(`The server at ${url.origin} is not answering, so this page cannot read the store. ` +
+      'If it was started by `nextflow plugin nf-blocks:explore`, that command has stopped: run it again and open the URL it prints.'),
+    { code: 'server_gone', cause: e })
+  }
+}

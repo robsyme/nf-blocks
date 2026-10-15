@@ -7,7 +7,7 @@ import { openSnapshot } from './db.js'
 import { createInlineWorker, inlineWasm } from './inline.js'
 import { BlockFetcher } from './blocks.js'
 import { listLog } from './storelog.js'
-import { resolveStore } from './store.js'
+import { explainFailure, resolveStore } from './store.js'
 import { Explorer } from './model.js'
 import { Tray, safeSessionStorage, trayNote } from './tray.js'
 import { writer } from './write.js'
@@ -114,7 +114,8 @@ async function render() {
     if (mine !== sequence) return
     updateStale()
     finish('ready')
-  } catch (e) {
+  } catch (failure) {
+    const e = await explainFailure(failure, location.href)
     if (mine !== sequence) return
     main.replaceChildren(views.errorNode(e))
     await panel.draw({ route: 'error', view: null }).catch(() => {})
@@ -189,7 +190,8 @@ async function runWrite(status, attempt, button = null) {
     let done
     try {
       done = await attempt()
-    } catch (e) {
+    } catch (failure) {
+      const e = await explainFailure(failure, location.href)
       recorded = e.code ?? 'write_failed'
       const node = views.errorNode(e)
       if (e.code === 'stale_supersedes') node.append(' Someone changed this since the page loaded; reload to see the current state.')
@@ -294,8 +296,8 @@ async function start() {
     nav = createNav(explorer, { el: document.getElementById('nav-body') })
     // Before the first render, so its snapshot reads fall in the open phase (plan P1).
     await nav.load()
-  } catch (e) {
-    document.getElementById('main').replaceChildren(views.errorNode(e))
+  } catch (failure) {
+    document.getElementById('main').replaceChildren(views.errorNode(await explainFailure(failure, location.href)))
     finish('error')
     return
   }
