@@ -2330,8 +2330,9 @@ plan `docs/superpowers/plans/2026-10-14-explorer-visual-language.md`.
   previewed by Range and left unchecked; `partial` never records it as
   verified, so A4 holds.
 - `friendlyOf` trusts a string `kind` only when it is an own key of its
-  table. A block claiming kind `__proto__`, or a `kind` that is not a
-  string, gets the generic "a block of kind unknown" line.
+  table. Any other string kind, `__proto__` included, gets the generic line
+  "a block of kind <kind>" with no link; a `kind` that is not a string gets
+  "a block of kind unknown".
 - Directory leaves are recognised by a dag-cbor address, read from a CID
   object or from its text.
 - Item rows are two lines: the item and its label, then its files, "from"
