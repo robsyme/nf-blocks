@@ -1684,7 +1684,8 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
 - Routes (location hash): `#/` home, `#/idle` (opens the snapshot and does
   nothing else), `#/pipeline/<name>[?offset=<n>]`, `#/run/<completion>`,
   `#/collection/<collection>[?offset=<n>]`, `#/item/<collection>/<item>`,
-  `#/content/<cid>` (query 1), `#/latest/<pipeline>` (query 2),
+  `#/content/<cid>` (query 1), `#/block/<cid>` (any block by its address),
+  `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
   (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`),
   `#/item/-/<item>` (an item with no collection, such as a Selection member
@@ -1740,6 +1741,10 @@ The DOM the Gate reads, and nothing else it may rely on:
 | `#stale[data-log]` | `read` when a Store Log listing answered in full, `unreadable` when none did (or an S3 listing failed part way): the tail is then unknown, and `data-stale-count` counts only the stale runs actually found |
 | `[data-run]` | one run: `data-run` completion cid, `data-pipeline`, `data-status`, `data-source` (`snapshot` or `tail`) |
 | `[data-collection]` | one output of a run: `data-collection` cid, `data-output` |
+| `[data-block]` | the block page; its value the CID (2026-10-14) |
+| `[data-block-check]` | on the block page: `verified`, `unchecked` (a raw block over 1 MiB), `refused` (hash mismatch) or `missing` |
+| `[data-address]` | an address link to `#/block/<cid>`; its value the CID |
+| `[data-icon]` | a kind's icon; its value the kind |
 | `[data-output-index]` | a collection's Output Index File, when it was published: `data-output-index` its address, holding an `<a download>` to its block (ticket 26); since 2026-10-14 under the collection page's Details, as Nextflow wrote it |
 | `[data-index-stable]` | the button that saves a collection's Output Index File with each Publish Coordinate replaced by its address (run page and collection page, 2026-10-14); `[data-index-status]` beside it says how many paths were left as written, or why it failed |
 | `[data-output-index-missing]` | a collection's Output Index File, when it was never written: `data-output-index-missing` the publish path it was to have (ticket 26) |
@@ -2297,6 +2302,47 @@ reader picks it knowing it moves.
   position. Nothing in the plugin reads `paths`; the page pairs a path with
   a leaf by file name within the item, or directly when the item has one
   path and one addressed leaf. A path two items claim pairs with neither.
+
+### Visual language and the block page (2026-10-14)
+
+Spec `docs/superpowers/specs/2026-10-14-explorer-visual-language-design.md`,
+plan `docs/superpowers/plans/2026-10-14-explorer-visual-language.md`.
+
+- One grey icon per kind (`web/src/icons.js`): pipeline, run, output, item,
+  file, directory, Selection, Claim, address, store. An icon is a span
+  painted by a CSS mask (`ICON_CSS`), so the test DOM needs no SVG.
+  `ref(kind, label, href)` names a thing with its icon.
+- `address(cid)` (in `icons.js`, since it draws an icon; the spec placed it
+  in `html.js`) replaces `cid()`: a quiet link to `#/block/<cid>`. The short
+  form is `shortCid`'s first 10 and last 6 characters, such as
+  `bafyreian3...ac6uye`.
+- `#/block/<cid>` shows any block: its CID decoded, the browser's hash
+  check, its kind with a link to its friendly page, and its contents as
+  DAG-JSON with each link an address. `[data-block-check]` takes four values:
+  `verified`, `unchecked`, `refused` and `missing`. A RunManifest links to
+  its run only when the Store Log tail names the run: the snapshot has no
+  query by manifest, and adding one would change `Index.groovy`'s mirror.
+- Block reads: `BlockFetcher.partial` reads the first 4 KiB by Range. A
+  server that ignores Range answers 200 and the body is cancelled, unread.
+  HTTP 416 means the block is empty (the size comes from
+  `Content-Range: bytes */n`), and any other error status is `fetch_failed`.
+  An empty raw block is `verified` with size 0. A raw block over 1 MiB is
+  previewed by Range and left unchecked; `partial` never records it as
+  verified, so A4 holds.
+- `friendlyOf` trusts a string `kind` only when it is an own key of its
+  table. A block claiming kind `__proto__`, or a `kind` that is not a
+  string, gets the generic "a block of kind unknown" line.
+- Directory leaves are recognised by a dag-cbor address, read from a CID
+  object or from its text.
+- Item rows are two lines: the item and its label, then its files, "from"
+  its run and output, and its address. Pills are on the item page and the
+  items table only. A row says "not in this store" for an item held
+  elsewhere and nothing when it is held here: the page knows only here or
+  elsewhere, not which other store.
+- The Selection page leads with its name, one quiet line of who named it
+  and when and its address, and lists "Items".
+- Gate tier A check A8 walks from a collection page to an item's block and
+  on to its file's block.
 
 ## 17. Milestone 4: cloud (2026-09-28)
 
