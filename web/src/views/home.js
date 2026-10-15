@@ -1,6 +1,6 @@
 // web/src/views/home.js
 // #/ and the idle page (DESIGN.md §15).
-import { h, link } from '../html.js'
+import { h } from '../html.js'
 import { ref } from '../icons.js'
 import { whenText } from '../words.js'
 import { enc, table, unreadableRuns } from './common.js'
