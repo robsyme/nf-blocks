@@ -1584,7 +1584,7 @@ the installed build; the Gate's browser tier uses it.
 
 `nextflow run` is unaffected: `Plugins.load(config)` installs the version
 pinned in the `plugins {}` block directly, never through
-`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.6.0-beta.1'` in `gate.config` needs none of this.
+`Plugins.start(target)`, so the Gate's `id 'nf-blocks@0.7.0-beta.1'` in `gate.config` needs none of this.
 
 ### What a member serves
 
@@ -2304,6 +2304,8 @@ reader picks it knowing it moves.
   path and one addressed leaf. A path two items claim pairs with neither.
 
 ### Visual language and the block page (2026-10-14)
+
+*Status: merged to main at `41bc018` (PR #4) and released as 0.7.0-beta.1. `./gradlew check` green; `cd web && npm test` 336 of 336; gate unit tests 333 OK (1 skipped). `make gate` on a fresh root: lineage 18 PASS, 0 FAIL, 5 SKIP; browser tier A (local) 6/6 including the new A8; tier B 14/14. `make gate-cloud` on the same root: browser tier A (cloud) 2/2 (A6, A7). Tier two not run against this release.*
 
 Spec `docs/superpowers/specs/2026-10-14-explorer-visual-language-design.md`,
 plan `docs/superpowers/plans/2026-10-14-explorer-visual-language.md`.
