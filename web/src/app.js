@@ -16,6 +16,7 @@ import { h, link } from './html.js'
 import * as views from './views/index.js'
 import { PAIRS_CSS } from './pairs.js'
 import { APP_CSS } from './styles.js'
+import { ICON_CSS } from './icons.js'
 import { createPanel, useLabel } from './panel.js'
 import { createNav } from './nav.js'
 
@@ -244,7 +245,7 @@ function renderMembers(store) {
 }
 
 async function start() {
-  document.head.append(h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS))
+  document.head.append(h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS), h('style', {}, ICON_CSS))
   window.__nfBlocks = { verified: [] }
   try {
     store = await resolveStore(location.href)
