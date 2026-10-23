@@ -64,6 +64,23 @@ export function fieldPaths(previews) {
   return [...paths].sort(byText)
 }
 
+const positionOf = (column) => /^\[(\d+)\]$/.exec(column)?.[1]
+
+/** The file columns over the loaded previews (items file columns spec §6.1): record keys sorted, then tuple positions `[i]` by number. */
+export function fileColumns(previews) {
+  const keys = new Set()
+  for (const p of previews ?? []) for (const s of p?.slots ?? []) keys.add(s.column)
+  const names = [...keys].filter(k => positionOf(k) === undefined).sort(byText)
+  const positions = [...keys].filter(k => positionOf(k) !== undefined).sort((a, b) => positionOf(a) - positionOf(b))
+  return [...names, ...positions]
+}
+
+/** One cell's slots (spec §6.2): the preview's slots in `column`, in order, the first `max` shown and a count of the rest. */
+export function cellSlots(preview, column, max = 5) {
+  const all = (preview?.slots ?? []).filter(s => s.column === column)
+  return { shown: all.slice(0, max), more: Math.max(0, all.length - max) }
+}
+
 const COMPRESSED = new Set(['gz', 'bgz', 'bz2', 'xz', 'zst'])
 
 /** A file name's suffix from its last '.', with the one before when that is a compression suffix; a name with no '.' after its first character is kept whole. */

@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, fieldPaths, fileChips, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, fieldPaths, fileChips, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -93,4 +93,22 @@ test('outputSuffixes: each distinct suffix over every loaded item, sorted, a com
     ['.fastq.gz', '.vcf.bgz', 'README'])
   assert.deepEqual(outputSuffixes([{ files: ['.hidden', 'x.'] }]), ['.hidden', 'x.'])
   assert.deepEqual(outputSuffixes([{ pending: true }, {}]), [])
+})
+
+const slot = (column, path) => ({ column, path, name: null, size: null, address: null, dir: false, reason: null })
+
+test('fileColumns: the union over loaded previews, names sorted, then positions by number', () => {
+  const a = { slots: [slot('samtools', 'samtools.stats'), slot('bam', 'bam')] }
+  const b = { slots: [slot('bai', 'bai'), slot('[10]', '[10]'), slot('[2]', '[2]')] }
+  assert.deepEqual(fileColumns([a, b, undefined, { error: 'block_missing' }]), ['bai', 'bam', 'samtools', '[2]', '[10]'])
+  assert.deepEqual(fileColumns([]), [])
+})
+
+test('cellSlots: the column\'s slots in order, at most five, and how many more', () => {
+  const p = { slots: [...Array(9)].map((_, i) => slot('mqc_files', `mqc_files[${i}]`)).concat([slot('bam', 'bam')]) }
+  const { shown, more } = cellSlots(p, 'mqc_files')
+  assert.deepEqual(shown.map(s => s.path), ['mqc_files[0]', 'mqc_files[1]', 'mqc_files[2]', 'mqc_files[3]', 'mqc_files[4]'])
+  assert.equal(more, 4)
+  assert.deepEqual(cellSlots(p, 'bam'), { shown: [p.slots[9]], more: 0 })
+  assert.deepEqual(cellSlots(p, 'bai'), { shown: [], more: 0 })
 })
