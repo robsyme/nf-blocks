@@ -2,14 +2,14 @@
 // #/items/<completion>/<output>?where=... (explorer layout B spec §5.4): query 3
 // as a table whose columns are the Meta Map keys that tell items apart.
 // Nothing here reads the snapshot but Explorer.items (Gate assertion 2).
-import { h, link } from '../html.js'
-import { address, icon } from '../icons.js'
+import { h } from '../html.js'
+import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { cellOf, cellSlots, emptyColumns, fileColumns, itemTable } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
 import { humanBytes, leafReasonText } from '../words.js'
-import { enc, nextFrame, pickAll, pickButton, runCrumbs } from './common.js'
+import { enc, nextFrame, pickAll, runCrumbs } from './common.js'
 
 export const TYPES = ['string', 'int', 'float', 'bool', 'null']
 
@@ -99,9 +99,37 @@ function pillTip() {
     if (r) el.setAttribute('style', `left: ${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px; top: ${r.bottom + 6}px`)
   }
   const hide = () => { el.dataset.open = 'false' }
-  const on = (lines) => ({ onmouseenter: (e) => show(e.currentTarget, lines), onfocus: (e) => show(e.currentTarget, lines),
-    onmouseleave: hide, onblur: hide, 'aria-label': lines.map(([, text]) => text).join('\n') })
+  /** Hover and focus handlers for `lines`, or for `() => lines` when they change after drawing. */
+  const on = (lines) => {
+    const get = typeof lines === 'function' ? lines : () => lines
+    return { onmouseenter: (e) => show(e.currentTarget, get()), onfocus: (e) => show(e.currentTarget, get()),
+      onmouseleave: hide, onblur: hide, 'aria-label': get().map(([, text]) => text).join('\n') }
+  }
   return { el, on }
+}
+
+/** The row's "+" pill (items file columns spec §6.5): adds the item to the tray with its collection, then shows a tick. */
+function pickPill(ctx, { address, via }, tip) {
+  let picked = ctx.tray.has(address)
+  const button = h('button', { type: 'button', class: `file-pill row-pill${picked ? ' picked' : ''}`, 'data-pick': address, 'data-kind': 'item',
+    'data-via': via.join(' '), disabled: picked, ...tip.on(() => [['tip-path', picked ? 'Picked' : 'Add to picked']]),
+    onclick: (event) => {
+      ctx.tray.add({ address, via, kind: 'item' })
+      ctx.trayChanged()
+      picked = true
+      const b = event.currentTarget
+      b.textContent = '✓'
+      b.disabled = true
+      b.classList.add('picked')
+      b.setAttribute('aria-label', 'Picked')
+    } }, picked ? '✓' : '+')
+  return button
+}
+
+/** The row's braces pill: opens the item page, with the item's address in the tip. */
+function openPill(href, address, tip) {
+  return h('a', { class: 'file-pill row-pill', href, 'data-open-item': '', 'data-address': address,
+    ...tip.on([['tip-path', 'Open item'], ['tip-name', address]]) }, icon('item'))
 }
 
 /** A stored file as a fixed-size file-pill linking to its block page (items file columns spec §6.3); the tip gives path, name and size. */
@@ -152,23 +180,21 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     const p = previews.get(r.address)
     r.drawn = p
     const itemHref = `#/item/${via[0] ?? '-'}/${r.address}`
-    const open = link(itemHref, 'Open')
-    const pick = pickButton(ctx, { address: r.address, via })
+    const actions = h('td', { class: 'item-actions' }, pickPill(ctx, { address: r.address, via }, tip), openPill(itemHref, r.address, tip))
     if (p === undefined) {
       const wait = r.index < previews.cap ? h('span', { class: 'muted' }, 'loading...')
         : h('button', { type: 'button', onclick: () => previews.ask(via[0] ?? null, r.address) }, 'show details')
-      r.tr.replaceChildren(h('td', {}, r.box), h('td', { colspan: span() }, wait), h('td', {}, open, ' ', address(r.address), ' ', pick))
+      r.tr.replaceChildren(h('td', {}, r.box), actions, h('td', { colspan: span() }, wait))
       return
     }
     if (p.error) {
-      r.tr.replaceChildren(h('td', {}, r.box), h('td', { class: 'muted', colspan: span() },
-        p.error === 'block_missing' ? 'not in this store' : `no preview (${p.error})`), h('td', {}, open, ' ', address(r.address), ' ', pick))
+      r.tr.replaceChildren(h('td', {}, r.box), actions, h('td', { class: 'muted', colspan: span() },
+        p.error === 'block_missing' ? 'not in this store' : `no preview (${p.error})`))
       return
     }
-    r.tr.replaceChildren(h('td', {}, r.box),
+    r.tr.replaceChildren(h('td', {}, r.box), actions,
       ...files.map((key, i) => fileCell(p, key, i, itemHref)),
-      ...shape.columns.map(path => h('td', {}, valueNode(cellOf(p, path), target))),
-      h('td', {}, open, ' ', address(r.address), ' ', pick))
+      ...shape.columns.map(path => h('td', {}, valueNode(cellOf(p, path), target))))
   }
   const redraw = nextFrame(() => {
     const loaded = rows.map(r => previews.get(r.address))
@@ -183,8 +209,8 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     if (reshaped) {
       table.dataset.columns = JSON.stringify(shape.columns)
       table.dataset.fileColumns = JSON.stringify(files)
-      head.replaceChildren(h('th', {}, all), ...files.map((k, i) => h('th', { class: `file-key ${fileClass(i)}`, 'data-file-column': k }, k)),
-        ...shape.columns.map(p => h('th', {}, p)), h('th', {}))
+      head.replaceChildren(h('th', {}, all), h('th', { class: 'item-actions' }), ...files.map((k, i) => h('th', { class: `file-key ${fileClass(i)}`, 'data-file-column': k }, k)),
+        ...shape.columns.map(p => h('th', {}, p)))
       constantLine.replaceChildren(...(shape.constant.length ? ['Same for every item: ',
         ...shape.constant.flatMap((e, i) => [i ? ' · ' : '', `${e.path} `, h('strong', {}, valueNode(e, target))])] : []))
       emptyLine.replaceChildren(...(empties.length ? [`No stored file in any item: ${empties.join(' · ')}`] : []))

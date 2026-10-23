@@ -155,6 +155,22 @@ light tint. Cells do not wrap.
   tooltip's lines, since it has no visible text. The dashed pill shows its
   count as text.
 
+### 6.5 Row actions (amended 2026-10-23)
+
+The Open link, the item address and the "Add to picked" button move from the
+end of the row to a cell right after the checkbox, as two pills of the same
+shape as the file pills (option B of `actions-v3.html`):
+
+- a `+` button carrying `data-pick`, `data-kind="item"` and `data-via`. It
+  adds the item to the tray with its collection and turns into a green `✓`;
+  an item already in the tray draws as picked. Tooltip: "Add to picked" or
+  "Picked".
+- a braces pill linking to `#/item/<collection or '-'>/<item>`, carrying
+  `data-address`. Tooltip: "Open item" and the item's full address.
+
+Column order is: checkbox, row actions, file columns, metadata columns. A
+loading or failed row keeps its actions and spans the rest.
+
 ### 6.4 Retired
 
 `fileChips` loses its only caller (`items.js`). It is removed with its test.

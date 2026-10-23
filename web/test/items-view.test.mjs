@@ -126,7 +126,8 @@ test('loading and failed rows span the file columns too (Review Focus 4)', async
   const columns = JSON.parse(page.querySelector('table').dataset.columns).length
   const files = JSON.parse(page.querySelector('table').dataset.fileColumns).length
   const failed = page.querySelectorAll('[data-item-result]')[2]
-  assert.equal(failed.querySelectorAll('td')[1].getAttribute('colspan'), String(columns + files))
+  assert.equal(failed.querySelectorAll('td')[2].getAttribute('colspan'), String(columns + files))
+  assert.ok(failed.querySelectorAll('td')[1].querySelector('[data-pick]'))
 })
 
 test('a value is a link that adds its filter; the chips bar removes one', async () => {
@@ -169,14 +170,53 @@ test('the items view records which run and output its collection is, for the pan
   assert.deepEqual(c.sources.get('coll'), { completion: 'bafyrun', output: 'markdup' })
 })
 
-test('file columns come first, after the checkbox and before the metadata columns', async () => {
+test('the row actions, then the file columns, come first, after the checkbox and before the metadata columns', async () => {
   installDom()
   const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
   await frame(); await frame()
-  assert.deepEqual(page.querySelectorAll('th').map(t => t.dataset.fileColumn ?? t.textContent), ['', 'bai', 'bam', 'samtools', 'id', 'single_end', ''])
+  assert.deepEqual(page.querySelectorAll('th').map(t => t.dataset.fileColumn ?? t.textContent), ['', '', 'bai', 'bam', 'samtools', 'id', 'single_end'])
   const cells = page.querySelectorAll('[data-item-result]')[0].querySelectorAll('td')
-  assert.deepEqual(cells.slice(1, 4).map(td => td.dataset.fileCell), ['bai', 'bam', 'samtools'])
-  assert.equal(cells[4].textContent, 'WT_REP1')
+  assert.equal(cells.length, 7)
+  assert.ok(cells[1].querySelector('[data-pick]') && cells[1].querySelector('[data-open-item]'))
+  assert.deepEqual(cells.slice(2, 5).map(td => td.dataset.fileCell), ['bai', 'bam', 'samtools'])
+  assert.equal(cells[5].textContent, 'WT_REP1')
+})
+
+test('a "+" pill picks the item with its collection and then shows it is picked; a braces pill opens the item page', async () => {
+  installDom()
+  const c = ctx()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', c)
+  await frame(); await frame()
+  const tip = page.querySelector('[data-pill-tip]')
+  const row = page.querySelectorAll('[data-item-result]')[0]
+  const pick = row.querySelector('button[data-pick]')
+  assert.equal(pick.dataset.pick, 'i1')
+  assert.equal(pick.dataset.via, 'coll')
+  assert.equal(pick.textContent, '+')
+  assert.equal(pick.getAttribute('aria-label'), 'Add to picked')
+  await pick.fire('click')
+  assert.deepEqual(c.tray.entries().map(e => [e.address, e.via]), [['i1', ['coll']]])
+  assert.equal(pick.disabled, true)
+  assert.equal(pick.textContent, '✓')
+  await pick.fire('mouseenter')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent), ['Picked'])
+  const open = row.querySelector('a[data-open-item]')
+  assert.equal(open.getAttribute('href'), '#/item/coll/i1')
+  assert.equal(open.dataset.address, 'i1')
+  await open.fire('mouseenter')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent), ['Open item', 'i1'])
+})
+
+test('an item already in the tray draws its "+" pill as picked', async () => {
+  installDom()
+  const c = ctx()
+  c.tray.add({ address: 'i2', via: ['coll'], kind: 'item' })
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', c)
+  await frame(); await frame()
+  const pick = page.querySelectorAll('[data-item-result]')[1].querySelector('button[data-pick]')
+  assert.equal(pick.disabled, true)
+  assert.equal(pick.textContent, '✓')
+  assert.equal(pick.getAttribute('aria-label'), 'Picked')
 })
 
 test('hovering or focusing a pill opens the page\'s own tooltip at once; leaving closes it', async () => {
