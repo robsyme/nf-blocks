@@ -10,13 +10,15 @@ const view = (id, singleEnd) => ({ id, single_end: singleEnd, strandedness: 'rev
 const VIEWS = { i1: view('WT_REP1', false), i2: view('WT_REP2', false), i3: view('RAP1_REP1', true) }
 const leaf = (name, address, size = 10, reason = null) => ({ kind: 'Leaf', name, address, size, reason })
 const BAM = rawCid('bam')
-// A markdup-shaped record; i3 has no bai, and json_info is a declined optional output on every item.
+// A markdup-shaped record; i3 has no bai, json_info is a declined optional output on every item, and
+// i1's samtools.idxstats is declined while its stats and flagstat are stored.
 const valueOf = (i) => {
   const id = VIEWS[i].id
   const value = { id, bam: leaf(`${id}.markdup.sorted.bam`, BAM, 2048), bai: leaf(`${id}.markdup.sorted.bam.bai`, rawCid(`bai-${i}`)),
     samtools: { stats: leaf(`${id}.stats`, rawCid(`stats-${i}`)), flagstat: leaf(`${id}.flagstat`, rawCid(`flagstat-${i}`)) },
     json_info: leaf(null, null, null, 'declined') }
   if (i === 'i3') delete value.bai
+  if (i === 'i1') value.samtools.idxstats = leaf(null, null, null, 'declined')
   return value
 }
 
@@ -61,8 +63,8 @@ test('one column per file key after the metadata columns; pills link to the bloc
   installDom()
   const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
   await frame(); await frame()
-  assert.deepEqual(JSON.parse(page.querySelector('table').dataset.fileColumns), ['bai', 'bam', 'json_info', 'samtools'])
-  assert.deepEqual(page.querySelectorAll('th[data-file-column]').map(t => t.textContent), ['bai', 'bam', 'json_info', 'samtools'])
+  assert.deepEqual(JSON.parse(page.querySelector('table').dataset.fileColumns), ['bai', 'bam', 'samtools'])
+  assert.deepEqual(page.querySelectorAll('th[data-file-column]').map(t => t.textContent), ['bai', 'bam', 'samtools'])
   const row = page.querySelectorAll('[data-item-result]')[0]
   const bam = row.querySelector('a[data-pill="bam"]')
   assert.equal(bam.getAttribute('href'), `#/block/${BAM.toString()}`)
@@ -70,31 +72,46 @@ test('one column per file key after the metadata columns; pills link to the bloc
   assert.equal(bam.getAttribute('title'), 'bam\nWT_REP1.markdup.sorted.bam\n2.0 KB')
   assert.equal(bam.getAttribute('aria-label'), bam.getAttribute('title'))
   assert.ok(bam.querySelector('[data-icon="file"]'))
-  assert.deepEqual(row.querySelector('[data-file-cell="samtools"]').querySelectorAll('[data-pill]').map(p => p.dataset.pill),
+  assert.deepEqual(row.querySelector('[data-file-cell="samtools"]').querySelectorAll('a[data-pill]').map(p => p.dataset.pill),
     ['samtools.stats', 'samtools.flagstat'])
 })
 
-test('a missing key is a dash; an address-less slot is a pill that is not a link', async () => {
+test('a missing key is a dash; a cell\'s address-less slots are one dashed pill after the stored ones, not a link', async () => {
   installDom()
   const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
   await frame(); await frame()
   const rows = page.querySelectorAll('[data-item-result]')
   assert.equal(rows[2].querySelector('[data-file-cell="bai"]').textContent, '—')
-  const empty = rows[0].querySelector('[data-pill="json_info"]')
+  const cell = rows[0].querySelector('[data-file-cell="samtools"]')
+  const empty = cell.querySelector('[data-pill-empty]')
   assert.equal(empty.tagName, 'SPAN')
-  assert.equal(empty.getAttribute('title'), 'json_info\nno file (an optional output was empty)')
+  assert.equal(empty.dataset.pillEmpty, '1')
+  assert.equal(empty.getAttribute('title'), '1 without a stored file\nsamtools.idxstats: no file (an optional output was empty)')
+  assert.equal(empty.getAttribute('aria-label'), empty.getAttribute('title'))
+  assert.equal(cell.querySelectorAll('[data-pill-empty]').length, 1)
+  assert.equal(rows[1].querySelector('[data-file-cell="samtools"]').querySelector('[data-pill-empty]'), null)
+})
+
+test('keys with no stored file in any item get no column; one line above the table names them', async () => {
+  installDom()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
+  await frame(); await frame()
+  assert.equal(page.querySelector('th[data-file-column="json_info"]'), null)
+  assert.equal(page.querySelector('[data-empty-columns]').textContent, 'No stored file in any item: json_info')
 })
 
 test('more than five slots shows five and +N to the item page, "-" when there is no collection (Review Focus 5)', async () => {
   installDom()
   const ex = fakeEx()
   ex.items = async () => ({ items: ['i1'], collection: null })
-  ex.item = async () => ({ view: { id: 'S' }, leaves: [], value: { id: 'S', mqc: [...Array(9)].map((_, i) => leaf(`f${i}`, rawCid(`f${i}`))) } })
+  ex.item = async () => ({ view: { id: 'S' }, leaves: [], value: { id: 'S', mqc: [leaf(null, null, null, 'declined'),
+    ...[...Array(9)].map((_, i) => leaf(`f${i}`, rawCid(`f${i}`))), leaf(null, null, null, 'declined')] } })
   const page = await items(ex, 'bafyrun', 'bam_qc', '[]', ctx())
   await frame(); await frame()
   const cell = page.querySelector('[data-file-cell="mqc"]')
-  assert.equal(cell.querySelectorAll('[data-pill]').length, 5)
+  assert.deepEqual(cell.querySelectorAll('a[data-pill]').map(p => p.dataset.pill), ['mqc[1]', 'mqc[2]', 'mqc[3]', 'mqc[4]', 'mqc[5]'])
   assert.equal(cell.querySelector('.pill-more').textContent, '+4')
+  assert.equal(cell.querySelector('[data-pill-empty]').dataset.pillEmpty, '2')
   assert.equal(cell.querySelector('.pill-more').getAttribute('href'), '#/item/-/i1')
 })
 

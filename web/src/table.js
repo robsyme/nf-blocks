@@ -67,19 +67,37 @@ export function fieldPaths(previews) {
 
 const positionOf = (column) => /^\[(\d+)\]$/.exec(column)?.[1]
 
-/** The file columns over the loaded previews (items file columns spec §6.1): record keys sorted, then tuple positions `[i]` by number. */
-export function fileColumns(previews) {
-  const keys = new Set()
-  for (const p of previews ?? []) for (const s of p?.slots ?? []) keys.add(s.column)
+/** Column keys sorted the file columns' way: record keys by text, then tuple positions `[i]` by number. */
+function columnOrder(keys) {
   const names = [...keys].filter(k => positionOf(k) === undefined).sort(byText)
   const positions = [...keys].filter(k => positionOf(k) !== undefined).sort((a, b) => positionOf(a) - positionOf(b))
   return [...names, ...positions]
 }
 
-/** One cell's slots (spec §6.2): the preview's slots in `column`, in order, the first `max` shown and a count of the rest. */
+/** Every column key over the loaded previews, split by whether any item stores a file under it. */
+function columnKeys(previews) {
+  const all = new Set()
+  const stored = new Set()
+  for (const p of previews ?? []) for (const s of p?.slots ?? []) { all.add(s.column); if (s.address) stored.add(s.column) }
+  return { all, stored }
+}
+
+/** The file columns over the loaded previews (items file columns spec §6.1): keys with a stored file in some item. */
+export function fileColumns(previews) {
+  return columnOrder(columnKeys(previews).stored)
+}
+
+/** The keys whose slots are address-less in every loaded item (spec §6.1, amended): listed above the table, not drawn as columns. */
+export function emptyColumns(previews) {
+  const { all, stored } = columnKeys(previews)
+  return columnOrder([...all].filter(k => !stored.has(k)))
+}
+
+/** One cell's slots (spec §6.2): stored slots in order, the first `max` shown and a count of the rest; address-less slots apart. */
 export function cellSlots(preview, column, max = 5) {
   const all = (preview?.slots ?? []).filter(s => s.column === column)
-  return { shown: all.slice(0, max), more: Math.max(0, all.length - max) }
+  const stored = all.filter(s => s.address)
+  return { shown: stored.slice(0, max), more: Math.max(0, stored.length - max), empty: all.filter(s => !s.address) }
 }
 
 const COMPRESSED = new Set(['gz', 'bgz', 'bz2', 'xz', 'zst'])

@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, fieldPaths, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, emptyColumns, fieldPaths, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -85,20 +85,31 @@ test('outputSuffixes: each distinct suffix over every loaded item, sorted, a com
   assert.deepEqual(outputSuffixes([{ pending: true }, {}]), [])
 })
 
-const slot = (column, path) => ({ column, path, name: null, size: null, address: null, dir: false, reason: null })
+const slot = (column, path, address = 'bafkstored') => ({ column, path, name: null, size: null, address, dir: false, reason: address ? null : 'declined' })
+const none = (column, path) => slot(column, path, null)
 
-test('fileColumns: the union over loaded previews, names sorted, then positions by number', () => {
-  const a = { slots: [slot('samtools', 'samtools.stats'), slot('bam', 'bam')] }
-  const b = { slots: [slot('bai', 'bai'), slot('[10]', '[10]'), slot('[2]', '[2]')] }
+test('fileColumns: keys with a stored file in some loaded item, names sorted, then positions by number', () => {
+  const a = { slots: [slot('samtools', 'samtools.stats'), slot('bam', 'bam'), none('meta', 'meta.original_genome_bam')] }
+  const b = { slots: [slot('bai', 'bai'), slot('[10]', '[10]'), slot('[2]', '[2]'), none('cram', 'cram'), none('samtools', 'samtools.idxstats')] }
   assert.deepEqual(fileColumns([a, b, undefined, { error: 'block_missing' }]), ['bai', 'bam', 'samtools', '[2]', '[10]'])
   assert.deepEqual(fileColumns([]), [])
 })
 
-test('cellSlots: the column\'s slots in order, at most five, and how many more', () => {
-  const p = { slots: [...Array(9)].map((_, i) => slot('mqc_files', `mqc_files[${i}]`)).concat([slot('bam', 'bam')]) }
-  const { shown, more } = cellSlots(p, 'mqc_files')
-  assert.deepEqual(shown.map(s => s.path), ['mqc_files[0]', 'mqc_files[1]', 'mqc_files[2]', 'mqc_files[3]', 'mqc_files[4]'])
-  assert.equal(more, 4)
-  assert.deepEqual(cellSlots(p, 'bam'), { shown: [p.slots[9]], more: 0 })
-  assert.deepEqual(cellSlots(p, 'bai'), { shown: [], more: 0 })
+test('emptyColumns: keys whose slots are address-less in every loaded item, sorted the same way', () => {
+  const a = { slots: [slot('bam', 'bam'), none('meta', 'meta.original_genome_bam'), none('cram', 'cram'), none('[3]', '[3]')] }
+  const b = { slots: [none('bam', 'bam'), none('json_info', 'json_info')] }
+  assert.deepEqual(emptyColumns([a, b, undefined]), ['cram', 'json_info', 'meta', '[3]'])
+  assert.deepEqual(emptyColumns([]), [])
+})
+
+test('cellSlots: stored slots first, at most five, how many more, and the address-less ones apart', () => {
+  const rseqc = [none('rseqc', 'rseqc.tin'), none('rseqc', 'rseqc.meta.original_genome_bam'), slot('rseqc', 'rseqc.bamstat'),
+    none('rseqc', 'rseqc.innerdistance.pdf'), ...[...Array(6)].map((_, i) => slot('rseqc', `rseqc.junction[${i}]`))]
+  const p = { slots: [...rseqc, slot('bam', 'bam')] }
+  const { shown, more, empty } = cellSlots(p, 'rseqc')
+  assert.deepEqual(shown.map(s => s.path), ['rseqc.bamstat', 'rseqc.junction[0]', 'rseqc.junction[1]', 'rseqc.junction[2]', 'rseqc.junction[3]'])
+  assert.equal(more, 2)
+  assert.deepEqual(empty.map(s => s.path), ['rseqc.tin', 'rseqc.meta.original_genome_bam', 'rseqc.innerdistance.pdf'])
+  assert.deepEqual(cellSlots(p, 'bam'), { shown: [p.slots.at(-1)], more: 0, empty: [] })
+  assert.deepEqual(cellSlots(p, 'bai'), { shown: [], more: 0, empty: [] })
 })

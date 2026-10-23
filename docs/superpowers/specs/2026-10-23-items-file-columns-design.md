@@ -84,11 +84,19 @@ address. Each slot belongs to a **column key**:
   matter.)
 - **Bare Leaf item**: a single column headed `[0]`. (My call.)
 
-The file columns are the union of the column keys over the items loaded so
-far. Record keys sort alphabetically; positions sort numerically. They come
+The file columns are the column keys that hold a stored file (a slot with an
+address) in at least one item loaded so far. Record keys sort alphabetically;
+positions sort numerically. They come
 after the metadata columns and before the Open / address / Pick cell, and they
 replace the single "files" column. Like the metadata columns, the set grows as
 previews load and the header redraws when it changes.
+
+*Amended 2026-10-23 after the rnaseq check:* a column key whose slots are
+address-less in every loaded item (nf-core/rnaseq: `meta` from
+`meta.original_genome_bam`, `cram`, `json_info`, ...) gets no column. Those
+keys are listed, sorted the same way, on one muted line above the table,
+"No stored file in any item: cram · json_info · meta", next to the "Same for
+every item" line. On the rnaseq store such columns were 13 of `aligned`'s 17.
 
 No cap on the number of file columns. In the rnaseq run the widest output has
 12 (`quant_merged`, one item); `bam_qc` has 6. The table already sits in a
@@ -105,9 +113,15 @@ For one item and one column key, take the file slots under that key in the
 order the item holds them (map keys sorted, list order kept):
 
 - **No slot:** `—`, muted. The item has no such key.
-- **Otherwise:** one pill per slot, in that order. When there are more than
-  five, the first five show and then `+N`, a link to the item page
-  (`#/item/<collection>/<item>`). (Five is my call.)
+- **Otherwise:** one pill per stored slot, in that order. When there are more
+  than five stored slots, the first five show and then `+N`, a link to the
+  item page (`#/item/<collection>/<item>`). (Five is my call.)
+- *Amended 2026-10-23:* the cell's address-less slots do not get a pill each
+  and do not count toward the five. When there are any, one dashed pill
+  follows the stored pills (and `+N`); its hover gives their count and, one
+  per line, each one's field path and `leafReasonText(reason)`. On the
+  rnaseq store, per-slot dashed pills pushed 16 of 17 stored `rseqc` files
+  behind `+N`.
 
 ### 6.3 The pill
 

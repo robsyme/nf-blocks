@@ -6,7 +6,7 @@ import { h, link } from '../html.js'
 import { address, icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
-import { cellOf, cellSlots, fileColumns, itemTable } from '../table.js'
+import { cellOf, cellSlots, emptyColumns, fileColumns, itemTable } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
 import { humanBytes, leafReasonText } from '../words.js'
 import { enc, nextFrame, pickAll, pickButton, runCrumbs } from './common.js'
@@ -85,17 +85,16 @@ export async function items(ex, completionCid, output, whereText, ctx) {
         itemsTable(ex, ctx, { results, via, target, checked, onCheck: report })])
 }
 
-/** A slot's hover text (items file columns spec §6.3): its field path, then name and size, or why nothing is stored. */
-function slotTitle(s) {
-  const parts = s.address ? [s.path, s.name, humanBytes(s.size)] : [s.path, leafReasonText(s.reason), s.name]
-  return parts.filter(Boolean).join('\n')
+/** A stored file as a fixed-size pill linking to its block page (items file columns spec §6.3); hover gives path, name and size. */
+function pill(s) {
+  const title = [s.path, s.name, humanBytes(s.size)].filter(Boolean).join('\n')
+  return h('a', { class: 'pill', href: `#/block/${s.address}`, title, 'aria-label': title, 'data-pill': s.path }, icon(s.dir ? 'directory' : 'file'))
 }
 
-/** One file slot as a fixed-size pill: a link to its block page, or a dashed pill when nothing is stored. */
-function pill(s) {
-  const title = slotTitle(s)
-  if (!s.address) return h('span', { class: 'pill pill-empty', role: 'img', title, 'aria-label': title, 'data-pill': s.path })
-  return h('a', { class: 'pill', href: `#/block/${s.address}`, title, 'aria-label': title, 'data-pill': s.path }, icon(s.dir ? 'directory' : 'file'))
+/** A cell's address-less slots as one dashed pill (spec §6.2, amended); hover gives the count and each one's path and reason. */
+function emptyPill(slots) {
+  const title = [`${slots.length} without a stored file`, ...slots.map(s => `${s.path}: ${leafReasonText(s.reason)}`)].join('\n')
+  return h('span', { class: 'pill pill-empty', role: 'img', title, 'aria-label': title, 'data-pill-empty': String(slots.length) })
 }
 
 function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
@@ -103,6 +102,7 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   const head = h('tr', {})
   const body = h('tbody', {})
   const constantLine = h('p', { class: 'constant muted' })
+  const emptyLine = h('p', { class: 'constant muted', 'data-empty-columns': '' })
   const table = h('table', { class: 'items-table', 'data-columns': '[]' }, h('thead', {}, head), body)
   const all = h('input', { type: 'checkbox', checked: true, 'aria-label': 'check every item', onchange: (event) => {
     const on = event.currentTarget.checked
@@ -123,9 +123,9 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   let files = []
   const span = () => String(Math.max(1, shape.columns.length + files.length))
   const fileCell = (p, key, open) => {
-    const { shown, more } = cellSlots(p, key)
-    return h('td', { 'data-file-cell': key }, shown.length === 0 ? h('span', { class: 'muted' }, '—')
-      : [...shown.map(pill), more ? h('a', { class: 'pill-more', href: open }, `+${more}`) : null])
+    const { shown, more, empty } = cellSlots(p, key)
+    return h('td', { 'data-file-cell': key }, shown.length + empty.length === 0 ? h('span', { class: 'muted' }, '—')
+      : [...shown.map(pill), more ? h('a', { class: 'pill-more', href: open }, `+${more}`) : null, empty.length ? emptyPill(empty) : null])
   }
   const drawRow = (r) => {
     const p = previews.get(r.address)
@@ -153,7 +153,8 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     const loaded = rows.map(r => previews.get(r.address))
     const next = itemTable(loaded)
     const nextFiles = fileColumns(loaded)
-    const key = JSON.stringify([next.columns, next.constant.map(e => [e.path, e.values]), nextFiles])
+    const empties = emptyColumns(loaded)
+    const key = JSON.stringify([next.columns, next.constant.map(e => [e.path, e.values]), nextFiles, empties])
     const reshaped = key !== shapeKey
     shape = next
     files = nextFiles
@@ -165,6 +166,7 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
         ...files.map(k => h('th', { 'data-file-column': k }, k)), h('th', {}))
       constantLine.replaceChildren(...(shape.constant.length ? ['Same for every item: ',
         ...shape.constant.flatMap((e, i) => [i ? ' · ' : '', `${e.path} `, h('strong', {}, valueNode(e, target))])] : []))
+      emptyLine.replaceChildren(...(empties.length ? [`No stored file in any item: ${empties.join(' · ')}`] : []))
     }
     for (const r of rows) if (reshaped || previews.get(r.address) !== r.drawn) drawRow(r)
   })
@@ -174,7 +176,7 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   for (const r of rows) drawRow(r)
   previews.onChange(redraw)
   previews.askFirst(rows.map(r => ({ collection: via[0] ?? null, item: r.address })))
-  return h('div', {}, constantLine, h('div', { class: 'scroll' }, table))
+  return h('div', {}, constantLine, emptyLine, h('div', { class: 'scroll' }, table))
 }
 
 function whereForm(completionCid, output, where) {
