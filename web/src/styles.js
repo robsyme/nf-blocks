@@ -5,10 +5,12 @@
 export const APP_CSS = `
   :root { color-scheme: light dark; --fg: #1d1d1f; --bg: #ffffff; --side: #f6f7f9; --muted: #6e6e73; --line: #d2d2d7;
     --accent: #2563eb; --accent-fg: #ffffff; --good: #15803d; --warn: #9a5b00; --bad: #b3261e; --num: #0550ae; --true: #116329;
-    --false: #cf222e; --pill-key: #f6f8fa; --chip: #eef1ff; --code: #f6f8fa; }
+    --false: #cf222e; --pill-key: #f6f8fa; --chip: #eef1ff; --code: #f6f8fa;
+    --pill-line: #a9a9b0; --tip-bg: #1d1d1f; --tip-fg: #f5f5f7; }
   @media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --bg: #161617; --side: #1d1d1f; --muted: #a1a1a6; --line: #3a3a3c;
     --accent: #6ea8ff; --accent-fg: #0b1220; --good: #56d364; --warn: #ffd180; --bad: #ff8a80; --num: #79c0ff; --true: #56d364;
-    --false: #ff7b72; --pill-key: #2c2c2e; --chip: #2a2f45; --code: #1f1f22; } }
+    --false: #ff7b72; --pill-key: #2c2c2e; --chip: #2a2f45; --code: #1f1f22;
+    --pill-line: #6b6b70; --tip-bg: #f5f5f7; --tip-fg: #1d1d1f; } }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.45 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
   a { color: var(--accent); } h1 { font-size: 1.35rem; margin: .4rem 0 .2rem; } h2 { font-size: 1.02rem; }
@@ -36,7 +38,9 @@ export const APP_CSS = `
   table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; } .scroll { overflow-x: auto; }
   .chip { display: inline-block; background: var(--chip); border-radius: 4px; padding: 0 5px; margin: 0 2px 2px 0; font-size: 12px; }
-  .pill { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border: 1px solid var(--line); border-radius: 9px; margin-right: 3px; vertical-align: middle; color: inherit; text-decoration: none; } .pill:hover, .pill:focus-visible { border-color: var(--accent); } .pill .icon { pointer-events: none; } .pill-empty { border-style: dashed; opacity: .5; cursor: help; } .pill-more { font-size: 11px; color: var(--muted); margin-left: 2px; }
+  .file-pill { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; width: 26px; height: 18px; border: 1px solid var(--pill-line); border-radius: 3px; margin-right: 4px; vertical-align: middle; color: var(--muted); text-decoration: none; } .file-pill:hover, .file-pill:focus-visible { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); outline: none; } .file-pill .icon { margin: 0; width: 12px; height: 12px; vertical-align: 0; pointer-events: none; } .file-pill:hover .icon, .file-pill:focus-visible .icon { background-color: var(--accent); } .file-pill-empty { border-style: dashed; opacity: .6; cursor: default; font: 10px ui-monospace, monospace; } .file-pill-more { font-size: 11px; color: var(--muted); margin: 0 6px 0 2px; text-decoration: none; } .file-pill-more:hover { color: var(--accent); }
+  .items-table td, .items-table th { white-space: nowrap; vertical-align: middle; } .items-table th.file-key { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg); } .items-table td.file-cell { background: color-mix(in srgb, var(--code) 70%, transparent); } .items-table .file-last { border-right: 1px solid var(--line); }
+  .file-pill-tip { position: fixed; z-index: 20; pointer-events: none; background: var(--tip-bg); color: var(--tip-fg); border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.4; max-width: 420px; box-shadow: 0 4px 14px #0003; } .file-pill-tip[data-open=false] { display: none; } .file-pill-tip .tip-path { font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace; } .file-pill-tip .tip-name { opacity: .85; word-break: break-all; } .file-pill-tip .tip-size { opacity: .7; } .file-pill-tip .tip-reason { font: 11px ui-monospace, monospace; opacity: .85; }
   .ext { display: inline-block; background: var(--code); border-radius: 3px; padding: 0 4px; margin-right: 2px; font: 11px ui-monospace, monospace; } .index-link { margin-left: .35rem; } button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
   .address { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration-color: var(--line); white-space: nowrap; }
   .address .icon { margin-right: 2px; }

@@ -87,7 +87,8 @@ address. Each slot belongs to a **column key**:
 The file columns are the column keys that hold a stored file (a slot with an
 address) in at least one item loaded so far. Record keys sort alphabetically;
 positions sort numerically. They come
-after the metadata columns and before the Open / address / Pick cell, and they
+first, right after the checkbox and before the metadata columns (amended
+2026-10-23; a rule separates the last file column from the metadata), and they
 replace the single "files" column. Like the metadata columns, the set grows as
 previews load and the header redraws when it changes.
 
@@ -125,9 +126,13 @@ order the item holds them (map keys sorted, list order kept):
 
 ### 6.3 The pill
 
-Every pill is the same fixed size and shape and shows an icon only, no text:
+Every pill is the same fixed size and shape: 26×18px with 3px corners, the
+icon 12px and centred (amended 2026-10-23, option C of `items-v2.html`). The
+class is `file-pill`, because `pairs.js` already styles `.pill` as a rounded
+key/value pill. File column headers are bold monospace and file cells have a
+light tint. Cells do not wrap.
 
-| slot | icon | link | hover (`title`) |
+| slot | icon | link | hover (tooltip) |
 |---|---|---|---|
 | stored file | `file` | `#/block/<address>` | field path, file name, size |
 | stored directory (address codec DAG-CBOR) | `directory` | `#/block/<address>` | field path, directory name, size if known |
@@ -141,9 +146,14 @@ Every pill is the same fixed size and shape and shows an icon only, no text:
 - The link is a plain hash link with no `download` attribute. The block page
   shows a Range preview of a file's first bytes with Download as a separate,
   explicit action, and a directory block's entries as links.
-- A pill is keyboard-focusable when it is a link, and carries an
-  `aria-label` with the same text as its `title`, since it has no visible
-  text.
+- The hover text is the page's own tooltip, not a `title` attribute: the
+  native one takes about a second to appear. It opens at once on mouseenter
+  or focus and closes on mouseleave or blur, positioned under the pill. The
+  first line is the field path in bold monospace. A pill has no `title`.
+  (Amended 2026-10-23.)
+- A pill is keyboard-focusable, and carries an `aria-label` with the
+  tooltip's lines, since it has no visible text. The dashed pill shows its
+  count as text.
 
 ### 6.4 Retired
 

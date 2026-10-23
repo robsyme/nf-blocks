@@ -85,16 +85,35 @@ export async function items(ex, completionCid, output, whereText, ctx) {
         itemsTable(ex, ctx, { results, via, target, checked, onCheck: report })])
 }
 
-/** A stored file as a fixed-size pill linking to its block page (items file columns spec §6.3); hover gives path, name and size. */
-function pill(s) {
-  const title = [s.path, s.name, humanBytes(s.size)].filter(Boolean).join('\n')
-  return h('a', { class: 'pill', href: `#/block/${s.address}`, title, 'aria-label': title, 'data-pill': s.path }, icon(s.dir ? 'directory' : 'file'))
+/**
+ * The items table's one tooltip (spec §6.3, amended): shown at once on hover or
+ * focus, where the native `title` waits about a second. `lines` are
+ * `[class, text]`; the first is the field path.
+ */
+function pillTip() {
+  const el = h('div', { class: 'file-pill-tip', role: 'tooltip', 'data-pill-tip': '', 'data-open': 'false' })
+  const show = (target, lines) => {
+    el.replaceChildren(...lines.map(([cls, text]) => h('div', { class: cls }, text)))
+    el.dataset.open = 'true'
+    const r = target.getBoundingClientRect?.()
+    if (r) el.setAttribute('style', `left: ${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px; top: ${r.bottom + 6}px`)
+  }
+  const hide = () => { el.dataset.open = 'false' }
+  const on = (lines) => ({ onmouseenter: (e) => show(e.currentTarget, lines), onfocus: (e) => show(e.currentTarget, lines),
+    onmouseleave: hide, onblur: hide, 'aria-label': lines.map(([, text]) => text).join('\n') })
+  return { el, on }
 }
 
-/** A cell's address-less slots as one dashed pill (spec §6.2, amended); hover gives the count and each one's path and reason. */
-function emptyPill(slots) {
-  const title = [`${slots.length} without a stored file`, ...slots.map(s => `${s.path}: ${leafReasonText(s.reason)}`)].join('\n')
-  return h('span', { class: 'pill pill-empty', role: 'img', title, 'aria-label': title, 'data-pill-empty': String(slots.length) })
+/** A stored file as a fixed-size file-pill linking to its block page (items file columns spec §6.3); the tip gives path, name and size. */
+function pill(s, tip) {
+  const lines = [['tip-path', s.path], ['tip-name', s.name && (s.dir ? `${s.name}/` : s.name)], ['tip-size', humanBytes(s.size)]].filter(([, t]) => t)
+  return h('a', { class: 'file-pill', href: `#/block/${s.address}`, 'data-pill': s.path, ...tip.on(lines) }, icon(s.dir ? 'directory' : 'file'))
+}
+
+/** A cell's address-less slots as one dashed file-pill showing their count (spec §6.2, amended); the tip lists each path and reason. */
+function emptyPill(slots, tip) {
+  const lines = [['tip-path', `${slots.length} without a stored file`], ...slots.map(s => ['tip-reason', `${s.path}: ${leafReasonText(s.reason)}`])]
+  return h('span', { class: 'file-pill file-pill-empty', role: 'img', tabindex: '0', 'data-pill-empty': String(slots.length), ...tip.on(lines) }, String(slots.length))
 }
 
 function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
@@ -122,10 +141,12 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   let shapeKey = null
   let files = []
   const span = () => String(Math.max(1, shape.columns.length + files.length))
-  const fileCell = (p, key, open) => {
+  const tip = pillTip()
+  const fileClass = (i) => (i === files.length - 1 ? 'file-cell file-last' : 'file-cell')
+  const fileCell = (p, key, i, open) => {
     const { shown, more, empty } = cellSlots(p, key)
-    return h('td', { 'data-file-cell': key }, shown.length + empty.length === 0 ? h('span', { class: 'muted' }, '—')
-      : [...shown.map(pill), more ? h('a', { class: 'pill-more', href: open }, `+${more}`) : null, empty.length ? emptyPill(empty) : null])
+    return h('td', { class: fileClass(i), 'data-file-cell': key }, shown.length + empty.length === 0 ? h('span', { class: 'muted' }, '—')
+      : [...shown.map(s => pill(s, tip)), more ? h('a', { class: 'file-pill-more', href: open }, `+${more}`) : null, empty.length ? emptyPill(empty, tip) : null])
   }
   const drawRow = (r) => {
     const p = previews.get(r.address)
@@ -145,8 +166,8 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
       return
     }
     r.tr.replaceChildren(h('td', {}, r.box),
+      ...files.map((key, i) => fileCell(p, key, i, itemHref)),
       ...shape.columns.map(path => h('td', {}, valueNode(cellOf(p, path), target))),
-      ...files.map(key => fileCell(p, key, itemHref)),
       h('td', {}, open, ' ', address(r.address), ' ', pick))
   }
   const redraw = nextFrame(() => {
@@ -162,8 +183,8 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
     if (reshaped) {
       table.dataset.columns = JSON.stringify(shape.columns)
       table.dataset.fileColumns = JSON.stringify(files)
-      head.replaceChildren(h('th', {}, all), ...shape.columns.map(p => h('th', {}, p)),
-        ...files.map(k => h('th', { 'data-file-column': k }, k)), h('th', {}))
+      head.replaceChildren(h('th', {}, all), ...files.map((k, i) => h('th', { class: `file-key ${fileClass(i)}`, 'data-file-column': k }, k)),
+        ...shape.columns.map(p => h('th', {}, p)), h('th', {}))
       constantLine.replaceChildren(...(shape.constant.length ? ['Same for every item: ',
         ...shape.constant.flatMap((e, i) => [i ? ' · ' : '', `${e.path} `, h('strong', {}, valueNode(e, target))])] : []))
       emptyLine.replaceChildren(...(empties.length ? [`No stored file in any item: ${empties.join(' · ')}`] : []))
@@ -176,7 +197,7 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   for (const r of rows) drawRow(r)
   previews.onChange(redraw)
   previews.askFirst(rows.map(r => ({ collection: via[0] ?? null, item: r.address })))
-  return h('div', {}, constantLine, emptyLine, h('div', { class: 'scroll' }, table))
+  return h('div', {}, constantLine, emptyLine, h('div', { class: 'scroll' }, table), tip.el)
 }
 
 function whereForm(completionCid, output, where) {

@@ -59,7 +59,7 @@ test('rows, columns from the loaded previews, the constant line; no snapshot rea
   assert.deepEqual(c.marked, [{ run: 'bafyrun' }])
 })
 
-test('one column per file key after the metadata columns; pills link to the block page with no download', async () => {
+test('one column per file key; pills link to the block page with no download', async () => {
   installDom()
   const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
   await frame(); await frame()
@@ -69,8 +69,8 @@ test('one column per file key after the metadata columns; pills link to the bloc
   const bam = row.querySelector('a[data-pill="bam"]')
   assert.equal(bam.getAttribute('href'), `#/block/${BAM.toString()}`)
   assert.equal(bam.getAttribute('download'), null)
-  assert.equal(bam.getAttribute('title'), 'bam\nWT_REP1.markdup.sorted.bam\n2.0 KB')
-  assert.equal(bam.getAttribute('aria-label'), bam.getAttribute('title'))
+  assert.equal(bam.getAttribute('title'), null)
+  assert.equal(bam.getAttribute('aria-label'), 'bam\nWT_REP1.markdup.sorted.bam\n2.0 KB')
   assert.ok(bam.querySelector('[data-icon="file"]'))
   assert.deepEqual(row.querySelector('[data-file-cell="samtools"]').querySelectorAll('a[data-pill]').map(p => p.dataset.pill),
     ['samtools.stats', 'samtools.flagstat'])
@@ -86,8 +86,9 @@ test('a missing key is a dash; a cell\'s address-less slots are one dashed pill 
   const empty = cell.querySelector('[data-pill-empty]')
   assert.equal(empty.tagName, 'SPAN')
   assert.equal(empty.dataset.pillEmpty, '1')
-  assert.equal(empty.getAttribute('title'), '1 without a stored file\nsamtools.idxstats: no file (an optional output was empty)')
-  assert.equal(empty.getAttribute('aria-label'), empty.getAttribute('title'))
+  assert.equal(empty.textContent, '1')
+  assert.equal(empty.getAttribute('title'), null)
+  assert.equal(empty.getAttribute('aria-label'), '1 without a stored file\nsamtools.idxstats: no file (an optional output was empty)')
   assert.equal(cell.querySelectorAll('[data-pill-empty]').length, 1)
   assert.equal(rows[1].querySelector('[data-file-cell="samtools"]').querySelector('[data-pill-empty]'), null)
 })
@@ -110,9 +111,9 @@ test('more than five slots shows five and +N to the item page, "-" when there is
   await frame(); await frame()
   const cell = page.querySelector('[data-file-cell="mqc"]')
   assert.deepEqual(cell.querySelectorAll('a[data-pill]').map(p => p.dataset.pill), ['mqc[1]', 'mqc[2]', 'mqc[3]', 'mqc[4]', 'mqc[5]'])
-  assert.equal(cell.querySelector('.pill-more').textContent, '+4')
+  assert.equal(cell.querySelector('.file-pill-more').textContent, '+4')
   assert.equal(cell.querySelector('[data-pill-empty]').dataset.pillEmpty, '2')
-  assert.equal(cell.querySelector('.pill-more').getAttribute('href'), '#/item/-/i1')
+  assert.equal(cell.querySelector('.file-pill-more').getAttribute('href'), '#/item/-/i1')
 })
 
 test('loading and failed rows span the file columns too (Review Focus 4)', async () => {
@@ -166,4 +167,36 @@ test('the items view records which run and output its collection is, for the pan
   const c = ctx()
   await items(fakeEx(), 'bafyrun', 'markdup', '[]', c)
   assert.deepEqual(c.sources.get('coll'), { completion: 'bafyrun', output: 'markdup' })
+})
+
+test('file columns come first, after the checkbox and before the metadata columns', async () => {
+  installDom()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
+  await frame(); await frame()
+  assert.deepEqual(page.querySelectorAll('th').map(t => t.dataset.fileColumn ?? t.textContent), ['', 'bai', 'bam', 'samtools', 'id', 'single_end', ''])
+  const cells = page.querySelectorAll('[data-item-result]')[0].querySelectorAll('td')
+  assert.deepEqual(cells.slice(1, 4).map(td => td.dataset.fileCell), ['bai', 'bam', 'samtools'])
+  assert.equal(cells[4].textContent, 'WT_REP1')
+})
+
+test('hovering or focusing a pill opens the page\'s own tooltip at once; leaving closes it', async () => {
+  installDom()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
+  await frame(); await frame()
+  const tip = page.querySelector('[data-pill-tip]')
+  assert.equal(tip.dataset.open, 'false')
+  const rows = page.querySelectorAll('[data-item-result]')
+  const bam = rows[0].querySelector('a[data-pill="bam"]')
+  await bam.fire('mouseenter')
+  assert.equal(tip.dataset.open, 'true')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent), ['bam', 'WT_REP1.markdup.sorted.bam', '2.0 KB'])
+  await bam.fire('mouseleave')
+  assert.equal(tip.dataset.open, 'false')
+  const empty = rows[0].querySelector('[data-pill-empty]')
+  await empty.fire('focus')
+  assert.equal(tip.dataset.open, 'true')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent),
+    ['1 without a stored file', 'samtools.idxstats: no file (an optional output was empty)'])
+  await empty.fire('blur')
+  assert.equal(tip.dataset.open, 'false')
 })
