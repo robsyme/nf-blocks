@@ -6,8 +6,9 @@ import { h, link } from '../html.js'
 import { address, icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
-import { cellOf, fileChips, itemTable } from '../table.js'
+import { cellOf, cellSlots, fileColumns, itemTable } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
+import { humanBytes, leafReasonText } from '../words.js'
 import { enc, nextFrame, pickAll, pickButton, runCrumbs } from './common.js'
 
 export const TYPES = ['string', 'int', 'float', 'bool', 'null']
@@ -84,6 +85,19 @@ export async function items(ex, completionCid, output, whereText, ctx) {
         itemsTable(ex, ctx, { results, via, target, checked, onCheck: report })])
 }
 
+/** A slot's hover text (items file columns spec §6.3): its field path, then name and size, or why nothing is stored. */
+function slotTitle(s) {
+  const parts = s.address ? [s.path, s.name, humanBytes(s.size)] : [s.path, leafReasonText(s.reason), s.name]
+  return parts.filter(Boolean).join('\n')
+}
+
+/** One file slot as a fixed-size pill: a link to its block page, or a dashed pill when nothing is stored. */
+function pill(s) {
+  const title = slotTitle(s)
+  if (!s.address) return h('span', { class: 'pill pill-empty', role: 'img', title, 'aria-label': title, 'data-pill': s.path })
+  return h('a', { class: 'pill', href: `#/block/${s.address}`, title, 'aria-label': title, 'data-pill': s.path }, icon(s.dir ? 'directory' : 'file'))
+}
+
 function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   const previews = new Previews(ex)
   const head = h('tr', {})
@@ -106,44 +120,57 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   body.append(...rows.map(r => r.tr))
   let shape = null
   let shapeKey = null
+  let files = []
+  const span = () => String(Math.max(1, shape.columns.length + files.length))
+  const fileCell = (p, key, open) => {
+    const { shown, more } = cellSlots(p, key)
+    return h('td', { 'data-file-cell': key }, shown.length === 0 ? h('span', { class: 'muted' }, '—')
+      : [...shown.map(pill), more ? h('a', { class: 'pill-more', href: open }, `+${more}`) : null])
+  }
   const drawRow = (r) => {
     const p = previews.get(r.address)
     r.drawn = p
-    const open = link(`#/item/${via[0] ?? '-'}/${r.address}`, 'Open')
+    const itemHref = `#/item/${via[0] ?? '-'}/${r.address}`
+    const open = link(itemHref, 'Open')
     const pick = pickButton(ctx, { address: r.address, via })
     if (p === undefined) {
       const wait = r.index < previews.cap ? h('span', { class: 'muted' }, 'loading...')
         : h('button', { type: 'button', onclick: () => previews.ask(via[0] ?? null, r.address) }, 'show details')
-      r.tr.replaceChildren(h('td', {}, r.box), h('td', { colspan: String(Math.max(1, shape.columns.length + 1)) }, wait), h('td', {}, open, ' ', address(r.address), ' ', pick))
+      r.tr.replaceChildren(h('td', {}, r.box), h('td', { colspan: span() }, wait), h('td', {}, open, ' ', address(r.address), ' ', pick))
       return
     }
     if (p.error) {
-      r.tr.replaceChildren(h('td', {}, r.box), h('td', { class: 'muted', colspan: String(Math.max(1, shape.columns.length + 1)) },
+      r.tr.replaceChildren(h('td', {}, r.box), h('td', { class: 'muted', colspan: span() },
         p.error === 'block_missing' ? 'not in this store' : `no preview (${p.error})`), h('td', {}, open, ' ', address(r.address), ' ', pick))
       return
     }
-    const { chips } = fileChips(p.files)
     r.tr.replaceChildren(h('td', {}, r.box),
       ...shape.columns.map(path => h('td', {}, valueNode(cellOf(p, path), target))),
-      h('td', {}, chips.length ? icon('file') : null, chips.slice(0, 3).map(t => h('span', { class: 'ext' }, t)), chips.length > 3 ? h('span', { class: 'ext' }, `+${chips.length - 3}`) : null),
+      ...files.map(key => fileCell(p, key, itemHref)),
       h('td', {}, open, ' ', address(r.address), ' ', pick))
   }
   const redraw = nextFrame(() => {
-    const next = itemTable(rows.map(r => previews.get(r.address)))
-    const key = JSON.stringify([next.columns, next.constant.map(e => [e.path, e.values])])
+    const loaded = rows.map(r => previews.get(r.address))
+    const next = itemTable(loaded)
+    const nextFiles = fileColumns(loaded)
+    const key = JSON.stringify([next.columns, next.constant.map(e => [e.path, e.values]), nextFiles])
     const reshaped = key !== shapeKey
     shape = next
+    files = nextFiles
     shapeKey = key
     if (reshaped) {
       table.dataset.columns = JSON.stringify(shape.columns)
-      head.replaceChildren(h('th', {}, all), ...shape.columns.map(p => h('th', {}, p)), h('th', {}, 'files'), h('th', {}))
+      table.dataset.fileColumns = JSON.stringify(files)
+      head.replaceChildren(h('th', {}, all), ...shape.columns.map(p => h('th', {}, p)),
+        ...files.map(k => h('th', { 'data-file-column': k }, k)), h('th', {}))
       constantLine.replaceChildren(...(shape.constant.length ? ['Same for every item: ',
         ...shape.constant.flatMap((e, i) => [i ? ' · ' : '', `${e.path} `, h('strong', {}, valueNode(e, target))])] : []))
     }
     for (const r of rows) if (reshaped || previews.get(r.address) !== r.drawn) drawRow(r)
   })
   shape = itemTable([])
-  head.replaceChildren(h('th', {}, all), h('th', {}, 'files'), h('th', {}))
+  table.dataset.fileColumns = '[]'
+  head.replaceChildren(h('th', {}, all), h('th', {}))
   for (const r of rows) drawRow(r)
   previews.onChange(redraw)
   previews.askFirst(rows.map(r => ({ collection: via[0] ?? null, item: r.address })))

@@ -2235,8 +2235,10 @@ Plan decisions, where the spec is silent or the Gate forced a refinement:
   write's re-render keeps Storage open (`B.retain` opens it with one click).
 - P8. Float values in `where:` get a `d` suffix (`1.0E-5d`), so they type
   back to the index's `Double.toString` text.
-- P9. File chips drop the prefix one item's files share, up to its last
-  `.`; an item with one file shows its whole name.
+- P9. (Retired 2026-10-23 for the items page, which now shows one column per
+  file key with a pill per file:
+  docs/superpowers/specs/2026-10-23-items-file-columns-design.md.) File chips
+  dropped the prefix one item's files share, up to its last `.`.
 - P10. The "same for every item" line needs at least two loaded items.
 - P11. The item page has no "View" for text files: Download, and a "where
   else" link to the content page.

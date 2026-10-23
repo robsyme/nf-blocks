@@ -36,6 +36,7 @@ export const APP_CSS = `
   table { border-collapse: collapse; width: 100%; } td, th { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; font-size: 12px; } .scroll { overflow-x: auto; }
   .chip { display: inline-block; background: var(--chip); border-radius: 4px; padding: 0 5px; margin: 0 2px 2px 0; font-size: 12px; }
+  .pill { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 18px; border: 1px solid var(--line); border-radius: 9px; margin-right: 3px; vertical-align: middle; color: inherit; text-decoration: none; } .pill:hover, .pill:focus-visible { border-color: var(--accent); } .pill .icon { pointer-events: none; } .pill-empty { border-style: dashed; opacity: .5; cursor: help; } .pill-more { font-size: 11px; color: var(--muted); margin-left: 2px; }
   .ext { display: inline-block; background: var(--code); border-radius: 3px; padding: 0 4px; margin-right: 2px; font: 11px ui-monospace, monospace; } .index-link { margin-left: .35rem; } button.link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; cursor: pointer; }
   .address { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration-color: var(--line); white-space: nowrap; }
   .address .icon { margin-right: 2px; }

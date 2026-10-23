@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, fieldPaths, fileChips, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, fieldPaths, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -64,16 +64,6 @@ test('cellOf and withoutDuplicates', () => {
   assert.equal(cellOf(undefined, 'id'), null)
   const { duplicates } = itemTable(MARKDUP)
   assert.ok(!withoutDuplicates(MARKDUP[0].pairs, duplicates).some(p => p.path === 'meta.id'))
-})
-
-test('file chips drop the prefix an item\'s files share, up to its last dot (P9)', () => {
-  assert.deepEqual(fileChips(files('WT_REP1')), { prefix: 'WT_REP1.markdup.sorted',
-    chips: ['.bam.bai', '.bam', '.metrics.txt', '.bam.stats', '.bam.flagstat', '.bam.idxstats'] })
-  assert.deepEqual(fileChips(['a.bam', 'a.bam.bai']), { prefix: 'a', chips: ['.bam', '.bam.bai'] })
-  assert.deepEqual(fileChips(['multiqc_report.html']), { prefix: '', chips: ['multiqc_report.html'] })
-  assert.deepEqual(fileChips(['x.tsv', 'y.rds']), { prefix: '', chips: ['x.tsv', 'y.rds'] })
-  assert.deepEqual(fileChips([]), { prefix: '', chips: [] })
-  assert.deepEqual(fileChips(undefined), { prefix: '', chips: [] })
 })
 
 test('fieldPaths: every path on any loaded item, a repeated key once, sorted', () => {

@@ -1,8 +1,9 @@
 // web/src/table.js
 // The items table's shape (explorer layout B spec §5.4), decided from the
 // previews loaded so far: which Meta Map paths are columns, which collapse into
-// the "same for every item" line, which repeat another path's values, and each
-// item's file suffixes. Pure: the views draw what it decides.
+// the "same for every item" line, which repeat another path's values, the
+// file columns (items file columns spec §6) and an output's file suffixes.
+// Pure: the views draw what it decides.
 
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const sig = (entry) => JSON.stringify([entry.types, entry.values])
@@ -100,22 +101,3 @@ export function outputSuffixes(previews) {
 
 /** `pairs` without the paths `itemTable` found to repeat another. */
 export const withoutDuplicates = (pairs, duplicates) => (pairs ?? []).filter(e => !duplicates.has(e.path))
-
-/**
- * An item's files as chips (P9): with two or more, the prefix they share up to
- * its last '.' is dropped, each chip keeping its leading '.'; one file, or no
- * shared prefix with a '.', keeps the whole names.
- */
-export function fileChips(files) {
-  if (!files?.length) return { prefix: '', chips: [] }
-  if (files.length === 1) return { prefix: '', chips: [files[0]] }
-  let common = files[0]
-  for (const f of files.slice(1)) {
-    let i = 0
-    while (i < common.length && i < f.length && common[i] === f[i]) i++
-    common = common.slice(0, i)
-  }
-  const cut = common.lastIndexOf('.')
-  if (cut <= 0) return { prefix: '', chips: [...files] }
-  return { prefix: common.slice(0, cut), chips: files.map(f => f.slice(cut)) }
-}
