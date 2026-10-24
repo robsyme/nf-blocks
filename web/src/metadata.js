@@ -60,6 +60,8 @@ export function attrRows(view) {
   const rows = []
   const walk = (value, path) => {
     if (isLeaf(value)) return
+    // A null field counts as absent (DESIGN.md §12, amended 2026-10-24), as in MetadataView.
+    if (value === null || value === undefined) return
     if (Array.isArray(value)) return value.forEach(v => walk(v, path))
     if (isMap(value)) return Object.entries(value).forEach(([k, v]) => walk(v, path ? `${path}.${k}` : k))
     rows.push(scalarRow(path, value))
@@ -83,8 +85,8 @@ export function predicateRow(path, type, text) {
     case 'bool':
       if (text !== 'true' && text !== 'false') throw new PredicateError(`'${text}' is not true or false`)
       return { path, type, value: text, truncated: 0 }
-    case 'null': return { path, type, value: null, truncated: 0 }
-    default: throw new PredicateError(`unknown type '${type}'; use string, int, float, bool or null`)
+    case 'null': throw new PredicateError(`a null field counts as absent and is not indexed, so '${path}' null matches nothing`)
+    default: throw new PredicateError(`unknown type '${type}'; use string, int, float or bool`)
   }
 }
 

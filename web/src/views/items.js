@@ -10,7 +10,7 @@ import { cellOf, fileChips, itemTable } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
 import { enc, nextFrame, pickAll, pickButton, runCrumbs } from './common.js'
 
-export const TYPES = ['string', 'int', 'float', 'bool', 'null']
+export const TYPES = ['string', 'int', 'float', 'bool']
 
 function parseWhere(whereText) {
   try {

@@ -10,7 +10,7 @@ import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
 const leaf = (name) => ({ kind: 'Leaf', name, address: null, size: null, provider: null, reason: 'declined' })
 const preview = (view, files = []) => ({ pairs: pairsOf(view), files })
 
-test('pairsOf: one entry per path, sorted by path, a list\'s values together, floats typed as the index types them', () => {
+test('pairsOf: one entry per path, sorted by path, a list\'s values together, floats typed as the index types them, nulls absent', () => {
   const pairs = pairsOf({ sample: 'A', lane: 1, depth: new Float(30), library: { kit: 'truseq' }, ids: ['x', 'y'],
     ok: true, none: null, reads: leaf('A.bam') })
   assert.deepEqual(pairs, [
@@ -18,7 +18,6 @@ test('pairsOf: one entry per path, sorted by path, a list\'s values together, fl
     { path: 'ids', type: 'string', values: ['x', 'y'], types: ['string', 'string'] },
     { path: 'lane', type: 'int', values: ['1'], types: ['int'] },
     { path: 'library.kit', type: 'string', values: ['truseq'], types: ['string'] },
-    { path: 'none', type: 'null', values: [null], types: ['null'] },
     { path: 'ok', type: 'bool', values: ['true'], types: ['bool'] },
     { path: 'sample', type: 'string', values: ['A'], types: ['string'] },
   ])
@@ -76,7 +75,7 @@ test('a pill: the last path segment as its key, a list\'s values in one pill, th
   const [ids] = pillsOf(pairsOf({ ids: ['x', 'y'] }), null)
   assert.deepEqual(ids.values.map(v => v.text), ['x', 'y'])
   const classes = pillsOf(pairsOf({ a: 1, b: new Float(2.5), c: true, d: false, e: null, f: 's' }), null).map(p => p.values[0].cls)
-  assert.deepEqual(classes, ['pv-num', 'pv-num', 'pv-true', 'pv-false', 'pv-null', 'pv-str'])
+  assert.deepEqual(classes, ['pv-num', 'pv-num', 'pv-true', 'pv-false', 'pv-str'])
   const [off] = pillsOf(pairsOf({ ok: false }), null)
   assert.deepEqual(off.values[0], { text: 'false', type: 'bool', cls: 'pv-false', href: null, title: 'ok is false' })
 })
@@ -88,9 +87,7 @@ test('a filter link adds its pair to the current conditions once, and needs a ru
   assert.equal(filterHref(target, 'sample', 'string', 'A'), at([['sample', 'string', 'A']]))
   assert.equal(filterHref(null, 'lane', 'int', '1'), null)
   assert.equal(filterHref({ completion: null, output: 'x', where: [] }, 'lane', 'int', '1'), null)
-  const [none] = pillsOf(pairsOf({ none: null }), { completion: 'r', output: 'o', where: [] })
-  assert.deepEqual(none.values[0], { text: 'null', type: 'null', cls: 'pv-null',
-    href: `#/items/r/o?where=${encodeURIComponent('[["none","null",null]]')}`, title: 'list the items of o in this run where none is null' })
+  assert.deepEqual(pillsOf(pairsOf({ none: null }), { completion: 'r', output: 'o', where: [] }), [])
 })
 
 test('the string "2" and the integer 2 draw differently, and each filter link finds only its own item (Review Focus 5)', async () => {

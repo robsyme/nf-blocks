@@ -62,15 +62,12 @@ class MetadataViewTest extends Specification {
         rows.every { it.truncated == 0 }
     }
 
-    def 'a null value keeps its own type'() {
+    def 'a null value is treated as absent: no row, at any depth or inside a list'() {
         when:
-        def rows = MetadataView.flatten([sample: null])
+        def rows = MetadataView.flatten([sample: null, nested: [ref: null, kept: 'x'], tags: [null, 'a']])
 
         then:
-        rows.size() == 1
-        rows[0].path == 'sample'
-        rows[0].type == 'null'
-        rows[0].value == null
+        rows.collect { "${it.path} ${it.type} ${it.value}".toString() } == ['nested.kept string x', 'tags string a']
     }
 
     def 'a Double is a float and an integer is an int'() {
