@@ -66,12 +66,18 @@ export function fieldPaths(previews) {
   return [...paths].sort(byText)
 }
 
+const isNumber = (v) => v.type === 'int' || v.type === 'float'
+
+/** Equally common values: numbers first, by value (`89` before `100`), then the rest as text. */
+const byValue = (a, b) => (Number(isNumber(b)) - Number(isNumber(a)))
+  || (isNumber(a) && isNumber(b) ? Number(a.value) - Number(b.value) : byText(String(a.value), String(b.value)))
+
 /**
  * What the filter picker offers (filter bar, option A of `filters-v1.html`):
  * each metadata path over the loaded items, a key `itemTable` found at two
  * paths listed once, shallower paths first, with its values and how many
- * loaded items hold each, most common first. `type` is the values' one type,
- * or `mixed`.
+ * loaded items hold each, most common first, then numbers by value and text
+ * by text. `type` is the values' one type, or `mixed`.
  */
 export function fieldChoices(previews) {
   const loaded = (previews ?? []).filter(p => p?.pairs)
@@ -99,7 +105,7 @@ export function fieldChoices(previews) {
   return [...fields.values()].sort((a, b) => (depth(a.path) - depth(b.path)) || byText(a.path, b.path)).map(f => ({
     path: f.path,
     type: f.types.size === 1 ? [...f.types][0] : 'mixed',
-    values: [...f.values.values()].sort((a, b) => (b.count - a.count) || byText(String(a.value), String(b.value))),
+    values: [...f.values.values()].sort((a, b) => (b.count - a.count) || byValue(a, b)),
   }))
 }
 

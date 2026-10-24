@@ -151,3 +151,13 @@ test('typedCondition with an operator: a numeric field compares, an int bound st
   assert.throws(() => typedCondition({ path: 'id', type: 'string' }, '3', '>'), PredicateError)
   assert.throws(() => typedCondition({ path: 'lane', type: 'int' }, 'x', '>='), PredicateError)
 })
+
+test('fieldChoices: among equally common values, numbers sort by value, not as text, and come before text', () => {
+  const v = (type, value) => ({ path: 'x', type, values: [value], types: [type] })
+  const loaded = ['100', '89', '9.5', '-2'].map((n, i) => ({ pairs: [v(i === 2 ? 'float' : 'int', n)] }))
+  assert.deepEqual(fieldChoices(loaded)[0].values.map(x => x.value), ['-2', '9.5', '89', '100'])
+  const mixed = [{ pairs: [v('string', 'b')] }, { pairs: [v('int', '10')] }, { pairs: [v('string', 'a')] }, { pairs: [v('int', '9')] }]
+  assert.deepEqual(fieldChoices(mixed)[0].values.map(x => x.value), ['9', '10', 'a', 'b'])
+  const common = [{ pairs: [v('int', '100')] }, { pairs: [v('int', '100')] }, { pairs: [v('int', '9')] }]
+  assert.deepEqual(fieldChoices(common)[0].values.map(x => x.value), ['100', '9'])
+})
