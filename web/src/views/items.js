@@ -33,7 +33,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
  */
 function filterBar(target, { choices, end }) {
   const picker = h('div', { class: 'fb-picker', role: 'dialog', 'aria-label': 'add a filter', 'data-filter-picker': '', 'data-open': 'false',
-    onclick: (e) => e.stopPropagation?.() })
+    onclick: (e) => e.stopPropagation?.(), onkeydown: (e) => { if (e.key === 'Escape') close() } })
   const close = () => { picker.dataset.open = 'false' }
   const onKey = (e) => { if (e.key === 'Escape') close() }
   const showFields = () => {
@@ -72,8 +72,9 @@ function filterBar(target, { choices, end }) {
   const add = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-add-filter': '', onclick: (e) => {
     e.stopPropagation?.()
     if (picker.dataset.open === 'true') return close()
-    showFields()
+    // Open first: a hidden picker's search box cannot take focus.
     picker.dataset.open = 'true'
+    showFields()
   } }, h('span', { class: 'btn-icon', 'aria-hidden': 'true' }, '+'), 'Add filter')
   const chip = ([p, t, v], i) => h('span', { class: 'fb-chip', 'data-chip': p, title: `${p} = ${valueText(t, v)}` },
     h('span', { class: 'fb-chip-key' }, `\u200e${p}`), h('span', { class: 'fb-chip-op' }, ' = '), h('span', { class: 'fb-chip-val' }, valueText(t, v)),
