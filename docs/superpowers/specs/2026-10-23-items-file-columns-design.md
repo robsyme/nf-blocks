@@ -171,6 +171,26 @@ shape as the file pills (option B of `actions-v3.html`):
 Column order is: checkbox, row actions, file columns, metadata columns. A
 loading or failed row keeps its actions and spans the rest.
 
+### 6.6 Filter bar (amended 2026-10-24)
+
+The folded "+ filter" form (a fixed-width path box, a type dropdown and
+unstyled buttons) is replaced by one row (option A of `filters-v1.html`):
+
+- a chip per condition, `path = value`, with a remove link. A long path is
+  cut from the front so its end stays visible; the full condition is the
+  chip's `title`.
+- "Add filter" opens a picker. It lists the metadata paths of the items
+  loaded so far (`fieldChoices`: a repeated key once, shallower paths first,
+  each with its number of distinct values) with a search box. Choosing a
+  path lists its values, most common first with how many loaded items hold
+  each, as filter links. Typing a value and pressing Enter uses the path's
+  type (`typedCondition`); a bad value shows the `PredicateError` message.
+- "Clear all" when there are conditions, and "Pick all" at the end of the row.
+- Escape or a click elsewhere closes the picker.
+
+Buttons use the new `.btn`, `.btn-ghost` and `.btn-primary` classes, a
+starting point for the design guide.
+
 ### 6.4 Retired
 
 `fileChips` loses its only caller (`items.js`). It is removed with its test.
