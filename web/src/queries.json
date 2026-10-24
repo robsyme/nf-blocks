@@ -10,6 +10,7 @@
     ">": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type IN ('int', 'float') AND CAST(a.value AS REAL) > ?)",
     "<": " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type IN ('int', 'float') AND CAST(a.value AS REAL) < ?)"
   },
+  "itemsNotEqual": " AND NOT EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?)",
   "itemsOrder": " ORDER BY ci.item_cid",
   "collectionsOf": "SELECT output_name, collection_cid FROM collection WHERE completion_cid = ? ORDER BY output_name",
   "watermark": "SELECT value FROM meta WHERE key = 'store_log_watermark'",

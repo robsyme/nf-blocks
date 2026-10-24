@@ -67,6 +67,9 @@ test('matching needs every predicate, and a truncated row never matches', () => 
   assert.equal(matches(rows, [predicateRow('s', 'string', 'A'), predicateRow('n', 'int', '1')]), true)
   assert.equal(matches(rows, [predicateRow('s', 'string', 'A'), predicateRow('n', 'int', '2')]), false)
   assert.equal(matches(rows, [{ path: 'l', type: 'string', value: 'sha256:00', truncated: 0 }]), false)
+  assert.equal(matches(rows, [{ ...predicateRow('s', 'string', 'A'), op: '!=' }]), false, '!= fails on an equal value')
+  assert.equal(matches(rows, [{ ...predicateRow('s', 'string', 'B'), op: '!=' }]), true)
+  assert.equal(matches(rows, [{ ...predicateRow('absent', 'string', 'A'), op: '!=' }]), true, 'and holds for a path the item lacks')
   assert.equal(matches(rows, []), true)
 })
 

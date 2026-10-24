@@ -359,6 +359,17 @@ test('block: an empty raw block is verified with size 0', async () => {
   assert.equal(b.size, 0)
 })
 
+test('!= over a snapshot run is the SQL, over a stale run the matcher; an item without the path matches', async () => {
+  const { explorer, member } = await open()
+  const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items
+  assert.deepEqual(await items(member.runs.R1.completion, [['sample', 'string', 'A', '!=']]), [member.item.B])
+  assert.deepEqual(await items(member.runs.R1.completion, [['lane', 'int', '1', '!=']]), [member.item.B])
+  assert.deepEqual(await items(member.runs.R1.completion, [['strandedness', 'string', 'reverse', '!=']]), [member.item.A, member.item.B].sort())
+  assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'B', '!=']]), [member.item.C])
+  assert.deepEqual(await items(member.runs.R2.completion, [['strandedness', 'string', 'reverse', '!=']]), [member.item.B, member.item.C].sort())
+  await assert.rejects(items(member.runs.R1.completion, [['sample', 'string', 'x'.repeat(2000), '!=']]), (e) => e.constructor.name === 'PredicateError')
+})
+
 test('a range over a snapshot run is the SQL, over a stale run the matcher; int and float bounds alike', async () => {
   const { explorer, member } = await open()
   const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items

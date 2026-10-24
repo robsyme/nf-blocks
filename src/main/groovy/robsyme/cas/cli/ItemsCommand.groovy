@@ -54,7 +54,7 @@ class ItemsCommand {
             final List<ItemHit> hits = hits(index, cas.store, request)
             if( hits.isEmpty() ) {
                 err.println("nf-blocks:items: no item of output '${request.output}' matches " +
-                    "${request.conditions ? request.conditions.collect { String k, String v -> Conditions.splitKey(k)[1] == '=' ? "${k}=${v}" : "${k}${v}" }.join(' ') : 'at all'} " +
+                    "${request.conditions ? request.conditions.collect { String k, String v -> final List<String> key = Conditions.splitKey(k); "${key[0]}${key[1]}${v}" }.join(' ') : 'at all'} " +
                     "in ${request.runs.join(', ')}" + (request.format == 'selection' ? '; an empty Selection is refused, so nothing is printed' : ''))
                 if( request.format == 'selection' )
                     return 1
@@ -80,11 +80,11 @@ class ItemsCommand {
         for( String arg : positionals.drop(1) ) {
             final List<String> parts = Conditions.splitArg(arg)
             if( parts == null )
-                throw new UsageException("condition '${arg}' is not <path>=<value> or <path>>=<number> (or >, <, <=)")
+                throw new UsageException("condition '${arg}' is not <path>=<value>, <path>!=<value> or <path>>=<number> (or >, <, <=)")
             final String path = parts[0], op = parts[1], value = parts[2]
             if( !path )
                 throw new UsageException("condition '${arg}' has no path before the '${op}'")
-            if( op != '=' ) {
+            if( Conditions.RANGE_OPS.contains(op) ) {
                 try {
                     Conditions.number(value)
                 }

@@ -95,6 +95,7 @@ test('values by type: a numeric-looking string stays a string, a float stays a D
 
 test('whereLiteral', () => {
   assert.equal(whereLiteral([]), null)
+  assert.equal(whereLiteral([['strandedness', 'string', 'reverse', '!='], ['lane', 'int', '2', '!=']]), "['strandedness !=': 'reverse', 'lane !=': 2]")
   assert.equal(whereLiteral([['meta.id', 'string', 'A'], ['depth', 'float', '1.5'], ['x', 'null', null]]), "['meta.id': 'A', depth: 1.5d, x: null]")
 })
 

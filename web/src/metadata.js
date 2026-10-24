@@ -93,6 +93,9 @@ export function predicateRow(path, type, text) {
 /** The comparisons a range condition may use (Index.SQL_ITEMS_RANGE, DESIGN.md §12 amended 2026-10-24). */
 export const RANGE_OPS = ['>', '>=', '<', '<=']
 
+/** A condition's operator for "holds no equal value", items without the path included (Index.SQL_ITEMS_NOT_EQUAL). */
+export const NOT_EQUAL = '!='
+
 /** A range predicate: an int or float row compared with `text` as a number, as Index.SQL_ITEMS_RANGE compares. */
 export function rangeRow(path, op, text) {
   if (!RANGE_OPS.includes(op)) throw new PredicateError(`unknown comparison '${op}'; use ${RANGE_OPS.join(', ')}`)
@@ -103,8 +106,10 @@ export function rangeRow(path, op, text) {
 
 const compare = { '>': (a, b) => a > b, '>=': (a, b) => a >= b, '<': (a, b) => a < b, '<=': (a, b) => a <= b }
 
+const equal = (r, p) => r.truncated === 0 && r.path === p.path && r.type === p.type && (p.value === null ? r.value === null : r.value === p.value)
+
 export function matches(rows, predicates) {
-  return predicates.every(p => rows.some(r => r.truncated === 0 && r.path === p.path && (p.op
-    ? (r.type === 'int' || r.type === 'float') && compare[p.op](Number(r.value), p.value)
-    : r.type === p.type && (p.value === null ? r.value === null : r.value === p.value))))
+  return predicates.every(p => (p.op === NOT_EQUAL ? !rows.some(r => equal(r, p))
+    : rows.some(r => (p.op ? r.truncated === 0 && r.path === p.path && (r.type === 'int' || r.type === 'float') && compare[p.op](Number(r.value), p.value)
+      : equal(r, p)))))
 }

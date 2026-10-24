@@ -9,7 +9,7 @@ import { BlockError } from './blocks.js'
 import { cidParts, friendlyOf } from './blockinfo.js'
 import { entriesSince } from './storelog.js'
 import { typedDecode } from './typed.js'
-import { attrRows, leavesOf, matches, metadataView, predicateRow, rangeRow } from './metadata.js'
+import { NOT_EQUAL, PredicateError, attrRows, leavesOf, matches, metadataView, predicateRow, rangeRow } from './metadata.js'
 import { DELETED, claimState } from './claims.js'
 import { addressesByPath, rewriteIndex } from './outputindex.js'
 
@@ -528,7 +528,10 @@ export class Explorer {
    */
   async items(completionCid, output, predicates, onProgress) {
     this.fetchesForQuery = 0
-    const rows = predicates.map(([path, type, value, op]) => (op ? rangeRow(path, op, value) : predicateRow(path, type, value)))
+    const rows = predicates.map(([path, type, value, op]) => (op === NOT_EQUAL ? { ...predicateRow(path, type, value), op }
+      : op ? rangeRow(path, op, value) : predicateRow(path, type, value)))
+    const long = rows.find(r => r.truncated && r.op === NOT_EQUAL)
+    if (long) throw new PredicateError(`the value for ${long.path} != is too long to compare: values that long are stored as digests`)
     if (rows.some(r => r.truncated)) return { items: [], collection: null }
     const stale = this.staleRow(completionCid)
     if (stale) {
@@ -539,6 +542,7 @@ export class Explorer {
     let sql = SQL.itemsBase
     const params = [completionCid, output]
     for (const r of rows) {
+      if (r.op === NOT_EQUAL) { sql += SQL.itemsNotEqual; params.push(r.path, r.type, r.value); continue }
       if (r.op) { sql += SQL.itemsRange[r.op]; params.push(r.path, r.value); continue }
       params.push(r.path, r.type)
       if (r.value === null) sql += SQL.itemsPredicateNull

@@ -124,9 +124,9 @@ test('fieldChoices: each metadata path over the loaded items, a repeated key onc
     undefined, { error: 'block_missing' },
   ]
   assert.deepEqual(fieldChoices(loaded), [
-    { path: 'id', type: 'string', values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
-    { path: 'single_end', type: 'bool', values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
-    { path: 'tags', type: 'string', values: [{ type: 'string', value: 'x', count: 1 }] },
+    { path: 'id', type: 'string', items: 3, values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
+    { path: 'single_end', type: 'bool', items: 3, values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
+    { path: 'tags', type: 'string', items: 3, values: [{ type: 'string', value: 'x', count: 1 }] },
   ])
   assert.deepEqual(fieldChoices([]), [])
 })
@@ -134,6 +134,12 @@ test('fieldChoices: each metadata path over the loaded items, a repeated key onc
 test('fieldChoices: shallower paths first, then by text, so nested copies of meta sink to the end', () => {
   const loaded = [{ pairs: [e('dupradar.meta.salmon.inferred', 'string', 'forward'), e('meta.single_end', 'bool', 'true'), e('id', 'string', 'A'), e('meta.salmon.inferred', 'string', 'reverse')] }]
   assert.deepEqual(fieldChoices(loaded).map(f => f.path), ['id', 'meta.single_end', 'meta.salmon.inferred', 'dupradar.meta.salmon.inferred'])
+})
+
+test('typedCondition: != takes the field\'s type as = does, on any field', () => {
+  assert.deepEqual(typedCondition({ path: 'strandedness', type: 'string' }, 'reverse', '!='), ['strandedness', 'string', 'reverse', '!='])
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '007', '!='), ['lane', 'int', '7', '!='])
+  assert.deepEqual(typedCondition({ path: 'x', type: 'mixed' }, '2', '!='), ['x', 'string', '2', '!='])
 })
 
 test('typedCondition: typed text takes the field\'s type, normalised as the index types it; a mixed field is a string', () => {

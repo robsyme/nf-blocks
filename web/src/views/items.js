@@ -7,15 +7,16 @@ import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, rankFields, typedCondition } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
-import { RANGE_OPS } from '../metadata.js'
+import { NOT_EQUAL, RANGE_OPS } from '../metadata.js'
 import { humanBytes, leafReasonText } from '../words.js'
 import { enc, nextFrame, pickAll, pillTip, runCrumbs } from './common.js'
 
 function parseWhere(whereText) {
   try {
     const where = JSON.parse(whereText)
-    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && (w.length === 3 || (w.length === 4 && RANGE_OPS.includes(w[3])))))
-      throw new Error(`not a list of [path, type, value] or [path, type, value, op] with op one of ${RANGE_OPS.join(' ')}`)
+    const ops = [NOT_EQUAL, ...RANGE_OPS]
+    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && (w.length === 3 || (w.length === 4 && ops.includes(w[3])))))
+      throw new Error(`not a list of [path, type, value] or [path, type, value, op] with op one of ${ops.join(' ')}`)
     return where
   } catch (e) {
     throw Object.assign(new Error(`the where filter is not JSON [[path, type, value], ...]: ${e.message}`), { code: 'bad_route' })
@@ -84,7 +85,8 @@ function filterBar(target, { choices, end }) {
     search.focus?.()
   }
   const showValues = (f) => {
-    // A number field compares: the chosen operator applies to a listed value and to a typed one.
+    // Every field takes == and !=; a number field also compares. The chosen
+    // operator applies to a listed value and to a typed one.
     const numeric = ['int', 'float', 'mixed'].includes(f.type)
     let op = '='
     const error = h('p', { class: 'fb-error', 'data-filter-error': '' })
@@ -99,23 +101,25 @@ function filterBar(target, { choices, end }) {
         }
       } })
     const list = h('div', { class: 'fb-list' })
-    const drawValues = () => list.replaceChildren(...f.values.filter(v => op === '=' || v.type === 'int' || v.type === 'float').map(v =>
+    // A != count is the loaded items that do not hold the value, those without the field included.
+    const drawValues = () => list.replaceChildren(...f.values.filter(v => op === '=' || op === NOT_EQUAL || v.type === 'int' || v.type === 'float').map(v =>
       h('a', { class: 'fb-item', 'data-value': String(v.value), href: filterHref(target, f.path, v.type, v.value, op) },
-        h('span', {}, `${op === '=' ? '' : `${op} `}${valueText(v.type, v.value)}`), h('span', { class: 'fb-count' }, plural(v.count, 'item')))))
-    const opButtons = numeric ? ['=', ...RANGE_OPS].map(o => h('button', { type: 'button', class: 'fb-op', 'data-op': o, 'aria-pressed': String(o === op),
+        h('span', {}, `${op === '=' ? '' : `${op} `}${valueText(v.type, v.value)}`), h('span', { class: 'fb-count' }, plural(op === NOT_EQUAL ? f.items - v.count : v.count, 'item')))))
+    const opButtons = ['=', NOT_EQUAL, ...(numeric ? RANGE_OPS : [])].map(o => h('button', { type: 'button', class: 'fb-op', 'data-op': o, 'aria-pressed': String(o === op),
       onclick: () => {
         op = o
         for (const b of opButtons) b.setAttribute('aria-pressed', String(b.dataset.op === op))
         drawValues()
         input.focus?.()
-      } }, o)) : []
+      } }, o === '=' ? '==' : o))
     drawValues()
-    picker.replaceChildren(
+    // replaceChildren writes a null argument as the text "null"; only h() skips it.
+    picker.replaceChildren(...[
       h('div', { class: 'fb-head' },
         h('button', { type: 'button', class: 'btn btn-ghost fb-back', 'aria-label': 'back to the fields', 'data-filter-back': '', onclick: showFields }, '‹'),
         h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-type' }, f.type)),
-      numeric ? h('div', { class: 'fb-ops', role: 'group', 'aria-label': 'compare with' }, opButtons) : null,
-      input, error, list)
+      h('div', { class: 'fb-ops', role: 'group', 'aria-label': 'compare with' }, opButtons),
+      input, error, list].filter(Boolean))
     input.focus?.()
   }
   const add = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-add-filter': '', onclick: (e) => {
