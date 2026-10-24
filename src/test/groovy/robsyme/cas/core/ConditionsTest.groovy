@@ -17,6 +17,8 @@ class ConditionsTest extends Specification {
         'lane >'               | ['lane', '>']
         'lane <='              | ['lane', '<=']
         '  depth   >  '        | ['depth', '>']
+        'strandedness !='      | ['strandedness', '!=']
+        'strandedness!='       | ['strandedness', '!=']
     }
 
     def 'an items argument splits at its first operator, a longer operator before a shorter (#arg)'() {
@@ -32,6 +34,8 @@ class ConditionsTest extends Specification {
         'depth<=1.5'   | ['depth', '<=', '1.5']
         'lane>2'       | ['lane', '>', '2']
         'lane<2'       | ['lane', '<', '2']
+        'strand!=rev'  | ['strand', '!=', 'rev']
+        'note=a!=b'    | ['note', '=', 'a!=b']
         'sample'       | null
     }
 

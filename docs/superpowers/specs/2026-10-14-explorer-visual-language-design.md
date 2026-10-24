@@ -31,10 +31,17 @@ while the reader is using it.
 `--muted`, one colour, so colour stays reserved for status (good, failed,
 warning). The kinds and their icons (the mockups' shapes):
 
+*Amended 2026-10-24:* a run's icon takes its status colour wherever the page
+already knows the status: `--good` when it succeeded and is not possibly
+incomplete, `--bad` otherwise (`statusTone`). This replaces the separate `●`
+status dot in the left column and on the run page. Where the status is not
+known without another read (the "every run that produced this file" table), the
+icon stays grey.
+
 | kind | icon |
 |---|---|
 | pipeline | two boxes joined by a line |
-| run | a play triangle |
+| run | a stopwatch (amended 2026-10-24: was a play triangle, which read as the disclosure triangle on folds) |
 | output | three horizontal lines |
 | item | a pair of braces |
 | file | a page with a folded corner |

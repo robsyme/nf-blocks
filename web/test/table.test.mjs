@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, typedCondition, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, rankFields, typedCondition, withoutDuplicates } from '../src/table.js'
 import { PredicateError } from '../src/metadata.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
@@ -124,9 +124,9 @@ test('fieldChoices: each metadata path over the loaded items, a repeated key onc
     undefined, { error: 'block_missing' },
   ]
   assert.deepEqual(fieldChoices(loaded), [
-    { path: 'id', type: 'string', values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
-    { path: 'single_end', type: 'bool', values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
-    { path: 'tags', type: 'string', values: [{ type: 'string', value: 'x', count: 1 }] },
+    { path: 'id', type: 'string', items: 3, values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
+    { path: 'single_end', type: 'bool', items: 3, values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
+    { path: 'tags', type: 'string', items: 3, values: [{ type: 'string', value: 'x', count: 1 }] },
   ])
   assert.deepEqual(fieldChoices([]), [])
 })
@@ -134,6 +134,12 @@ test('fieldChoices: each metadata path over the loaded items, a repeated key onc
 test('fieldChoices: shallower paths first, then by text, so nested copies of meta sink to the end', () => {
   const loaded = [{ pairs: [e('dupradar.meta.salmon.inferred', 'string', 'forward'), e('meta.single_end', 'bool', 'true'), e('id', 'string', 'A'), e('meta.salmon.inferred', 'string', 'reverse')] }]
   assert.deepEqual(fieldChoices(loaded).map(f => f.path), ['id', 'meta.single_end', 'meta.salmon.inferred', 'dupradar.meta.salmon.inferred'])
+})
+
+test('typedCondition: != takes the field\'s type as = does, on any field', () => {
+  assert.deepEqual(typedCondition({ path: 'strandedness', type: 'string' }, 'reverse', '!='), ['strandedness', 'string', 'reverse', '!='])
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '007', '!='), ['lane', 'int', '7', '!='])
+  assert.deepEqual(typedCondition({ path: 'x', type: 'mixed' }, '2', '!='), ['x', 'string', '2', '!='])
 })
 
 test('typedCondition: typed text takes the field\'s type, normalised as the index types it; a mixed field is a string', () => {
@@ -160,4 +166,21 @@ test('fieldChoices: among equally common values, numbers sort by value, not as t
   assert.deepEqual(fieldChoices(mixed)[0].values.map(x => x.value), ['9', '10', 'a', 'b'])
   const common = [{ pairs: [v('int', '100')] }, { pairs: [v('int', '100')] }, { pairs: [v('int', '9')] }]
   assert.deepEqual(fieldChoices(common)[0].values.map(x => x.value), ['100', '9'])
+})
+
+test('rankFields: whole path, whole last segment, its start, a word start in it then earlier, anywhere, then letters in order; ties keep the given order', () => {
+  const f = (...paths) => paths.map(path => ({ path }))
+  const ranked = (fields, q) => rankFields(fields, q).map(x => x.path)
+  const fields = f('spread', 'qc.r_e_a_d', 'qc.thread_id', 'meta.read_count', 'qc.bigRead', 'meta.reads', 'read', 'meta.read')
+  assert.deepEqual(ranked(fields, 'read'), ['read', 'meta.read', 'meta.read_count', 'meta.reads', 'qc.bigRead', 'spread', 'qc.thread_id', 'qc.r_e_a_d'])
+  assert.deepEqual(ranked(fields, 'READ'), ranked(fields, 'read'), 'case is ignored')
+  assert.deepEqual(ranked(fields, ''), fields.map(x => x.path), 'no query lists everything in the given order')
+  assert.deepEqual(ranked(fields, 'zzz'), [])
+  const rnaseq = f('id', 'single_end', 'meta.id', 'meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments', 'qc.fastqc.read_count')
+  assert.deepEqual(ranked(rnaseq, 'frag'), ['meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments'])
+  assert.deepEqual(ranked(rnaseq, 'fwdfrag'), ['meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments'], 'letters in order, with gaps')
+  assert.deepEqual(ranked(rnaseq, 'count'), ['qc.fastqc.read_count'])
+  assert.deepEqual(ranked(rnaseq, 'id'), ['id', 'meta.id'], 'under three letters, no letters-in-order match (single_end has an i then a d)')
+  assert.deepEqual(ranked(f('qc.salmon_strand.forwardFragments', 'meta.inferred_strandedness'), 'strand'),
+    ['meta.inferred_strandedness', 'qc.salmon_strand.forwardFragments'], 'a word start in the field\'s own name beats one in a parent')
 })

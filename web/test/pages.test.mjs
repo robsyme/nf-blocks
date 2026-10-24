@@ -24,7 +24,8 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
       leaves: [{ name: 'WT_REP1.bam', size: 412_000_000, address: 'bafybam' }, { name: 'in.fq', size: null, address: null, reason: 'never_published' }] }),
     producersOf: async () => [{ collection_cid: 'coll', completion_cid: 'bafyrun' }, { collection_cid: 'coll2', completion_cid: 'bafyold' }],
     selectionsHolding: async () => [],
-    runLabel: async (c) => ({ run_name: c === 'coll' ? 'high_jang' : 'happy_rubens', output: 'markdup', completion: c === 'coll' ? 'bafyrun' : 'bafyold' }),
+    runLabel: async (c) => ({ run_name: c === 'coll' ? 'high_jang' : 'happy_rubens', output: 'markdup', completion: c === 'coll' ? 'bafyrun' : 'bafyold',
+      status: c === 'coll' ? 'succeeded' : 'failed', possibly_incomplete: c !== 'coll' }),
     runIdentity: async () => ({ pipeline: 'nf-core/rnaseq', run_name: 'high_jang' }),
     blocks: { urlFor: (a) => `blocks/${a}` },
   }
@@ -40,6 +41,22 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
   assert.equal(page.querySelector('[data-pick]').textContent, 'Add to picked')
   assert.deepEqual(c.used.at(-1), { completion: 'bafyrun', output: 'markdup', where: [], count: null })
   assert.ok(page.querySelector('[data-fold="storage"]'))
+  const runIcons = page.querySelectorAll('[data-icon=run]')
+  assert.deepEqual(runIcons.map(i => ['tone-good', 'tone-bad'].find(t => i.classList.contains(t))), ['tone-good', 'tone-bad'], 'produced by, then the other run')
+})
+
+test('the item page folds its metadata only when the fold would hide five pills or more', async () => {
+  installDom()
+  const view = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${String(i).padStart(2, '0')}`, i]))
+  const page = async (n) => item({ item: async () => ({ view: view(n), state: claimState([]), leaves: [] }), producersOf: async () => [],
+    selectionsHolding: async () => [], runLabel: async () => null, blocks: { urlFor: (a) => a } }, '-', 'bafyitem', ctx())
+  const header = (p) => p.querySelectorAll('.pills-page').flatMap(g => g.querySelectorAll('.pill'))
+  const twelve = await page(12)
+  assert.equal(twelve.querySelector('[data-fold="meta"]'), null)
+  assert.equal(header(twelve).length, 12)
+  const thirteen = await page(13)
+  assert.equal(thirteen.querySelector('[data-fold="meta"]').querySelector('summary').textContent, '+5 more')
+  assert.equal(header(thirteen).length, 13)
 })
 
 test('the Selection view leaves the call and samplesheets to the panel (Review Focus 5)', async () => {
@@ -125,10 +142,11 @@ test('a Selection row says "from" its run and output, and where it is held only 
     firstSeen: null, block: { asserted_by: 'rob' } }),
     held: async (kind, a) => (a === 'i1' ? 'here' : 'elsewhere'),
     item: async (c, i) => ({ view: { firstName: i }, leaves: [{ name: `${i}.dat` }] }),
-    runLabel: async () => ({ run_name: 'boring_yalow', output: 'people', completion: 'bafyrun' }) }
+    runLabel: async () => ({ run_name: 'boring_yalow', output: 'people', completion: 'bafyrun', status: 'succeeded', possibly_incomplete: false }) }
   const page = await selection(ex, 'bafysel', ctx())
   await frame()
   const [here, away] = page.querySelectorAll('[data-member]')
+  assert.ok(here.querySelector('[data-icon=run]').classList.contains('tone-good'))
   assert.equal(here.dataset.held, 'here')
   assert.equal(here.querySelector('.row-action').textContent, '')
   assert.equal(away.querySelector('.row-action').textContent, 'not in this store')
@@ -171,12 +189,14 @@ test('home, pipeline and item pages name their kinds with icons', async () => {
   const homePage = await home(homeEx, ctx())
   await frame()
   assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline', 'run'])
+  assert.ok(homePage.querySelector('[data-icon=run]').classList.contains('tone-good'), 'the latest good run is good by definition')
   const pipeEx = { runPage: async () => ({ rows: [{ completion_cid: 'bafyrun', pipeline: 'p', run_name: 'high_jang', status: 'succeeded', possibly_incomplete: 0,
     finished_at: '2026-09-30T21:10:38.345Z', source: 'snapshot' }], hidden: 0, first: 1, last: 1, total: 1, prev: null, next: null }),
     completionOf: async () => ({ anomalies: {} }), stale: [] }
   const pipePage = await pipeline(pipeEx, 'p', 0, ctx())
   assert.equal(pipePage.querySelector('h1').querySelector('[data-icon]').dataset.icon, 'pipeline')
   assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
+  assert.ok(pipePage.querySelector('[data-run]').querySelector('[data-icon]').classList.contains('tone-good'))
 })
 
 test('a Selection row whose collection this store does not know shows the collection as an address', async () => {

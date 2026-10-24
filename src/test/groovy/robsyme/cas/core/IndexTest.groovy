@@ -321,6 +321,38 @@ class IndexTest extends Specification {
         index.items(completion, 'aligned', [sample: 'C', 'lane >=': 2]) == [alignedBySample['C']]
     }
 
+    def 'a where key ending in != matches every item with no equal value, including items without the field'() {
+        given:
+        def completion = buildRun()
+        index.ingestRun(store, completion, 'lab')
+
+        expect:
+        index.items(completion, 'aligned', ['sample !=': 'C']).toSet() == [alignedBySample['A'], alignedBySample['B']] as Set
+        index.items(completion, 'aligned', ['lane !=': 2]).toSet() == [alignedBySample['A'], alignedBySample['C']] as Set
+        index.items(completion, 'aligned', ['lane !=': '2']).size() == 3      // typed: no item holds the string '2'
+        index.items(completion, 'aligned', ['strandedness !=': 'reverse']).size() == 3
+        index.items(completion, 'aligned', ['sample !=': 'C', 'lane >=': 2]) == [alignedBySample['B']]
+    }
+
+    def 'a != whose value is too long to compare, or null, is refused'() {
+        given:
+        def completion = buildRun()
+        index.ingestRun(store, completion, 'lab')
+
+        when:
+        index.items(completion, 'aligned', ['sample !=': 'x' * 2000])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'sample !='")
+
+        when:
+        index.items(completion, 'aligned', ['sample !=': null])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def 'a range on a value that is not a number is refused'() {
         given:
         def completion = buildRun()

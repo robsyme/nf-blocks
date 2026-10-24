@@ -75,6 +75,11 @@ class Index implements Closeable {
         [(op): " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type IN ('int', 'float') AND CAST(a.value AS REAL) ${op} ?)".toString()]
     }.asImmutable() as Map<String, String>
 
+    // != keeps every item with no row equal on path, type and value, so an item
+    // without the path matches (DESIGN.md §12 amended 2026-10-24).
+    static final String SQL_ITEMS_NOT_EQUAL =
+        ' AND NOT EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?)'
+
     static final String SQL_ITEMS_ORDER = ' ORDER BY ci.item_cid'
 
     static final String SQL_COLLECTIONS_OF =
@@ -87,6 +92,9 @@ class Index implements Closeable {
 
     private static final String SQL_ITEM_HITS_TEXT =
         ' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.value = ?)'
+
+    private static final String SQL_ITEM_HITS_NOT_TEXT =
+        ' AND NOT EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.value = ?)'
 
     private static final String SQL_ITEM_HITS_ORDER = ' ORDER BY ci.item_cid, ci.collection_cid'
 
@@ -1203,8 +1211,9 @@ class Index implements Closeable {
      * The items of one output of one run, filtered by the metadata view. Each
      * key of {@code where} is one `item_attr` match on path, type and value, or,
      * for a key ending in an operator ({@code 'depth >='}), a numeric comparison
-     * with an int or float value; several keys intersect. An empty predicate is
-     * every item.
+     * with an int or float value, or, for a key ending in {@code !=}, every item
+     * with no equal row, items without the path included; several keys
+     * intersect. An empty predicate is every item.
      */
     List<Cid> items(Cid completion, String outputName, Map<String, Object> where) {
         final StringBuilder sql = new StringBuilder(SQL_ITEMS_BASE)
@@ -1213,6 +1222,14 @@ class Index implements Closeable {
             if( entry.value == null )
                 throw new IllegalArgumentException("the predicate on '${entry.key}' is null, which matches nothing: a null field counts as absent and is not indexed (DESIGN.md §12)")
             final List<String> key = Conditions.splitKey(entry.key)
+            if( key[1] == Conditions.NOT_EQUAL ) {
+                final AttrRow row = MetadataView.scalar(key[0], entry.value)
+                if( row.truncated )
+                    throw new IllegalArgumentException("the predicate '${entry.key}' is longer than ${MetadataView.VALUE_CAP_BYTES} bytes; values that long are stored as digests, so != cannot tell which items hold it")
+                sql.append(SQL_ITEMS_NOT_EQUAL)
+                parameters.addAll([row.path, row.type, row.value] as List<Object>)
+                continue
+            }
             if( key[1] != '=' ) {
                 if( !(entry.value instanceof Number) )
                     throw new IllegalArgumentException("the predicate '${entry.key}' compares with ${key[1]}, so its value must be a number, got '${entry.value}'")
@@ -1258,6 +1275,14 @@ class Index implements Closeable {
         final Map<String, String> all = conditions ?: Collections.<String, String> emptyMap()
         for( Map.Entry<String, String> condition : all.entrySet() ) {
             final List<String> key = Conditions.splitKey(condition.key)
+            if( key[1] == Conditions.NOT_EQUAL ) {
+                if( condition.value == null || condition.value.getBytes('UTF-8').length > MetadataView.VALUE_CAP_BYTES )
+                    throw new IllegalArgumentException("the condition '${condition.key}' is longer than ${MetadataView.VALUE_CAP_BYTES} bytes; values that long are stored as digests, so != cannot tell which items hold it")
+                sql.append(SQL_ITEM_HITS_NOT_TEXT)
+                parameters.add(key[0])
+                parameters.add(condition.value)
+                continue
+            }
             if( key[1] != '=' ) {
                 final BigDecimal bound
                 try {

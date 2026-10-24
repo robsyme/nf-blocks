@@ -199,6 +199,12 @@ class ItemsCommandTest extends Specification {
         !Files.exists(tempDir.resolve('store/index'))
     }
 
+    def 'the no-match message repeats each condition as it was typed'() {
+        expect:
+        run(['greetings', 'sample=nobody', 'kind!=x', '--run', 'lid://hash1']) == 0
+        err.toString('UTF-8').contains("matches sample=nobody kind!=x in")
+    }
+
     def 'no match: a header, an empty list or nothing, exit 0; for selection nothing and exit 1'() {
         expect:
         run(['greetings', 'sample=nobody', '--run', 'lid://hash1', '--format', format]) == status
@@ -222,6 +228,12 @@ class ItemsCommandTest extends Specification {
         args                                  | named
         ['nothing', '--run', 'lid://hash1']   | "has no output 'nothing'; its outputs are greetings"
         ['greetings', '--run', 'lid://nope']  | "no run with nextflow run hash 'nope'"
+    }
+
+    def 'a condition may exclude a value: path!=value, keyed as fromStore keys it, and its value need not be a number'() {
+        expect:
+        ItemsCommand.parse(['greetings', 'strandedness!=reverse', 'lane!=2', '--run', 'lid://hash1']).conditions ==
+            ['strandedness !=': 'reverse', 'lane !=': '2']
     }
 
     def 'a condition may compare: path>=n, path<n and the like, keyed as fromStore keys them'() {

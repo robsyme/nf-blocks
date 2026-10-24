@@ -140,7 +140,7 @@ class CasCommands {
         final String head = cmd ? "unknown command 'nf-blocks:${cmd}'" : 'no command given'
         return "${head}; usage: nextflow plugin nf-blocks:<command>\ncommands:\n" +
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
-            '  items <output> [<path>=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
+            '  items <output> [<path>=<value>|<path>!=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
             '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
             '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +

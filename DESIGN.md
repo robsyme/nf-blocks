@@ -1211,6 +1211,13 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   must be a number; text never matches a range. `nf-blocks:items` takes
   `path>=n` and the like and keys them the same way. No schema change: the
   `(path, type, value)` index still narrows by path.
+  *Amended 2026-10-24 (not equal):* a `where:` key ending in `!=`
+  (`'meta.strandedness !='`) keeps every item with no row equal on path, type
+  and value, so an item without the path matches (`Index.SQL_ITEMS_NOT_EQUAL`,
+  a `NOT EXISTS` over the same index, mirrored in `queries.json` as
+  `itemsNotEqual`). A value past 1024 bytes is refused, since a truncated row
+  cannot be compared. `nf-blocks:items` takes `path!=value`, matched as text
+  like `=`. The explorer's filter picker offers `==` and `!=` on every field.
 - `producer.filename` = the Leaf name.
 - Rebuild: `Index.rebuild(store)` deletes and recreates from `bafy…` blocks
   only, into a temp file renamed into place. *Amended 2026-09-25:* a schema

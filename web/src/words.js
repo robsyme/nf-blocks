@@ -38,6 +38,9 @@ export function statusText({ status, possibly_incomplete }) {
 
 export const statusTone = ({ status, possibly_incomplete }) => (status === 'succeeded' && !possibly_incomplete ? 'good' : 'bad')
 
+/** A run icon's tone: statusTone when the run's status is known, else null (the icon stays grey). */
+export const runTone = (run) => (run?.status ? statusTone(run) : null)
+
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
 /** Decimal units, as file browsers show them. */

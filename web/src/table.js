@@ -4,7 +4,7 @@
 // the "same for every item" line, which repeat another path's values, the
 // file columns (items file columns spec §6) and an output's file suffixes.
 // Pure: the views draw what it decides.
-import { PredicateError, predicateRow, rangeRow } from './metadata.js'
+import { NOT_EQUAL, PredicateError, predicateRow, rangeRow } from './metadata.js'
 
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const sig = (entry) => JSON.stringify([entry.types, entry.values])
@@ -73,6 +73,45 @@ const byValue = (a, b) => (Number(isNumber(b)) - Number(isNumber(a)))
   || (isNumber(a) && isNumber(b) ? Number(a.value) - Number(b.value) : byText(String(a.value), String(b.value)))
 
 /**
+ * The field picker's search (filter bar): the `choices` whose path matches
+ * `query`, best first, ignoring case. A match ranks by where the query falls:
+ * the whole path, the whole last segment, the start of the last segment, the
+ * start of a word in the last segment, then in an earlier one (a word starts
+ * after . _ - [ or at a lower-to-upper case change), anywhere, and last, for
+ * three letters or more, its letters in order with gaps (`fwdfrag` finds
+ * `forwardFragments`). Ties keep the given order (fieldChoices: shallower
+ * paths first). An empty query keeps every choice.
+ */
+export function rankFields(choices, query) {
+  const q = String(query ?? '').toLowerCase()
+  if (!q) return [...choices]
+  return choices.map((f, i) => ({ f, i, rank: matchRank(f.path, q) }))
+    .filter(m => m.rank !== null).sort((a, b) => a.rank - b.rank || a.i - b.i).map(m => m.f)
+}
+
+const WORD_BREAK = /[._\-[\]]/
+
+function matchRank(path, q) {
+  const lower = path.toLowerCase()
+  const lastAt = lower.lastIndexOf('.') + 1
+  const last = lower.slice(lastAt)
+  if (lower === q) return 0
+  if (last === q) return 1
+  if (last.startsWith(q)) return 2
+  let wordStart = null
+  for (let i = path.length - 1; i >= 0 && wordStart === null; i--) {
+    const start = i === 0 || WORD_BREAK.test(path[i - 1]) || (/[A-Z]/.test(path[i]) && /[a-z0-9]/.test(path[i - 1]))
+    if (start && lower.startsWith(q, i)) wordStart = i >= lastAt ? 3 : 4
+  }
+  if (wordStart !== null) return wordStart
+  if (lower.includes(q)) return 5
+  if (q.length < 3) return null
+  let at = 0
+  for (const c of lower) if (c === q[at] && ++at === q.length) return 6
+  return null
+}
+
+/**
  * What the filter picker offers (filter bar, option A of `filters-v1.html`):
  * each metadata path over the loaded items, a key `itemTable` found at two
  * paths listed once, shallower paths first, with its values and how many
@@ -105,21 +144,23 @@ export function fieldChoices(previews) {
   return [...fields.values()].sort((a, b) => (depth(a.path) - depth(b.path)) || byText(a.path, b.path)).map(f => ({
     path: f.path,
     type: f.types.size === 1 ? [...f.types][0] : 'mixed',
+    items: loaded.length,
     values: [...f.values.values()].sort((a, b) => (b.count - a.count) || byValue(a, b)),
   }))
 }
 
 /**
  * A typed-in value as a condition. With `=`: `[path, type, value]` in the
- * field's type (a mixed field's is string), normalised by `predicateRow`. With
+ * field's type (a mixed field's is string), normalised by `predicateRow`; with
+ * `!=`, the same and the operator, on any field. With
  * a range operator, on an int, float or mixed field: `[path, type, value, op]`,
  * the bound an int when it is a whole number and a float otherwise. Throws
  * `PredicateError`.
  */
 export function typedCondition(field, text, op = '=') {
-  if (op === '=') {
+  if (op === '=' || op === NOT_EQUAL) {
     const row = predicateRow(field.path, field.type === 'mixed' ? 'string' : field.type, text)
-    return [row.path, row.type, row.value]
+    return op === '=' ? [row.path, row.type, row.value] : [row.path, row.type, row.value, op]
   }
   if (!['int', 'float', 'mixed'].includes(field.type)) throw new PredicateError(`${field.path} holds ${field.type} values, which do not compare with ${op}`)
   rangeRow(field.path, op, text)

@@ -8,6 +8,7 @@ import { Previews } from '../previews.js'
 import { labelPaths, labelText } from '../pairs.js'
 import { trayNote } from '../tray.js'
 import { itemTable, withoutDuplicates } from '../table.js'
+import { runTone } from '../words.js'
 
 export const enc = encodeURIComponent
 
@@ -17,6 +18,29 @@ export function errorNode(e) {
 
 export function table(head, rows) {
   return h('div', { class: 'scroll' }, h('table', {}, h('tr', {}, head.map(t => h('th', {}, t))), rows))
+}
+
+/**
+ * The page's one tooltip (spec §6.3, amended): shown at once on hover or
+ * focus, where the native `title` waits about a second. `lines` are
+ * `[class, text]`, one line each; the items table and the run page's +N use it.
+ */
+export function pillTip() {
+  const el = h('div', { class: 'file-pill-tip', role: 'tooltip', 'data-pill-tip': '', 'data-open': 'false' })
+  const show = (target, lines) => {
+    el.replaceChildren(...lines.map(([cls, text]) => h('div', { class: cls }, text)))
+    el.dataset.open = 'true'
+    const r = target.getBoundingClientRect?.()
+    if (r) el.setAttribute('style', `left: ${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px; top: ${r.bottom + 6}px`)
+  }
+  const hide = () => { el.dataset.open = 'false' }
+  /** Hover and focus handlers for `lines`, or for `() => lines` when they change after drawing. */
+  const on = (lines) => {
+    const get = typeof lines === 'function' ? lines : () => lines
+    return { onmouseenter: (e) => show(e.currentTarget, get()), onfocus: (e) => show(e.currentTarget, get()),
+      onmouseleave: hide, onblur: hide, 'aria-label': get().map(([, text]) => text).join('\n') }
+  }
+  return { el, on }
 }
 
 /** What Copy on a Selection member copies (spec 7.1a): the bare item address when it has no via, else `cas://<via>/<address>`. */
@@ -139,7 +163,7 @@ export function runLabelNode(ex, collectionCid, completionCid = null) {
     if (!label) return
     const c = label.completion
     node.replaceChildren(
-      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null), ' / ',
+      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null, { tone: runTone(label) }), ' / ',
       ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null))
   }, () => {})
   return node

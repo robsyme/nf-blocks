@@ -7,7 +7,7 @@
 // attributes are data-nav-*, never the Gate's data-run or data-selection.
 import { h, link } from './html.js'
 import { icon } from './icons.js'
-import { statusTone, whenText } from './words.js'
+import { runTone, statusText, whenText } from './words.js'
 
 const NAV_RUNS = 10
 const NAV_SELECTIONS = 5
@@ -41,8 +41,9 @@ export function createNav(ex, { el }) {
     if (!page) return h('p', { class: 'muted' }, 'loading...')
     return h('ul', { class: 'nav-runs' },
       page.rows.map(r => h('li', { 'data-nav-run': r.completion_cid, 'aria-current': r.completion_cid === here.run ? 'page' : null },
-        link(`#/run/${r.completion_cid}`, h('span', { class: `dot dot-${statusTone(r)}`, 'aria-hidden': 'true' }, '●'), ' ',
-          r.run_name ?? 'unnamed run', ' ', h('span', { class: 'muted' }, whenText(r.finished_at).split(',')[0])))),
+        h('a', { class: 'nav-run', href: `#/run/${r.completion_cid}`, title: [r.run_name ?? 'unnamed run', statusText(r), whenText(r.finished_at)].join(' · ') },
+          icon('run', { tone: runTone(r) }), h('span', { class: 'nav-run-name' }, r.run_name ?? 'unnamed run'),
+          h('span', { class: 'muted nav-run-when' }, whenText(r.finished_at).split(',')[0])))),
       page.total > page.rows.length ? h('li', {}, link(`#/pipeline/${enc(name)}`, 'all runs…')) : null)
   }
 

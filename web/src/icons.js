@@ -1,13 +1,14 @@
 // One grey icon per kind the explorer names (visual language spec §2): the
 // same shape wherever a run, output, item, file, directory, Selection,
-// Claim, address or store appears; colour stays for status. Each icon is a
+// Claim, address or store appears; colour stays for status, so a run's icon
+// takes its status colour (`tone`) where the status is known. Each icon is a
 // span painted by a CSS mask, so the page and the test DOM need no SVG
 // elements; ICON_CSS holds the shapes.
 import { h, link } from './html.js'
 
 const SHAPES = {
   pipeline: '<path d="M2 4h4v8H2zM10 4h4v8h-4zM6 8h4" fill="none" stroke="#000" stroke-width="1.5"/>',
-  run: '<path d="M4 2.5v11l9-5.5z"/>',
+  run: '<circle cx="8" cy="9" r="5.3" fill="none" stroke="#000" stroke-width="1.4"/><path d="M6.3 1.5h3.4M8 1.5v2.2M8 9V6.2M12 4.4l1.2-1.2" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>',
   output: '<path d="M2 4h12M2 8h12M2 12h12" stroke="#000" stroke-width="1.6"/>',
   item: '<path d="M6 2.5C4 2.5 4.5 6 3 8c1.5 2 1 5.5 3 5.5M10 2.5c2 0 1.5 3.5 3 5.5-1.5 2-1 5.5-3 5.5" fill="none" stroke="#000" stroke-width="1.5"/>',
   file: '<path d="M4 1.5h5l3 3v10H4zM9 1.5v3h3" fill="none" stroke="#000" stroke-width="1.4"/>',
@@ -29,16 +30,18 @@ export const ICON_CSS = [
   '.icon { display: inline-block; width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; flex: none;',
   '  background-color: var(--muted); -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }',
   '.ref { white-space: nowrap; }',
+  '.icon.tone-good { background-color: var(--good); } .icon.tone-bad { background-color: var(--bad); }',
   ...KINDS.map(k => `.icon-${k} { --icon: ${dataUri(SHAPES[k])}; }`),
 ].join('\n')
 
-export function icon(kind) {
+/** `tone` ('good' or 'bad', from runTone) paints the icon in that status colour; without it the icon is grey. */
+export function icon(kind, { tone = null } = {}) {
   if (!(kind in SHAPES)) throw new Error(`no icon for '${kind}'`)
-  return h('span', { class: `icon icon-${kind}`, 'data-icon': kind, title: NAMES[kind], 'aria-hidden': 'true' })
+  return h('span', { class: `icon icon-${kind}${tone ? ` tone-${tone}` : ''}`, 'data-icon': kind, title: NAMES[kind], 'aria-hidden': 'true' })
 }
 
-export function ref(kind, label, href = null) {
-  return h('span', { class: 'ref' }, icon(kind), href ? link(href, label) : label)
+export function ref(kind, label, href = null, { tone = null } = {}) {
+  return h('span', { class: 'ref' }, icon(kind, { tone }), href ? link(href, label) : label)
 }
 
 export const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)

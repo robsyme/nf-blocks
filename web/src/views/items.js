@@ -5,17 +5,18 @@
 import { h } from '../html.js'
 import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
-import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, typedCondition } from '../table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, rankFields, typedCondition } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
-import { RANGE_OPS } from '../metadata.js'
+import { NOT_EQUAL, RANGE_OPS } from '../metadata.js'
 import { humanBytes, leafReasonText } from '../words.js'
-import { enc, nextFrame, pickAll, runCrumbs } from './common.js'
+import { enc, nextFrame, pickAll, pillTip, runCrumbs } from './common.js'
 
 function parseWhere(whereText) {
   try {
     const where = JSON.parse(whereText)
-    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && (w.length === 3 || (w.length === 4 && RANGE_OPS.includes(w[3])))))
-      throw new Error(`not a list of [path, type, value] or [path, type, value, op] with op one of ${RANGE_OPS.join(' ')}`)
+    const ops = [NOT_EQUAL, ...RANGE_OPS]
+    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && (w.length === 3 || (w.length === 4 && ops.includes(w[3])))))
+      throw new Error(`not a list of [path, type, value] or [path, type, value, op] with op one of ${ops.join(' ')}`)
     return where
   } catch (e) {
     throw Object.assign(new Error(`the where filter is not JSON [[path, type, value], ...]: ${e.message}`), { code: 'bad_route' })
@@ -40,18 +41,52 @@ function filterBar(target, { choices, end }) {
   const onKey = (e) => { if (e.key === 'Escape') close() }
   const showFields = () => {
     const all = choices()
-    const list = h('div', { class: 'fb-list' })
-    const draw = (q) => list.replaceChildren(...all.filter(f => f.path.includes(q)).map(f =>
-      h('button', { type: 'button', class: 'fb-item', 'data-field': f.path, onclick: () => showValues(f) },
-        h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-count' }, plural(f.values.length, 'value')))))
-    draw('')
+    const list = h('div', { class: 'fb-list', role: 'listbox', id: 'fb-fields' })
+    // Focus stays in the search box; the arrow keys move `active` through the
+    // fields `shown` (a combobox's aria-activedescendant), wrapping at the ends.
+    // Typing ranks the fields (rankFields) and highlights the best, so Enter
+    // takes it before the name is finished.
+    let shown = []
+    let active = -1
+    const highlight = (i) => {
+      const was = list.children[active]
+      was?.classList.remove('active')
+      was?.setAttribute('aria-selected', 'false')
+      active = i
+      const b = list.children[i]
+      if (!b) { search.removeAttribute('aria-activedescendant'); return }
+      b.classList.add('active')
+      b.setAttribute('aria-selected', 'true')
+      search.setAttribute('aria-activedescendant', b.getAttribute('id'))
+      b.scrollIntoView?.({ block: 'nearest' })
+    }
+    const move = (step) => {
+      if (!shown.length) return
+      highlight(active < 0 ? (step > 0 ? 0 : shown.length - 1) : (active + step + shown.length) % shown.length)
+    }
+    const onSearchKey = (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); move(e.key === 'ArrowDown' ? 1 : -1) }
+      else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); showValues(shown[active]) }
+      else onKey(e)
+    }
     const search = h('input', { class: 'fb-input', type: 'search', placeholder: 'Search fields…', 'aria-label': 'search fields', 'data-filter-search': '',
-      oninput: (e) => draw((e.currentTarget.value ?? '').trim()), onkeydown: onKey })
+      role: 'combobox', 'aria-controls': 'fb-fields', 'aria-expanded': 'true', 'aria-autocomplete': 'list',
+      oninput: (e) => draw((e.currentTarget.value ?? '').trim()), onkeydown: onSearchKey })
+    const draw = (q) => {
+      shown = rankFields(all, q)
+      active = -1
+      list.replaceChildren(...shown.map((f, i) =>
+        h('button', { type: 'button', class: 'fb-item', role: 'option', id: `fb-field-${i}`, 'aria-selected': 'false', 'data-field': f.path, onclick: () => showValues(f) },
+          h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-count' }, plural(f.values.length, 'value')))))
+      highlight(q && shown.length ? 0 : -1)
+    }
+    draw('')
     picker.replaceChildren(search, all.length ? list : h('p', { class: 'muted fb-note' }, 'No fields yet: the items are still loading.'))
     search.focus?.()
   }
   const showValues = (f) => {
-    // A number field compares: the chosen operator applies to a listed value and to a typed one.
+    // Every field takes == and !=; a number field also compares. The chosen
+    // operator applies to a listed value and to a typed one.
     const numeric = ['int', 'float', 'mixed'].includes(f.type)
     let op = '='
     const error = h('p', { class: 'fb-error', 'data-filter-error': '' })
@@ -66,23 +101,25 @@ function filterBar(target, { choices, end }) {
         }
       } })
     const list = h('div', { class: 'fb-list' })
-    const drawValues = () => list.replaceChildren(...f.values.filter(v => op === '=' || v.type === 'int' || v.type === 'float').map(v =>
+    // A != count is the loaded items that do not hold the value, those without the field included.
+    const drawValues = () => list.replaceChildren(...f.values.filter(v => op === '=' || op === NOT_EQUAL || v.type === 'int' || v.type === 'float').map(v =>
       h('a', { class: 'fb-item', 'data-value': String(v.value), href: filterHref(target, f.path, v.type, v.value, op) },
-        h('span', {}, `${op === '=' ? '' : `${op} `}${valueText(v.type, v.value)}`), h('span', { class: 'fb-count' }, plural(v.count, 'item')))))
-    const opButtons = numeric ? ['=', ...RANGE_OPS].map(o => h('button', { type: 'button', class: 'fb-op', 'data-op': o, 'aria-pressed': String(o === op),
+        h('span', {}, `${op === '=' ? '' : `${op} `}${valueText(v.type, v.value)}`), h('span', { class: 'fb-count' }, plural(op === NOT_EQUAL ? f.items - v.count : v.count, 'item')))))
+    const opButtons = ['=', NOT_EQUAL, ...(numeric ? RANGE_OPS : [])].map(o => h('button', { type: 'button', class: 'fb-op', 'data-op': o, 'aria-pressed': String(o === op),
       onclick: () => {
         op = o
         for (const b of opButtons) b.setAttribute('aria-pressed', String(b.dataset.op === op))
         drawValues()
         input.focus?.()
-      } }, o)) : []
+      } }, o === '=' ? '==' : o))
     drawValues()
-    picker.replaceChildren(
+    // replaceChildren writes a null argument as the text "null"; only h() skips it.
+    picker.replaceChildren(...[
       h('div', { class: 'fb-head' },
         h('button', { type: 'button', class: 'btn btn-ghost fb-back', 'aria-label': 'back to the fields', 'data-filter-back': '', onclick: showFields }, '‹'),
         h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-type' }, f.type)),
-      numeric ? h('div', { class: 'fb-ops', role: 'group', 'aria-label': 'compare with' }, opButtons) : null,
-      input, error, list)
+      h('div', { class: 'fb-ops', role: 'group', 'aria-label': 'compare with' }, opButtons),
+      input, error, list].filter(Boolean))
     input.focus?.()
   }
   const add = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-add-filter': '', onclick: (e) => {
@@ -156,29 +193,6 @@ export async function items(ex, completionCid, output, whereText, ctx) {
     filterBar(target, { choices: () => fieldChoices(results.map(a => previews.get(a))), end: results.length ? [status, pickAllButton] : [] }),
     results.length === 0 ? h('p', { class: 'muted' }, 'No items match.')
       : itemsTable(ex, ctx, { results, via, target, checked, onCheck: report, previews }))
-}
-
-/**
- * The items table's one tooltip (spec §6.3, amended): shown at once on hover or
- * focus, where the native `title` waits about a second. `lines` are
- * `[class, text]`; the first is the field path.
- */
-function pillTip() {
-  const el = h('div', { class: 'file-pill-tip', role: 'tooltip', 'data-pill-tip': '', 'data-open': 'false' })
-  const show = (target, lines) => {
-    el.replaceChildren(...lines.map(([cls, text]) => h('div', { class: cls }, text)))
-    el.dataset.open = 'true'
-    const r = target.getBoundingClientRect?.()
-    if (r) el.setAttribute('style', `left: ${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px; top: ${r.bottom + 6}px`)
-  }
-  const hide = () => { el.dataset.open = 'false' }
-  /** Hover and focus handlers for `lines`, or for `() => lines` when they change after drawing. */
-  const on = (lines) => {
-    const get = typeof lines === 'function' ? lines : () => lines
-    return { onmouseenter: (e) => show(e.currentTarget, get()), onfocus: (e) => show(e.currentTarget, get()),
-      onmouseleave: hide, onblur: hide, 'aria-label': get().map(([, text]) => text).join('\n') }
-  }
-  return { el, on }
 }
 
 /** The row's "+" pill (items file columns spec §6.5): adds the item to the tray with its collection, then shows a tick. */

@@ -202,9 +202,9 @@ test('a run row carries its nf_run_hash, from the snapshot and from a tail run\'
 test('runLabel names a collection by its run and output, from the snapshot or the tail, and null when neither knows it (decision 11)', async () => {
   const { explorer, member } = await open()
   assert.deepEqual(await explorer.runLabel(member.runs.R1.collection),
-    { run_name: 'R1', output: 'aligned', completion: member.runs.R1.completion })
+    { run_name: 'R1', output: 'aligned', completion: member.runs.R1.completion, status: 'succeeded', possibly_incomplete: false })
   assert.deepEqual(await explorer.runLabel(member.runs.R2.collection),
-    { run_name: 'R2', output: 'aligned', completion: member.runs.R2.completion })
+    { run_name: 'R2', output: 'aligned', completion: member.runs.R2.completion, status: 'succeeded', possibly_incomplete: false })
   assert.equal(await explorer.runLabel(rawCid('held elsewhere').toString()), null)
   assert.equal(await explorer.runLabel(null), null)
   assert.equal(explorer.runLabel(member.runs.R1.collection), explorer.runLabel(member.runs.R1.collection), 'one lookup per collection')
@@ -357,6 +357,17 @@ test('block: an empty raw block is verified with size 0', async () => {
   const b = await ex.block(cid)
   assert.equal(b.check, 'verified')
   assert.equal(b.size, 0)
+})
+
+test('!= over a snapshot run is the SQL, over a stale run the matcher; an item without the path matches', async () => {
+  const { explorer, member } = await open()
+  const items = async (run, where) => (await explorer.items(run, 'aligned', where)).items
+  assert.deepEqual(await items(member.runs.R1.completion, [['sample', 'string', 'A', '!=']]), [member.item.B])
+  assert.deepEqual(await items(member.runs.R1.completion, [['lane', 'int', '1', '!=']]), [member.item.B])
+  assert.deepEqual(await items(member.runs.R1.completion, [['strandedness', 'string', 'reverse', '!=']]), [member.item.A, member.item.B].sort())
+  assert.deepEqual(await items(member.runs.R2.completion, [['sample', 'string', 'B', '!=']]), [member.item.C])
+  assert.deepEqual(await items(member.runs.R2.completion, [['strandedness', 'string', 'reverse', '!=']]), [member.item.B, member.item.C].sort())
+  await assert.rejects(items(member.runs.R1.completion, [['sample', 'string', 'x'.repeat(2000), '!=']]), (e) => e.constructor.name === 'PredicateError')
 })
 
 test('a range over a snapshot run is the SQL, over a stale run the matcher; int and float bounds alike', async () => {

@@ -43,6 +43,7 @@ class ExplorerQueriesTest extends Specification {
         page.itemsPredicate == Index.SQL_ITEMS_PREDICATE
         page.itemsPredicateNull == Index.SQL_ITEMS_PREDICATE_NULL
         page.itemsRange == Index.SQL_ITEMS_RANGE
+        page.itemsNotEqual == Index.SQL_ITEMS_NOT_EQUAL
         page.itemsOrder == Index.SQL_ITEMS_ORDER
         page.collectionsOf == Index.SQL_COLLECTIONS_OF
     }
@@ -50,7 +51,7 @@ class ExplorerQueriesTest extends Specification {
     def 'every page query runs against the real schema'() {
         expect:
         page.each { String name, Object sql ->
-            if( name.startsWith('itemsPredicate') || name == 'itemsRange' || name == 'itemsOrder' )
+            if( name.startsWith('itemsPredicate') || name == 'itemsRange' || name == 'itemsNotEqual' || name == 'itemsOrder' )
                 return
             plan((String) sql)     // throws on a syntax error or an unknown column
         }
@@ -73,6 +74,8 @@ class ExplorerQueriesTest extends Specification {
         'items, two predicates'   | page.itemsBase + page.itemsPredicate + page.itemsPredicateNull + page.itemsOrder
         'items, a range (>=)'     | page.itemsBase + page.itemsRange['>='] + page.itemsOrder
         'items, a range (<)'      | page.itemsBase + page.itemsPredicate + page.itemsRange['<'] + page.itemsOrder
+        'items, not equal'        | page.itemsBase + page.itemsNotEqual + page.itemsOrder
+        'items, = and !='         | page.itemsBase + page.itemsPredicate + page.itemsNotEqual + page.itemsOrder
         'collectionsOf'           | page.collectionsOf
         'watermark'               | page.watermark
         'pipelines'               | page.pipelines

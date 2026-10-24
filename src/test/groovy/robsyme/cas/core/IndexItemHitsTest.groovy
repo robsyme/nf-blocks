@@ -64,6 +64,23 @@ class IndexItemHitsTest extends Specification {
         hits(['lane >=': '2', 'lane <': '3'])*.item == [laneInt]
     }
 
+    def 'a != condition keeps every item with no equal value text, including items without the path and a truncated value'() {
+        expect:
+        hits(['lane !=': '2'])*.item.toSet() == [depthFloat, pairedBool, lanesList, longNote, nestedKit] as Set
+        hits(['sample !=': 'A'])*.item.toSet() == [laneString, depthFloat, pairedBool, lanesList, longNote, nestedKit] as Set
+        hits(['note !=': 'short'])*.item.size() == 7
+        hits(['sample !=': 'A', 'lane !=': '2'])*.item.toSet() == [depthFloat, pairedBool, lanesList, longNote, nestedKit] as Set
+    }
+
+    def 'a != condition whose value is too long to compare is refused'() {
+        when:
+        hits(['note !=': LONG])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'note !='")
+    }
+
     def 'a range condition whose value is not a number is refused'() {
         when:
         hits(['lane >=': 'two'])
