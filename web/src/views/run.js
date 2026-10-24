@@ -66,7 +66,7 @@ export async function run(ex, completionCid, ctx) {
     h('h2', {}, 'Outputs'),
     collections.length === 0 ? h('p', { class: 'muted', 'data-no-outputs': '' }, 'This run published no outputs.')
       : table(['output', 'items', 'fields', 'files'], rows.map(r => h('tr', { 'data-collection': r.c.cid, 'data-output': r.c.output },
-        h('td', {}, icon('output'), link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.fields, r.files))),
+        h('td', { class: 'output-name' }, icon('output'), link(`#/items/${completionCid}/${enc(r.c.output)}`, h('strong', {}, r.c.output))), r.count, r.fields, r.files))),
     fold(`details:${completionCid}`, 'Run details', details),
     fold(`storage:${completionCid}`, 'Storage', retentionPanel(completionCid, state, ctx, { isRun: true, kind: 'run', href: ctx.write.hrefFor(`#/run/${completionCid}`) })),
     fold(`lineage:${completionCid}`, `Lineage check: ${healthSummary(completion.anomalies)}`,
