@@ -73,6 +73,45 @@ const byValue = (a, b) => (Number(isNumber(b)) - Number(isNumber(a)))
   || (isNumber(a) && isNumber(b) ? Number(a.value) - Number(b.value) : byText(String(a.value), String(b.value)))
 
 /**
+ * The field picker's search (filter bar): the `choices` whose path matches
+ * `query`, best first, ignoring case. A match ranks by where the query falls:
+ * the whole path, the whole last segment, the start of the last segment, the
+ * start of a word in the last segment, then in an earlier one (a word starts
+ * after . _ - [ or at a lower-to-upper case change), anywhere, and last, for
+ * three letters or more, its letters in order with gaps (`fwdfrag` finds
+ * `forwardFragments`). Ties keep the given order (fieldChoices: shallower
+ * paths first). An empty query keeps every choice.
+ */
+export function rankFields(choices, query) {
+  const q = String(query ?? '').toLowerCase()
+  if (!q) return [...choices]
+  return choices.map((f, i) => ({ f, i, rank: matchRank(f.path, q) }))
+    .filter(m => m.rank !== null).sort((a, b) => a.rank - b.rank || a.i - b.i).map(m => m.f)
+}
+
+const WORD_BREAK = /[._\-[\]]/
+
+function matchRank(path, q) {
+  const lower = path.toLowerCase()
+  const lastAt = lower.lastIndexOf('.') + 1
+  const last = lower.slice(lastAt)
+  if (lower === q) return 0
+  if (last === q) return 1
+  if (last.startsWith(q)) return 2
+  let wordStart = null
+  for (let i = path.length - 1; i >= 0 && wordStart === null; i--) {
+    const start = i === 0 || WORD_BREAK.test(path[i - 1]) || (/[A-Z]/.test(path[i]) && /[a-z0-9]/.test(path[i - 1]))
+    if (start && lower.startsWith(q, i)) wordStart = i >= lastAt ? 3 : 4
+  }
+  if (wordStart !== null) return wordStart
+  if (lower.includes(q)) return 5
+  if (q.length < 3) return null
+  let at = 0
+  for (const c of lower) if (c === q[at] && ++at === q.length) return 6
+  return null
+}
+
+/**
  * What the filter picker offers (filter bar, option A of `filters-v1.html`):
  * each metadata path over the loaded items, a key `itemTable` found at two
  * paths listed once, shallower paths first, with its values and how many

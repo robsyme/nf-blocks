@@ -38,6 +38,7 @@ class FakeElement extends FakeNode {
   get isConnected() { return false }
   classes() { return (this.attributes.get('class') ?? '').split(/\s+/).filter(Boolean) }
   setAttribute(k, v) { this.attributes.set(k, String(v)) }
+  removeAttribute(k) { this.attributes.delete(k) }
   getAttribute(k) { return this.attributes.get(k) ?? null }
   hasAttribute(k) { return this.attributes.has(k) }
   get disabled() { return this.attributes.has('disabled') }
@@ -57,6 +58,12 @@ class FakeElement extends FakeNode {
   /** Runs this element's own listeners for `type` and returns what they return (a Promise for an async handler). */
   fire(type) { return Promise.all((this.listeners.get(type) ?? []).map(fn => fn({ currentTarget: this, target: this, preventDefault() {} }))) }
   click() { return this.fire('click') }
+  /** A keydown for `key` (e.g. 'ArrowDown') to this element's own listeners; true when a listener called preventDefault. */
+  press(key) {
+    let prevented = false
+    for (const fn of this.listeners.get('keydown') ?? []) fn({ key, currentTarget: this, target: this, type: 'keydown', preventDefault() { prevented = true } })
+    return prevented
+  }
   /** A real Event (e.g. `new Event('input')`) dispatched synchronously to this element's own listeners only. */
   dispatchEvent(event) {
     for (const fn of this.listeners.get(event.type) ?? []) fn({ currentTarget: this, target: this, type: event.type, preventDefault() {} })

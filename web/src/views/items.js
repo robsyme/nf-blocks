@@ -5,7 +5,7 @@
 import { h } from '../html.js'
 import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
-import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, typedCondition } from '../table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, rankFields, typedCondition } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
 import { RANGE_OPS } from '../metadata.js'
 import { humanBytes, leafReasonText } from '../words.js'
@@ -40,13 +40,46 @@ function filterBar(target, { choices, end }) {
   const onKey = (e) => { if (e.key === 'Escape') close() }
   const showFields = () => {
     const all = choices()
-    const list = h('div', { class: 'fb-list' })
-    const draw = (q) => list.replaceChildren(...all.filter(f => f.path.includes(q)).map(f =>
-      h('button', { type: 'button', class: 'fb-item', 'data-field': f.path, onclick: () => showValues(f) },
-        h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-count' }, plural(f.values.length, 'value')))))
-    draw('')
+    const list = h('div', { class: 'fb-list', role: 'listbox', id: 'fb-fields' })
+    // Focus stays in the search box; the arrow keys move `active` through the
+    // fields `shown` (a combobox's aria-activedescendant), wrapping at the ends.
+    // Typing ranks the fields (rankFields) and highlights the best, so Enter
+    // takes it before the name is finished.
+    let shown = []
+    let active = -1
+    const highlight = (i) => {
+      const was = list.children[active]
+      was?.classList.remove('active')
+      was?.setAttribute('aria-selected', 'false')
+      active = i
+      const b = list.children[i]
+      if (!b) { search.removeAttribute('aria-activedescendant'); return }
+      b.classList.add('active')
+      b.setAttribute('aria-selected', 'true')
+      search.setAttribute('aria-activedescendant', b.getAttribute('id'))
+      b.scrollIntoView?.({ block: 'nearest' })
+    }
+    const move = (step) => {
+      if (!shown.length) return
+      highlight(active < 0 ? (step > 0 ? 0 : shown.length - 1) : (active + step + shown.length) % shown.length)
+    }
+    const onSearchKey = (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); move(e.key === 'ArrowDown' ? 1 : -1) }
+      else if (e.key === 'Enter' && active >= 0) { e.preventDefault(); showValues(shown[active]) }
+      else onKey(e)
+    }
     const search = h('input', { class: 'fb-input', type: 'search', placeholder: 'Search fields…', 'aria-label': 'search fields', 'data-filter-search': '',
-      oninput: (e) => draw((e.currentTarget.value ?? '').trim()), onkeydown: onKey })
+      role: 'combobox', 'aria-controls': 'fb-fields', 'aria-expanded': 'true', 'aria-autocomplete': 'list',
+      oninput: (e) => draw((e.currentTarget.value ?? '').trim()), onkeydown: onSearchKey })
+    const draw = (q) => {
+      shown = rankFields(all, q)
+      active = -1
+      list.replaceChildren(...shown.map((f, i) =>
+        h('button', { type: 'button', class: 'fb-item', role: 'option', id: `fb-field-${i}`, 'aria-selected': 'false', 'data-field': f.path, onclick: () => showValues(f) },
+          h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-count' }, plural(f.values.length, 'value')))))
+      highlight(q && shown.length ? 0 : -1)
+    }
+    draw('')
     picker.replaceChildren(search, all.length ? list : h('p', { class: 'muted fb-note' }, 'No fields yet: the items are still loading.'))
     search.focus?.()
   }

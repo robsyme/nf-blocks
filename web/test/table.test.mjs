@@ -1,7 +1,7 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, typedCondition, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, rankFields, typedCondition, withoutDuplicates } from '../src/table.js'
 import { PredicateError } from '../src/metadata.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
@@ -160,4 +160,21 @@ test('fieldChoices: among equally common values, numbers sort by value, not as t
   assert.deepEqual(fieldChoices(mixed)[0].values.map(x => x.value), ['9', '10', 'a', 'b'])
   const common = [{ pairs: [v('int', '100')] }, { pairs: [v('int', '100')] }, { pairs: [v('int', '9')] }]
   assert.deepEqual(fieldChoices(common)[0].values.map(x => x.value), ['100', '9'])
+})
+
+test('rankFields: whole path, whole last segment, its start, a word start in it then earlier, anywhere, then letters in order; ties keep the given order', () => {
+  const f = (...paths) => paths.map(path => ({ path }))
+  const ranked = (fields, q) => rankFields(fields, q).map(x => x.path)
+  const fields = f('spread', 'qc.r_e_a_d', 'qc.thread_id', 'meta.read_count', 'qc.bigRead', 'meta.reads', 'read', 'meta.read')
+  assert.deepEqual(ranked(fields, 'read'), ['read', 'meta.read', 'meta.read_count', 'meta.reads', 'qc.bigRead', 'spread', 'qc.thread_id', 'qc.r_e_a_d'])
+  assert.deepEqual(ranked(fields, 'READ'), ranked(fields, 'read'), 'case is ignored')
+  assert.deepEqual(ranked(fields, ''), fields.map(x => x.path), 'no query lists everything in the given order')
+  assert.deepEqual(ranked(fields, 'zzz'), [])
+  const rnaseq = f('id', 'single_end', 'meta.id', 'meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments', 'qc.fastqc.read_count')
+  assert.deepEqual(ranked(rnaseq, 'frag'), ['meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments'])
+  assert.deepEqual(ranked(rnaseq, 'fwdfrag'), ['meta.salmon.forwardFragments', 'qc.meta.salmon.forwardFragments'], 'letters in order, with gaps')
+  assert.deepEqual(ranked(rnaseq, 'count'), ['qc.fastqc.read_count'])
+  assert.deepEqual(ranked(rnaseq, 'id'), ['id', 'meta.id'], 'under three letters, no letters-in-order match (single_end has an i then a d)')
+  assert.deepEqual(ranked(f('qc.salmon_strand.forwardFragments', 'meta.inferred_strandedness'), 'strand'),
+    ['meta.inferred_strandedness', 'qc.salmon_strand.forwardFragments'], 'a word start in the field\'s own name beats one in a parent')
 })
