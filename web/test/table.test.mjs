@@ -1,7 +1,8 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, fieldPaths, fileChips, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, typedCondition, withoutDuplicates } from '../src/table.js'
+import { PredicateError } from '../src/metadata.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -66,16 +67,6 @@ test('cellOf and withoutDuplicates', () => {
   assert.ok(!withoutDuplicates(MARKDUP[0].pairs, duplicates).some(p => p.path === 'meta.id'))
 })
 
-test('file chips drop the prefix an item\'s files share, up to its last dot (P9)', () => {
-  assert.deepEqual(fileChips(files('WT_REP1')), { prefix: 'WT_REP1.markdup.sorted',
-    chips: ['.bam.bai', '.bam', '.metrics.txt', '.bam.stats', '.bam.flagstat', '.bam.idxstats'] })
-  assert.deepEqual(fileChips(['a.bam', 'a.bam.bai']), { prefix: 'a', chips: ['.bam', '.bam.bai'] })
-  assert.deepEqual(fileChips(['multiqc_report.html']), { prefix: '', chips: ['multiqc_report.html'] })
-  assert.deepEqual(fileChips(['x.tsv', 'y.rds']), { prefix: '', chips: ['x.tsv', 'y.rds'] })
-  assert.deepEqual(fileChips([]), { prefix: '', chips: [] })
-  assert.deepEqual(fileChips(undefined), { prefix: '', chips: [] })
-})
-
 test('fieldPaths: every path on any loaded item, a repeated key once, sorted', () => {
   assert.deepEqual(fieldPaths(MARKDUP),
     ['has_genome_bam', 'has_transcriptome_bam', 'id', 'inferred_strandedness', 'single_end', 'strandedness'])
@@ -93,4 +84,61 @@ test('outputSuffixes: each distinct suffix over every loaded item, sorted, a com
     ['.fastq.gz', '.vcf.bgz', 'README'])
   assert.deepEqual(outputSuffixes([{ files: ['.hidden', 'x.'] }]), ['.hidden', 'x.'])
   assert.deepEqual(outputSuffixes([{ pending: true }, {}]), [])
+})
+
+const slot = (column, path, address = 'bafkstored') => ({ column, path, name: null, size: null, address, dir: false, reason: address ? null : 'declined' })
+const none = (column, path) => slot(column, path, null)
+
+test('fileColumns: keys with a stored file in some loaded item, names sorted, then positions by number', () => {
+  const a = { slots: [slot('samtools', 'samtools.stats'), slot('bam', 'bam'), none('meta', 'meta.original_genome_bam')] }
+  const b = { slots: [slot('bai', 'bai'), slot('[10]', '[10]'), slot('[2]', '[2]'), none('cram', 'cram'), none('samtools', 'samtools.idxstats')] }
+  assert.deepEqual(fileColumns([a, b, undefined, { error: 'block_missing' }]), ['bai', 'bam', 'samtools', '[2]', '[10]'])
+  assert.deepEqual(fileColumns([]), [])
+})
+
+test('emptyColumns: keys whose slots are address-less in every loaded item, sorted the same way', () => {
+  const a = { slots: [slot('bam', 'bam'), none('meta', 'meta.original_genome_bam'), none('cram', 'cram'), none('[3]', '[3]')] }
+  const b = { slots: [none('bam', 'bam'), none('json_info', 'json_info')] }
+  assert.deepEqual(emptyColumns([a, b, undefined]), ['cram', 'json_info', 'meta', '[3]'])
+  assert.deepEqual(emptyColumns([]), [])
+})
+
+test('cellSlots: stored slots first, at most five, how many more, and the address-less ones apart', () => {
+  const rseqc = [none('rseqc', 'rseqc.tin'), none('rseqc', 'rseqc.meta.original_genome_bam'), slot('rseqc', 'rseqc.bamstat'),
+    none('rseqc', 'rseqc.innerdistance.pdf'), ...[...Array(6)].map((_, i) => slot('rseqc', `rseqc.junction[${i}]`))]
+  const p = { slots: [...rseqc, slot('bam', 'bam')] }
+  const { shown, more, empty } = cellSlots(p, 'rseqc')
+  assert.deepEqual(shown.map(s => s.path), ['rseqc.bamstat', 'rseqc.junction[0]', 'rseqc.junction[1]', 'rseqc.junction[2]', 'rseqc.junction[3]'])
+  assert.equal(more, 2)
+  assert.deepEqual(empty.map(s => s.path), ['rseqc.tin', 'rseqc.meta.original_genome_bam', 'rseqc.innerdistance.pdf'])
+  assert.deepEqual(cellSlots(p, 'bam'), { shown: [p.slots.at(-1)], more: 0, empty: [] })
+  assert.deepEqual(cellSlots(p, 'bai'), { shown: [], more: 0, empty: [] })
+})
+
+test('fieldChoices: each metadata path over the loaded items, a repeated key once, values most common first with item counts', () => {
+  const p = (...pairs) => ({ pairs })
+  const loaded = [
+    p(e('id', 'string', 'A'), e('meta.id', 'string', 'A'), e('single_end', 'bool', 'false')),
+    p(e('id', 'string', 'B'), e('meta.id', 'string', 'B'), e('single_end', 'bool', 'false')),
+    p(e('id', 'string', 'C'), e('meta.id', 'string', 'C'), e('single_end', 'bool', 'true'), { path: 'tags', type: 'string', values: ['x', 'x'], types: ['string', 'string'] }),
+    undefined, { error: 'block_missing' },
+  ]
+  assert.deepEqual(fieldChoices(loaded), [
+    { path: 'id', type: 'string', values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
+    { path: 'single_end', type: 'bool', values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
+    { path: 'tags', type: 'string', values: [{ type: 'string', value: 'x', count: 1 }] },
+  ])
+  assert.deepEqual(fieldChoices([]), [])
+})
+
+test('fieldChoices: shallower paths first, then by text, so nested copies of meta sink to the end', () => {
+  const loaded = [{ pairs: [e('dupradar.meta.salmon.inferred', 'string', 'forward'), e('meta.single_end', 'bool', 'true'), e('id', 'string', 'A'), e('meta.salmon.inferred', 'string', 'reverse')] }]
+  assert.deepEqual(fieldChoices(loaded).map(f => f.path), ['id', 'meta.single_end', 'meta.salmon.inferred', 'dupradar.meta.salmon.inferred'])
+})
+
+test('typedCondition: typed text takes the field\'s type, normalised as the index types it; a mixed field is a string', () => {
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '007'), ['lane', 'int', '7'])
+  assert.deepEqual(typedCondition({ path: 'id', type: 'string' }, 'WT_REP1'), ['id', 'string', 'WT_REP1'])
+  assert.deepEqual(typedCondition({ path: 'x', type: 'mixed' }, '2'), ['x', 'string', '2'])
+  assert.throws(() => typedCondition({ path: 'lane', type: 'int' }, 'two'), PredicateError)
 })

@@ -3,12 +3,9 @@
 // them through BlockFetcher (hash-checked, cached), a few at a time. No
 // snapshot query: a preview never costs a range read of the index.
 import { PREVIEW_CAP, PREVIEW_CONCURRENCY } from './config.js'
-import { CID } from 'multiformats/cid'
 import { DAG_CBOR } from './cid.js'
 import { pairsOf } from './pairs.js'
-
-/** The codec of a leaf address given as a CID or as its text; null when it is neither. */
-const codeOf = (a) => { try { return (CID.asCID(a) ?? CID.parse(String(a))).code } catch { return null } }
+import { codeOf, fileSlots } from './slots.js'
 
 export class Previews {
   constructor(ex, { cap = PREVIEW_CAP, concurrency = PREVIEW_CONCURRENCY } = {}) {
@@ -66,7 +63,7 @@ export class Previews {
       }
       answer.then(
         (it) => { this.done.set(itemCid, { pairs: pairsOf(it.view), files: it.leaves.map(l => l.name).filter(Boolean),
-          dirs: it.leaves.filter(l => l.name && l.address && codeOf(l.address) === DAG_CBOR).map(l => l.name) }); this.fetched++ },
+          dirs: it.leaves.filter(l => l.name && l.address && codeOf(l.address) === DAG_CBOR).map(l => l.name), slots: fileSlots(it.value) }); this.fetched++ },
         (e) => { this.done.set(itemCid, { error: e?.code ?? 'query_failed', message: e?.message ?? String(e) }); this.failed++ })
         .finally(() => {
           this.inFlight--

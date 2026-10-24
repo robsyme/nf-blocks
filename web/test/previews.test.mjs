@@ -43,7 +43,7 @@ test('at most six previews are fetched at once; the rest wait their turn (ticket
   assert.equal(f.most(), 6)
   assert.deepEqual(p.get('i3'), {
     pairs: [{ path: 'lane', type: 'int', values: ['1'], types: ['int'] }, { path: 'sample', type: 'string', values: ['i3'], types: ['string'] }],
-    files: ['i3.bam'], dirs: [] })
+    files: ['i3.bam'], dirs: [], slots: [] })
 })
 
 test('askFirst asks for the first hundred rows only; the rest wait for a click (ticket 03 Q3)', async () => {
@@ -105,6 +105,17 @@ test('cancel drops the queue and keeps what is in flight; an unsubscribed listen
   assert.equal(p.get('i7'), undefined)
   p.ask('coll', 'i7')
   assert.equal(p.stats.inFlight, 1)
+})
+
+test('a preview carries the item value\'s file slots, or none when the item has no value', async () => {
+  const ex = { item: async (c, i) => (i === 'i1'
+    ? { view: null, leaves: [], value: { bam: { kind: 'Leaf', name: 'a.bam', address: rawCid('a'), size: 3, reason: null } } }
+    : { view: null, leaves: [] }) }
+  const p = new Previews(ex)
+  p.ask('coll', 'i1'); p.ask('coll', 'i2')
+  await tick()
+  assert.deepEqual(p.get('i1').slots.map(s => s.path), ['bam'])
+  assert.deepEqual(p.get('i2').slots, [])
 })
 
 test('dirs names the leaves whose address is a dag-cbor CID, given as an object or as text', async () => {
