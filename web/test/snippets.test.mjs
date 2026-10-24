@@ -130,3 +130,10 @@ test('the set of drawn snippets stays bounded across redraws', () => {
   // The newest draw is still there.
   assert.ok(snippetBlock({ kind: 'selection', cid: 'x' }).querySelector('[data-snippet]'))
 })
+
+test('where: a range is the path and its operator as one quoted key; two bounds on one path are two keys', () => {
+  assert.equal(whereLiteral([['meta.depth', 'float', '30.0', '>='], ['meta.depth', 'float', '100.0', '<'], ['lane', 'int', '2', '>']]),
+    "['meta.depth >=': 30.0d, 'meta.depth <': 100.0d, 'lane >': 2]")
+  assert.equal(whereRepeatsPath([['depth', 'float', '1.0', '>='], ['depth', 'float', '2.0', '<']]), false)
+  assert.equal(whereRepeatsPath([['depth', 'float', '1.0', '>='], ['depth', 'float', '2.0', '>=']]), true)
+})

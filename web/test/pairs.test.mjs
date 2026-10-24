@@ -114,3 +114,12 @@ test('the string "2" and the integer 2 draw differently, and each filter link fi
   assert.deepEqual((await ex.items('run1', 'reads', whereOf(str.values[0].href))).items, ['itemStr'])
   assert.deepEqual((await ex.items('run1', 'reads', whereOf(int.values[0].href))).items, ['itemInt'])
 })
+
+test('filterHref takes an operator: a range condition is [path, type, value, op], equality stays three', () => {
+  const target = { completion: 'run1', output: 'reads', where: [['sample', 'string', 'A']] }
+  const where = (href) => JSON.parse(decodeURIComponent(href.split('where=')[1]))
+  assert.deepEqual(where(filterHref(target, 'depth', 'float', '30.0', '>=')), [['sample', 'string', 'A'], ['depth', 'float', '30.0', '>=']])
+  assert.deepEqual(where(filterHref(target, 'depth', 'float', '30.0', '=')), [['sample', 'string', 'A'], ['depth', 'float', '30.0']])
+  const ranged = { ...target, where: [['depth', 'float', '30.0', '>=']] }
+  assert.deepEqual(where(filterHref(ranged, 'depth', 'float', '30.0', '>=')), [['depth', 'float', '30.0', '>=']])
+})

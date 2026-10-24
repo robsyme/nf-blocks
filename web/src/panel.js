@@ -16,7 +16,7 @@ import { valueText } from './pairs.js'
 const OUTPUT_ROUTES = new Set(['items', 'item', 'collection'])
 const counted = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 const short = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
-const whereText = (where) => where.map(([p, t, v]) => `${p} = ${valueText(t, v)}`).join(', ')
+const whereText = (where) => where.map(([p, t, v, op = '=']) => `${p} ${op} ${valueText(t, v)}`).join(', ')
 
 /** Spec §6.1. `view` is what the current view passed to ctx.use; `picked` the tray's size. */
 export function panelState({ route, view = null, picked = 0 }) {
