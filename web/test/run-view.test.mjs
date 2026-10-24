@@ -33,6 +33,8 @@ test('the run overview: status in words, outputs A–Z with counts, fields and f
   await frame(); await frame()
   assert.deepEqual(marks, [{ pipeline: 'nf-core/rnaseq', run: 'bafyrun', expand: true }])
   assert.match(page.querySelector('h1').textContent, /high_jang/)
+  assert.ok(page.querySelector('h1').querySelector('[data-icon=run]').classList.contains('tone-good'), 'the heading icon carries the status colour')
+  assert.doesNotMatch(page.textContent, /●/)
   assert.match(page.textContent, /Succeeded/)
   assert.match(page.textContent, /latest good run of nf-core\/rnaseq/)
   const rows = page.querySelectorAll('[data-collection]')
@@ -46,7 +48,23 @@ test('the run overview: status in words, outputs A–Z with counts, fields and f
   assert.ok(!page.querySelector('[data-snippet]'), 'the panel shows the call, not the run page')
 })
 
-test('fields: at most three, then +N naming the rest; files: at most two suffixes, then +N, and the index link after them; nothing when there is nothing', async () => {
+test('empty outputs: greyed and moved below the rest, still A–Z among themselves', async () => {
+  installDom()
+  resetFolds()
+  const ex = fakeEx()
+  const run0 = ex.run
+  ex.run = async () => { const r = await run0(); return { ...r, collections: [...r.collections, { output: 'lint_ribo', cid: 'cl' }, { output: 'bam_qc_rustqc', cid: 'cb' }] } }
+  const collection = ex.collection
+  ex.collection = async (cid) => (cid === 'cl' || cid === 'cb' ? { total: 0, items: [], index: null } : collection(cid))
+  const page = await run(ex, 'bafyrun', ctx())
+  await frame(); await frame()
+  const rows = page.querySelectorAll('[data-collection]')
+  assert.deepEqual(rows.map(r => r.dataset.output), ['markdup', 'quant', 'bam_qc_rustqc', 'lint_ribo'])
+  assert.deepEqual(rows.map(r => r.classList.contains('empty-output')), [false, false, true, true])
+  assert.deepEqual([...page.querySelectorAll('th')].map(t => t.textContent), ['output', 'items', 'fields', 'files'])
+})
+
+test('fields: at most three, then +N whose tooltip names the rest; files: at most two suffixes, then +N likewise, and the index link after them; nothing when there is nothing', async () => {
   installDom()
   resetFolds()
   const ex = fakeEx()
@@ -60,8 +78,18 @@ test('fields: at most three, then +N naming the rest; files: at most two suffixe
   const [markdup, quant] = page.querySelectorAll('[data-collection]')
   const fields = markdup.querySelector('[data-fields]')
   assert.equal(fields.textContent, 'a, b, c +2')
-  assert.equal(fields.querySelector('[title]').getAttribute('title'), 'd, e')
+  const tip = page.querySelector('[data-pill-tip]')
+  assert.equal(tip.dataset.open, 'false')
+  await fields.querySelector('[data-more]').fire('mouseenter')
+  assert.equal(tip.dataset.open, 'true')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent), ['d', 'e'])
+  await fields.querySelector('[data-more]').fire('mouseleave')
+  assert.equal(tip.dataset.open, 'false')
   assert.deepEqual(markdup.querySelector('[data-files]').querySelectorAll('.ext').map(c => c.textContent), ['.bai', '.bam', '+1'])
+  const moreFiles = markdup.querySelector('[data-files]').querySelector('[data-more]')
+  assert.equal(moreFiles.getAttribute('aria-label'), '.csv')
+  await moreFiles.fire('focus')
+  assert.deepEqual(tip.querySelectorAll('div').map(d => d.textContent), ['.csv'])
   assert.equal(quant.querySelector('[data-fields]').textContent, '')
   const index = quant.querySelector('[data-files]').querySelector('[data-index-stable]')
   assert.equal(index.textContent, 'index file', 'no space inside the link to underline')

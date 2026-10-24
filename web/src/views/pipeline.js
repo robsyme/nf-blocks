@@ -2,7 +2,7 @@
 // #/pipeline/<name> and the latest-run redirect (DESIGN.md §15).
 import { h, link } from '../html.js'
 import { icon, ref, shortCid } from '../icons.js'
-import { healthText, statusText, whenText } from '../words.js'
+import { healthText, runTone, statusText, whenText } from '../words.js'
 import { crumbs, enc, errorNode, pager, table, unreadableRuns } from './common.js'
 
 export async function pipeline(ex, name, offset = 0, ctx) {
@@ -19,7 +19,7 @@ export async function pipeline(ex, name, offset = 0, ctx) {
     page.hidden ? h('p', { 'data-hidden-runs': page.hidden, class: 'muted' }, `${page.hidden} run${page.hidden === 1 ? '' : 's'} on this page hidden by a delete Claim`) : null,
     table(['run', 'status', 'finished', 'health', 'from'], rows.map(({ r, anomalies }) => h('tr', {
       'data-run': r.completion_cid, 'data-pipeline': r.pipeline, 'data-status': r.status, 'data-source': r.source },
-    h('td', {}, ref('run', r.run_name ?? r.completion_cid, `#/run/${r.completion_cid}`)),
+    h('td', {}, ref('run', r.run_name ?? r.completion_cid, `#/run/${r.completion_cid}`, { tone: runTone(r) })),
     h('td', {}, statusText(r)),
     h('td', {}, whenText(r.finished_at)),
     anomalies,
@@ -38,5 +38,5 @@ export async function latest(ex, pipelineName) {
   return h('section', {},
     crumbs({ text: pipelineName, href: `#/pipeline/${enc(pipelineName)}` }, { text: 'latest good run' }),
     h('h1', {}, `Latest successful run of ${pipelineName}`),
-    h('p', { 'data-latest': best ?? '' }, best ? ref('run', shortCid(best), `#/run/${best}`) : 'None: no run of this pipeline succeeded without being possibly incomplete.'))
+    h('p', { 'data-latest': best ?? '' }, best ? ref('run', shortCid(best), `#/run/${best}`, { tone: 'good' }) : 'None: no run of this pipeline succeeded without being possibly incomplete.'))
 }

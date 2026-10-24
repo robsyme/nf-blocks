@@ -17,7 +17,7 @@ export async function home(ex, ctx) {
       if (!best) { good.textContent = 'none'; return }
       const id = await ex.runIdentity(best)
       good.classList.remove('muted')
-      good.replaceChildren(ref('run', id?.run_name ?? 'unnamed run', `#/run/${best}`))
+      good.replaceChildren(ref('run', id?.run_name ?? 'unnamed run', `#/run/${best}`, { tone: 'good' }))
     }).catch(() => { good.textContent = '?' })
   }
   return h('section', {},

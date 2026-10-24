@@ -9,7 +9,7 @@ import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, 
 import { filterHref, valueText } from '../pairs.js'
 import { RANGE_OPS } from '../metadata.js'
 import { humanBytes, leafReasonText } from '../words.js'
-import { enc, nextFrame, pickAll, runCrumbs } from './common.js'
+import { enc, nextFrame, pickAll, pillTip, runCrumbs } from './common.js'
 
 function parseWhere(whereText) {
   try {
@@ -156,29 +156,6 @@ export async function items(ex, completionCid, output, whereText, ctx) {
     filterBar(target, { choices: () => fieldChoices(results.map(a => previews.get(a))), end: results.length ? [status, pickAllButton] : [] }),
     results.length === 0 ? h('p', { class: 'muted' }, 'No items match.')
       : itemsTable(ex, ctx, { results, via, target, checked, onCheck: report, previews }))
-}
-
-/**
- * The items table's one tooltip (spec §6.3, amended): shown at once on hover or
- * focus, where the native `title` waits about a second. `lines` are
- * `[class, text]`; the first is the field path.
- */
-function pillTip() {
-  const el = h('div', { class: 'file-pill-tip', role: 'tooltip', 'data-pill-tip': '', 'data-open': 'false' })
-  const show = (target, lines) => {
-    el.replaceChildren(...lines.map(([cls, text]) => h('div', { class: cls }, text)))
-    el.dataset.open = 'true'
-    const r = target.getBoundingClientRect?.()
-    if (r) el.setAttribute('style', `left: ${Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8))}px; top: ${r.bottom + 6}px`)
-  }
-  const hide = () => { el.dataset.open = 'false' }
-  /** Hover and focus handlers for `lines`, or for `() => lines` when they change after drawing. */
-  const on = (lines) => {
-    const get = typeof lines === 'function' ? lines : () => lines
-    return { onmouseenter: (e) => show(e.currentTarget, get()), onfocus: (e) => show(e.currentTarget, get()),
-      onmouseleave: hide, onblur: hide, 'aria-label': get().map(([, text]) => text).join('\n') }
-  }
-  return { el, on }
 }
 
 /** The row's "+" pill (items file columns spec §6.5): adds the item to the tray with its collection, then shows a tick. */

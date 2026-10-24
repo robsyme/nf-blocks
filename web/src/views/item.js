@@ -7,10 +7,12 @@ import { address, icon, ref, shortCid } from '../icons.js'
 import { fold } from '../folds.js'
 import { labelPaths, labelText, pairsNode, pairsOf } from '../pairs.js'
 import { itemTable, withoutDuplicates } from '../table.js'
-import { humanBytes, leafReasonText } from '../words.js'
+import { humanBytes, leafReasonText, runTone } from '../words.js'
 import { crumbs, pickButton, retentionPanel, runCrumbs, runLabelNode, table } from './common.js'
 
 const SHOWN_PAIRS = 8
+// A fold that would hide fewer pills than this costs more than it saves: show them all.
+const MIN_FOLDED = 5
 
 export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
@@ -35,8 +37,8 @@ export async function item(ex, collectionCid, itemCid, ctx) {
     from?.completion ? runCrumbs(ex, from.completion, [{ text: from.output, href: `#/items/${from.completion}/${encodeURIComponent(from.output)}?where=%5B%5D` }, { text: title }])
       : crumbs({ text: title }),
     h('h1', {}, icon('item'), title),
-    pairs.length ? h('div', {}, pairsNode(pairs.slice(0, SHOWN_PAIRS), target, { size: 'page' }),
-      pairs.length > SHOWN_PAIRS ? fold(`meta:${itemCid}`, `+${pairs.length - SHOWN_PAIRS} more`, pairsNode(pairs.slice(SHOWN_PAIRS), target, { size: 'page' })) : null)
+    pairs.length ? h('div', {}, pairsNode(pairs.length - SHOWN_PAIRS < MIN_FOLDED ? pairs : pairs.slice(0, SHOWN_PAIRS), target, { size: 'page' }),
+      pairs.length - SHOWN_PAIRS >= MIN_FOLDED ? fold(`meta:${itemCid}`, `+${pairs.length - SHOWN_PAIRS} more`, pairsNode(pairs.slice(SHOWN_PAIRS), target, { size: 'page' })) : null)
       : h('p', { class: 'muted' }, 'No Meta Map.'),
     h('h2', {}, 'Files'),
     table(['file', 'size', ''], it.leaves.map(l => h('tr', {},
@@ -47,7 +49,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
         : h('span', { class: 'muted' }, leafReasonText(l.reason)))))),
     h('p', {}, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })),
     h('h2', {}, 'Produced by'),
-    from ? h('p', {}, from.completion ? ref('run', from.run_name ?? 'this run', `#/run/${from.completion}`) : from.run_name ?? 'this run',
+    from ? h('p', {}, from.completion ? ref('run', from.run_name ?? 'this run', `#/run/${from.completion}`, { tone: runTone(from) }) : from.run_name ?? 'this run',
       elsewhere.length ? [h('span', { class: 'muted' }, ' · same files also in: '),
         elsewhere.map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)])] : null)
       : [runs.size ? h('p', {}, [...runs].map(([completion, coll], i) => [i ? ', ' : null, runLabelNode(ex, coll, completion)]))

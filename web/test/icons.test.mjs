@@ -19,6 +19,15 @@ test('every kind has an icon span naming its kind, and a CSS rule drawing it', (
   assert.equal(icon('claim').getAttribute('title'), 'name or pin')
 })
 
+test('a tone colours an icon by status, and ref passes it on; no tone stays grey', () => {
+  installDom()
+  assert.ok(icon('run', { tone: 'good' }).classList.contains('tone-good'))
+  assert.ok(!icon('run').getAttribute('class').includes('tone-'))
+  assert.ok(ref('run', 'x', '#/run/x', { tone: 'bad' }).querySelector('[data-icon]').classList.contains('tone-bad'))
+  assert.match(ICON_CSS, /\.icon\.tone-good\s*\{[^}]*var\(--good\)/)
+  assert.match(ICON_CSS, /\.icon\.tone-bad\s*\{[^}]*var\(--bad\)/)
+})
+
 test('an unknown kind throws', () => {
   installDom()
   assert.throws(() => icon('blob'), /no icon for 'blob'/)
