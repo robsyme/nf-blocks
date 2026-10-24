@@ -1,8 +1,10 @@
 // web/src/table.js
 // The items table's shape (explorer layout B spec §5.4), decided from the
 // previews loaded so far: which Meta Map paths are columns, which collapse into
-// the "same for every item" line, which repeat another path's values, and each
-// item's file suffixes. Pure: the views draw what it decides.
+// the "same for every item" line, which repeat another path's values, the
+// file columns (items file columns spec §6) and an output's file suffixes.
+// Pure: the views draw what it decides.
+import { predicateRow } from './metadata.js'
 
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const sig = (entry) => JSON.stringify([entry.types, entry.values])
@@ -64,6 +66,84 @@ export function fieldPaths(previews) {
   return [...paths].sort(byText)
 }
 
+/**
+ * What the filter picker offers (filter bar, option A of `filters-v1.html`):
+ * each metadata path over the loaded items, a key `itemTable` found at two
+ * paths listed once, shallower paths first, with its values and how many
+ * loaded items hold each, most common first. `type` is the values' one type,
+ * or `mixed`.
+ */
+export function fieldChoices(previews) {
+  const loaded = (previews ?? []).filter(p => p?.pairs)
+  const { duplicates } = itemTable(loaded)
+  const fields = new Map()
+  for (const p of loaded) {
+    for (const e of p.pairs) {
+      if (duplicates.has(e.path)) continue
+      const f = fields.get(e.path) ?? { path: e.path, types: new Set(), values: new Map() }
+      const seen = new Set()
+      e.values.forEach((value, i) => {
+        const type = e.types[i]
+        const key = JSON.stringify([type, value])
+        f.types.add(type)
+        if (seen.has(key)) return
+        seen.add(key)
+        const v = f.values.get(key) ?? { type, value, count: 0 }
+        v.count++
+        f.values.set(key, v)
+      })
+      fields.set(e.path, f)
+    }
+  }
+  const depth = (path) => path.split('.').length
+  return [...fields.values()].sort((a, b) => (depth(a.path) - depth(b.path)) || byText(a.path, b.path)).map(f => ({
+    path: f.path,
+    type: f.types.size === 1 ? [...f.types][0] : 'mixed',
+    values: [...f.values.values()].sort((a, b) => (b.count - a.count) || byText(String(a.value), String(b.value))),
+  }))
+}
+
+/** A typed-in value as a condition `[path, type, value]`: the field's type (a mixed field's is string), normalised by `predicateRow`, which throws `PredicateError`. */
+export function typedCondition(field, text) {
+  const row = predicateRow(field.path, field.type === 'mixed' ? 'string' : field.type, text)
+  return [row.path, row.type, row.value]
+}
+
+const positionOf = (column) => /^\[(\d+)\]$/.exec(column)?.[1]
+
+/** Column keys sorted the file columns' way: record keys by text, then tuple positions `[i]` by number. */
+function columnOrder(keys) {
+  const names = [...keys].filter(k => positionOf(k) === undefined).sort(byText)
+  const positions = [...keys].filter(k => positionOf(k) !== undefined).sort((a, b) => positionOf(a) - positionOf(b))
+  return [...names, ...positions]
+}
+
+/** Every column key over the loaded previews, split by whether any item stores a file under it. */
+function columnKeys(previews) {
+  const all = new Set()
+  const stored = new Set()
+  for (const p of previews ?? []) for (const s of p?.slots ?? []) { all.add(s.column); if (s.address) stored.add(s.column) }
+  return { all, stored }
+}
+
+/** The file columns over the loaded previews (items file columns spec §6.1): keys with a stored file in some item. */
+export function fileColumns(previews) {
+  return columnOrder(columnKeys(previews).stored)
+}
+
+/** The keys whose slots are address-less in every loaded item (spec §6.1, amended): listed above the table, not drawn as columns. */
+export function emptyColumns(previews) {
+  const { all, stored } = columnKeys(previews)
+  return columnOrder([...all].filter(k => !stored.has(k)))
+}
+
+/** One cell's slots (spec §6.2): stored slots in order, the first `max` shown and a count of the rest; address-less slots apart. */
+export function cellSlots(preview, column, max = 5) {
+  const all = (preview?.slots ?? []).filter(s => s.column === column)
+  const stored = all.filter(s => s.address)
+  return { shown: stored.slice(0, max), more: Math.max(0, stored.length - max), empty: all.filter(s => !s.address) }
+}
+
 const COMPRESSED = new Set(['gz', 'bgz', 'bz2', 'xz', 'zst'])
 
 /** A file name's suffix from its last '.', with the one before when that is a compression suffix; a name with no '.' after its first character is kept whole. */
@@ -83,22 +163,3 @@ export function outputSuffixes(previews) {
 
 /** `pairs` without the paths `itemTable` found to repeat another. */
 export const withoutDuplicates = (pairs, duplicates) => (pairs ?? []).filter(e => !duplicates.has(e.path))
-
-/**
- * An item's files as chips (P9): with two or more, the prefix they share up to
- * its last '.' is dropped, each chip keeping its leading '.'; one file, or no
- * shared prefix with a '.', keeps the whole names.
- */
-export function fileChips(files) {
-  if (!files?.length) return { prefix: '', chips: [] }
-  if (files.length === 1) return { prefix: '', chips: [files[0]] }
-  let common = files[0]
-  for (const f of files.slice(1)) {
-    let i = 0
-    while (i < common.length && i < f.length && common[i] === f[i]) i++
-    common = common.slice(0, i)
-  }
-  const cut = common.lastIndexOf('.')
-  if (cut <= 0) return { prefix: '', chips: [...files] }
-  return { prefix: common.slice(0, cut), chips: files.map(f => f.slice(cut)) }
-}
