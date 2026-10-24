@@ -5,13 +5,10 @@
 import { h } from '../html.js'
 import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
-import { fold } from '../folds.js'
-import { cellOf, cellSlots, emptyColumns, fileColumns, itemTable } from '../table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, typedCondition } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
 import { humanBytes, leafReasonText } from '../words.js'
 import { enc, nextFrame, pickAll, runCrumbs } from './common.js'
-
-export const TYPES = ['string', 'int', 'float', 'bool', 'null']
 
 function parseWhere(whereText) {
   try {
@@ -25,10 +22,70 @@ function parseWhere(whereText) {
 
 const routeOf = (target, where) => `#/items/${target.completion}/${enc(target.output)}?where=${enc(JSON.stringify(where))}`
 
-function chipsBar(target) {
-  if (!target.where.length) return h('p', { class: 'muted' }, 'Click any value to filter by it.')
-  return h('p', { class: 'chips-bar' }, target.where.map(([p, t, v], i) => h('span', { class: 'chip', 'data-chip': p },
-    `${p} = ${valueText(t, v)} `, h('a', { href: routeOf(target, target.where.filter((_, j) => j !== i)), 'aria-label': `remove ${p}` }, '✕'))))
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/**
+ * The filter bar (option A of `filters-v1.html`): one chip per condition with
+ * a remove link, "Add filter" opening a picker of the loaded items' fields and
+ * then their values (each a filter link, with how many items hold it, or a
+ * typed value on Enter), "Clear all", and the Pick all button at the end.
+ * `choices()` is `fieldChoices` over the previews loaded so far.
+ */
+function filterBar(target, { choices, end }) {
+  const picker = h('div', { class: 'fb-picker', role: 'dialog', 'aria-label': 'add a filter', 'data-filter-picker': '', 'data-open': 'false',
+    onclick: (e) => e.stopPropagation?.() })
+  const close = () => { picker.dataset.open = 'false' }
+  const onKey = (e) => { if (e.key === 'Escape') close() }
+  const showFields = () => {
+    const all = choices()
+    const list = h('div', { class: 'fb-list' })
+    const draw = (q) => list.replaceChildren(...all.filter(f => f.path.includes(q)).map(f =>
+      h('button', { type: 'button', class: 'fb-item', 'data-field': f.path, onclick: () => showValues(f) },
+        h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-count' }, plural(f.values.length, 'value')))))
+    draw('')
+    const search = h('input', { class: 'fb-input', type: 'search', placeholder: 'Search fields…', 'aria-label': 'search fields', 'data-filter-search': '',
+      oninput: (e) => draw((e.currentTarget.value ?? '').trim()), onkeydown: onKey })
+    picker.replaceChildren(search, all.length ? list : h('p', { class: 'muted fb-note' }, 'No fields yet: the items are still loading.'))
+    search.focus?.()
+  }
+  const showValues = (f) => {
+    const error = h('p', { class: 'fb-error', 'data-filter-error': '' })
+    const input = h('input', { class: 'fb-input', placeholder: 'Or type a value and press Enter', 'aria-label': `a value for ${f.path}`, 'data-filter-value': '',
+      onkeydown: (e) => {
+        if (e.key !== 'Enter') return onKey(e)
+        try {
+          const [path, type, value] = typedCondition(f, e.currentTarget.value ?? '')
+          location.hash = filterHref(target, path, type, value)
+        } catch (err) {
+          error.textContent = err.message
+        }
+      } })
+    picker.replaceChildren(
+      h('div', { class: 'fb-head' },
+        h('button', { type: 'button', class: 'btn btn-ghost fb-back', 'aria-label': 'back to the fields', 'data-filter-back': '', onclick: showFields }, '‹'),
+        h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-type' }, f.type)),
+      input, error,
+      h('div', { class: 'fb-list' }, f.values.map(v => h('a', { class: 'fb-item', 'data-value': String(v.value), href: filterHref(target, f.path, v.type, v.value) },
+        h('span', {}, valueText(v.type, v.value)), h('span', { class: 'fb-count' }, plural(v.count, 'item'))))))
+    input.focus?.()
+  }
+  const add = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-add-filter': '', onclick: (e) => {
+    e.stopPropagation?.()
+    if (picker.dataset.open === 'true') return close()
+    showFields()
+    picker.dataset.open = 'true'
+  } }, h('span', { class: 'btn-icon', 'aria-hidden': 'true' }, '+'), 'Add filter')
+  const chip = ([p, t, v], i) => h('span', { class: 'fb-chip', 'data-chip': p, title: `${p} = ${valueText(t, v)}` },
+    h('span', { class: 'fb-chip-key' }, `\u200e${p}`), h('span', { class: 'fb-chip-op' }, ' = '), h('span', { class: 'fb-chip-val' }, valueText(t, v)),
+    h('a', { class: 'fb-chip-x', href: routeOf(target, target.where.filter((_, j) => j !== i)), 'aria-label': `remove ${p}`, 'data-chip-remove': '' }, '×'))
+  const bar = h('div', { class: 'fb-bar', 'data-filter-bar': '' }, ...target.where.map(chip),
+    h('span', { class: 'fb-anchor' }, add, picker),
+    target.where.length ? h('a', { class: 'btn btn-ghost', href: routeOf(target, []), 'data-clear-filters': '' }, 'Clear all') : null,
+    h('span', { class: 'fb-spacer' }), ...end)
+  // A click anywhere else closes the picker; the listener goes once the page has.
+  const onDoc = () => { if (!bar.isConnected) return document.removeEventListener?.('click', onDoc); close() }
+  globalThis.document?.addEventListener?.('click', onDoc)
+  return bar
 }
 
 function valueNode(entry, target) {
@@ -63,8 +120,9 @@ export async function items(ex, completionCid, output, whereText, ctx) {
   ctx.use?.(view)
   ctx.mark?.({ run: completionCid })
   const report = () => { view.checked = checked.size; ctx.use?.(view) }
-  const status = h('span', { class: 'muted' })
-  const pickAllButton = h('button', { type: 'button', 'data-pick-all': '', 'data-via': via.join(' '), 'data-count': results.length, onclick: async (event) => {
+  const previews = new Previews(ex)
+  const status = h('span', { class: 'muted fb-status' })
+  const pickAllButton = h('button', { type: 'button', class: 'btn', 'data-pick-all': '', 'data-via': via.join(' '), 'data-count': results.length, onclick: async (event) => {
     const button = event.currentTarget
     button.disabled = true
     try {
@@ -78,11 +136,9 @@ export async function items(ex, completionCid, output, whereText, ctx) {
   return h('section', {},
     runCrumbs(ex, completionCid, [{ text: output }]),
     h('h1', {}, output, h('span', { class: 'muted' }, ` · ${results.length} item${results.length === 1 ? '' : 's'}`)),
-    chipsBar(target),
-    fold(`filter:${completionCid}/${output}`, '+ filter', whereForm(completionCid, output, where)),
+    filterBar(target, { choices: () => fieldChoices(results.map(a => previews.get(a))), end: results.length ? [status, pickAllButton] : [] }),
     results.length === 0 ? h('p', { class: 'muted' }, 'No items match.')
-      : [h('p', { class: 'row-actions' }, pickAllButton, ' ', status),
-        itemsTable(ex, ctx, { results, via, target, checked, onCheck: report })])
+      : itemsTable(ex, ctx, { results, via, target, checked, onCheck: report, previews }))
 }
 
 /**
@@ -144,8 +200,7 @@ function emptyPill(slots, tip) {
   return h('span', { class: 'file-pill file-pill-empty', role: 'img', tabindex: '0', 'data-pill-empty': String(slots.length), ...tip.on(lines) }, String(slots.length))
 }
 
-function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
-  const previews = new Previews(ex)
+function itemsTable(ex, ctx, { results, via, target, checked, onCheck, previews }) {
   const head = h('tr', {})
   const body = h('tbody', {})
   const constantLine = h('p', { class: 'constant muted' })
@@ -224,19 +279,4 @@ function itemsTable(ex, ctx, { results, via, target, checked, onCheck }) {
   previews.onChange(redraw)
   previews.askFirst(rows.map(r => ({ collection: via[0] ?? null, item: r.address })))
   return h('div', {}, constantLine, emptyLine, h('div', { class: 'scroll' }, table), tip.el)
-}
-
-function whereForm(completionCid, output, where) {
-  const rows = h('div', {})
-  const addRow = ([path, type, value] = ['', 'string', '']) => rows.append(h('fieldset', {},
-    h('input', { name: 'path', value: path, placeholder: 'Meta Map key, e.g. sample or library.kit' }),
-    h('select', { name: 'type' }, TYPES.map(t => h('option', { value: t, selected: t === type }, t))),
-    h('input', { name: 'value', value: value ?? '', placeholder: 'value' })))
-  ;(where.length ? where : [undefined]).forEach(addRow)
-  return h('form', { onsubmit: (event) => {
-    event.preventDefault()
-    const next = [...rows.querySelectorAll('fieldset')].map(f => [f.elements.path.value.trim(), f.elements.type.value, f.elements.value.value])
-      .filter(([path]) => path)
-    location.hash = `#/items/${completionCid}/${enc(output)}?where=${enc(JSON.stringify(next))}`
-  } }, rows, h('div', {}, h('button', { type: 'button', onclick: () => addRow() }, 'Add a condition'), ' ', h('button', { type: 'submit' }, 'Filter')))
 }

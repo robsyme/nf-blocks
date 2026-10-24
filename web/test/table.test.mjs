@@ -1,7 +1,8 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, emptyColumns, fieldPaths, fileColumns, itemTable, outputSuffixes, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, typedCondition, withoutDuplicates } from '../src/table.js'
+import { PredicateError } from '../src/metadata.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
 const files = (s) => ['.markdup.sorted.bam.bai', '.markdup.sorted.bam', '.markdup.sorted.metrics.txt',
@@ -112,4 +113,27 @@ test('cellSlots: stored slots first, at most five, how many more, and the addres
   assert.deepEqual(empty.map(s => s.path), ['rseqc.tin', 'rseqc.meta.original_genome_bam', 'rseqc.innerdistance.pdf'])
   assert.deepEqual(cellSlots(p, 'bam'), { shown: [p.slots.at(-1)], more: 0, empty: [] })
   assert.deepEqual(cellSlots(p, 'bai'), { shown: [], more: 0, empty: [] })
+})
+
+test('fieldChoices: each metadata path over the loaded items, a repeated key once, values most common first with item counts', () => {
+  const p = (...pairs) => ({ pairs })
+  const loaded = [
+    p(e('id', 'string', 'A'), e('meta.id', 'string', 'A'), e('single_end', 'bool', 'false')),
+    p(e('id', 'string', 'B'), e('meta.id', 'string', 'B'), e('single_end', 'bool', 'false')),
+    p(e('id', 'string', 'C'), e('meta.id', 'string', 'C'), e('single_end', 'bool', 'true'), { path: 'tags', type: 'string', values: ['x', 'x'], types: ['string', 'string'] }),
+    undefined, { error: 'block_missing' },
+  ]
+  assert.deepEqual(fieldChoices(loaded), [
+    { path: 'id', type: 'string', values: [{ type: 'string', value: 'A', count: 1 }, { type: 'string', value: 'B', count: 1 }, { type: 'string', value: 'C', count: 1 }] },
+    { path: 'single_end', type: 'bool', values: [{ type: 'bool', value: 'false', count: 2 }, { type: 'bool', value: 'true', count: 1 }] },
+    { path: 'tags', type: 'string', values: [{ type: 'string', value: 'x', count: 1 }] },
+  ])
+  assert.deepEqual(fieldChoices([]), [])
+})
+
+test('typedCondition: typed text takes the field\'s type, normalised as the index types it; a mixed field is a string', () => {
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '007'), ['lane', 'int', '7'])
+  assert.deepEqual(typedCondition({ path: 'id', type: 'string' }, 'WT_REP1'), ['id', 'string', 'WT_REP1'])
+  assert.deepEqual(typedCondition({ path: 'x', type: 'mixed' }, '2'), ['x', 'string', '2'])
+  assert.throws(() => typedCondition({ path: 'lane', type: 'int' }, 'two'), PredicateError)
 })

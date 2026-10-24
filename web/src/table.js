@@ -4,6 +4,7 @@
 // the "same for every item" line, which repeat another path's values, the
 // file columns (items file columns spec §6) and an output's file suffixes.
 // Pure: the views draw what it decides.
+import { predicateRow } from './metadata.js'
 
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const sig = (entry) => JSON.stringify([entry.types, entry.values])
@@ -63,6 +64,47 @@ export function fieldPaths(previews) {
   const paths = new Set()
   for (const p of previews ?? []) for (const e of p?.pairs ?? []) if (!duplicates.has(e.path)) paths.add(e.path)
   return [...paths].sort(byText)
+}
+
+/**
+ * What the filter picker offers (filter bar, option A of `filters-v1.html`):
+ * each metadata path over the loaded items, a key `itemTable` found at two
+ * paths listed once, with its values and how many loaded items hold each,
+ * most common first. `type` is the values' one type, or `mixed`.
+ */
+export function fieldChoices(previews) {
+  const loaded = (previews ?? []).filter(p => p?.pairs)
+  const { duplicates } = itemTable(loaded)
+  const fields = new Map()
+  for (const p of loaded) {
+    for (const e of p.pairs) {
+      if (duplicates.has(e.path)) continue
+      const f = fields.get(e.path) ?? { path: e.path, types: new Set(), values: new Map() }
+      const seen = new Set()
+      e.values.forEach((value, i) => {
+        const type = e.types[i]
+        const key = JSON.stringify([type, value])
+        f.types.add(type)
+        if (seen.has(key)) return
+        seen.add(key)
+        const v = f.values.get(key) ?? { type, value, count: 0 }
+        v.count++
+        f.values.set(key, v)
+      })
+      fields.set(e.path, f)
+    }
+  }
+  return [...fields.values()].sort((a, b) => byText(a.path, b.path)).map(f => ({
+    path: f.path,
+    type: f.types.size === 1 ? [...f.types][0] : 'mixed',
+    values: [...f.values.values()].sort((a, b) => (b.count - a.count) || byText(String(a.value), String(b.value))),
+  }))
+}
+
+/** A typed-in value as a condition `[path, type, value]`: the field's type (a mixed field's is string), normalised by `predicateRow`, which throws `PredicateError`. */
+export function typedCondition(field, text) {
+  const row = predicateRow(field.path, field.type === 'mixed' ? 'string' : field.type, text)
+  return [row.path, row.type, row.value]
 }
 
 const positionOf = (column) => /^\[(\d+)\]$/.exec(column)?.[1]

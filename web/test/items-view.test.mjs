@@ -240,3 +240,47 @@ test('hovering or focusing a pill opens the page\'s own tooltip at once; leaving
   await empty.fire('blur')
   assert.equal(tip.dataset.open, 'false')
 })
+
+test('the filter bar holds the chips, Add filter, Clear all and Pick all on one row; the old form is gone', async () => {
+  installDom()
+  const where = [['single_end', 'bool', 'false']]
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', JSON.stringify(where), ctx())
+  await frame(); await frame()
+  const bar = page.querySelector('[data-filter-bar]')
+  assert.ok(bar.querySelector('[data-chip="single_end"]'))
+  assert.equal(bar.querySelector('[data-chip="single_end"]').getAttribute('title'), 'single_end = false')
+  assert.ok(bar.querySelector('button[data-add-filter]'))
+  assert.equal(bar.querySelector('a[data-clear-filters]').getAttribute('href'), `#/items/bafyrun/markdup?where=${encodeURIComponent('[]')}`)
+  assert.ok(bar.querySelector('[data-pick-all]'))
+  assert.equal(page.querySelector('fieldset'), null)
+  assert.ok(!page.textContent.includes('+ filter'))
+})
+
+test('with no conditions the bar has no Clear all', async () => {
+  installDom()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
+  await frame(); await frame()
+  assert.equal(page.querySelector('[data-clear-filters]'), null)
+  assert.equal(page.querySelectorAll('[data-chip]').length, 0)
+})
+
+test('Add filter lists the loaded fields; a field lists its values as filter links with item counts; back returns', async () => {
+  installDom()
+  const page = await items(fakeEx(), 'bafyrun', 'markdup', '[]', ctx())
+  await frame(); await frame()
+  const picker = page.querySelector('[data-filter-picker]')
+  assert.equal(picker.dataset.open, 'false')
+  await page.querySelector('button[data-add-filter]').fire('click')
+  assert.equal(picker.dataset.open, 'true')
+  assert.deepEqual(picker.querySelectorAll('[data-field]').map(b => b.dataset.field), ['id', 'single_end', 'strandedness'])
+  assert.match(picker.querySelector('[data-field="single_end"]').textContent, /2 values/)
+  await picker.querySelector('[data-field="single_end"]').fire('click')
+  const values = picker.querySelectorAll('a[data-value]')
+  assert.deepEqual(values.map(a => [a.dataset.value, decodeURIComponent(a.getAttribute('href').split('where=')[1])]), [
+    ['false', '[["single_end","bool","false"]]'], ['true', '[["single_end","bool","true"]]']])
+  assert.match(values[0].textContent, /2 items/)
+  assert.match(values[1].textContent, /1 item$/)
+  assert.ok(picker.querySelector('input[data-filter-value]'))
+  await picker.querySelector('button[data-filter-back]').fire('click')
+  assert.equal(picker.querySelectorAll('[data-field]').length, 3)
+})
