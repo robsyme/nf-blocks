@@ -53,6 +53,25 @@ class IndexItemHitsTest extends Specification {
         return index.itemHitsByText(run1, 'aligned', conditions)
     }
 
+    def 'a range condition compares numbers, int or float, a list by any member, and never text'() {
+        expect:
+        hits(['lane >=': '2'])*.item == [laneInt]
+        hits(['lane >': '2']) == []
+        hits(['depth <=': '1.5'])*.item == [depthFloat]
+        hits(['depth <': '2'])*.item == [depthFloat]
+        hits(['depth >': '1.5']) == []
+        hits(['lanes >=': '3'])*.item == [lanesList]
+        hits(['lane >=': '2', 'lane <': '3'])*.item == [laneInt]
+    }
+
+    def 'a range condition whose value is not a number is refused'() {
+        when:
+        hits(['lane >=': 'two'])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
     def 'a condition matches the value text whatever its type'() {
         expect:
         hits([lane: '2'])*.item == [laneInt, laneString].sort()

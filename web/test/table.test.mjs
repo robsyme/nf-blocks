@@ -142,3 +142,12 @@ test('typedCondition: typed text takes the field\'s type, normalised as the inde
   assert.deepEqual(typedCondition({ path: 'x', type: 'mixed' }, '2'), ['x', 'string', '2'])
   assert.throws(() => typedCondition({ path: 'lane', type: 'int' }, 'two'), PredicateError)
 })
+
+test('typedCondition with an operator: a numeric field compares, an int bound stays int, a decimal bound is float, text is refused', () => {
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '2', '>='), ['lane', 'int', '2', '>='])
+  assert.deepEqual(typedCondition({ path: 'lane', type: 'int' }, '2.5', '<'), ['lane', 'float', '2.5', '<'])
+  assert.deepEqual(typedCondition({ path: 'depth', type: 'float' }, '30', '>'), ['depth', 'int', '30', '>'])
+  assert.deepEqual(typedCondition({ path: 'depth', type: 'float' }, '30', '='), ['depth', 'float', '30.0'])
+  assert.throws(() => typedCondition({ path: 'id', type: 'string' }, '3', '>'), PredicateError)
+  assert.throws(() => typedCondition({ path: 'lane', type: 'int' }, 'x', '>='), PredicateError)
+})

@@ -4,7 +4,7 @@
 // the "same for every item" line, which repeat another path's values, the
 // file columns (items file columns spec §6) and an output's file suffixes.
 // Pure: the views draw what it decides.
-import { predicateRow } from './metadata.js'
+import { PredicateError, predicateRow, rangeRow } from './metadata.js'
 
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
 const sig = (entry) => JSON.stringify([entry.types, entry.values])
@@ -103,10 +103,22 @@ export function fieldChoices(previews) {
   }))
 }
 
-/** A typed-in value as a condition `[path, type, value]`: the field's type (a mixed field's is string), normalised by `predicateRow`, which throws `PredicateError`. */
-export function typedCondition(field, text) {
-  const row = predicateRow(field.path, field.type === 'mixed' ? 'string' : field.type, text)
-  return [row.path, row.type, row.value]
+/**
+ * A typed-in value as a condition. With `=`: `[path, type, value]` in the
+ * field's type (a mixed field's is string), normalised by `predicateRow`. With
+ * a range operator, on an int, float or mixed field: `[path, type, value, op]`,
+ * the bound an int when it is a whole number and a float otherwise. Throws
+ * `PredicateError`.
+ */
+export function typedCondition(field, text, op = '=') {
+  if (op === '=') {
+    const row = predicateRow(field.path, field.type === 'mixed' ? 'string' : field.type, text)
+    return [row.path, row.type, row.value]
+  }
+  if (!['int', 'float', 'mixed'].includes(field.type)) throw new PredicateError(`${field.path} holds ${field.type} values, which do not compare with ${op}`)
+  rangeRow(field.path, op, text)
+  const row = predicateRow(field.path, /^\s*-?\d+\s*$/.test(text) ? 'int' : 'float', text.trim())
+  return [row.path, row.type, row.value, op]
 }
 
 const positionOf = (column) => /^\[(\d+)\]$/.exec(column)?.[1]

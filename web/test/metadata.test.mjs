@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Float, typedDecode } from '../src/typed.js'
-import { attrRows, javaDouble, matches, metadataView, predicateRow, PredicateError } from '../src/metadata.js'
+import { RANGE_OPS, attrRows, javaDouble, matches, metadataView, predicateRow, PredicateError, rangeRow } from '../src/metadata.js'
 
 // Each right-hand side is Java 21's Double.toString, checked with `java` on 2026-09-25.
 const JAVA = [[30.0, '30.0'], [1e10, '1.0E10'], [1e-4, '1.0E-4'], [0.001, '0.001'], [1234567, '1234567.0'],
@@ -68,4 +68,20 @@ test('matching needs every predicate, and a truncated row never matches', () => 
   assert.equal(matches(rows, [predicateRow('s', 'string', 'A'), predicateRow('n', 'int', '2')]), false)
   assert.equal(matches(rows, [{ path: 'l', type: 'string', value: 'sha256:00', truncated: 0 }]), false)
   assert.equal(matches(rows, []), true)
+})
+
+test('a range compares numbers: int and float rows alike, a list by any member, never text', () => {
+  const rows = [{ path: 'n', type: 'int', value: '2', truncated: 0 }, { path: 'f', type: 'float', value: '1.5', truncated: 0 },
+    { path: 's', type: 'string', value: '9', truncated: 0 }, { path: 'l', type: 'int', value: '1', truncated: 0 }, { path: 'l', type: 'int', value: '5', truncated: 0 }]
+  assert.equal(matches(rows, [rangeRow('n', '>=', '2')]), true)
+  assert.equal(matches(rows, [rangeRow('n', '>', '2')]), false)
+  assert.equal(matches(rows, [rangeRow('f', '<', '2')]), true)
+  assert.equal(matches(rows, [rangeRow('f', '<=', '1.4')]), false)
+  assert.equal(matches(rows, [rangeRow('s', '>', '1')]), false)
+  assert.equal(matches(rows, [rangeRow('l', '>', '4')]), true)
+  assert.equal(matches(rows, [rangeRow('n', '>=', '1'), rangeRow('n', '<', '3')]), true)
+  assert.deepEqual(rangeRow('n', '>=', ' 30 '), { path: 'n', op: '>=', value: 30, truncated: 0 })
+  assert.throws(() => rangeRow('n', '>=', 'two'), PredicateError)
+  assert.throws(() => rangeRow('n', '!=', '1'), PredicateError)
+  assert.deepEqual(RANGE_OPS, ['>', '>=', '<', '<='])
 })

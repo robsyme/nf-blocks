@@ -7,13 +7,15 @@ import { icon } from '../icons.js'
 import { Previews } from '../previews.js'
 import { cellOf, cellSlots, emptyColumns, fieldChoices, fileColumns, itemTable, typedCondition } from '../table.js'
 import { filterHref, valueText } from '../pairs.js'
+import { RANGE_OPS } from '../metadata.js'
 import { humanBytes, leafReasonText } from '../words.js'
 import { enc, nextFrame, pickAll, runCrumbs } from './common.js'
 
 function parseWhere(whereText) {
   try {
     const where = JSON.parse(whereText)
-    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && w.length === 3)) throw new Error('not a list of [path, type, value]')
+    if (!Array.isArray(where) || !where.every(w => Array.isArray(w) && (w.length === 3 || (w.length === 4 && RANGE_OPS.includes(w[3])))))
+      throw new Error(`not a list of [path, type, value] or [path, type, value, op] with op one of ${RANGE_OPS.join(' ')}`)
     return where
   } catch (e) {
     throw Object.assign(new Error(`the where filter is not JSON [[path, type, value], ...]: ${e.message}`), { code: 'bad_route' })
@@ -49,24 +51,38 @@ function filterBar(target, { choices, end }) {
     search.focus?.()
   }
   const showValues = (f) => {
+    // A number field compares: the chosen operator applies to a listed value and to a typed one.
+    const numeric = ['int', 'float', 'mixed'].includes(f.type)
+    let op = '='
     const error = h('p', { class: 'fb-error', 'data-filter-error': '' })
     const input = h('input', { class: 'fb-input', placeholder: 'Or type a value and press Enter', 'aria-label': `a value for ${f.path}`, 'data-filter-value': '',
       onkeydown: (e) => {
         if (e.key !== 'Enter') return onKey(e)
         try {
-          const [path, type, value] = typedCondition(f, e.currentTarget.value ?? '')
-          location.hash = filterHref(target, path, type, value)
+          const [path, type, value, rangeOp] = typedCondition(f, e.currentTarget.value ?? '', op)
+          location.hash = filterHref(target, path, type, value, rangeOp ?? '=')
         } catch (err) {
           error.textContent = err.message
         }
       } })
+    const list = h('div', { class: 'fb-list' })
+    const drawValues = () => list.replaceChildren(...f.values.filter(v => op === '=' || v.type === 'int' || v.type === 'float').map(v =>
+      h('a', { class: 'fb-item', 'data-value': String(v.value), href: filterHref(target, f.path, v.type, v.value, op) },
+        h('span', {}, `${op === '=' ? '' : `${op} `}${valueText(v.type, v.value)}`), h('span', { class: 'fb-count' }, plural(v.count, 'item')))))
+    const opButtons = numeric ? ['=', ...RANGE_OPS].map(o => h('button', { type: 'button', class: 'fb-op', 'data-op': o, 'aria-pressed': String(o === op),
+      onclick: () => {
+        op = o
+        for (const b of opButtons) b.setAttribute('aria-pressed', String(b.dataset.op === op))
+        drawValues()
+        input.focus?.()
+      } }, o)) : []
+    drawValues()
     picker.replaceChildren(
       h('div', { class: 'fb-head' },
         h('button', { type: 'button', class: 'btn btn-ghost fb-back', 'aria-label': 'back to the fields', 'data-filter-back': '', onclick: showFields }, '‹'),
         h('span', { class: 'fb-path' }, f.path), h('span', { class: 'fb-type' }, f.type)),
-      input, error,
-      h('div', { class: 'fb-list' }, f.values.map(v => h('a', { class: 'fb-item', 'data-value': String(v.value), href: filterHref(target, f.path, v.type, v.value) },
-        h('span', {}, valueText(v.type, v.value)), h('span', { class: 'fb-count' }, plural(v.count, 'item'))))))
+      numeric ? h('div', { class: 'fb-ops', role: 'group', 'aria-label': 'compare with' }, opButtons) : null,
+      input, error, list)
     input.focus?.()
   }
   const add = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'data-add-filter': '', onclick: (e) => {
@@ -76,8 +92,8 @@ function filterBar(target, { choices, end }) {
     picker.dataset.open = 'true'
     showFields()
   } }, h('span', { class: 'btn-icon', 'aria-hidden': 'true' }, '+'), 'Add filter')
-  const chip = ([p, t, v], i) => h('span', { class: 'fb-chip', 'data-chip': p, title: `${p} = ${valueText(t, v)}` },
-    h('span', { class: 'fb-chip-key' }, `\u200e${p}`), h('span', { class: 'fb-chip-op' }, ' = '), h('span', { class: 'fb-chip-val' }, valueText(t, v)),
+  const chip = ([p, t, v, op = '='], i) => h('span', { class: 'fb-chip', 'data-chip': p, title: `${p} ${op} ${valueText(t, v)}` },
+    h('span', { class: 'fb-chip-key' }, `\u200e${p}`), h('span', { class: 'fb-chip-op' }, ` ${op} `), h('span', { class: 'fb-chip-val' }, valueText(t, v)),
     h('a', { class: 'fb-chip-x', href: routeOf(target, target.where.filter((_, j) => j !== i)), 'aria-label': `remove ${p}`, 'data-chip-remove': '' }, '×'))
   const bar = h('div', { class: 'fb-bar', 'data-filter-bar': '' }, ...target.where.map(chip),
     h('span', { class: 'fb-anchor' }, add, picker),

@@ -338,6 +338,12 @@ Each item arrives in the shape the producer published it, here
 `[meta, bam]`, with every file a `cas://` path Nextflow stages like any
 other. `run:` also takes a `lid://<run hash>` or a `cas://` RunCompletion.
 
+A `where:` key is a metadata path matched for equality, or a path followed by
+`>`, `>=`, `<` or `<=`, which compares an `int` or `float` value as a number
+and never matches text. Two bounds on one path are two keys:
+`where: ['meta.depth >=': 30, 'meta.depth <': 100]`. A bound that is not a
+number is an error.
+
 In a typed script (`nextflow.enable.types = true`), Nextflow 26.04.6 cannot
 reach a plugin factory through `channel.` (nextflow-io/nextflow#7694). Keep
 the include and call it through `nextflow.Channel`, with `records: true` so a
@@ -453,7 +459,9 @@ leading `occurrence` column; `--format json` prints the same rows as JSON,
 `--format selection` a complete `put` request. A condition is
 `<path>=<value>`, split at the first `=`, with dotted paths for nested keys;
 it matches the value as text whatever its type, so `lane=2` finds the number
-and the string. In a `put` request a member may be written as such an
+and the string. `<path>>=<number>` (or `>`, `<`, `<=`) compares numbers
+only, so `depth>=30 depth<100` is a range; the split is at the first operator,
+so `note=a>b` is still an equality. In a `put` request a member may be written as such an
 occurrence string instead of `{"item": {"address": ..., "via": [...]}}`,
 meaning the item as picked from that collection. `put --name` writes the name
 Claim after the Selection, and nothing when the Selection already has that

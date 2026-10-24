@@ -224,6 +224,19 @@ class ItemsCommandTest extends Specification {
         ['greetings', '--run', 'lid://nope']  | "no run with nextflow run hash 'nope'"
     }
 
+    def 'a condition may compare: path>=n, path<n and the like, keyed as fromStore keys them'() {
+        expect:
+        ItemsCommand.parse(['greetings', 'lane>=2', 'lane<3', 'depth<=1.5', 'note=a>b', '--run', 'lid://hash1']).conditions ==
+            ['lane >=': '2', 'lane <': '3', 'depth <=': '1.5', note: 'a>b']
+    }
+
+    def 'a comparison whose value is not a number is a usage error naming it'() {
+        expect:
+        run(['greetings', 'lane>=two', '--run', 'lid://hash1']) == 2
+        err.toString('UTF-8').contains("'lane>=two'")
+        err.toString('UTF-8').contains('number')
+    }
+
     def 'usage errors exit 2 and name the argument (Review Focus 2)'() {
         expect:
         run(args) == 2

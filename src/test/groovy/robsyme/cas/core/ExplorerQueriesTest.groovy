@@ -42,16 +42,17 @@ class ExplorerQueriesTest extends Specification {
         page.itemsBase == Index.SQL_ITEMS_BASE
         page.itemsPredicate == Index.SQL_ITEMS_PREDICATE
         page.itemsPredicateNull == Index.SQL_ITEMS_PREDICATE_NULL
+        page.itemsRange == Index.SQL_ITEMS_RANGE
         page.itemsOrder == Index.SQL_ITEMS_ORDER
         page.collectionsOf == Index.SQL_COLLECTIONS_OF
     }
 
     def 'every page query runs against the real schema'() {
         expect:
-        page.each { String name, String sql ->
-            if( name.startsWith('itemsPredicate') || name == 'itemsOrder' )
+        page.each { String name, Object sql ->
+            if( name.startsWith('itemsPredicate') || name == 'itemsRange' || name == 'itemsOrder' )
                 return
-            plan(sql)     // throws on a syntax error or an unknown column
+            plan((String) sql)     // throws on a syntax error or an unknown column
         }
     }
 
@@ -70,6 +71,8 @@ class ExplorerQueriesTest extends Specification {
         'items, no predicate'     | page.itemsBase + page.itemsOrder
         'items, one predicate'    | page.itemsBase + page.itemsPredicate + page.itemsOrder
         'items, two predicates'   | page.itemsBase + page.itemsPredicate + page.itemsPredicateNull + page.itemsOrder
+        'items, a range (>=)'     | page.itemsBase + page.itemsRange['>='] + page.itemsOrder
+        'items, a range (<)'      | page.itemsBase + page.itemsPredicate + page.itemsRange['<'] + page.itemsOrder
         'collectionsOf'           | page.collectionsOf
         'watermark'               | page.watermark
         'pipelines'               | page.pipelines

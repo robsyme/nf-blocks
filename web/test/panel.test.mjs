@@ -385,3 +385,12 @@ test('where repeating a path with some rows unchecked offers the checked ones, o
   assert.equal(el.querySelector('#pick-checked').textContent, 'Pick these 2')
   assert.match(el.textContent, /2 of 4 checked/)
 })
+
+test('filtered with a range: the call keys it as path and operator, and the text says the operator', async () => {
+  const { el, panel } = world()
+  const where = [['depth', 'float', '30.0', '>='], ['single_end', 'bool', 'false']]
+  await panel.draw({ route: 'items', view: { ...ITEMS, where, count: 2, checked: 2 } })
+  assert.equal(el.querySelector('[data-snippet="untyped"]').textContent,
+    "channel.fromStore(run: 'cas://bafyrun', output: 'markdup', where: ['depth >=': 30.0d, single_end: false])")
+  assert.match(el.textContent, /2 items of markdup, where depth >= 30\.0, single_end = false/)
+})

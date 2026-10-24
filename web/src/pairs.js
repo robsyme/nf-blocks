@@ -64,10 +64,11 @@ const valueClass = (type, value) => (type === 'int' || type === 'float' ? 'pv-nu
  * Q2): the pair is added to `target.where` unless it is already there. Null
  * when the run or the output is not known, so the pill is not a link.
  */
-export function filterHref(target, path, type, value) {
+export function filterHref(target, path, type, value, op = '=') {
   if (!target?.completion || !target.output) return null
-  const kept = (target.where ?? []).filter(([p, t, v]) => !(p === path && t === type && v === value))
-  const where = [...kept, [path, type, value]]
+  const entry = op === '=' ? [path, type, value] : [path, type, value, op]
+  const kept = (target.where ?? []).filter(w => JSON.stringify(w) !== JSON.stringify(entry))
+  const where = [...kept, entry]
   return `#/items/${target.completion}/${enc(target.output)}?where=${enc(JSON.stringify(where))}`
 }
 

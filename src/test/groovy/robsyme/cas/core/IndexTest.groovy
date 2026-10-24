@@ -308,6 +308,33 @@ class IndexTest extends Specification {
         e.message.contains('absent')
     }
 
+    def 'a where key ending in an operator compares numbers, int or float'() {
+        given:
+        def completion = buildRun()
+        index.ingestRun(store, completion, 'lab')
+
+        expect:
+        index.items(completion, 'aligned', ['lane >=': 2]).toSet() == [alignedBySample['B'], alignedBySample['C']] as Set
+        index.items(completion, 'aligned', ['lane >': 1, 'lane <=': 2]) == [alignedBySample['B']]
+        index.items(completion, 'aligned', ['lane <': 1.5d]) == [alignedBySample['A']]
+        index.items(completion, 'aligned', ['lane >': 3]) == []
+        index.items(completion, 'aligned', [sample: 'C', 'lane >=': 2]) == [alignedBySample['C']]
+    }
+
+    def 'a range on a value that is not a number is refused'() {
+        given:
+        def completion = buildRun()
+        index.ingestRun(store, completion, 'lab')
+
+        when:
+        index.items(completion, 'aligned', ['lane >=': '2'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'lane >='")
+        e.message.contains('number')
+    }
+
     def 'a run is reachable by nextflow hash, by manifest and by its collections'() {
         given:
         def completion = buildRun()

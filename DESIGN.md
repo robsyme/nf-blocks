@@ -1204,6 +1204,13 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   of matching nothing; `null` is no longer written);
   `value` is the text form; strings longer than 1024 bytes stored as
   `sha256:<hex>` with `truncated = 1`.
+  *Amended 2026-10-24 (ranges):* a `where:` key ending in `>`, `>=`, `<` or
+  `<=` (`'meta.depth >='`, `Conditions.splitKey`) compares rows of type `int`
+  or `float` by `CAST(value AS REAL)` (`Index.SQL_ITEMS_RANGE`, one clause per
+  operator, mirrored in the page's `queries.json` as `itemsRange`). The bound
+  must be a number; text never matches a range. `nf-blocks:items` takes
+  `path>=n` and the like and keys them the same way. No schema change: the
+  `(path, type, value)` index still narrows by path.
 - `producer.filename` = the Leaf name.
 - Rebuild: `Index.rebuild(store)` deletes and recreates from `bafy…` blocks
   only, into a temp file renamed into place. *Amended 2026-09-25:* a schema
@@ -1701,7 +1708,9 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
   (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`; `null`
-  was dropped 2026-10-24, since nulls are not indexed),
+  was dropped 2026-10-24, since nulls are not indexed; *amended 2026-10-24:*
+  an entry may be `[path, type, value, op]` with `op` one of `>`, `>=`, `<`,
+  `<=`, a numeric range run with `itemsRange[op]`),
   `#/item/-/<item>` (an item with no collection, such as a Selection member
   picked by a query), `#/selections[?offset=<n>][&deleted=1]` (this member's
   Selections, 50 a page; `deleted=1` lists the deleted ones, each with undo),

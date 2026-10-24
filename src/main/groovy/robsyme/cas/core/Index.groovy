@@ -69,6 +69,12 @@ class Index implements Closeable {
     static final String SQL_ITEMS_PREDICATE_NULL =
         ' AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value IS NULL)'
 
+    // A range compares an int or float value as a number (Conditions, DESIGN.md
+    // §12 amended 2026-10-24). One clause per operator, so no SQL is built from input.
+    static final Map<String, String> SQL_ITEMS_RANGE = Conditions.RANGE_OPS.collectEntries { String op ->
+        [(op): " AND EXISTS (SELECT 1 FROM item_attr a WHERE a.item_cid = ci.item_cid AND a.truncated = 0 AND a.path = ? AND a.type IN ('int', 'float') AND CAST(a.value AS REAL) ${op} ?)".toString()]
+    }.asImmutable() as Map<String, String>
+
     static final String SQL_ITEMS_ORDER = ' ORDER BY ci.item_cid'
 
     static final String SQL_COLLECTIONS_OF =
@@ -1195,8 +1201,10 @@ class Index implements Closeable {
 
     /**
      * The items of one output of one run, filtered by the metadata view. Each
-     * key of {@code where} is one `item_attr` match on path, type and value;
-     * several keys intersect. An empty predicate is every item.
+     * key of {@code where} is one `item_attr` match on path, type and value, or,
+     * for a key ending in an operator ({@code 'depth >='}), a numeric comparison
+     * with an int or float value; several keys intersect. An empty predicate is
+     * every item.
      */
     List<Cid> items(Cid completion, String outputName, Map<String, Object> where) {
         final StringBuilder sql = new StringBuilder(SQL_ITEMS_BASE)
@@ -1204,6 +1212,15 @@ class Index implements Closeable {
         for( Map.Entry<String, Object> entry : (where ?: [:]).entrySet() ) {
             if( entry.value == null )
                 throw new IllegalArgumentException("the predicate on '${entry.key}' is null, which matches nothing: a null field counts as absent and is not indexed (DESIGN.md §12)")
+            final List<String> key = Conditions.splitKey(entry.key)
+            if( key[1] != '=' ) {
+                if( !(entry.value instanceof Number) )
+                    throw new IllegalArgumentException("the predicate '${entry.key}' compares with ${key[1]}, so its value must be a number, got '${entry.value}'")
+                sql.append(SQL_ITEMS_RANGE[key[1]])
+                parameters.add(key[0])
+                parameters.add(((Number) entry.value).doubleValue())
+                continue
+            }
             final AttrRow row = MetadataView.scalar(entry.key, entry.value)
             if( row.truncated ) {
                 // A value stored as a digest refuses equality, so nothing can match.
@@ -1240,6 +1257,20 @@ class Index implements Closeable {
         final List<Object> parameters = new ArrayList<Object>([completion.toString(), outputName] as List<Object>)
         final Map<String, String> all = conditions ?: Collections.<String, String> emptyMap()
         for( Map.Entry<String, String> condition : all.entrySet() ) {
+            final List<String> key = Conditions.splitKey(condition.key)
+            if( key[1] != '=' ) {
+                final BigDecimal bound
+                try {
+                    bound = Conditions.number(condition.value ?: '')
+                }
+                catch( NumberFormatException ignored ) {
+                    throw new IllegalArgumentException("the condition '${condition.key}' compares with ${key[1]}, so its value must be a number, got '${condition.value}'")
+                }
+                sql.append(SQL_ITEMS_RANGE[key[1]])
+                parameters.add(key[0])
+                parameters.add(bound.doubleValue())
+                continue
+            }
             if( condition.value != null && condition.value.getBytes('UTF-8').length > MetadataView.VALUE_CAP_BYTES ) {
                 // Stored as a digest with truncated = 1, which never matches.
                 log.warn("the condition on '${condition.key}' is longer than ${MetadataView.VALUE_CAP_BYTES} bytes and cannot be matched")

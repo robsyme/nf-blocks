@@ -86,11 +86,14 @@ export function groovyValue(type, value) {
   }
 }
 
-/** True when two conditions share a path: a Groovy map keeps one value per key, so `where:` cannot say it. */
-export const whereRepeatsPath = (where) => new Set((where ?? []).map(([p]) => p)).size < (where?.length ?? 0)
+/** A condition's `where:` key: the path, or for a range the path and its operator (`'depth >='`, Conditions.splitKey). */
+const whereKey = ([p, , , op]) => (op ? `${p} ${op}` : p)
+
+/** True when two conditions share a key: a Groovy map keeps one value per key, so `where:` cannot say it. */
+export const whereRepeatsPath = (where) => new Set((where ?? []).map(whereKey)).size < (where?.length ?? 0)
 
 /** `[k: v, ...]` for the chips, or null when there are none. */
-export const whereLiteral = (where) => (where?.length ? `[${where.map(([p, t, v]) => `${groovyKey(p)}: ${groovyValue(t, v)}`).join(', ')}]` : null)
+export const whereLiteral = (where) => (where?.length ? `[${where.map(([p, t, v, op]) => `${op ? quote(whereKey([p, t, v, op])) : groovyKey(p)}: ${groovyValue(t, v)}`).join(', ')}]` : null)
 
 /** The two lines of a snippet: the include, and the call for `mode`. */
 export function snippetLines(spec, mode) {
