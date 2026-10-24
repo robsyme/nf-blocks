@@ -1,6 +1,7 @@
 # Items table: one column per file key, files as pills
 
-Date: 2026-10-23. Status: design agreed in conversation, spec awaiting review.
+Date: 2026-10-23. Status: merged to main (PRs #5, #6, #7) and released as
+0.8.0-beta.1; the amendments dated 2026-10-23 and 2026-10-24 are part of it.
 Mockups: `.superpowers/brainstorm/56917-1792764595/content/` (`pills.html` is
 the agreed one; `files-column.html`, `metadata-and-files.html`,
 `column-per-key.html` are earlier steps; gitignored, local only).
