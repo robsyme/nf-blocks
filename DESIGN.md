@@ -605,7 +605,17 @@ leaf is replaced by a **Leaf** map:
 `name` is the file name it was published under (last segment of the publish
 path). `reason` is null when `address` is set and non-null otherwise; an absent
 address is never an absent field. A `declined` leaf is what Nextflow hands us
-as `null` in place of a path. A `never_published` leaf is a path in the item
+as `null` in place of a path. *Amended 2026-10-24:* `Join` no longer writes
+declined leaves. Nextflow's `WorkflowOutputEvent` carries no type (the output
+declaration's type is dropped at compile time and `PublishOp.normalizeValue`
+rebuilds records as plain maps), so a `null` cannot be told apart from a null
+string, and on nf-core/rnaseq most were optional outputs or fields that did
+not apply. A `null` now stays a `null` in the item: no leaf, no `paths` entry,
+not counted in `anomalies.declined` (which new runs report as 0). Readers
+treat a null field as an absent key (§12). An item with a null field
+therefore has a different address than the same output stored before this
+change. Declined leaves in items written earlier still decode, and
+`fromStore` still restores them to `null`. A `never_published` leaf is a path in the item
 that never received a publish event (a path outside the work dir).
 *Amended 2026-09-30 (patch 0.3.0-beta.2):* that includes a path that is not
 `cas://` at all, such as an https or local input FASTQ a record carries
@@ -1188,7 +1198,10 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
 
 - `item_attr`: every scalar leaf of the item's **metadata view** (the item
   itself if a Map, else its first top-level Map) under its dotted path; array
-  elements under the array's path; `type` ∈ `string|int|float|bool|null`;
+  elements under the array's path; `type` ∈ `string|int|float|bool|null`
+  (*amended 2026-10-24:* a null value writes no row, so a null field counts
+  as an absent key, and `Index.items` refuses a null predicate value instead
+  of matching nothing; `null` is no longer written);
   `value` is the text form; strings longer than 1024 bytes stored as
   `sha256:<hex>` with `truncated = 1`.
   *Amended 2026-10-24 (ranges):* a `where:` key ending in `>`, `>=`, `<` or
@@ -1694,9 +1707,10 @@ runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
   `#/content/<cid>` (query 1), `#/block/<cid>` (any block by its address),
   `#/latest/<pipeline>` (query 2),
   `#/items/<completion>/<output>?where=<JSON [[path, type, value], ...]>`
-  (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`, `null`;
-  *amended 2026-10-24:* an entry may be `[path, type, value, op]` with `op`
-  one of `>`, `>=`, `<`, `<=`, a numeric range run with `itemsRange[op]`),
+  (query 3, per run; `type` is one of `string`, `int`, `float`, `bool`; `null`
+  was dropped 2026-10-24, since nulls are not indexed; *amended 2026-10-24:*
+  an entry may be `[path, type, value, op]` with `op` one of `>`, `>=`, `<`,
+  `<=`, a numeric range run with `itemsRange[op]`),
   `#/item/-/<item>` (an item with no collection, such as a Selection member
   picked by a query), `#/selections[?offset=<n>][&deleted=1]` (this member's
   Selections, 50 a page; `deleted=1` lists the deleted ones, each with undo),

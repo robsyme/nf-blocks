@@ -66,6 +66,10 @@ class MetadataView {
             // A file position, not metadata.
             return
         }
+        if( value == null ) {
+            // A null field counts as absent (DESIGN.md §12, amended 2026-10-24).
+            return
+        }
         if( value instanceof Map ) {
             walkMap((Map) value, path, rows)
             return

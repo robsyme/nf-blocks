@@ -294,6 +294,20 @@ class IndexTest extends Specification {
         index.items(completion, 'aligned', [lane: 2]).size() == 1
     }
 
+    def 'a null predicate value is refused: a null field counts as absent and is not indexed'() {
+        given:
+        def completion = buildRun()
+        index.ingestRun(store, completion, 'lab')
+
+        when:
+        index.items(completion, 'aligned', [sample: null])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("'sample'")
+        e.message.contains('absent')
+    }
+
     def 'a where key ending in an operator compares numbers, int or float'() {
         given:
         def completion = buildRun()
