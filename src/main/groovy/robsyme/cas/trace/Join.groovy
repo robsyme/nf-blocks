@@ -146,19 +146,18 @@ class Join {
 
     /**
      * Rebuilds one item's structure, replacing every file/directory leaf (a
-     * {@code cas://} coordinate {@link Path}) and every {@code null} (a declined
-     * path) with a {@link Leaf}, and appending each leaf's publish path to
-     * {@code leafPaths} in the depth-first order {@link OutputItem#leaves} uses.
+     * {@code cas://} coordinate {@link Path}) with a {@link Leaf}, and appending
+     * each leaf's publish path to {@code leafPaths} in the depth-first order
+     * {@link OutputItem#leaves} uses. A {@code null} stays a null: nothing says
+     * it was a file, and readers treat it as an absent key (DESIGN.md §6,
+     * amended 2026-10-24).
      */
     private static Object build(Object raw, List<String> leafPaths, Counters counters, CasSession session,
                                 Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
         if( raw instanceof Path )
             return leafFor((Path) raw, leafPaths, counters, session, byProvider, joined)
-        if( raw == null ) {
-            leafPaths.add(null)
-            counters.declined += 1
-            return Leaf.declined()
-        }
+        if( raw == null )
+            return null
         if( raw instanceof Map ) {
             final Map<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) raw).entrySet() )

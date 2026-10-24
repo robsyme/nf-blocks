@@ -99,7 +99,32 @@ class JoinTest extends Specification {
         result.anomalies == Anomalies.NONE
     }
 
-    def 'a null is a declined leaf and a path with no publish is never_published'() {
+    def 'a null stays a null in the item: no leaf, no paths entry, nothing declined'() {
+        given:
+        final session = sessionWith([
+            'cas://lab/misc/A/A.bam': new CasSession.Publish(new StoreRef(rawCid(1), 'A.bam'), 10L, 'head-node'),
+        ], dagCid(9))
+        final captured = [
+            misc: [
+                [id: 'A', bam: coord('cas://lab/misc/A/A.bam'), cram: null, meta: [id: 'A', original_bam: null]],
+            ],
+        ] as Map<String, Object>
+
+        when:
+        final result = Join.join(captured, session)
+
+        then:
+        final out = result.outputs[0]
+        final item = out.items[0]
+        item.value.cram == null
+        ((Map) item.value).containsKey('cram')
+        item.value.meta == [id: 'A', original_bam: null]
+        item.leaves()*.name == ['A.bam']
+        out.collection.paths == [['misc/A/A.bam']]
+        result.anomalies.declined == 0
+    }
+
+    def 'a null tuple element stays null; a path with no publish is never_published'() {
         given:
         final run = dagCid(9)
         final session = sessionWith([:], run)
@@ -114,17 +139,16 @@ class JoinTest extends Specification {
         final result = Join.join(captured, session)
 
         then:
-        final leaves = result.outputs[0].items.collectMany { it.leaves() }
-        final declined = leaves.find { it.reason == Leaf.DECLINED }
-        declined != null
-        declined.name == null
-        declined.address == null
+        final items = result.outputs[0].items
+        items.find { it.value[0].sample == 'A' }.value == [[sample: 'A'], null]
+        final leaves = items.collectMany { it.leaves() }
+        leaves.every { it.reason != Leaf.DECLINED }
         final never = leaves.find { it.reason == Leaf.NEVER_PUBLISHED }
         never.name == 'Z.bam'
         never.address == null
 
         and:
-        result.anomalies.declined == 1
+        result.anomalies.declined == 0
         result.anomalies.neverPublished == 1
     }
 

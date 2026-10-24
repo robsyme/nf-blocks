@@ -30,7 +30,7 @@ test('attribute rows are what Index.ingestItem writes (Review Focus 3)', () => {
   assert.deepEqual(rows, [
     ['a', 'int', '30', 0], ['b', 'float', '30.0', 0], ['big', 'float', '1.0E10', 0],
     ['meta.strand', 'string', 'fwd', 0], ['meta.tags', 'string', 'x', 0], ['meta.tags', 'string', 'y', 0],
-    ['none', 'null', null, 0], ['ok', 'bool', 'true', 0],
+    ['ok', 'bool', 'true', 0],
   ].sort())
 })
 
@@ -50,10 +50,15 @@ test('predicates normalise the way MetadataView.scalar types a value', () => {
   assert.deepEqual(predicateRow('lane', 'int', '007'), { path: 'lane', type: 'int', value: '7', truncated: 0 })
   assert.deepEqual(predicateRow('depth', 'float', '30'), { path: 'depth', type: 'float', value: '30.0', truncated: 0 })
   assert.deepEqual(predicateRow('ok', 'bool', 'true'), { path: 'ok', type: 'bool', value: 'true', truncated: 0 })
-  assert.deepEqual(predicateRow('x', 'null', ''), { path: 'x', type: 'null', value: null, truncated: 0 })
   assert.throws(() => predicateRow('lane', 'int', '1.5'), PredicateError)
   assert.throws(() => predicateRow('ok', 'bool', 'yes'), PredicateError)
   assert.throws(() => predicateRow('x', 'date', '1'), PredicateError)
+})
+
+test('a null is absent: no attribute row at any depth or in a list, and a null predicate is refused', () => {
+  assert.deepEqual(attrRows({ sample: null, nested: { ref: null, kept: 'x' }, tags: [null, 'a'] }).map(r => [r.path, r.value]),
+    [['nested.kept', 'x'], ['tags', 'a']])
+  assert.throws(() => predicateRow('x', 'null', ''), (e) => e instanceof PredicateError && /absent/.test(e.message))
 })
 
 test('matching needs every predicate, and a truncated row never matches', () => {

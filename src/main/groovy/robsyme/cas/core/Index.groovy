@@ -1202,6 +1202,8 @@ class Index implements Closeable {
         final StringBuilder sql = new StringBuilder(SQL_ITEMS_BASE)
         final List<Object> parameters = new ArrayList<Object>([completion.toString(), outputName] as List<Object>)
         for( Map.Entry<String, Object> entry : (where ?: [:]).entrySet() ) {
+            if( entry.value == null )
+                throw new IllegalArgumentException("the predicate on '${entry.key}' is null, which matches nothing: a null field counts as absent and is not indexed (DESIGN.md §12)")
             final AttrRow row = MetadataView.scalar(entry.key, entry.value)
             if( row.truncated ) {
                 // A value stored as a digest refuses equality, so nothing can match.
