@@ -5,6 +5,7 @@ import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
+import robsyme.cas.core.Conditions
 import robsyme.cas.core.DagJson
 import robsyme.cas.core.Index
 import robsyme.cas.core.ItemHit
@@ -53,7 +54,7 @@ class ItemsCommand {
             final List<ItemHit> hits = hits(index, cas.store, request)
             if( hits.isEmpty() ) {
                 err.println("nf-blocks:items: no item of output '${request.output}' matches " +
-                    "${request.conditions ? request.conditions.collect { String k, String v -> "${k}=${v}" }.join(' ') : 'at all'} " +
+                    "${request.conditions ? request.conditions.collect { String k, String v -> Conditions.splitKey(k)[1] == '=' ? "${k}=${v}" : "${k}${v}" }.join(' ') : 'at all'} " +
                     "in ${request.runs.join(', ')}" + (request.format == 'selection' ? '; an empty Selection is refused, so nothing is printed' : ''))
                 if( request.format == 'selection' )
                     return 1
@@ -77,15 +78,25 @@ class ItemsCommand {
             throw new UsageException("items takes the output name first, then conditions; got the condition '${output}' where the output name goes")
         final Map<String, String> conditions = new LinkedHashMap<String, String>()
         for( String arg : positionals.drop(1) ) {
-            final int eq = arg.indexOf('=')
-            if( eq < 0 )
-                throw new UsageException("condition '${arg}' is not <path>=<value>")
-            if( eq == 0 )
-                throw new UsageException("condition '${arg}' has no path before the '='")
-            final String path = arg.substring(0, eq)
-            if( conditions.containsKey(path) )
+            final List<String> parts = Conditions.splitArg(arg)
+            if( parts == null )
+                throw new UsageException("condition '${arg}' is not <path>=<value> or <path>>=<number> (or >, <, <=)")
+            final String path = parts[0], op = parts[1], value = parts[2]
+            if( !path )
+                throw new UsageException("condition '${arg}' has no path before the '${op}'")
+            if( op != '=' ) {
+                try {
+                    Conditions.number(value)
+                }
+                catch( NumberFormatException ignored ) {
+                    throw new UsageException("condition '${arg}' compares with ${op}, so its value must be a number")
+                }
+            }
+            // Keyed as fromStore's where: keys them: the path, or the path and its operator.
+            final String key = op == '=' ? path : "${path} ${op}".toString()
+            if( conditions.containsKey(key) )
                 throw new UsageException("condition '${arg}': the path '${path}' is already given, and each path takes one value")
-            conditions.put(path, arg.substring(eq + 1))
+            conditions.put(key, value)
         }
         final String run = options.flag('run')
         if( !run )
