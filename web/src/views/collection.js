@@ -181,7 +181,7 @@ export async function content(ex, contentCid, ctx, { highlight = [] } = {}) {
     actions: [missing ? downloadElsewhere(pres, contentCid) : h('a', { class: 'btn', href: ex.blocks.urlFor(contentCid), download: name ?? '' }, 'Download')],
     subline: [h('span', {}, h('b', {}, size === null ? '—' : bytes(size)), ` · ${kind}`),
       dims ? dims : null,
-      addrChip(contentCid, { ref: `cas://${contentCid}/${name ?? ''}`, seal: false })].filter(Boolean),
+      addrChip(contentCid, { ref: `cas://${contentCid}/${name ?? ''}` })].filter(Boolean),
   })
   const produced = rows.length === 0 ? h('p', { class: 'muted' }, 'No run in this member produced it.')
     : h('div', { class: 'tbox' }, h('table', { class: 't' },

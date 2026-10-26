@@ -8,7 +8,7 @@
 // and the Leaves' sum what the record names.
 import { h, link } from '../html.js'
 import { shortCid } from '../icons.js'
-import { addrChip, age, button, claimTag, durability, factTag, fieldChip, kv, pageHead, panel, status, thread } from '../components.js'
+import { addrChip, ago, button, claimTag, durability, fieldChip, kv, pageHead, panel, runFact, status, thread } from '../components.js'
 import { downloadElsewhere, presenceOf } from '../presence.js'
 import { bytes, formatNumber, formatValue, sizeText } from '../format.js'
 import { fold } from '../folds.js'
@@ -41,6 +41,11 @@ export function runStatus(label, completion = label?.completion) {
   node.replaceChildren(node.children[0], completion ? link(`#/run/${completion}`, name) : name)
   node.setAttribute('title', `${name}: ${status(label ?? {}).textContent}`)
   return node
+}
+
+/** A run as a chip (runFact) and how long ago it finished, the full time on hover. */
+function runChip(label, completion, { extra = null, now = Date.now() } = {}) {
+  return h('span', { class: 'row', style: 'gap:8px' }, runFact(label, completion, extra), ago(label?.finished_at, now, { class: 'muted small' }))
 }
 
 /**
@@ -289,16 +294,16 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const storedFiles = new Set(producers.map(([leaf]) => String(leaf.address))).size
   const elsewhere = [...runs].filter(([completion]) => completion !== from?.completion)
   const allOf = elsewhere.every(([completion]) => made.get(completion).size === storedFiles)
+  const now = ex.now?.() ?? Date.now()
   const producedBy = panel({ title: 'Produced by' },
-    from ? h('div', { class: 'row' }, runStatus(from), runRow?.finished_at ? h('span', { class: 'muted' }, age(runRow.finished_at)) : null)
-      : runs.size ? h('div', { class: 'row' }, [...runs].map(([completion, coll]) => runName(ex, coll, completion, (l) => runStatus(l, completion))))
+    from ? h('div', { class: 'row' }, runChip({ ...from, finished_at: runRow?.finished_at ?? from.finished_at }, from.completion, { now }))
+      : runs.size ? h('div', { class: 'row' }, [...runs].map(([completion, coll]) => runName(ex, coll, completion, (l) => runChip(l, completion, { now }))))
         : h('p', { class: 'muted' }, 'No run in this member produced it.'),
     collectionCid === '-' ? h('p', { class: 'muted small' }, 'Picked by a query across runs.') : null,
     elsewhere.length ? [h('p', { class: 'muted small' }, allOf ? `The same ${storedFiles} ${storedFiles === 1 ? 'file was' : 'files were'} also produced by`
       : 'Some of these files were also produced by'),
       h('div', { class: 'row' }, elsewhere.map(([completion, coll]) => runName(ex, coll, completion,
-        (l) => factTag('run', [l.run_name ?? 'unnamed run', l.status && l.status !== 'succeeded' ? h('span', { class: 'muted' }, ` ${l.status}`) : null,
-          allOf ? null : h('span', { class: 'muted' }, ` · ${made.get(completion).size} of ${storedFiles}`)], completion, `#/run/${completion}`)))),
+        (l) => runChip(l, completion, { now, extra: allOf ? null : h('span', { class: 'muted' }, ` · ${made.get(completion).size} of ${storedFiles}`) })))),
       h('p', { class: 'muted small' }, 'Stored once. Content addressing keeps one copy for every run.')] : null)
 
   // Each Selection by its name (a Claim: this main pane may read them), its short CID beside it.
@@ -317,7 +322,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
         : ['Pinning keeps it in ', h('b', {}, store.name), ' even if the run that wrote it is released.'] }),
     fold(`details:${itemCid}`, 'Address',
       kv([['Item', addrChip(itemCid)],
-        ...(collectionCid !== '-' ? [['In output', addrChip(collectionCid, { ref: `cas://${collectionCid}/${itemCid}`, seal: false })]] : []),
+        ...(collectionCid !== '-' ? [['In output', addrChip(collectionCid, { ref: `cas://${collectionCid}/${itemCid}` })]] : []),
         ...it.leaves.filter(l => l.address).map(l => [l.name ?? 'file', addrChip(String(l.address))])]),
       all.length ? pairsNode(all, target, { size: 'row' }) : null))
 }

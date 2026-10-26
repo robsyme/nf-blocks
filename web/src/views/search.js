@@ -15,7 +15,7 @@ import { ADDRESS_HEAD, ADDRESS_MIN, isAddressQuery, namedBy } from '../model.js'
 import { SAMPLE_PATHS } from '../table.js'
 import { pairsOf } from '../pairs.js'
 import { matchPromoted, pipelineConfig, promotedFor } from '../promoted.js'
-import { runTone, statusText, statusTone } from '../words.js'
+import { dayText, runTone, statusText, statusTone } from '../words.js'
 import { enc } from './common.js'
 import { fromEach, hrefIn, listsAll, mergeRows, unreadableText } from '../members.js'
 import { presenceOf } from '../presence.js'
@@ -43,13 +43,6 @@ const rank = (path) => SAMPLE_PATHS.indexOf(path)
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 const sub = (text) => h('span', { class: 'sub' }, text)
 
-/** `Oct 24`, with the year when it is not this year's. */
-function dayText(iso, now = Date.now()) {
-  const d = new Date(iso)
-  if (!iso || Number.isNaN(d.getTime())) return ''
-  const year = d.getUTCFullYear() === new Date(now).getUTCFullYear() ? {} : { year: 'numeric' }
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC', ...year })
-}
 
 /**
  * searchSamples rows as one entry per run and sample, latest run first:
@@ -138,7 +131,7 @@ function samplesPanel(at, groups, query, { cap = null, href }) {
         runCell(g.run, at),
         promotedCell(at, g, i < PROMOTED_ROWS),
         h('td', { class: 'muted' }, plural(g.outputs, 'output')),
-        h('td', { class: 'muted r nowrap' }, dayText(g.run.finished_at)))),
+        h('td', { class: 'muted r nowrap' }, dayText(g.run.finished_at, Date.now())))),
       groups.length > shown.length
         ? h('tr', { class: 'group' }, h('td', { colspan: '5' }, link(href, `${groups.length - shown.length} more`)))
         : null)))

@@ -91,10 +91,9 @@ test('item page: Produced by names the runs; the pin says its bytes and waits fo
   const calls = []
   const page = await item(itemEx(), COLL, ITEM, ctxFor({ calls }))
   await frame()
-  assert.ok(page.querySelector('.status.ok'))
-  assert.equal(page.querySelector('.status.ok').textContent.includes('distraught_murdock'), true)
   const facts = page.querySelectorAll('.fact').map(f => f.textContent)
-  assert.equal(facts.length, 2)
+  assert.equal(facts.length, 3, 'the run it came from is a chip like the other two')
+  assert.ok(facts[0].includes('distraught_murdock'))
   assert.ok(facts.some(f => f.includes('sad_yonath')))
   assert.ok(facts.some(f => /sharp_magritte.*failed/.test(f)))
   const pin = page.querySelector('#pin')

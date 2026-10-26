@@ -202,9 +202,9 @@ test('a run row carries its nf_run_hash, from the snapshot and from a tail run\'
 test('runLabel names a collection by its run and output, from the snapshot or the tail, and null when neither knows it (decision 11)', async () => {
   const { explorer, member } = await open()
   assert.deepEqual(await explorer.runLabel(member.runs.R1.collection),
-    { run_name: 'R1', output: 'aligned', completion: member.runs.R1.completion, status: 'succeeded', possibly_incomplete: false })
+    { run_name: 'R1', output: 'aligned', completion: member.runs.R1.completion, status: 'succeeded', possibly_incomplete: false, finished_at: (await explorer.runRow(member.runs.R1.completion)).finished_at })
   assert.deepEqual(await explorer.runLabel(member.runs.R2.collection),
-    { run_name: 'R2', output: 'aligned', completion: member.runs.R2.completion, status: 'succeeded', possibly_incomplete: false })
+    { run_name: 'R2', output: 'aligned', completion: member.runs.R2.completion, status: 'succeeded', possibly_incomplete: false, finished_at: (await explorer.runRow(member.runs.R2.completion)).finished_at })
   assert.equal(await explorer.runLabel(rawCid('held elsewhere').toString()), null)
   assert.equal(await explorer.runLabel(null), null)
   assert.equal(explorer.runLabel(member.runs.R1.collection), explorer.runLabel(member.runs.R1.collection), 'one lookup per collection')

@@ -19,7 +19,7 @@ import { matchPromoted, pipelineConfig, promotedFor, shortLabel } from '../promo
 import { fieldPaths, itemTable } from '../table.js'
 import { parseSamplesWhere } from '../samples.js'
 import { firstItemKeyed, joinRun, samplesTab } from './samples.js'
-import { anomalyLines, dayText, healthLine } from '../words.js'
+import { anomalyLines, dayText, healthLine, whenText } from '../words.js'
 import { enc, holds, namesText, omittedNote, pillTip, retentionPanel, stableIndexControl, staleFiguresText, transfersNode } from './common.js'
 import { samePrincipal, whoText } from '../identity.js'
 import { copyToButton } from './copy.js'
@@ -52,14 +52,6 @@ export function durationText(ms) {
   const hours = Math.floor(m / 60)
   if (hours < 24) return pair(hours, 'h', m % 60, 'min')
   return pair(Math.floor(hours / 24), 'd', hours % 24, 'h')
-}
-
-/** `Oct 24, 1:29 PM` in the reader's time zone, with the year when it is not the year of `now`, the Explorer's clock (ex.now). */
-function finishedText(iso, now) {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return String(iso)
-  const year = d.getFullYear() === new Date(now).getFullYear() ? {} : { year: 'numeric' }
-  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', ...year, hour: 'numeric', minute: '2-digit' })
 }
 
 /** replaceChildren that skips null, undefined and false, as h() does. */
@@ -215,7 +207,7 @@ function header(ex, completionCid, ctx, { row, completion, state, lid, manifest,
   const started = Date.parse(completion.started_at ?? '')
   const finished = Date.parse(completion.finished_at ?? '')
   const took = Number.isFinite(started) && Number.isFinite(finished) && finished >= started ? ` · ${durationText(finished - started)}` : ''
-  const when = completion.finished_at ? slot('finished', 'Finished ', h('b', {}, finishedText(completion.finished_at, ex.now())), took) : slot('finished')
+  const when = completion.finished_at ? slot('finished', 'Finished ', h('b', {}, whenText(completion.finished_at, ex.now())), took) : slot('finished')
   const nextflow = slot('nextflow')
   manifest.then((m) => { if (m?.nextflow_version) fill(nextflow, 'Nextflow ', h('b', {}, m.nextflow_version)) })
   const size = slot('size')

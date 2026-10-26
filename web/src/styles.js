@@ -60,6 +60,7 @@ export const APP_CSS = `
   body:is([data-route=selections], [data-route=selection]) .nav a[data-nav-link=selections] {
     background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
   .addr.flash { border-color: var(--accent); }
+  .addr.flash .copy { color: var(--accent-ink); }
   .status .ico { display: inline-flex; }
   .status.neutral { color: var(--ink-3); }
   @media (max-width: 1200px) {
@@ -301,6 +302,8 @@ export const APP_CSS = `
   .sel-grid td.files .kinds { flex-direction: column; align-items: flex-start; gap: 3px; }
   .sel-grid td.from-cell { min-width: 120px; }
   .sel-grid td.from-cell .from + .from { margin-top: 4px; }
+  .sel-grid td.from-cell .from, .sel-grid td.from-cell .from > span { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+  .sel-grid td.from-cell .from > span { display: inline-flex; }
   /* --- end task 7 --- */
   /* --- p1a task 2: samples tab --- */
   .samples-tab, .samples-body { display: grid; gap: 12px; min-width: 0; }
@@ -469,7 +472,8 @@ export const APP_CSS = `
   .project-page .project-people { gap: 4px; }
   .project-page ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
   .project-page .project-fields { display: grid; gap: 14px; }
-  .project-page .project-fields > div { display: grid; gap: 6px; }
+  .project-page .project-fields > div { display: grid; gap: 6px; justify-items: start; }
+  .project-page .project-fields > div.row { display: flex; }
   .project-page .project-fields p { margin: 0; }
   .project-page .project-fields .row { gap: 8px; flex-wrap: wrap; }
   .project-page .project-confirm { display: grid; gap: 8px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--sunken); }
@@ -479,6 +483,8 @@ export const APP_CSS = `
   .project-page .project-form .row { gap: 8px; flex-wrap: wrap; }
   .project-page .project-basis { padding: 12px 16px; border-top: 1px solid var(--line); display: grid; gap: 6px; }
   .project-page .project-basis p { margin: 0; font-size: 12px; }
+  .project-page .panel > .pb.project-empty { padding: 12px 16px; }
+  .project-page .project-empty p { margin: 0; }
   .project-page .project-storage { display: grid; gap: 16px; }
   .project-page .project-storage p { margin: 0; }
   .project-page .activity-row { gap: 8px; min-width: 0; flex-wrap: nowrap; }

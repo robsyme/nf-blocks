@@ -22,7 +22,7 @@ import { h, link } from '../html.js'
 import { icon } from '../icons.js'
 import { avatar, durability, empty, minibar, note, pageHead, panel, status, storageBar } from '../components.js'
 import { bytes, formatNumber, ratioText, sizeText } from '../format.js'
-import { agoText, dayText, statusText } from '../words.js'
+import { agoText, dayText, fullWhenText, statusText } from '../words.js'
 import { asserterKey, isAnon, samePrincipal, whoText } from '../identity.js'
 import { extLabel } from '../sizes.js'
 import { ask, storedTitle } from './home.js'
@@ -282,7 +282,7 @@ export async function storage(ex, ctx) {
   const now = ex.now()
   // More than one member, in either mode: the card row replaces R9's single summary, and its caption the lead.
   const several = (ctx?.members?.list?.length ?? 0) > 1
-  const head = pageHead({ title: 'Storage', after: [h('span', { class: 'muted storage-asof', title: written ?? null }, `as of snapshot${written ? ` · ${agoText(written, now)}` : ''}`)] })
+  const head = pageHead({ title: 'Storage', after: [h('span', { class: 'muted storage-asof', title: written ? fullWhenText(written) : null }, `as of snapshot${written ? ` · ${agoText(written, now)}` : ''}`)] })
   if (!several) head.append(h('p', { class: 'muted storage-lead' }, 'Each store keeps its own pins and runs its own cleanup, so every number here belongs to one store.'))
   // A read-only store shows a lock and no Release: Release writes a Claim beside the run, in this member.
   const writable = !!ctx?.write?.available && ctx.write.here !== false

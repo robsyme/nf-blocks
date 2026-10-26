@@ -9,7 +9,7 @@ import { labelPaths, labelText } from '../pairs.js'
 import { trayNote } from '../tray.js'
 import { SAMPLE_PATHS, itemTable, withoutDuplicates } from '../table.js'
 import { runTone } from '../words.js'
-import { age, avatar, claimTag, durability, note, panel } from '../components.js'
+import { ago, avatar, claimTag, durability, note, panel } from '../components.js'
 import { seal } from '../seal.js'
 import { mineState, samePrincipal, whoText } from '../identity.js'
 import { bytes, sizeText } from '../format.js'
@@ -746,7 +746,7 @@ export async function transfersNode(ex, cid, ctx) {
   const now = ex.now()
   return h('div', { 'data-transfers': cid }, transfers.map(t => h('p', { 'data-transfer': t.cid },
     'Copied here from ', h('b', {}, t.from ?? 'another store'), ' by ', avatar(t.assertedBy), ' ', whoText(t.assertedBy, ctx?.viewer),
-    t.at ? [' · ', h('span', { title: t.at }, age(t.at, now))] : null,
+    t.at ? [' · ', ago(t.at, now)] : null,
     t.depth ? ` · depth ${t.depth}` : null, ' · ',
     link(`#/block/${t.cid}`, seal(t.cid, { size: 14 }), ' ', shortCid(t.cid)))))
 }

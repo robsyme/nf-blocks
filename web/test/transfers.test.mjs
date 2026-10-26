@@ -15,6 +15,7 @@ import { run } from '../src/views/run.js'
 import { selection } from '../src/views/selection.js'
 import { Tray } from '../src/tray.js'
 import { claimState } from '../src/claims.js'
+import { fullWhenText } from '../src/words.js'
 
 const NOW = Date.parse('2026-10-24T12:00:00.000Z')
 const transfer = (roots, runs, extra = {}) => ({ kind: 'Transfer', schema: 1, asserted_by: 'rob', roots, from: 'org-s3', to: 'lab',
@@ -201,7 +202,7 @@ test("Home's activity says a Transfer as \"Copied from <from> · <depth>\" with 
     transfer: { from: 'org-s3', to: 'lab', depth: 'lineage', assertedBy: 'ana@example.org', at: '2026-10-24T11:00:00.000Z' } })
   assert.match(tag.textContent, /^Copied fromorg-s3 · lineage/)
   assert.equal(tag.querySelector('.av').getAttribute('title'), 'ana@example.org')
-  assert.equal(tag.querySelector('[title="2026-10-24T11:00:00.000Z"]').textContent.length > 0, true, 'when, with the exact time on hover')
+  assert.equal(tag.querySelector(`[title="${fullWhenText('2026-10-24T11:00:00.000Z')}"]`).textContent.length > 0, true, 'when, with the exact time on hover')
   const a = tag.querySelector('a[data-transfer-block]')
   assert.equal(a.getAttribute('href'), '#/block/bafytransfer1')
   assert.ok(a.querySelector('.seal'))

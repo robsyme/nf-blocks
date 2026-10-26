@@ -25,6 +25,7 @@ import { samplesTab } from '../src/views/samples.js'
 import { snapshotDb } from './helpers.mjs'
 import { blockFetch, buildMember, entryName, rawCid } from './fixture.mjs'
 import SQL from '../src/queries.json' with { type: 'json' }
+import { fullWhenText } from '../src/words.js'
 
 const NOW = Date.parse('2026-10-25T12:00:00.000Z')
 const PIPE = 'nf-core/rnaseq'
@@ -163,7 +164,7 @@ test('run page: a tag per membership in the subline, with who and when and the p
   assert.equal(inP.querySelector('a').textContent, 'RAP1 depletion')
   assert.equal(inP.querySelector('.av').getAttribute('title'), 'ana@x')
   assert.equal(inP.querySelector('a').getAttribute('href'), `#/project/${ids.P}`)
-  assert.equal(inP.querySelector('.age').getAttribute('title'), at(200))
+  assert.equal(inP.querySelector('.age').getAttribute('title'), fullWhenText(at(200)))
   assert.match(text(inQ), /Old study.*\(deleted\)/)
   // Add to project… sits beside Copy to….
   const labels = page.querySelector('.page-head').querySelectorAll('.btn').map(b => b.textContent)

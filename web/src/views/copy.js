@@ -14,6 +14,7 @@ import { addrChip, button, claimTag, initials, kv, note, pageHead, panel, shortC
 import { presenceOf } from '../presence.js'
 import { bytes, formatNumber, sizeText } from '../format.js'
 import { isAnon, whoText } from '../identity.js'
+import { dayText } from '../words.js'
 import { hrefIn } from '../members.js'
 import { CATEGORIES, DEFAULT_CLAIMS, DEPTHS, cantCopyText, copyAvailability, copyHref } from '../copy.js'
 import { claimVerb, enc, errorNode, isProjectClaim, projectClaimWords } from './common.js'
@@ -483,7 +484,7 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
       .filter(c => c.attribute === 'name' && c.verb === 'set' && c.carried !== false)
       .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1))[0] : null
     const by = named ? (isAnon({ principal: named.asserted_by }) ? 'anonymously' : `by ${initials(named.asserted_by)}`) : null
-    const example = named ? `"named ${by} on ${shortDate(named.timestamp)}"` : 'who made each one, and when,'
+    const example = named ? `"named ${by} on ${(dayText(named.timestamp, Date.now()) || named.timestamp)}"` : 'who made each one, and when,'
     const skipped = p?.skipped_claims ?? {}
     claimsBody.replaceChildren(...rows,
       h('p', { class: 'muted small', 'data-claims-verbatim': '' }, `Claims are copied as-is, so ${example} stays true in ${toName}.`),
@@ -858,13 +859,6 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
   return section
 }
 
-/** `Oct 24` (with the year when it is not this year). */
-function shortDate(iso) {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return String(iso)
-  const same = d.getFullYear() === new Date().getFullYear()
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(same ? {} : { year: 'numeric' }) })
-}
 
 /** The head's name and crumbs: a Selection by its current names, a run by its name under its pipeline. Reads the snapshot only. */
 async function headOf(ex, kind, cid, backHref) {

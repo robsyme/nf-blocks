@@ -28,7 +28,7 @@ import { createPanel, showsRail, useLabel } from './panel.js'
 import { argsOf, routeOf } from './routes.js'
 import { createNav, drawStores } from './nav.js'
 import { createSizes, memberHref, mountSwitcher } from './views/switcher.js'
-import { agoText, snapshotModeText, staleText } from './words.js'
+import { agoText, fullWhenText, snapshotModeText, staleText } from './words.js'
 
 let explorer = null
 let sequence = 0
@@ -354,7 +354,7 @@ async function start() {
     const written = explorer.snapshotWrittenAt
     const ageEl = document.getElementById('snapshot-age')
     ageEl.textContent = written ? `Snapshot ${agoText(written)}` : 'Snapshot'
-    if (written) ageEl.setAttribute('title', `Snapshot written ${written}`)
+    if (written) ageEl.setAttribute('title', `Snapshot written ${fullWhenText(written)}`)
     updateStale()
     panel = createPanel({ el: document.getElementById('panel-inner'), ex: explorer, ctx: { tray, write, sources, trayChanged: updateTray },
       onState: (s) => { document.getElementById('use-toggle').textContent = useLabel(s, tray) } })

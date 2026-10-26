@@ -9,7 +9,7 @@
 // first). Every storage figure is one store's, never added up; every pin
 // it writes names its bytes first.
 import { h, link } from '../html.js'
-import { age, avatar, button, claimTag, pageHead, panel, shortCid, storageBar, tabs } from '../components.js'
+import { ago, avatar, button, claimTag, pageHead, panel, shortCid, storageBar, tabs } from '../components.js'
 import { icon } from '../icons.js'
 import { formatNumber, plural, sizeText } from '../format.js'
 import { samePrincipal } from '../identity.js'
@@ -483,7 +483,7 @@ function activityPanel(events, ex, { limit = Infinity, more = null, all = false,
   const now = ex.now?.() ?? Date.now()
   const shown = events.slice(0, limit)
   const rows = shown.map(e => h('div', { class: 'row activity-row', 'data-activity': e.key, 'data-at': e.at ?? '' },
-    h('span', { class: 'mono muted activity-age', title: e.at ?? '' }, age(e.at, now)),
+    ago(e.at, now, { class: 'mono muted activity-age' }) ?? h('span', { class: 'mono muted activity-age' }),
     claimTag({ assertedBy: e.who, verb: e.verb, value: e.value ?? (e.text ? h('span', {}, e.text) : null) })))
   return panel({ title: 'Activity', meta: scope.meta(all ? 'newest first' : null) },
     rows.length ? rows : h('p', { class: 'muted' }, 'Nothing yet.'),

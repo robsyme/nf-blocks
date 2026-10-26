@@ -10,6 +10,7 @@ import { bytes } from '../src/format.js'
 import { copyView, copyToButton, lineageRuleText, REPLAN_DELAY_MS } from '../src/views/copy.js'
 import { CopyError, copyAvailability, copyClient } from '../src/copy.js'
 import { openRoblab, ROBLAB } from './storage-fixture.mjs'
+import { fullWhenText } from '../src/words.js'
 
 const PLAN = JSON.parse(readFileSync(new URL('./fixtures/copy-plan-wigshop.json', import.meta.url), 'utf8'))
 const WIGSHOP = PLAN.root.cid
@@ -275,7 +276,7 @@ test('pins are off by default; an unticked pin still shows who pinned it and whe
   assert.equal(tag.dataset.carried, 'false')
   assert.ok(tag.classList.contains('muted'), 'not carried reads dimmed')
   assert.equal(tag.querySelector('.av').textContent, 'AN')
-  assert.equal(tag.querySelector('.age').getAttribute('title'), pin.timestamp, 'when, to the reader')
+  assert.equal(tag.querySelector('.age').getAttribute('title'), fullWhenText(pin.timestamp), 'when, to the reader')
   assert.match(tag.textContent, /pinned“figure 3”.*ana@example\.org$/)
   assert.match(row.textContent, /Pins · not carried.*Pins are per store; someone with write access confirms them in org-s3\./)
   box.checked = true
