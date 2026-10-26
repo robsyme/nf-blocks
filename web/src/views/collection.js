@@ -1,7 +1,7 @@
 // web/src/views/collection.js
 // #/collection/<cid> and #/content/<cid> (DESIGN.md §15).
 import { h, link } from '../html.js'
-import { address, icon, shortCid } from '../icons.js'
+import { address, icon, ref, sealed, shortCid } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { addrChip, durability, kindChip, kv, pageHead, panel } from '../components.js'
@@ -56,7 +56,7 @@ export async function collection(ex, collectionCid, offset = 0, ctx) {
   if (c.completion) ctx.use?.({ completion: c.completion, output: c.output, where: [], count: c.total })
   return h('section', {},
     c.completion ? runCrumbs(ex, c.completion, [{ text: c.output }]) : crumbs({ text: c.output }),
-    h('h1', {}, icon('output'), c.output),
+    h('h1', {}, sealed('output', collectionCid, { size: 30 }), c.output),
     sizeLine(ex, collectionCid),
     fold(`storage:${collectionCid}`, 'Storage', retentionPanel(collectionCid, c.state, ctx, { kind: 'collection', href: ctx.write.hrefFor(`#/collection/${collectionCid}`),
       size: ex.collectionSize ? Promise.resolve(ex.collectionSize(collectionCid)) : null, ...holds(ex, collectionCid) })),
@@ -175,7 +175,7 @@ export async function content(ex, contentCid, ctx, { highlight = [] } = {}) {
       { text: first.id?.run_name ?? 'run', href: runHref },
       firstOutput ? { text: firstOutput, href: `#/items/${first.p.completion_cid}/${encodeURIComponent(firstOutput)}?where=%5B%5D` } : null,
       { text: name ?? 'File' }].filter(Boolean) : [{ text: name ?? 'File' }],
-    seal: contentCid,
+    seal: contentCid, kind: 'file',
     title: h('span', { class: 'mono', 'data-file-title': '' }, name ?? shortCid(contentCid)),
     after: [holder, pres.dots(contentCid, { hereHeld: missing ? false : unread ? null : true })],
     actions: [missing ? downloadElsewhere(pres, contentCid) : h('a', { class: 'btn', href: ex.blocks.urlFor(contentCid), download: name ?? '' }, 'Download')],
@@ -190,7 +190,7 @@ export async function content(ex, contentCid, ctx, { highlight = [] } = {}) {
         'data-producer': '', 'data-content': p.content_cid, 'data-item': p.item_cid, 'data-collection': p.collection_cid,
         'data-completion': p.completion_cid, 'data-filename': p.filename },
       h('td', {}, id ? runStatus(id, p.completion_cid)
-        : h('span', { class: 'runname', title: p.completion_cid }, link(`#/run/${p.completion_cid}`, h('code', { class: 'cid' }, shortCid(p.completion_cid))))),
+        : h('span', { class: 'runname', title: p.completion_cid }, ref('run', h('code', { class: 'cid' }, shortCid(p.completion_cid)), `#/run/${p.completion_cid}`, { cid: p.completion_cid }))),
       h('td', {}, itemCell(ex, p, i < LABELLED)),
       h('td', { class: 'mono', style: 'font-size:12px' }, p.filename ?? ''),
       h('td', { class: 'muted' }, id?.finished_at ? whenText(id.finished_at) : ''))))))

@@ -11,6 +11,7 @@ import { Previews } from '../previews.js'
 import { trayNote } from '../tray.js'
 import { counted, entryRow, groupEntries, nameEntries, pickedSize, saveFlow, sourceLabel } from '../picked.js'
 import { ref, shortCid } from '../icons.js'
+import { runTone } from '../words.js'
 import { enc } from './common.js'
 
 /**
@@ -24,8 +25,8 @@ function sourceHead(ex, ctx, collectionCid) {
     if (!label) return
     const c = label.completion
     node.replaceChildren(...[
-      label.run_name ? ref('run', label.run_name, c ? `#/run/${c}` : null) : null, label.run_name ? ' / ' : null,
-      ref('output', label.output, c ? `#/items/${c}/${enc(label.output)}?where=%5B%5D` : null)].filter(Boolean))
+      label.run_name ? ref('run', label.run_name, c ? `#/run/${c}` : null, { cid: c, tone: runTone(label) }) : null, label.run_name ? ' / ' : null,
+      ref('output', label.output, c ? `#/items/${c}/${enc(label.output)}?where=%5B%5D` : null, { cid: collectionCid })].filter(Boolean))
   }, () => {})
   return node
 }

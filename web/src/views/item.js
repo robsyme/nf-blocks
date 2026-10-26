@@ -7,7 +7,8 @@
 // 5.27 MB", the files being those stored here (a directory counts its files)
 // and the Leaves' sum what the record names.
 import { h, link } from '../html.js'
-import { shortCid } from '../icons.js'
+import { ref, sealed, shortCid } from '../icons.js'
+import { runTone, statusText } from '../words.js'
 import { addrChip, ago, button, claimTag, durability, fieldChip, kv, pageHead, panel, runFact, status, thread } from '../components.js'
 import { downloadElsewhere, presenceOf } from '../presence.js'
 import { bytes, formatNumber, formatValue, sizeText } from '../format.js'
@@ -37,9 +38,11 @@ const storeOf = (ctx) => ctx.store ?? { name: 'this store', key: 'a' }
 /** A run's name as a link, with its status icon and word; the run is a label from Explorer.runLabel. */
 export function runStatus(label, completion = label?.completion) {
   const name = label?.run_name ?? 'unnamed run'
-  const node = status(label ?? {})
-  node.replaceChildren(node.children[0], completion ? link(`#/run/${completion}`, name) : name)
-  node.setAttribute('title', `${name}: ${status(label ?? {}).textContent}`)
+  const tone = runTone(label)
+  const word = tone === 'bad' ? h('span', { class: 'muted' }, ` ${statusText(label).toLowerCase()}`) : null
+  const node = h('span', { class: 'ref', 'data-run-status': label?.status ?? '' },
+    sealed('run', completion, { tone }), completion ? link(`#/run/${completion}`, name) : name, word)
+  node.setAttribute('title', `${name}: ${statusText(label ?? {})}`)
   return node
 }
 
@@ -53,7 +56,7 @@ function runChip(label, completion, { extra = null, now = Date.now() } = {}) {
  * then the name with its status. `build(label)` makes the node for a label.
  */
 export function runName(ex, collectionCid, completion, build) {
-  const node = h('span', { class: 'runname', title: completion }, link(`#/run/${completion}`, h('code', { class: 'cid' }, shortCid(completion))))
+  const node = h('span', { class: 'runname', title: completion }, ref('run', h('code', { class: 'cid' }, shortCid(completion)), `#/run/${completion}`, { cid: completion }))
   ex.runLabel(collectionCid).then((label) => { if (label) node.replaceChildren(build(label)) }, () => {})
   return node
 }
@@ -229,7 +232,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const releasedRun = runState?.released
   // Add to project (P4): its memberships from the item's own Claims (it.state), so the subline's tags cost no query.
   const projects = projectControl(ex, ctx, { subject: itemCid, kind: 'item', claims: it.state?.claims ?? null, href: `#/item/${collectionCid}/${itemCid}` })
-  const head = pageHead({ crumbs, seal: itemCid, title,
+  const head = pageHead({ crumbs, seal: itemCid, kind: 'item', title,
     after: [from?.output ? h('span', { class: 'muted', style: 'font-size:15px' }, `${from.output} item`) : null,
       it.state.pinned ? durability('pinned', 'Pinned') : from ? (releasedRun ? [durability('releasing', 'Run released'), claimTag({ assertedBy: runState.releaseClaim?.asserted_by, verb: 'released', at: runState.releaseClaim?.timestamp })] : durability('held', 'Held by run')) : null, here],
     actions: [projects.button, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })].filter(Boolean),
@@ -252,7 +255,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
         r.dir ? link(`#/block/${r.address}`, 'Directory') : h('a', { class: 'btn sm ghost', href: ex.blocks.urlFor(r.address), download: r.name ?? '' }, 'Download')]
       : h('span', { class: 'muted' }, leafReasonText(r.reason)))
     const row = h('tr', { 'data-file': r.address ?? '' },
-      h('td', {}, h('div', { class: 'namecell' }, stored ? seal(r.address, { size: 18 }) : null,
+      h('td', {}, h('div', { class: 'namecell' }, stored ? sealed(r.dir ? 'directory' : 'file', r.address, { size: 18 }) : null,
         stored ? h('a', { href: `#/content/${r.address}`, class: 'mono', style: 'font-weight:500;font-size:12px', title: 'Which runs produced this file' }, r.name ?? r.address)
           : h('span', { class: 'mono', style: 'font-size:12px' }, r.name ?? ''))),
       h('td', { class: 'mono muted', style: 'font-size:11.5px' }, r.sub),

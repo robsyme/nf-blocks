@@ -162,7 +162,8 @@ test('a Selection row says which run and output it is from, and where it is held
   assert.match(here.textContent, /boring_yalow · people/)
   const chip = here.querySelector('a[href="#/run/bafyrun"]')
   assert.ok(chip.classList.contains('fact'), 'the run as a chip, as Produced by shows it')
-  assert.equal(chip.querySelector('.k').textContent, 'run')
+  assert.equal(chip.querySelector('[data-sealed]').dataset.sealed, 'run', 'the kind rides on the Seal\'s badge')
+  assert.equal(chip.querySelector('.k'), null)
   assert.match(chip.textContent, /boring_yalow$/)
   assert.deepEqual(page.querySelectorAll('th').map(t => t.textContent).slice(0, 1), ['Sample'])
 })
@@ -246,13 +247,14 @@ test('home, pipeline and item pages name their kinds with icons', async () => {
     latestSuccessfulRun: async () => 'bafyrun', runRow: async () => ({ run_name: 'high_jang' }) }
   const homePage = await home(homeEx, ctx())
   await frame()
-  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline'])
-  assert.ok(homePage.querySelector('.status.ok'), 'the latest good run shows the ok status icon')
+  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline', 'run'])
+  assert.ok(homePage.querySelector('[data-sealed]').querySelector('.tone-good'), 'the latest good run: its Seal, the badge green')
   const pipeEx = { runPage: async () => ({ rows: [{ completion_cid: 'bafyrun', pipeline: 'p', run_name: 'high_jang', status: 'succeeded', possibly_incomplete: 0,
     finished_at: '2026-09-30T21:10:38.345Z', source: 'snapshot' }], hidden: 0, first: 1, last: 1, total: 1, prev: null, next: null }),
     completionOf: async () => ({ anomalies: {} }), stale: [] }
   const pipePage = await pipeline(pipeEx, 'p', 0, ctx())
   assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
+  assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-seal]').dataset.seal, 'bafyrun', 'a run row leads with its Seal')
   assert.ok(pipePage.querySelector('[data-run]').querySelector('[data-icon]').classList.contains('tone-good'))
 })
 

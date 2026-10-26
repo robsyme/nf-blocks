@@ -6,8 +6,9 @@
 import { copyOutcome, h } from './html.js'
 import { bytes } from './format.js'
 import { seal } from './seal.js'
-import { dayText, fullWhenText, statusText, statusTone, whenText } from './words.js'
+import { dayText, fullWhenText, runTone, statusText, statusTone, whenText } from './words.js'
 import { isAnon, principalKey } from './identity.js'
+import { KINDS, sealed } from './icons.js'
 
 /** The kit's short form: `bafy…26ocxq` for a CID, `lid://e25b…b06f` for a lineage id. */
 export function shortCid(text) {
@@ -39,9 +40,15 @@ export function addrChip(text, { ref = text, seal: withSeal = true } = {}) {
   return chip
 }
 
-/** An immutable record: its Seal, a kind label and a name; a link when given `href`. */
-export function factTag(kind, label, cid, href = null) {
-  return h(href ? 'a' : 'span', { class: 'fact', href }, seal(cid, { size: 16 }), h('span', { class: 'k' }, kind), label)
+/**
+ * An immutable record: its Seal and a name; a link when given `href`. A kind
+ * with an icon rides on the Seal's badge; any other kind (a manifest, a copy)
+ * keeps its word label.
+ */
+export function factTag(kind, label, cid, href = null, { tone = null } = {}) {
+  const known = KINDS.includes(kind)
+  return h(href ? 'a' : 'span', { class: `fact${known ? ' sealed-fact' : ''}`, href },
+    known ? sealed(kind, cid, { size: 18, tone }) : seal(cid, { size: 16 }), known ? null : h('span', { class: 'k' }, kind), label)
 }
 
 /**
@@ -50,7 +57,7 @@ export function factTag(kind, label, cid, href = null) {
  */
 export function runFact(label, completion, extra = null) {
   const word = label?.status && statusTone(label) !== 'good' ? h('span', { class: 'muted' }, ` ${statusText(label).toLowerCase()}`) : null
-  return factTag('run', [label?.run_name ?? 'unnamed run', word, extra], completion, completion ? `#/run/${completion}` : null)
+  return factTag('run', [label?.run_name ?? 'unnamed run', word, extra], completion, completion ? `#/run/${completion}` : null, { tone: runTone(label) })
 }
 
 const isAnonymous = (who) => isAnon({ principal: who })
@@ -195,11 +202,11 @@ export const note = (text, tone = 'info') => h('div', { class: tone === 'info' ?
 export const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text)
 
 /** Crumbs, the title row (Seal, h1, extras, actions on the right) and the subline. */
-export function pageHead({ crumbs = [], seal: cid = null, title, after = [], actions = [], subline = [] }) {
+export function pageHead({ crumbs = [], seal: cid = null, kind = null, tone = null, title, after = [], actions = [], subline = [] }) {
   const trail = crumbs.flatMap((c, i) => [i ? '/' : null, c.href ? h('a', { href: c.href }, c.text) : h('b', {}, c.text)])
   return h('div', { class: 'page-head' },
     crumbs.length ? h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' }, trail) : null,
-    h('div', { class: 'title' }, cid ? seal(cid, { size: 30 }) : null, h('h1', {}, title), after,
+    h('div', { class: 'title' }, cid ? (kind ? sealed(kind, cid, { size: 30, tone }) : seal(cid, { size: 30 })) : null, h('h1', {}, title), after,
       actions.length ? [h('span', { class: 'spacer' }), actions] : null),
     subline.length ? h('div', { class: 'subline' }, subline.map(s => h('span', {}, s))) : null)
 }

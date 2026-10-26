@@ -248,7 +248,7 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
 
   // Element.append writes null as the text "null": only nodes go in.
   section.append(...[
-    pageHead({ crumbs: [...head.crumbs, { text: 'Copy' }], seal: cid, title: `Copy ${head.name}`,
+    pageHead({ crumbs: [...head.crumbs, { text: 'Copy' }], seal: cid, kind: kind === 'run' ? 'run' : 'selection', title: `Copy ${head.name}`,
       after: [h('span', { class: 'muted' }, 'from'),
         h('span', { class: 'fact', 'data-copy-from': source ?? '' }, h('span', { class: `dot ${ctx.store?.key ?? 'a'}` }), sourceName),
         h('span', { class: 'muted' }, 'to'), dest.el] }),

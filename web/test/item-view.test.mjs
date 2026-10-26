@@ -70,7 +70,8 @@ test('item page: the id with its Seal, promoted chips, the files by record key, 
   const page = await item(itemEx(), COLL, ITEM, ctxFor())
   await frame()
   assert.equal(page.querySelector('h1').textContent, 'WT_REP1')
-  assert.ok(page.querySelector('.title').children[0].innerHTML.includes('<svg'), 'a Seal beside the title')
+  assert.ok(page.querySelector('.title').children[0].querySelector('[data-seal]').innerHTML.includes('<svg'), 'a Seal beside the title')
+  assert.equal(page.querySelector('.title').children[0].dataset.sealed, 'item', 'its badge says item')
   const chips = page.querySelectorAll('.field')
   const chip = (label) => chips.find(c => c.querySelector('.k').textContent === label)?.querySelector('.v').textContent
   assert.equal(chip('Reads (trimmed)'), '99,566')

@@ -1,7 +1,7 @@
 // web/src/views/selection.js
 // #/selections and #/selection/<cid> (DESIGN.md §15; the tray composer is #/compose, compose.js).
 import { h, link, copyOutcome } from '../html.js'
-import { address, ref } from '../icons.js'
+import { address, ref, sealed } from '../icons.js'
 import { Previews } from '../previews.js'
 import { retryRestore } from '../save-flow.js'
 import { fold } from '../folds.js'
@@ -183,7 +183,7 @@ export async function selection(ex, selectionCid, ctx) {
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
     pageHead({
       crumbs: [{ text: 'Selections', href: '#/selections' }, { text: title }],
-      seal: selectionCid, title,
+      seal: selectionCid, kind: 'selection', title,
       after: [
         nameClaims.map(c => nameClaim(c, st.names.length > 1)),
         deletion, presenceOf(ctx).dots(selectionCid),
@@ -264,7 +264,7 @@ function memberRow(ex, ctx, m, index, previews, copy) {
     const size = h('td', { class: 'r num muted nowrap' })
     ex.selectionSize(m.address).then((z) => size.replaceChildren(sizeText(z)), () => {})
     return { m, tr, held, nested: true, size,
-      sample: h('td', {}, h('div', { class: 'namecell' }, ref('selection', name, `#/selection/${m.address}`)), held, h('div', { class: 'sub' }, address(m.address))), address: addrChip(m.address) }
+      sample: h('td', {}, h('div', { class: 'namecell' }, ref('selection', name, `#/selection/${m.address}`, { cid: m.address, size: 18 })), held, h('div', { class: 'sub' }, address(m.address))), address: addrChip(m.address) }
   }
   const collection = m.via[0] ?? null
   const href = `#/item/${collection ?? '-'}/${m.address}`
@@ -276,7 +276,7 @@ function memberRow(ex, ctx, m, index, previews, copy) {
   } }, 'show details')
   const size = h('td', { class: 'r num nowrap' })
   return { m, tr, held, label, size, href, collection, drawn: undefined,
-    sample: h('td', {}, h('div', { class: 'namecell' }, seal(m.address, { size: 18 }), label, more), held, h('div', { class: 'sub' }, address(m.address))),
+    sample: h('td', {}, h('div', { class: 'namecell' }, sealed('item', m.address, { size: 18 }), label, more), held, h('div', { class: 'sub' }, address(m.address))),
     from: h('td', { class: 'muted from-cell' }, fromNode(ex, m.address, m.via, copy)) }
 }
 

@@ -4,7 +4,7 @@
 // across the members, with dots for the stores that hold its runs; the row's
 // figures are those of the first member that has it, where its link opens.
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { ago, avatar, claimTag, factTag, pageHead, panel, status } from '../components.js'
 import { seal } from '../seal.js'
 import { bytes, ratioText, sizeText } from '../format.js'
@@ -89,7 +89,7 @@ function pipelineRow(ex, p, counts, { href = (hash) => hash, dots = null, opensI
     const r = await ex.runRow(best)
     // One line (mockup 02): the header says the run succeeded, so the run's name takes the status word's place.
     good.replaceChildren(h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' },
-      status({ status: 'succeeded' }, opensInLink(href(`#/run/${best}`), r?.run_name ?? 'unnamed run', opensIn)), when(r?.finished_at)))
+      h('span', { class: 'ref' }, sealed('run', best, { tone: 'good' }), opensInLink(href(`#/run/${best}`), r?.run_name ?? 'unnamed run', opensIn)), when(r?.finished_at)))
   }).catch(() => { good.textContent = '?' })
   ask(() => ex.pipelineSize(p.pipeline)).then((size) => {
     stored.replaceChildren(storedCell(size))
@@ -151,7 +151,7 @@ function selectionsPanel(rows, ctx, all) {
           presenceOf(ctx).dots(r.cid, { hereHeld: null, held: heldIn }))
         : link(`#/selection/${r.cid}`, name || 'Unnamed Selection')
       return h('div', { class: 'row', 'data-home-selection': r.cid, style: 'justify-content:space-between' },
-        h('div', { class: 'row' }, seal(r.cid, { size: 28 }), h('div', { style: 'display:grid' }, title, meta)),
+        h('div', { class: 'row' }, sealed('selection', r.cid, { size: 28 }), h('div', { style: 'display:grid' }, title, meta)),
         named ? claimTag({ assertedBy: named.asserted_by, verb: 'named', at: named.timestamp }) : null)
     }), ...notes)
   }).catch(() => { body.replaceChildren(h('span', { class: 'muted' }, 'Selections could not be read.')) })

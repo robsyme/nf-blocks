@@ -508,14 +508,14 @@ export const runLabelText = (label, collectionCid) => (label ? `${label.run_name
  */
 export function runLabelNode(ex, collectionCid, completionCid = null) {
   const node = h('span', { title: collectionCid }, completionCid
-    ? link(`#/run/${completionCid}`, h('code', { class: 'cid' }, shortCid(completionCid)))
+    ? ref('run', h('code', { class: 'cid' }, shortCid(completionCid)), `#/run/${completionCid}`, { cid: completionCid })
     : address(collectionCid))
   ex.runLabel(collectionCid).then((label) => {
     if (!label) return
     const c = label.completion
     node.replaceChildren(
-      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null, { tone: runTone(label) }), ' / ',
-      ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null))
+      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null, { tone: runTone(label), cid: c }), ' / ',
+      ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null, { cid: collectionCid }))
   }, () => {})
   return node
 }

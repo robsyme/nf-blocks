@@ -8,7 +8,7 @@
 // searched; a result found in several is one row, opening in the first, with
 // dots for the stores whose indexes list it.
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { claimTag, pageHead, panel, shortCid, tabs } from '../components.js'
 import { formatValue, sizeText } from '../format.js'
 import { ADDRESS_HEAD, ADDRESS_MIN, isAddressQuery, namedBy } from '../model.js'
@@ -104,7 +104,7 @@ const KIND_WORDS = { run: 'run', output: 'output', selection: 'Selection', item:
 function runCell(run, at) {
   const good = run.status && statusTone(run) === 'good'
   return h('td', {}, h('span', { class: 'runname', title: statusText(run) },
-    icon('run', { tone: runTone(run) }), at.link(run, `#/run/${run.completion_cid}`, run.run_name ?? shortCid(run.completion_cid)),
+    sealed('run', run.completion_cid, { size: 20, tone: runTone(run) }), at.link(run, `#/run/${run.completion_cid}`, run.run_name ?? shortCid(run.completion_cid)),
     at.dots(run, run.completion_cid)),
   good ? null : sub(` · ${statusText(run)}`))
 }
@@ -189,7 +189,7 @@ function selectionsPanel(at, lookup, query, counted) {
     }
     body.replaceChildren(...gone, h('div', { class: 'tbox' }, h('table', { class: 't' }, h('tbody', {}, shown.map(s =>
         h('tr', { 'data-selection': s.cid },
-          h('td', {}, h('div', { class: 'namecell' }, icon('selection'), at.link(s, `#/selection/${s.cid}`, s.state?.names.join(' / ') || 'unnamed Selection'),
+          h('td', {}, h('div', { class: 'namecell' }, sealed('selection', s.cid, { size: 20 }), at.link(s, `#/selection/${s.cid}`, s.state?.names.join(' / ') || 'unnamed Selection'),
             at.dots(s, s.cid))),
           h('td', {}, nameTags(namedBy(s.state?.current ?? []))),
           h('td', { class: 'r' }, h('code', { class: 'cid', title: s.cid }, shortCid(s.cid)))))))))

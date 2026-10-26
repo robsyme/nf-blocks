@@ -9,7 +9,7 @@
 // releasing it would free, and holds the retention panel, with Release's
 // inline confirmation (open from the start with release=1).
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { Previews } from '../previews.js'
 import { fold } from '../folds.js'
 import { addrChip, button, claimTag, durability, kindChip, kv, minibar, note, pageHead, panel, status, storageBar, tabs } from '../components.js'
@@ -19,7 +19,7 @@ import { matchPromoted, pipelineConfig, promotedFor, shortLabel } from '../promo
 import { fieldPaths, itemTable } from '../table.js'
 import { parseSamplesWhere } from '../samples.js'
 import { firstItemKeyed, joinRun, samplesTab } from './samples.js'
-import { anomalyLines, dayText, healthLine, whenText } from '../words.js'
+import { anomalyLines, dayText, healthLine, runTone, whenText } from '../words.js'
 import { enc, holds, namesText, omittedNote, pillTip, retentionPanel, stableIndexControl, staleFiguresText, transfersNode } from './common.js'
 import { samePrincipal, whoText } from '../identity.js'
 import { copyToButton } from './copy.js'
@@ -220,7 +220,7 @@ function header(ex, completionCid, ctx, { row, completion, state, lid, manifest,
   aimCopyTo(copyTo, projects, (choice) => copyToButton(ctx, 'run', completionCid, choice))
   const head = pageHead({
     crumbs: [{ text: 'Pipelines', href: '#/' }, { text: row.pipeline, href: `#/pipeline/${enc(row.pipeline)}` }, { text: row.run_name ?? 'run' }],
-    seal: completionCid,
+    seal: completionCid, kind: 'run', tone: runTone(completion),
     title: row.run_name ?? 'run',
     after: [status(completion), runDurability(state, earliest),
       presenceOf(ctx).dots(completionCid)],
@@ -275,7 +275,7 @@ function outputsTab(ex, completionCid, ctx, { pipeline, collections, tip, counte
         if (e.target?.closest?.('a, button, [data-more]')) return
         if (globalThis.location) globalThis.location.hash = hrefOf(r.c.output)
       } },
-    h('td', { class: 'nowrap' }, h('div', { class: 'namecell' }, icon('output'), link(hrefOf(r.c.output), r.c.output))),
+    h('td', { class: 'nowrap' }, h('div', { class: 'namecell' }, sealed('output', r.c.cid, { size: 20 }), link(hrefOf(r.c.output), r.c.output))),
     r.countCell, r.fields, r.files,
     h('td', { class: 'r nowrap' }, r.barCell))
   }
