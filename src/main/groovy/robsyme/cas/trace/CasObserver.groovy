@@ -13,6 +13,7 @@ import nextflow.Session
 import nextflow.config.Manifest
 import nextflow.exception.AbortRunException
 import nextflow.processor.TaskProcessor
+import nextflow.processor.TaskRun
 import nextflow.script.WorkflowMetadata
 import nextflow.trace.TraceObserverV2
 import nextflow.trace.event.FilePublishEvent
@@ -27,6 +28,7 @@ import robsyme.cas.core.BlockStore
 import robsyme.cas.core.Cid
 import robsyme.cas.core.Coordinates
 import robsyme.cas.core.Index
+import robsyme.cas.core.InputSet
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
@@ -53,10 +55,19 @@ class CasObserver implements TraceObserverV2 {
     private Session session
     private CasSession cas
 
-    /** output name -> the captured (already target-normalised) value, for the join. */
+    /**
+     * Guards {@link #capturedOutputs} and {@link #capturedIndexes}. Nextflow
+     * calls onWorkflowOutput from its dataflow actor threads, several within
+     * milliseconds, and a plain map loses puts (the Gate's intermittent
+     * checks 14 and 16). A lock rather than ConcurrentHashMap, because an
+     * output's value may be null.
+     */
+    private final Object captureLock = new Object()
+
+    /** output name -> the captured (already target-normalised) value, for the join. Guarded by captureLock. */
     private final Map<String, Object> capturedOutputs = new LinkedHashMap<String, Object>()
 
-    /** output name -> the Output Index File Nextflow named for it (ticket 26). */
+    /** output name -> the Output Index File Nextflow named for it (ticket 26). Guarded by captureLock. */
     private final Map<String, Path> capturedIndexes = new LinkedHashMap<String, Path>()
 
     /** join key -> the labels seen on its publish event, kept for the index layer. */
@@ -68,11 +79,25 @@ class CasObserver implements TraceObserverV2 {
     /** The missing-fromStore hint is logged once per run, however often onFlowError fires. */
     private final AtomicBoolean hinted = new AtomicBoolean(false)
 
+    /**
+     * The RunCompletion's cid, set the moment putBlock returns it (on the
+     * nf-blocks-completion thread, read after the join). From then on the run
+     * is recorded, and completeRun lets nothing that fails later escape
+     * (fix round 3, G3).
+     */
+    private volatile Cid recordedAs
+
     /** Process names already warned about an unchained afterScript (Task 9 fix round 1), so onProcessCreate warns once each. */
     private final Set<String> nodeHashWarned = ConcurrentHashMap.newKeySet()
 
     /** Processes already warned about publishDir, so each is warned once. */
     private final Set<String> publishDirWarned = ConcurrentHashMap.newKeySet()
+
+    /**
+     * The files this run's tasks read, for its InputSet (explorer v0.3 P4
+     * plan 1.3). Made on first use, by when the run's params are final.
+     */
+    private InputRecorder inputs
 
     /** Observers of this JVM whose RunCompletion is not yet written, for {@link #finishPending}. */
     private static final Set<CasObserver> PENDING = ConcurrentHashMap.newKeySet()
@@ -122,9 +147,15 @@ class CasObserver implements TraceObserverV2 {
 
     @Override
     void onFlowBegin() {
+        // Resolve the identity now, before any task runs, so the "signing as" line or the
+        // anonymous warning (and any slow Platform read) comes at the start of the run, not
+        // at the join when the manifest below is deferred.
+        cas.principal
         // The Nextflow run key (LinObserver.executionHash) is set when
         // CasLinStore.save(<hash>, WorkflowRun) runs during LinObserver's own
         // create. If it has not arrived, the manifest is deferred to the join.
+        // params.input is queued now, so its stat and hash overlap with the run.
+        recordSamplesheet()
         if( cas.getNextflowRunKey() == null ) {
             log.debug('nextflow run key not yet known at onFlowBegin; deferring the run manifest to the join')
             return
@@ -154,15 +185,138 @@ class CasObserver implements TraceObserverV2 {
 
     @Override
     void onWorkflowOutput(WorkflowOutputEvent event) {
-        capturedOutputs.put(event.name, event.value)
-        if( event.index != null )
-            capturedIndexes.put(event.name, event.index)
+        synchronized( captureLock ) {
+            capturedOutputs.put(event.name, event.value)
+            if( event.index != null )
+                capturedIndexes.put(event.name, event.index)
+        }
+    }
+
+    /** A copy of the outputs captured so far, taken under the lock. */
+    @groovy.transform.PackageScope
+    Map<String, Object> capturedOutputs() {
+        synchronized( captureLock ) {
+            return new LinkedHashMap<String, Object>(capturedOutputs)
+        }
+    }
+
+    /** A copy of the Output Index Files captured so far, taken under the lock. */
+    @groovy.transform.PackageScope
+    Map<String, Path> capturedIndexes() {
+        synchronized( captureLock ) {
+            return new LinkedHashMap<String, Path>(capturedIndexes)
+        }
+    }
+
+    @Override
+    void onTaskComplete(TaskEvent event) {
+        recordInputs(event)
     }
 
     @Override
     void onTaskCached(TaskEvent event) {
-        // Skeleton: record only. Address reuse by task hash is a later task.
+        // Address reuse by task hash is a later task; a cached task's inputs are still inputs of this run.
         log.debug("cached task ${event?.handler?.task?.hash}")
+        recordInputs(event)
+    }
+
+    /**
+     * Runs on Nextflow's task-completion thread, so it only classifies the
+     * task's staged files and queues their stat and hash (InputRecorder). The
+     * InputSet is a record of what the run read, so a failure here is logged
+     * and the run goes on.
+     */
+    private void recordInputs(TaskEvent event) {
+        final TaskRun task = event?.handler?.task
+        try {
+            inputRecorder().recordTask(task)
+        }
+        catch( Exception e ) {
+            log.warn("nf-blocks could not record the inputs of task ${taskName(task)}: ${e.message}", e)
+        }
+    }
+
+    /** The task's name for a log line; TaskRun.getName reads the task's config, which may not be there. */
+    private static String taskName(TaskRun task) {
+        try {
+            return task?.name
+        }
+        catch( Exception ignored ) {
+            return task?.hash?.toString()
+        }
+    }
+
+    private void recordSamplesheet() {
+        try {
+            inputRecorder().recordSamplesheet()
+        }
+        catch( Exception e ) {
+            log.warn("nf-blocks could not record params.input: ${e.message}", e)
+        }
+    }
+
+    private synchronized InputRecorder inputRecorder() {
+        if( inputs == null )
+            inputs = newInputRecorder(session?.workDir, session?.baseDir, (session?.params ?: [:]) as Map, cas.config.inputsHash)
+        return inputs
+    }
+
+    /** Overridable seam so a test can hand the observer a recorder that is slow or fails. */
+    protected InputRecorder newInputRecorder(Path workDir, Path projectDir, Map params, boolean hash) {
+        return new InputRecorder(workDir, projectDir, params, hash)
+    }
+
+    /**
+     * The run's InputSet block, or null when it could not be made: the
+     * InputSet records what the run read, so a failure making it warns and
+     * the RunCompletion links none. Writing the block is a provenance write,
+     * and its failure aborts the run (rule 3).
+     */
+    private Cid writeInputSet(boolean success) {
+        final Map<String, Object> block = inputSetBlock(success)
+        return block == null ? null : putBlock(block, 'InputSet')
+    }
+
+    /**
+     * Waits for the queued stats and hashes, up to {@code cas.inputs.waitSeconds} on a
+     * successful run and at most {@link #FAILED_RUN_INPUT_WAIT_MILLIS} of it on
+     * a failed one (inside the time the losing notification and the plugin
+     * stop wait for the completion). An input whose stat or hash is still
+     * running then is listed with reason "unfinished", and the console says
+     * how many. The run's status and its RunCompletion are as they would
+     * have been.
+     */
+    private Map<String, Object> inputSetBlock(boolean success) {
+        InputRecorder recorder = null
+        try {
+            recorder = inputRecorder()
+            recordSamplesheet()
+            final long waitMillis = inputWaitMillis(success)
+            final List<InputSet.Input> read = recorder.collect(waitMillis)
+            final int left = recorder.leftUnfinished
+            if( left > 0 )
+                ConsoleLog.LOG.warn("nf-blocks: ${left} input(s) were still being read (a stat or a hash) after ${waitMillis.intdiv(1000L)} s, so the run records them without an address, as unfinished; " +
+                    "cas.inputs.waitSeconds (${cas.config.inputsWaitSeconds}) sets how long a run waits${success ? '' : ', at most 30 s for a failed run'}")
+            return new InputSet(cas.assertedBy, read).toCbor()
+        }
+        catch( Throwable t ) {
+            ConsoleLog.LOG.warn("nf-blocks: the run's InputSet could not be made, so its RunCompletion records no inputs: ${t.message ?: t.class.name}")
+            log.warn("the run's InputSet could not be made: ${t.message ?: t.class.name}", t)
+            return null
+        }
+        finally {
+            try {
+                recorder?.close()
+            }
+            catch( Throwable t ) {
+                log.debug("the input hashing pool could not be stopped: ${t.message}")
+            }
+        }
+    }
+
+    private long inputWaitMillis(boolean success) {
+        final long configured = cas.config.inputsWaitSeconds * 1000L
+        return success ? configured : Math.min(FAILED_RUN_INPUT_WAIT_MILLIS, configured)
     }
 
     /**
@@ -252,6 +406,14 @@ class CasObserver implements TraceObserverV2 {
             runUninterrupted { writeCompletion() }
         }
         catch( Throwable t ) {
+            // Once the RunCompletion is put the run is recorded: whatever fails
+            // after it (a derived write, a log line, even an OutOfMemoryError in
+            // a catch) only warns (fix round 3, G3).
+            final Cid recorded = recordedAs
+            if( recorded != null ) {
+                warnRecorded(recorded, t)
+                return
+            }
             // Session.notifyEvent logs anything but an AbortRunException at debug
             // (Session.groovy:1125-1128), so the user would never see the run go
             // unrecorded. Say so on the terminal, then fail as before (§0 rule 3).
@@ -260,10 +422,45 @@ class CasObserver implements TraceObserverV2 {
             throw t
         }
         finally {
-            cas.completionWritten()
-            PENDING.remove(this)
-            // The winning notification only: the loser returned above and leaves this to us.
-            cas.stopLiveWriter()
+            try {
+                cas.completionWritten()
+                PENDING.remove(this)
+                // The winning notification only: the loser returned above and leaves this to us.
+                cas.stopLiveWriter()
+            }
+            catch( Throwable t ) {
+                final Cid recorded = recordedAs
+                if( recorded == null )
+                    throw t
+                warnRecorded(recorded, t)
+            }
+        }
+    }
+
+    /**
+     * Says, on the terminal, that the run is recorded though a step after its
+     * RunCompletion failed. It never throws: a logger that fails (an
+     * OutOfMemoryError in an appender) falls back to System.err, and a
+     * failure there is dropped, since the run is in the store either way.
+     */
+    private static void warnRecorded(Cid completion, Throwable failure) {
+        try {
+            ConsoleLog.LOG.warn("nf-blocks: the run was recorded as ${completion}; a later step failed: " +
+                "${failure.message ?: failure.class.name}${IndexSnapshot.heapAdvice(failure)}")
+        }
+        catch( Throwable ignored ) {
+            try {
+                System.err.println('nf-blocks: the run was recorded as ' + completion + '; a later step failed: ' + failure)
+            }
+            catch( Throwable dropped ) {
+            }
+            return
+        }
+        try {
+            // The stack trace goes to .nextflow.log, as the other derived-write catches log theirs.
+            log.warn("the run was recorded as ${completion}; a later step failed: ${failure.message ?: failure.class.name}", failure)
+        }
+        catch( Throwable ignored ) {
         }
     }
 
@@ -332,6 +529,9 @@ class CasObserver implements TraceObserverV2 {
     /** How long the losing notification waits for the winner's write. */
     static final long COMPLETION_WAIT_MILLIS = 60_000L
 
+    /** The most a failed run's completion waits for input hashing still queued (cas.inputs.waitSeconds may lower it). */
+    static final long FAILED_RUN_INPUT_WAIT_MILLIS = 30_000L
+
     /**
      * Nextflow shuts its executors down, interrupting their threads, while a
      * failed run is still notifying observers on one of them. An interrupt that
@@ -380,7 +580,7 @@ class CasObserver implements TraceObserverV2 {
         if( unclosed )
             ConsoleLog.LOG.warn("nf-blocks: ${unclosed.size()} file(s) written through cas:// were still open when the run completed, so this run does not record them: " +
                 "${unclosed.take(3).join(', ')}${unclosed.size() > 3 ? ', ...' : ''}")
-        final Join.Result joined = Join.join(capturedOutputs, capturedIndexes, cas)
+        final Join.Result joined = Join.join(capturedOutputs(), capturedIndexes(), cas)
 
         // Every coordinate this run stored (an upload, a stream, a collectFile storeDir)
         // or a publish event named (a resumed publish known only by its pointer).
@@ -404,12 +604,13 @@ class CasObserver implements TraceObserverV2 {
         collections.addAll(byName.values())
 
         final boolean success = session.isSuccess()
+        final Cid inputSet = writeInputSet(success)
         final WorkflowMetadata meta = session.workflowMetadata
         final Cid completion = putBlock(new RunCompletion([
             assertedBy        : cas.assertedBy,
             run               : manifest,
             collections       : collections,
-            inputSet          : null,
+            inputSet          : inputSet,
             status            : success ? RunCompletion.SUCCEEDED : RunCompletion.FAILED,
             exitStatus        : meta?.exitStatus,
             possiblyIncomplete: !success,
@@ -419,6 +620,8 @@ class CasObserver implements TraceObserverV2 {
             error             : success ? null : errorText(meta),
             providers         : joined.providers,
         ]).toCbor(), 'RunCompletion')
+        // Recorded: nothing below may report the run as unrecorded, or fail it (fix round 3, G3).
+        recordedAs = completion
 
         appendStoreLog(completion)
         log.info(cas.addresser.summary())
@@ -512,8 +715,10 @@ class CasObserver implements TraceObserverV2 {
             final Set<String> failed = cas.catchUpIndex(index)
             writeSnapshot(index, base, failed)
         }
-        catch( Exception e ) {
-            log.warn("the index could not be updated for run ${completion}; it is derived and can be rebuilt: ${e.message}", e)
+        catch( Throwable e ) {
+            // The run is recorded by now, so even an OutOfMemoryError only warns (fix round 2, B2).
+            log.warn("the run was recorded; the index could not be updated for run ${completion}: ${e.message ?: e.class.name}${IndexSnapshot.heapAdvice(e)}. " +
+                "It is derived and can be rebuilt", e)
             try {
                 index?.markStale()
             }
@@ -530,18 +735,53 @@ class CasObserver implements TraceObserverV2 {
         return cas.openIndex()
     }
 
-    /** The member's Index Snapshot, under the cap and the guard (DESIGN.md §15). Derived: a failure only warns. */
+    /** Overridable seam so a test can make the snapshot write fail as it likes, an OutOfMemoryError included. */
+    protected IndexSnapshot.Result writeIndexSnapshot(Index index, SnapshotBase base, Set<String> failed) {
+        return cas.snapshotWritable(index, cas.config.snapshotMaxBytes, base, failed)
+    }
+
+    /**
+     * The member's Index Snapshot, under the cap and the guard (DESIGN.md §15).
+     * Derived: any failure only warns, an OutOfMemoryError included, since by
+     * now the run is recorded (fix round 2, B2).
+     */
     private void writeSnapshot(Index index, SnapshotBase base, Set<String> failed) {
+        final String alias = cas.config.writableAlias
+        final long cap = cas.config.snapshotMaxBytes
         try {
-            final IndexSnapshot.Result r = cas.snapshotWritable(index, cas.config.snapshotMaxBytes, base, failed)
-            if( r.skipped == IndexSnapshot.OVER_CAP )
-                log.info("the Index Snapshot of store '${cas.config.writableAlias}' is over cas.snapshot.maxBytes " +
-                    "(${cas.config.snapshotMaxBytes} bytes) and was not rewritten; `nextflow plugin nf-blocks:snapshot` rewrites it at any size")
+            final IndexSnapshot.Result r = writeIndexSnapshot(index, base, failed)
+            // A lean-seeded cache cannot compute the figures at any size or cap; only a reindex that does not seed can.
+            if( r.skipped == IndexSnapshot.OVER_CAP && r.seededLean )
+                log.warn("the Index Snapshot of store '${alias}' is over cas.snapshot.maxBytes (${cap} bytes)" +
+                    "${r.omitted != null ? ' even without its storage figures' : ''} and was not rewritten. This cache was seeded from a snapshot " +
+                    "without storage figures; `nextflow plugin nf-blocks:reindex --seed false` rebuilds it with them")
+            else if( r.skipped == IndexSnapshot.OVER_CAP && r.omitted != null )
+                log.warn("the Index Snapshot of store '${alias}' is over cas.snapshot.maxBytes (${cap} bytes) even without its storage figures " +
+                    "and was not rewritten; `nextflow plugin nf-blocks:snapshot` rewrites it at any size")
+            else if( r.skipped == IndexSnapshot.OVER_CAP )
+                log.warn("the Index Snapshot of store '${alias}' is over cas.snapshot.maxBytes (${cap} bytes) and was not rewritten; " +
+                    "`nextflow plugin nf-blocks:snapshot` rewrites it at any size")
+            else if( r.skipped == IndexSnapshot.SEEDED_LEAN_BASE_FULL || r.skipped == IndexSnapshot.SEEDED_LEAN_BASE_UNKNOWN )
+                log.warn("the run was recorded; the Index Snapshot of store '${alias}' was not rewritten (${r.skipped})" +
+                    "${IndexSnapshot.skipAdvice(r)}")
             else if( r.skipped )
-                log.info("the Index Snapshot of store '${cas.config.writableAlias}' was not rewritten (${r.skipped}); it is derived, and the next writer rewrites it")
+                log.info("the Index Snapshot of store '${alias}' was not rewritten (${r.skipped}); it is derived, and the next writer rewrites it")
+            else if( r.seededLean )
+                log.info("the Index Snapshot of store '${alias}' was written without storage figures (${r.omitted}): this cache was seeded " +
+                    "from a snapshot without them; `nextflow plugin nf-blocks:reindex --seed false` rebuilds it with them")
+            else if( r.omitted == IndexSnapshot.OVER_CAP )
+                log.info("the Index Snapshot of store '${alias}' was written without storage figures: with them it would pass cas.snapshot.maxBytes " +
+                    "(${cap} bytes); `nextflow plugin nf-blocks:snapshot` writes them at any size")
+            else if( r.omitted == IndexSnapshot.OUT_OF_MEMORY && r.heapExhausted )
+                log.info("the Index Snapshot of store '${alias}' was written without storage figures, which ran out of heap; " +
+                    "`nextflow plugin nf-blocks:snapshot` writes them once you ${IndexSnapshot.MORE_HEAP}")
+            else if( r.omitted == IndexSnapshot.OUT_OF_MEMORY )
+                log.info("the Index Snapshot of store '${alias}' was written without storage figures, which ran out of memory outside the heap; " +
+                    "the next build tries them again")
         }
-        catch( Exception e ) {
-            log.warn("the Index Snapshot of store '${cas.config.writableAlias}' could not be written; it is derived: ${e.message}", e)
+        catch( Throwable e ) {
+            log.warn("the run was recorded; its Index Snapshot was not rewritten: ${e.message ?: e.class.name}${IndexSnapshot.heapAdvice(e)}. " +
+                "The snapshot of store '${alias}' is derived, and the next writer rewrites it", e)
         }
     }
 
@@ -550,8 +790,10 @@ class CasObserver implements TraceObserverV2 {
             StoreLog.append(cas.store, StoreLogKind.RUN, completion, nowMillis())
             cas.noteLogged(completion)
         }
-        catch( Exception e ) {
-            log.warn("the store log entry for ${completion} could not be written; it is derived: ${e.message}", e)
+        catch( Throwable e ) {
+            // The RunCompletion is written by now, so even an OutOfMemoryError only warns (fix round 2).
+            log.warn("the run was recorded; its Store Log entry could not be written: ${e.message ?: e.class.name}${IndexSnapshot.heapAdvice(e)}. " +
+                "The entry is derived, and the RunCompletion ${completion} is in the store", e)
         }
     }
 

@@ -1,7 +1,8 @@
 // web/test/table.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cellOf, cellSlots, emptyColumns, fieldChoices, fieldPaths, fileColumns, itemTable, outputSuffixes, rankFields, typedCondition, withoutDuplicates } from '../src/table.js'
+import { cellOf, cellSlots, columnOrder, emptyColumns, fieldChoices, fieldPaths, fileColumns, fileGroups, itemColumns, itemTable, outputSuffixes, rankFields,
+  typedCondition, withoutDuplicates } from '../src/table.js'
 import { PredicateError } from '../src/metadata.js'
 
 const e = (path, type, value) => ({ path, type, values: [value], types: [type] })
@@ -183,4 +184,132 @@ test('rankFields: whole path, whole last segment, its start, a word start in it 
   assert.deepEqual(ranked(rnaseq, 'id'), ['id', 'meta.id'], 'under three letters, no letters-in-order match (single_end has an i then a d)')
   assert.deepEqual(ranked(f('qc.salmon_strand.forwardFragments', 'meta.inferred_strandedness'), 'strand'),
     ['meta.inferred_strandedness', 'qc.salmon_strand.forwardFragments'], 'a word start in the field\'s own name beats one in a parent')
+})
+
+// --- The items grid's columns (P0 polish, Task 5) ---
+const RNASEQ = [
+  { path: 'num_trimmed_reads', label: 'Reads (trimmed)', format: 'int' },
+  { path: 'meta.single_end', label: 'Layout', labels: { true: 'single', false: 'paired' } },
+  { path: 'meta.strandedness', label: 'Strandedness' },
+  { path: 'meta.salmon_strand_analysis.inferred_strandedness', label: 'Strand' },
+  { path: 'percent_mapped', label: '% mapped', format: 'percent' },
+]
+const PREPROCESSED_PATHS = ['meta.has_genome_bam', 'meta.salmon_strand_analysis.forwardFragments', 'meta.single_end', 'id',
+  'meta.salmon_strand_analysis.inferred_strandedness', 'num_trimmed_reads', 'meta.strandedness', 'meta.seq_center']
+
+test('columnOrder: id first, then promoted paths in config order, then the rest A-Z', () => {
+  assert.deepEqual(columnOrder(PREPROCESSED_PATHS, RNASEQ), ['id', 'num_trimmed_reads', 'meta.single_end', 'meta.strandedness',
+    'meta.salmon_strand_analysis.inferred_strandedness', 'meta.has_genome_bam', 'meta.salmon_strand_analysis.forwardFragments', 'meta.seq_center'])
+  assert.deepEqual(columnOrder(['sample', 'meta.id', 'lane'], []), ['meta.id', 'lane', 'sample'], 'meta.id leads when there is no id')
+  assert.deepEqual(columnOrder(['zeta', 'alpha', 'id', 'mid'], []), ['id', 'alpha', 'mid', 'zeta'], 'no promoted config: id then A-Z (Review Focus 5)')
+  assert.deepEqual(columnOrder(['qc.meta.single_end', 'meta.single_end', 'b'], RNASEQ), ['meta.single_end', 'qc.meta.single_end', 'b'],
+    'a path ending in a promoted path sits with it, the exact one first')
+  assert.deepEqual(columnOrder([], RNASEQ), [])
+})
+
+test('columnOrder: any subset of the paths comes out in the same relative order, so filters never reorder columns (Review Focus 4)', () => {
+  const paths = [...PREPROCESSED_PATHS, 'qc.meta.single_end']
+  const full = columnOrder(paths, RNASEQ)
+  for (let mask = 1; mask < 2 ** paths.length; mask += 7) {
+    const subset = paths.filter((_, i) => mask & (1 << i))
+    assert.deepEqual(columnOrder(subset, RNASEQ), full.filter(p => subset.includes(p)), `subset ${subset}`)
+  }
+})
+
+const pre = (id, reads, singleEnd, inferred = null) => ({
+  pairs: [e('id', 'string', id), e('meta.id', 'string', id), e('meta.has_genome_bam', 'bool', 'false'), e('meta.strandedness', 'string', 'reverse'),
+    e('meta.single_end', 'bool', singleEnd), e('num_trimmed_reads', 'float', reads), e('meta.seq_center', 'string', id.startsWith('WT') ? 'A' : 'B'),
+    ...(inferred ? [e('meta.salmon_strand_analysis.inferred_strandedness', 'string', inferred), e('meta.salmon_strand_analysis.forwardFragments', 'float', '10.37')] : [])],
+  slots: [],
+})
+const PRE = [pre('RAP1_IAA_30M_REP1', '49791.0', 'false'), pre('WT_REP1', '99566.0', 'false', 'reverse'), pre('RAP1_UNINDUCED_REP1', '49969.0', 'true'),
+  pre('WT_REP2', '49760.0', 'false'), pre('RAP1_UNINDUCED_REP2', '99971.0', 'true')]
+
+test('itemColumns: the sample id, then the varying promoted fields; a constant promoted field joins the strip; varying others wait under "more fields"', () => {
+  const shape = itemColumns(PRE, { promoted: RNASEQ })
+  assert.equal(shape.sample, 'id')
+  assert.deepEqual(shape.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.single_end', 'meta.salmon_strand_analysis.inferred_strandedness'])
+  assert.deepEqual(shape.columns.map(c => c.field?.label ?? null), [null, 'Reads (trimmed)', 'Layout', 'Strand'])
+  assert.deepEqual(shape.more, ['meta.salmon_strand_analysis.forwardFragments', 'meta.seq_center'])
+  assert.deepEqual(shape.constant.map(c => c.path), ['meta.strandedness', 'meta.has_genome_bam'], 'the strip in column order: promoted first, then A-Z')
+  assert.ok(!shape.columns.some(c => c.path === 'meta.id'))
+})
+
+test('itemColumns: an added field becomes a column in its stable place and leaves "more fields"; an added constant one too', () => {
+  const shape = itemColumns(PRE, { promoted: RNASEQ, added: ['meta.seq_center', 'not.here'] })
+  assert.deepEqual(shape.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.single_end',
+    'meta.salmon_strand_analysis.inferred_strandedness', 'meta.seq_center'])
+  assert.deepEqual(shape.more, ['meta.salmon_strand_analysis.forwardFragments'])
+  const constant = itemColumns(PRE, { promoted: RNASEQ, added: ['meta.strandedness'] })
+  assert.deepEqual(constant.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.single_end', 'meta.strandedness',
+    'meta.salmon_strand_analysis.inferred_strandedness'])
+  assert.deepEqual(constant.constant.map(c => c.path), ['meta.has_genome_bam'])
+})
+
+test('itemColumns: a promoted column with one value moves to the strip when unfiltered, with no memory of it; the rest keep their order (Review Focus 4)', () => {
+  const paired = itemColumns([PRE[0], PRE[1], PRE[3]], { promoted: RNASEQ })
+  assert.deepEqual(paired.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.salmon_strand_analysis.inferred_strandedness'])
+  assert.deepEqual(paired.constant.map(c => c.path), ['meta.single_end', 'meta.strandedness', 'meta.has_genome_bam'])
+})
+
+test('itemColumns: filtering to fewer items keeps id first and the promoted columns, in the same order (Review Focus 4)', () => {
+  const all = itemColumns(PRE, { promoted: RNASEQ }).columns.map(c => c.path)
+  const filtered = itemColumns([PRE[1], PRE[4]], { promoted: RNASEQ }).columns.map(c => c.path)
+  assert.deepEqual(filtered, all)
+  const one = itemColumns([PRE[3], PRE[3]], { promoted: RNASEQ }).columns.map(c => c.path)
+  assert.equal(one[0], 'id', 'id stays first even when every loaded item holds the same id')
+})
+
+test('itemColumns: no promoted config, or none of its fields present, gives id then the varying fields A-Z; never an empty header (Review Focus 5)', () => {
+  const plain = itemColumns(PRE, { promoted: [] })
+  assert.deepEqual(plain.columns.map(c => c.path), ['id', 'meta.salmon_strand_analysis.forwardFragments',
+    'meta.salmon_strand_analysis.inferred_strandedness', 'meta.seq_center', 'meta.single_end', 'num_trimmed_reads'])
+  assert.deepEqual(plain.constant.map(c => c.path), ['meta.has_genome_bam', 'meta.strandedness'])
+  assert.deepEqual(itemColumns(PRE, { promoted: [{ path: 'nowhere', label: 'Nowhere' }] }).columns.map(c => c.path), plain.columns.map(c => c.path))
+  const capped = itemColumns(PRE, { promoted: [], maxColumns: 3 })
+  assert.deepEqual(capped.columns.map(c => c.path), ['id', 'meta.salmon_strand_analysis.forwardFragments', 'meta.salmon_strand_analysis.inferred_strandedness'])
+  assert.deepEqual(capped.more, ['meta.seq_center', 'meta.single_end', 'num_trimmed_reads'])
+  assert.deepEqual(itemColumns([], { promoted: RNASEQ }), { sample: null, columns: [], more: [], constant: [], duplicates: new Map() })
+  const noId = itemColumns([{ pairs: [e('lane', 'int', '1')] }, { pairs: [e('lane', 'int', '2')] }], { promoted: [] })
+  assert.equal(noId.sample, null)
+  assert.deepEqual(noId.columns.map(c => c.path), ['lane'])
+})
+
+test('fileGroups: an item\'s stored files by top-level column, in the table\'s column order, with extension counts and bytes', () => {
+  const s = (column, name, size, address = `bafk-${name}`) => ({ column, path: `${column}.${name}`, name, size, address, dir: false, reason: address ? null : 'declined' })
+  const p = { slots: [s('fastqc', 'A_1.html', 100), s('fastqc', 'A_1.zip', 300), s('fastqc', 'A_2.html', 100), s('fastqc', 'A_2.zip', 300),
+    s('trim', 'A.txt', 5), s('bbsplit', 'A.stats.txt', 7), { column: 'reads_cat', path: 'reads_cat', name: null, size: null, address: null, dir: false, reason: 'declined' },
+    { column: 'trim', path: 'trim.log', name: null, size: null, address: null, dir: false, reason: 'declined' }] }
+  const groups = fileGroups(p, ['bbsplit', 'fastqc', 'trim', 'unzip'])
+  assert.deepEqual(groups.map(g => [g.column, g.exts, g.bytes, g.files.length, g.empty.length]), [
+    ['bbsplit', [['txt', 1]], 7, 1, 0], ['fastqc', [['zip', 2], ['html', 2]], 800, 4, 0], ['trim', [['txt', 1]], 5, 1, 1]])
+  const dir = { slots: [{ column: 'salmon', path: 'salmon', name: 'A', size: null, address: 'bafy-dir', dir: true, reason: null }] }
+  assert.deepEqual(fileGroups(dir, ['salmon']).map(g => g.exts), [[['dir', 1]]])
+  const declined = { slots: [{ column: 'trim', path: 'trim', name: null, size: null, address: null, dir: false, reason: 'declined' }] }
+  assert.deepEqual(fileGroups(declined, ['trim']).map(g => [g.column, g.files.length, g.empty.length]), [['trim', 0, 1]])
+  assert.deepEqual(fileGroups(undefined, ['x']), [])
+})
+
+test('one list of sample paths: a Meta Map keyed on sample leads the grid as its Sample column', async () => {
+  const { SAMPLE_PATHS, columnOrder, itemColumns, fileGroups } = await import('../src/table.js')
+  const { itemName } = await import('../src/views/common.js')
+  assert.ok(SAMPLE_PATHS.includes('sample'))
+  assert.deepEqual(columnOrder(['lane', 'sample', 'depth']), ['sample', 'depth', 'lane'])
+  const p = (sample, lane) => ({ pairs: [{ path: 'sample', type: 'string', types: ['string'], values: [sample] }, { path: 'lane', type: 'int', types: ['int'], values: [lane] }] })
+  assert.equal(itemColumns([p('A', 1), p('B', 2)]).sample, 'sample')
+  assert.equal(itemName(p('A', 1)), 'A')
+  const groups = fileGroups({ slots: [{ column: 'docs', name: 'README', address: 'bafkr', size: 3 }, { column: 'docs', name: 'a.txt', address: 'bafkt', size: 1 }] }, ['docs'])
+  assert.deepEqual(groups[0].exts, [['txt', 1]], 'README draws no empty extension')
+})
+
+// --- p1a task 5: column stability ---
+
+test('itemColumns: a constant promoted field goes to the strip unfiltered, but is a column when filtered or kept', () => {
+  const paired = [PRE[0], PRE[1], PRE[3]]
+  assert.ok(itemColumns(paired, { promoted: RNASEQ }).constant.some(c => c.path === 'meta.single_end'))
+  const filtered = itemColumns(paired, { promoted: RNASEQ, filtered: true })
+  assert.deepEqual(filtered.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.single_end', 'meta.strandedness', 'meta.salmon_strand_analysis.inferred_strandedness'])
+  assert.ok(!filtered.constant.some(c => c.path === 'meta.single_end'))
+  const kept = itemColumns(paired, { promoted: RNASEQ, keep: ['meta.single_end'] })
+  assert.deepEqual(kept.columns.map(c => c.path), ['id', 'num_trimmed_reads', 'meta.single_end', 'meta.salmon_strand_analysis.inferred_strandedness'])
 })

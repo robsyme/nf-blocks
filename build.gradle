@@ -146,13 +146,20 @@ test {
     filter {
         excludeTestsMatching 'robsyme.cas.core.MemoryBoundTest'
         excludeTestsMatching 'robsyme.cas.s3.S3MemoryBoundTest'
+        excludeTestsMatching 'robsyme.cas.core.SnapshotHeapBoundTest'
+    }
+    // RoblabStorageTest runs only when -Droblab.store=<dir> is given; -Droblab.out=<dir> keeps its snapshot.
+    ['roblab.store', 'roblab.out'].each { String key ->
+        if( System.getProperty(key) )
+            systemProperty key, System.getProperty(key)
     }
 }
 
 // The mechanised memory bound (DESIGN.md §0 rule 2): hash and store a 256 MiB
-// file in a JVM whose whole heap is smaller than the file.
+// file in a JVM whose whole heap is smaller than the file. Also a snapshot
+// build whose storage figures cannot fit that heap.
 tasks.register('memoryBoundTest', Test) {
-    description = 'Runs MemoryBoundTest and S3MemoryBoundTest under a 48 MiB heap'
+    description = 'Runs MemoryBoundTest, S3MemoryBoundTest and SnapshotHeapBoundTest under a 48 MiB heap'
     group = 'verification'
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
@@ -160,6 +167,8 @@ tasks.register('memoryBoundTest', Test) {
     filter {
         includeTestsMatching 'robsyme.cas.core.MemoryBoundTest'
         includeTestsMatching 'robsyme.cas.s3.S3MemoryBoundTest'
+        // Fix round 2, B2: storage figures that do not fit the heap give a lean snapshot.
+        includeTestsMatching 'robsyme.cas.core.SnapshotHeapBoundTest'
         failOnNoMatchingTests = false
     }
 }

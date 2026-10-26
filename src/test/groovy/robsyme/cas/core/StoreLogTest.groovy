@@ -110,6 +110,38 @@ class StoreLogTest extends Specification {
         StoreLog.read(store)*.cid == [good]
     }
 
+    def 'a listing keeps every <13 digits>-<rest> name it cannot read apart, by name; other names are in neither list'() {
+        given:
+        def good = cidOf('good')
+        StoreLog.append(store, StoreLogKind.PROJECT, good, 1_000L)
+        def dir = tempDir.resolve('store/log')
+        def future = "${String.format('%013d', 9999999999999L - 2_000L)}-pin-${cidOf('future')}".toString()
+        def hyphenated = "${String.format('%013d', 9999999999999L - 4_000L)}-input-set-${cidOf('inputs')}".toString()
+        def badCid = "${String.format('%013d', 9999999999999L - 3_000L)}-run-notacid".toString()
+        def noCid = "${String.format('%013d', 9999999999999L - 5_000L)}-frob".toString()
+        [future, hyphenated, badCid, noCid].each { Files.createFile(dir.resolve(it)) }
+        Files.createFile(dir.resolve('README'))
+        Files.createFile(dir.resolve("123-run-${cidOf('short')}"))
+        Files.createFile(dir.resolve('.DS_Store'))
+
+        when:
+        def listing = StoreLog.of(store).list()
+
+        then:
+        listing.entries*.cid == [good]
+        listing.entries*.kind == [StoreLogKind.PROJECT]
+        listing.unknown == [noCid, hyphenated, badCid, future]
+        StoreLog.unknownKindOf(future) == 'pin'
+        StoreLog.unknownKindOf(hyphenated) == 'input-set'
+        StoreLog.unknownKindOf(badCid) == 'run'
+        StoreLog.unknownKindOf(noCid) == 'frob'
+        StoreLog.unknownKindOf(listing.entries[0].name) == null
+        StoreLog.unknownKindOf('README') == null
+        StoreLog.unknownKindOf("123-run-${cidOf('short')}".toString()) == null
+        StoreLog.unknownKindOf("${String.format('%013d', 0L)}-".toString()) == null
+        [future, hyphenated, badCid, noCid].every { StoreLog.parse(it) == null }
+    }
+
     def 'entriesSince returns everything newer than the watermark plus the overlap window'() {
         given: 'entries at 0, 20 min, 25 min and 40 min'
         def base = 1_700_000_000_000L

@@ -76,14 +76,65 @@ class StoreLog {
 
     /** Every entry, newest first. Names that do not parse are ignored. */
     List<StoreLogEntry> read() {
+        return list().entries
+    }
+
+    /**
+     * One listing of the log: the entries this build reads, newest first, and
+     * the names of the well-formed entries whose kind it does not know (a newer
+     * build wrote them), sorted. A sweep needs the second list (P4 ruling R8):
+     * what such an entry roots is unknown here, so this build must not apply a
+     * sweep beside it. Other names that do not parse are in neither list.
+     */
+    Listing list() {
         final List<StoreLogEntry> entries = new ArrayList<StoreLogEntry>()
+        final List<String> unknown = new ArrayList<String>()
         for( String name : storage.listEntries() ) {
             final StoreLogEntry entry = parse(name)
             if( entry != null )
                 entries.add(entry)
+            else if( unknownKindOf(name) != null )
+                unknown.add(name)
         }
         Collections.sort(entries)
-        return entries
+        Collections.sort(unknown)
+        return new Listing(entries, unknown)
+    }
+
+    @CompileStatic
+    static final class Listing {
+        final List<StoreLogEntry> entries
+        /** Entry names of kinds this build does not know. */
+        final List<String> unknown
+
+        Listing(List<StoreLogEntry> entries, List<String> unknown) {
+            this.entries = Collections.unmodifiableList(entries)
+            this.unknown = Collections.unmodifiableList(unknown)
+        }
+    }
+
+    private static final java.util.regex.Pattern ENTRY_PREFIX = ~/^\d{13}-./
+
+    /**
+     * The kind of an entry name this build cannot read: a name that starts
+     * with 13 digits and `-` and does not {@link #parse}. A newer build may
+     * write a hyphenated kind (`input-set`) or a cid form this build cannot
+     * parse, so the kind is the text between the first `-` and the last, or
+     * everything after the first when there is no other. Null for a name
+     * this build reads and for a name that is not an entry at all.
+     */
+    static String unknownKindOf(String name) {
+        if( !ENTRY_PREFIX.matcher(name).find() || readable(name) )
+            return null
+        final String rest = name.substring(14)
+        final int last = rest.lastIndexOf('-')
+        return last > 0 ? rest.substring(0, last) : rest
+    }
+
+    /** {@link #parse}'s test, without its warnings. */
+    private static boolean readable(String name) {
+        final String[] parts = name.split('-', 3)
+        return parts.length == 3 && parts[0].matches(/\d{13}/) && StoreLogKind.fromToken(parts[1]) != null && Cid.isCid(parts[2])
     }
 
     /**

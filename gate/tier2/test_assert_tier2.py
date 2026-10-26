@@ -269,7 +269,7 @@ class World(object):
         con.commit()
         con.close()
         with open(path, "rb") as fh:
-            self.s3.put(BUCKET, "%s/index/v3.sqlite" % member, fh.read(), metadata={"runs": str(runs)})
+            self.s3.put(BUCKET, "%s/index/v6.sqlite" % member, fh.read(), metadata={"runs": str(runs)})
 
     def _members(self):
         c = self.c = {}

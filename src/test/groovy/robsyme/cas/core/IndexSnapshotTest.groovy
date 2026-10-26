@@ -92,7 +92,7 @@ class IndexSnapshotTest extends Specification {
         then:
         result.written
         result.runs == 1
-        file == labRoot.resolve('index/v3.sqlite')
+        file == labRoot.resolve('index/v6.sqlite')
         rows(file, 'SELECT completion_cid, member FROM run') == [[a[0].toString(), null]]
         rows(file, 'SELECT collection_cid FROM collection')*.get(0) == [a[1].toString()]
         rows(file, 'SELECT DISTINCT completion_cid FROM producer')*.get(0) == [a[0].toString()]
@@ -117,7 +117,7 @@ class IndexSnapshotTest extends Specification {
         rows(file, 'SELECT version FROM schema_version') == [[Index.SCHEMA_VERSION]]
         rows(file, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name") ==
             rows(index.file, "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v3.sqlite']
+        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v6.sqlite']
     }
 
     def 'meta carries the member watermark and the time it was written'() {
@@ -211,7 +211,7 @@ class IndexSnapshotTest extends Specification {
         failures == []
         rows(file, 'PRAGMA integrity_check') == [['ok']]
         rows(file, 'SELECT count(*) FROM run') == [[4]]
-        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v3.sqlite']
+        Files.list(file.parent).withCloseable { it.toList() }*.fileName*.toString() == ['v6.sqlite']
     }
 
     def 'the page is written beside the snapshot only when its bytes differ'() {

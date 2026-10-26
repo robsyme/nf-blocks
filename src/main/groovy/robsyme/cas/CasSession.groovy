@@ -13,6 +13,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.function.Supplier
 
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
@@ -36,6 +37,7 @@ import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.Providers
 import robsyme.cas.core.Put
 import robsyme.cas.core.RetainedStore
+import robsyme.cas.core.RetentionStorage
 import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.SnapshotStorage
 import robsyme.cas.core.StoreIds
@@ -110,7 +112,110 @@ class CasSession {
     final CasConfig config
     final BlockStore store
     final CoordinateTree coordinates
-    final String assertedBy
+
+    /**
+     * Where this session's notices go, once each: the identity warnings, the
+     * "signing as" line, the storage-class warning, the clock check's, and the
+     * index's missing-snapshot and rebuild lines ({@link #openIndex}). A run's
+     * reach the Nextflow console through {@link ConsoleLog}. A command's
+     * ({@link #forCommand}) go to the command's stderr, so its stdout carries
+     * only its output.
+     */
+    @CompileStatic
+    static final class Notices implements Index.Notice {
+
+        /** Lines a run session has printed in this JVM. */
+        private static final Set<String> CONSOLE_SEEN = ConcurrentHashMap.newKeySet()
+
+        static final Notices CONSOLE = new Notices(Identity.RUN_WHAT, CONSOLE_SEEN, null)
+
+        /** What the identity warnings say will read 'anonymous'. */
+        final String what
+        private final Set<String> seen
+        private final PrintStream err
+
+        private Notices(String what, Set<String> seen, PrintStream err) {
+            this.what = what
+            this.seen = seen
+            this.err = err
+        }
+
+        /** A command's channel: its stderr, with its own record of what it printed. */
+        static Notices to(PrintStream err) {
+            return new Notices(Identity.COMMAND_WHAT, ConcurrentHashMap.<String>newKeySet(), err)
+        }
+
+        @Override
+        void warn(String message) {
+            if( !seen.add(message) )
+                return
+            if( err != null )
+                err.println(message)
+            else
+                ConsoleLog.LOG.warn(message)
+        }
+
+        @Override
+        void info(String message) {
+            if( !seen.add(message) )
+                return
+            if( err != null )
+                err.println(message)
+            else
+                ConsoleLog.LOG.info(message)
+        }
+    }
+
+    private final Notices notices
+
+    /** Test seams for the principal's sources. */
+    static PlatformIdentity platformIdentity = new HttpPlatformIdentity()
+    static GitEmail gitEmail = new ProcessGitEmail()
+    static Map<String,String> env = System.getenv()
+
+    /** Set once by {@link #getPrincipal}; guarded by {@code resolving}. */
+    private volatile Principal resolved
+    private final Object resolving = new Object()
+
+    /**
+     * Who this session signs as, and which source said so. Resolved on first
+     * use and kept: only what signs (a run's blocks, put, an applied sweep or
+     * prune, a write from explore) pays for Platform or git, and threads that
+     * ask at once share one resolution. Resolving prints the "signing as" line,
+     * or the warning, to this session's notices.
+     */
+    Principal getPrincipal() {
+        final Principal known = resolved
+        if( known != null )
+            return known
+        synchronized( resolving ) {
+            if( resolved == null )
+                resolved = resolvePrincipal()
+            return resolved
+        }
+    }
+
+    /** The name this session signs with: {@link #getPrincipal}'s. */
+    String getAssertedBy() {
+        return getPrincipal().name
+    }
+
+    private Principal resolvePrincipal() {
+        final Principal p = Identity.resolve(config.assertedBy, config.rawConfig, env, gitEmail, platformIdentity, notices.what,
+            { String m -> notices.warn(m); null } as Closure<Void>)
+        // An anonymous principal has already printed its warning.
+        if( !p.isAnonymous() )
+            notices.info("nf-blocks: signing as ${p.name} (from ${Identity.sourceText(p)})".toString())
+        return p
+    }
+
+    /** A session for a {@code nextflow plugin nf-blocks:<verb>} command; its notices go to {@code err}. */
+    static CasSession forCommand(CasConfig config, PrintStream err) {
+        return new CasSession(config, Notices.to(err))
+    }
+
+    /** Test seam: forget which lines run sessions have printed. */
+    static void forgetNotices() { Notices.CONSOLE_SEEN.clear() }
 
     /** join key -> the address, size and provider recorded when the file was published. */
     final ConcurrentHashMap<String, Publish> publishes = new ConcurrentHashMap<>()
@@ -150,9 +255,14 @@ class CasSession {
     private final Map<String, CoordinateTree> trees = new LinkedHashMap<>()
     private final Map<String, SnapshotStorage> snapshots = new LinkedHashMap<>()
 
+    /** A run's session: its notices reach the console. */
     CasSession(CasConfig config) {
+        this(config, Notices.CONSOLE)
+    }
+
+    private CasSession(CasConfig config, Notices notices) {
         this.config = config
-        this.assertedBy = config.assertedBy
+        this.notices = notices
         final List<BlockStore> members = new ArrayList<>()
         for( String alias : config.members ) {
             final boolean writable = alias == config.writableAlias
@@ -173,7 +283,7 @@ class CasSession {
         this.store = new CompositeStore(members)
         this.coordinates = trees.get(config.writableAlias)
         if( config.storageClassWarning )
-            warnOnce(config.storageClassWarning)
+            notices.warn(config.storageClassWarning)
     }
 
     /**
@@ -184,7 +294,7 @@ class CasSession {
      */
     CasSession(CasConfig config, BlockStore store, CoordinateTree coordinates) {
         this.config = config
-        this.assertedBy = config.assertedBy
+        this.notices = Notices.CONSOLE
         this.store = store
         this.coordinates = coordinates
         for( String alias : config.members ) {
@@ -232,14 +342,26 @@ class CasSession {
 
     /** As {@link #catchUpIndex(Index)}; with {@code seed} false no member's Index Snapshot seeds the cache, so every block is scanned (reindex --seed false). */
     Set<String> catchUpIndex(Index index, boolean seed) {
+        return catchUpIndex(index, seed, Collections.<String> emptySet())
+    }
+
+    /**
+     * As {@link #catchUpIndex(Index, boolean)}, leaving the members in
+     * {@code leftOut} alone: neither their logs nor their store-ids are read,
+     * and the writable member's store-id is not created when it is left out.
+     * A copy plans this way, so planning never writes to the destination.
+     */
+    Set<String> catchUpIndex(Index index, boolean seed, Set<String> leftOut) {
         final Set<String> failed = new LinkedHashSet<String>()
         try {
-            index.reconcileStoreIds(memberStoreIds(), { String a, String w -> watermarkLogged(a, w) } as Closure<Boolean>)
+            index.reconcileStoreIds(memberStoreIds(leftOut), { String a, String w -> watermarkLogged(a, w) } as Closure<Boolean>)
         }
         catch( Exception e ) {
             log.warn("could not compare this cache with the store's ids; it is derived: ${e.message}", e)
         }
         for( BlockStore member : members() ) {
+            if( leftOut.contains(member.alias()) )
+                continue
             try {
                 final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
                 index.catchUp(member, StoreLog.of(member), member.alias(), seed ? snapshotsOf(member.alias()) : null, config.tmpDir, quietFor, store)
@@ -279,10 +401,10 @@ class CasSession {
      * be read is left out (plan decision 3), and so is the writable member when
      * its id could not be created, which would otherwise read as "the id vanished".
      */
-    private Map<String, String> memberStoreIds() {
+    private Map<String, String> memberStoreIds(Set<String> leftOut) {
         final Map<String, String> ids = new LinkedHashMap<String, String>()
         for( BlockStore member : members() ) {
-            if( !(member instanceof IdentifiedStore) )
+            if( !(member instanceof IdentifiedStore) || leftOut.contains(member.alias()) )
                 continue
             if( member.alias() == config.writableAlias && member.isWritable() ) {
                 final String id = writableStoreId()
@@ -368,9 +490,15 @@ class CasSession {
         }
     }
 
-    /** This composition's per-user cache index (DESIGN.md §12), named by every member's location text. The caller closes it. */
+    /**
+     * This composition's per-user cache index (DESIGN.md §12), named by every
+     * member's location text, with its terminal lines sent to this session's
+     * notices. The caller closes it.
+     */
     Index openIndex() {
-        return Index.open(IndexPaths.cachePath(config.locationTexts(), config.indexOverride))
+        final Index index = Index.open(IndexPaths.cachePath(config.locationTexts(), config.indexOverride))
+        index.notice = notices
+        return index
     }
 
     /**
@@ -379,7 +507,7 @@ class CasSession {
      * builder uses it under its own lock.
      */
     Put newPut(Index index) {
-        return new Put(store, members()[0], index, assertedBy, { -> System.currentTimeMillis() }, { -> catchUpIndex(index) })
+        return new Put(store, members()[0], index, { -> getAssertedBy() } as Supplier<String>, { -> System.currentTimeMillis() }, { -> catchUpIndex(index) })
     }
 
     /**
@@ -395,6 +523,22 @@ class CasSession {
     }
 
     /**
+     * {@code cas.sweep.grace} (14 days by default) for the snapshot meta, so
+     * the page can date the earliest deletion of released content (P2 ruling
+     * R7). Null, with one warning, when the setting does not parse: the
+     * snapshot is derived, and a sweep refuses the setting itself.
+     */
+    private Long sweepGraceMillis() {
+        try {
+            return SweepSettings.graceMillis(config.rawConfig)
+        }
+        catch( IllegalArgumentException e ) {
+            warnOnce("${e.message}; the Index Snapshot is written without a sweep grace, so the explorer gives no deletion date for released content".toString())
+            return null
+        }
+    }
+
+    /**
      * As the 4-arg {@code snapshotWritable}; with {@code rebuild} the
      * snapshot replaces base even when base has a newer watermark or more
      * runs (`reindex`, and a sweep whose deletes no forget entry announces).
@@ -403,7 +547,14 @@ class CasSession {
         if( failed?.contains(config.writableAlias) )
             return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
         final SnapshotStorage storage = snapshotsOf(config.writableAlias)
-        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId(), rebuild)
+        // A sweep takes what only released or deleted runs reached, and a copy brings a run's records without all its
+        // files (P3 plan D8): the build asks the writable member which blocks of those, and of transferred roots and runs, it lacks.
+        final BlockStore writable = members()[0]
+        final Closure<Boolean> present = { Cid cid -> writable.has(cid) }
+        // Its sweep.lock: the build records no presence while a sweep may be deleting (null: none is recorded).
+        final RetentionStorage sweepLock = writable instanceof RetainedStore ? ((RetainedStore) writable).retentionStorage() : null
+        final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId(), rebuild,
+            sweepGraceMillis(), present, sweepLock)
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )
@@ -441,7 +592,7 @@ class CasSession {
         catch( Exception e ) {
             // A 403 on a missing key without s3:ListBucket, or the network: the check is advice, and
             // a real outage is reported by the first write (silent decision 19).
-            ConsoleLog.LOG.warn("could not check this machine's clock against S3 (${e.message}); continuing")
+            notices.warn("could not check this machine's clock against S3 (${e.message}); continuing".toString())
             return
         }
         final Long server = s3.ops.firstServerDateMillis()
@@ -452,7 +603,7 @@ class CasSession {
             case ClockSkew.Verdict.ABORT:
                 throw new ClockSkewException(ClockSkew.describe(now, server))
             case ClockSkew.Verdict.WARN:
-                ConsoleLog.LOG.warn(ClockSkew.describe(now, server))
+                notices.warn(ClockSkew.describe(now, server))
                 break
             default:
                 break
@@ -501,11 +652,9 @@ class CasSession {
         }
     }
 
-    private static final Set<String> WARNED = ConcurrentHashMap.newKeySet()
-
-    private static void warnOnce(String message) {
-        if( WARNED.add(message) )
-            log.warn(message)
+    /** A notice for the person at the terminal, once: see {@link Notices}. */
+    private void warnOnce(String message) {
+        notices.warn(message)
     }
 
     void recordPublish(String joinKey, Publish publish) {

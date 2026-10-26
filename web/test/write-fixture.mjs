@@ -5,6 +5,7 @@
 import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildMember } from './fixture.mjs'
+import { SNAPSHOT_PATH } from '../src/config.js'
 
 const dir = process.argv[2]
 const member = await buildMember()
@@ -15,6 +16,6 @@ for (const [cid, bytes] of member.blocks) {
 mkdirSync(join(dir, 'log'), { recursive: true })
 for (const name of member.log) writeFileSync(join(dir, 'log', name), '')
 mkdirSync(join(dir, 'index'), { recursive: true })
-writeFileSync(join(dir, 'index', 'v3.sqlite'), member.snapshot)
+writeFileSync(join(dir, SNAPSHOT_PATH), member.snapshot)
 copyFileSync(new URL('../dist/index.html', import.meta.url), join(dir, 'index.html'))
 console.log(JSON.stringify({ runs: member.runs, item: member.item, content: member.content }))

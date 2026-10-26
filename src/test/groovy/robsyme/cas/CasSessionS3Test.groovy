@@ -21,11 +21,33 @@ class CasSessionS3Test extends Specification {
 
     def cleanup() { CasSession.s3OpsFactory = saved }
 
-    private CasSession session(Map extra = [:]) {
+    private CasConfig config(Map extra = [:]) {
         final Map cfg = [cas: [stores: [lab: [location: 's3://member/cas'], shared: [location: tmp.resolve('shared').toString()]],
                                index: [path: tmp.resolve('cache.sqlite').toString()], tmpDir: tmp.resolve('t').toString()]]
         cfg.putAll(extra)
-        return new CasSession(CasConfig.from(cfg, 'cas://lab'))
+        return CasConfig.from(cfg, 'cas://lab')
+    }
+
+    private CasSession session(Map extra = [:]) {
+        return new CasSession(config(extra))
+    }
+
+    /** Runs {@code body} with the nextflow.cas logger captured; returns its lines as LEVEL message. */
+    private static List<String> consoleDuring(Closure body) {
+        final def logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger('nextflow.cas')
+        final def level = logger.level
+        logger.level = ch.qos.logback.classic.Level.INFO
+        final def appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
+        appender.start()
+        logger.addAppender(appender)
+        try {
+            body.call()
+        }
+        finally {
+            logger.detachAppender(appender)
+            logger.level = level
+        }
+        return appender.list.collect { "${it.level} ${it.formattedMessage}".toString() }
     }
 
     def 'members are built from config: S3 writable first, local read-only after'() {
@@ -55,7 +77,7 @@ class CasSessionS3Test extends Specification {
         then:
         buckets['member'].objects.keySet().any { it.startsWith('cas/log/') && it.contains('-selection-') }
         snap.written
-        buckets['member'].objects['cas/index/v3.sqlite'].metadata.runs == '0'
+        buckets['member'].objects['cas/index/v6.sqlite'].metadata.runs == '0'
 
         cleanup:
         index?.close()
@@ -169,5 +191,64 @@ class CasSessionS3Test extends Specification {
     def 'the cache file is named by the location texts, S3 ones included'() {
         expect:
         session().config.locationTexts() == ['s3://member/cas', tmp.resolve('shared').toString()]
+    }
+
+    def 'a command session sends its storage-class and clock-skew notices to its err and nothing to nextflow.cas'() {
+        given:
+        final ByteArrayOutputStream err = new ByteArrayOutputStream()
+        buckets['member'] = new MemoryS3Ops('member')
+        buckets['member'].serverDateMillis = System.currentTimeMillis() - 90_000L
+        CasSession s = null
+
+        when:
+        final List<String> console = consoleDuring {
+            s = CasSession.forCommand(config([aws: [client: [storageClass: 'STANDARD_IA']]]), new PrintStream(err, true, 'UTF-8'))
+            s.checkClock()
+        }
+        final List<String> lines = err.toString('UTF-8').readLines()
+
+        then:
+        console.isEmpty()
+        lines.size() == 2
+        lines[0] == s.config.storageClassWarning
+        lines[0].contains('packing')
+        lines[1].contains('behind') || lines[1].contains('ahead of')
+    }
+
+    def 'a command session whose clock check cannot reach S3 says so on its err'() {
+        given:
+        final ByteArrayOutputStream err = new ByteArrayOutputStream()
+        buckets['member'] = new MemoryS3Ops('member') {
+            @Override S3Head head(String key) { throw new IOException('403 Forbidden') }
+        }
+
+        when:
+        final List<String> console = consoleDuring {
+            CasSession.forCommand(config(), new PrintStream(err, true, 'UTF-8')).checkClock()
+        }
+
+        then:
+        console.isEmpty()
+        err.toString('UTF-8').readLines() == ["could not check this machine's clock against S3 (403 Forbidden); continuing"]
+    }
+
+    def 'a run session sends its storage-class and clock-skew notices to nextflow.cas, once each'() {
+        given:
+        buckets['member'] = new MemoryS3Ops('member')
+        buckets['member'].serverDateMillis = System.currentTimeMillis() - 90_000L
+        CasSession s = null
+
+        when:
+        final List<String> console = consoleDuring {
+            s = session([aws: [client: [storageClass: 'STANDARD_IA']]])
+            session([aws: [client: [storageClass: 'STANDARD_IA']]])
+            s.checkClock()
+        }
+
+        then:
+        console.size() == 2
+        console[0] == "WARN ${s.config.storageClassWarning}".toString()
+        console[1].startsWith('WARN ')
+        console[1].contains('behind') || console[1].contains('ahead of')
     }
 }

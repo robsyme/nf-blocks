@@ -65,8 +65,26 @@ test('a string that reads as a number is shown quoted; null is shown as null', (
   assert.equal(valueText('string', '2a'), '2a')
   assert.equal(valueText('string', ''), '')
   assert.equal(valueText('int', '2'), '2')
-  assert.equal(valueText('float', '1.0E10'), '1.0E10')
   assert.equal(valueText('null', null), 'null')
+})
+
+test('valueText formats numbers for display through formatValue; a promoted field adds its format and boolean labels', () => {
+  assert.equal(valueText('float', '99566.0'), '99,566')
+  assert.equal(valueText('float', '49791.0'), '49,791')
+  assert.equal(valueText('int', '1234567'), '1,234,567')
+  assert.equal(valueText('float', '89.62899137102112'), '89.6')
+  assert.equal(valueText('float', '1.0E10'), '10,000,000,000')
+  assert.equal(valueText('float', '89.62899137102112', { path: 'percent_mapped', format: 'percent' }), '89.6%')
+  assert.equal(valueText('bool', 'false', { path: 'meta.single_end', labels: { true: 'single', false: 'paired' } }), 'paired')
+  assert.equal(valueText('bool', 'true'), 'true')
+  assert.equal(valueText('string', '99566.0'), '"99566.0"', 'a numeric-looking string is still quoted and left as written')
+})
+
+test('a pill shows the formatted number while its filter link keeps the raw value (P0 polish)', () => {
+  const target = { completion: 'run1', output: 'reads', where: [] }
+  const [reads] = pillsOf(pairsOf({ num_trimmed_reads: new Float(99566) }), target)
+  assert.equal(reads.values[0].text, '99,566')
+  assert.deepEqual(JSON.parse(decodeURIComponent(reads.values[0].href.split('where=')[1])), [['num_trimmed_reads', 'float', '99566.0']])
 })
 
 test('a pill: the last path segment as its key, a list\'s values in one pill, the value classed by type', () => {

@@ -37,6 +37,8 @@ export function claimState(claims) {
     retain,
     retainClaims: retainGroup.map(c => c.cid),
     released: retain === RELEASED,
+    // JS only (not in ClaimState.groovy): the one current `set retain lineage` claim, for who and when.
+    releaseClaim: retain === RELEASED ? current.find(c => c.attribute === 'retain') : null,
     pins,
     pinClaims: pins.map(p => p.cid),
     pinned: pins.length > 0,

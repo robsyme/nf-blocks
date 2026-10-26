@@ -10,6 +10,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { loadSqlite, snapshotDb } from './helpers.mjs'
 import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
+import { SCHEMA_VERSION } from '../src/config.js'
 
 const HORIZON = 9999999999999
 export const entryName = (millis, kind, cid) => `${String(HORIZON - millis).padStart(13, '0')}-${kind}-${cid}`
@@ -35,7 +36,8 @@ function completion(run, collections, status, finishedAt,
     started_at: '2026-09-01T00:00:00.000Z', finished_at: finishedAt, anomalies, error: null }
 }
 
-export async function buildMember({ now = Date.now(), extra = null } = {}) {
+/** `lean` writes the snapshot as a lean one (meta storage_omitted 'over_cap'), so every size walks the blocks. */
+export async function buildMember({ now = Date.now(), extra = null, lean = false } = {}) {
   const blocks = new Map()
   const put = (value) => { const b = block(value); blocks.set(b.cid.toString(), b.bytes); return b.cid }
   const content = { A: rawCid('bam-A'), B: rawCid('bam-B'), C: rawCid('bam-C') }
@@ -74,7 +76,7 @@ export async function buildMember({ now = Date.now(), extra = null } = {}) {
     ...more.log,
   ]
   const watermark = entryName(at.R1, 'run', runs.R1.completion)
-  const snapshot = await snapshotOf(runs.R1, item, content, watermark, more.rows)
+  const snapshot = await snapshotOf(runs.R1, item, content, watermark, more.rows, lean)
   /** The first fixture block value of the given kind, decoded. */
   const valueOfKind = (kind) => {
     for (const bytes of blocks.values()) {
@@ -88,13 +90,13 @@ export async function buildMember({ now = Date.now(), extra = null } = {}) {
 }
 
 /** R1's rows, as Index.ingestRun and IndexSnapshot.write would leave them. */
-async function snapshotOf(r1, item, content, watermark, rows = null) {
+async function snapshotOf(r1, item, content, watermark, rows = null, lean = false) {
   const sqlite3 = await loadSqlite()
   const db = new sqlite3.oo1.DB(':memory:')
   try {
     db.exec('PRAGMA page_size=4096')
     db.exec(readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'))
-    db.exec({ sql: 'INSERT INTO schema_version VALUES (3)' })
+    db.exec({ sql: 'INSERT INTO schema_version VALUES (?)', bind: [SCHEMA_VERSION] })
     db.exec({ sql: 'INSERT INTO run VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)', bind: [r1.completion, r1.manifest, 'demo', null, null,
       'hash-R1', 's', 'R1', 'test', 'succeeded', 0, r1.finished] })
     db.exec({ sql: "INSERT INTO collection(collection_cid, kind, completion_cid, output_name, asserted_by) VALUES (?, 'output', ?, ?, 'test')",
@@ -110,6 +112,7 @@ async function snapshotOf(r1, item, content, watermark, rows = null) {
     if (rows) rows(db)
     db.exec({ sql: "INSERT INTO meta VALUES ('store_log_watermark', ?)", bind: [watermark] })
     db.exec({ sql: "INSERT INTO meta VALUES ('snapshot_written_at', '2026-09-01T10:00:01.000Z')" })
+    if (lean) db.exec({ sql: "INSERT INTO meta VALUES ('storage_omitted', 'over_cap')" })
     return sqlite3.capi.sqlite3_js_db_export(db)
   } finally {
     db.close()

@@ -28,11 +28,16 @@ class CasConfigScopeTest extends Specification {
         scope.getOption(['tmpDir']) != null
         scope.getOption(['nodeHash']) != null
 
+        and: 'the nested inputs scope (explorer v0.3 P4)'
+        scope.getOption(['inputs', 'hash']) != null
+        scope.getOption(['inputs', 'waitSeconds']) != null
+
         and: 'the nested index scope'
         scope.getOption(['index', 'path']) != null
 
         and: 'a placeholder store member: cas.stores.<alias>.location'
         scope.getOption(['stores', 'lab', 'location']) != null
+        scope.getOption(['stores', 'lab', 'readOnly']) != null
 
         and: 'the nested sweep scope (ticket 07 answers 2 and 6)'
         scope.getOption(['sweep', 'ageFloor']) != null

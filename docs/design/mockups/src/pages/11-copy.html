@@ -1,0 +1,91 @@
+<!--META
+{
+ "file":"11-copy.html","title":"Copy to store","phase":"P3 · multi-store + copy","route":"#/selection/<selection_cid>/copy?to=org-s3",
+ "nav":"selections","navContext":"none","store":"roblab","stores":["a","b","c"],"picked":0,
+ "summary":"Copy the wigshop Selection from roblab to the shared org-s3 store while keeping provenance. Run records (completion + manifest with params, config, script) are always included at every depth. Claims travel verbatim as blocks, so the original author and time survive. A dry-run plan shows what's already at the destination before anything moves.",
+ "data":"Real: wigshop's 3 items and 9 bigWig files (1.14 MB), the producing run's completion and manifest CIDs, the name claim, and the 4 input FASTQs referenced by path. org-s3 contents and lineage-depth sizes are estimates.",
+ "spec":{
+  "Steps":[
+   "1 Destination: only writable stores are selectable; read-only ones show why.",
+   "2 Depth: Results (+ run records, always), + upstream lineage, Everything this run stored. Run records can't be unticked.",
+   "3 Claims: names, annotations, project membership on by default. Pins off by default with a note: pins express intent in a store, so the destination confirms them.",
+   "4 Plan (dry run, always shown before Copy): blocks in plan / already there / to transfer / bytes to upload, plus inputs that stay as references.",
+   "5 Copy: progress per block group; destination verifies each block against its CID. Then a transfer entry is written to the destination log (it's a block with its own address).",
+   "6 After: presence dots update everywhere; offer 'Release in roblab' with the bytes that would free there."
+  ],
+  "CLI parity":["Show the exact equivalent command; it updates with every choice."],
+  "Acceptance":["The fromStore(selection: …) snippet is identical before and after the copy.","Lineage page for the copied items works when only org-s3 is open."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="#">Selections</a>/<a href="08-selection.html">wigshop</a>/<b>Copy</b></nav>
+  <div class="title">
+    <span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="30"></span>
+    <h1>Copy wigshop</h1>
+    <span class="muted">from</span><span class="fact"><span class="dot a"></span>roblab</span><span class="muted">to</span>
+    <button class="store-switch" type="button"><span class="dot b"></span>org-s3 · s3://lab-blocks<span class="chev">▾</span></button>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="stack">
+    <section class="panel">
+      <div class="ph"><h2>What travels</h2></div>
+      <div class="pb">
+        <div class="depth" id="depth" style="display:grid;gap:8px">
+          <label class="panel" style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:12px;border-color:var(--accent-ink);box-shadow:inset 0 0 0 1px var(--accent-ink);cursor:pointer"><input type="radio" name="d" checked><span><b>Results + run records</b><br><span class="muted" style="font-size:12px">3 items, 9 bigWig files, and the completion + manifest (params, config, script) that produced them</span></span><span class="mono" style="font-size:12px;text-align:right">15 blocks<br>1.14 MB</span></label>
+          <label class="panel" style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:12px;cursor:pointer"><input type="radio" name="d"><span><b>+ upstream lineage</b><br><span class="muted" style="font-size:12px">Also the BAMs, alignments and trimmed-read QC these bigWigs came from</span></span><span class="mono" style="font-size:12px;text-align:right">≈120 blocks<br>≈21 MB</span></label>
+          <label class="panel" style="display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:12px;cursor:pointer"><input type="radio" name="d"><span><b>Everything distraught_murdock stored</b><br><span class="muted" style="font-size:12px">All 17 outputs for all 5 samples</span></span><span class="mono" style="font-size:12px;text-align:right">894 blocks<br>78.4 MB</span></label>
+        </div>
+        <div class="row" style="padding:12px;background:var(--sunken);border-radius:var(--r-md);gap:6px">
+          <span class="fact"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="16"></span><span class="k">selection</span>1</span><span class="muted">→</span>
+          <span class="fact"><span class="k">items</span>3</span><span class="muted">→</span>
+          <span class="fact"><span class="k">files</span>9 bigWig</span><span class="muted">+</span>
+          <span class="fact"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="16"></span><span class="k">completion</span>distraught_murdock</span>
+          <span class="fact"><span data-seal="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq" data-size="16"></span><span class="k">manifest</span>+ config</span>
+          <span class="fact" style="opacity:.55;border-style:dashed"><span class="presence"><span class="dot ring a"></span></span><span class="k">inputs</span>4 FASTQs · stay as references</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ph"><h2>Plan</h2><span class="muted">dry run · nothing has moved yet</span></div>
+      <div class="pb">
+        <div class="grid-3" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+          <div><div class="eyebrow">In plan</div><div class="bignum">15</div><div class="muted" style="font-size:12px">blocks</div></div>
+          <div><div class="eyebrow">Already in org-s3</div><div class="bignum">2</div><div class="muted" style="font-size:12px">run records</div></div>
+          <div><div class="eyebrow">To transfer</div><div class="bignum">13</div><div class="muted" style="font-size:12px">blocks</div></div>
+          <div><div class="eyebrow">To upload</div><div class="bignum">1.14 MB</div><div class="muted" style="font-size:12px">verified on write</div></div>
+        </div>
+        <div class="note ok"><span>Provenance is complete at the destination: the completion and manifest are already there, so lineage resolves in org-s3 on its own.</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section class="panel">
+      <div class="ph"><h2>Claims to carry</h2></div>
+      <div class="pb" style="gap:8px">
+        <label class="check"><input type="checkbox" checked><span><span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span>“wigshop”<span class="age">Oct 24</span></span></span></label>
+        <label class="check"><input type="checkbox" checked disabled><span class="muted">Annotations · none on these items</span></label>
+        <label class="check"><input type="checkbox" checked disabled><span class="muted">Project membership · none yet</span></label>
+        <label class="check"><input type="checkbox" disabled><span class="muted">Pins · none in roblab. Pins are per store; someone with write access confirms them in org-s3.</span></label>
+        <p class="muted" style="font-size:12px">Claims are copied as-is, so “named by RS on Oct 24” stays true in org-s3.</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>Same thing from the CLI</h2></div>
+      <div class="pb">
+<pre class="code">nextflow plugin nf-blocks:copy \
+  selection:bafyreib2r…id5hce \
+  --from roblab --to org-s3 \
+  --depth results \
+  --claims names,annotations,projects \
+  --dry-run</pre>
+      </div>
+    </section>
+    <div class="row"><a class="btn" href="08-selection.html">Cancel</a><span class="spacer"></span><button class="btn" type="button">Copy, then release in roblab…</button><button class="btn primary" type="button">Copy 13 blocks</button></div>
+  </div>
+</div>

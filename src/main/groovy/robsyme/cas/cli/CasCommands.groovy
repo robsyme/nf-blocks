@@ -34,7 +34,7 @@ import robsyme.cas.explore.ExploreCommand
 @CompileStatic
 class CasCommands {
 
-    static final List<String> VERBS = ['explore', 'items', 'prune', 'put', 'reindex', 'snapshot', 'sweep', 'untrash']
+    static final List<String> VERBS = ['copy', 'explore', 'items', 'prune', 'put', 'reindex', 'snapshot', 'sweep', 'untrash']
 
     /** The verb's clock, which stamps the name Claim of put --name; a test seam. */
     Closure<Long> clock = { -> System.currentTimeMillis() } as Closure<Long>
@@ -106,10 +106,12 @@ class CasCommands {
         }
         try {
             switch( cmd ) {
+                case 'copy':
+                    return CopyCommand.run(Options.parse(args, CopyCommand.FLAGS), config, out, err, clock)
                 case 'snapshot':
-                    return snapshot(Options.parse(args, [] as Set), config, out)
+                    return snapshot(Options.parse(args, [] as Set), config, out, err)
                 case 'reindex':
-                    return reindex(Options.parse(args, ['seed'] as Set), config, out)
+                    return reindex(Options.parse(args, ['seed'] as Set), config, out, err)
                 case 'explore':
                     return ExploreCommand.run(args, config, out, err)
                 case 'items':
@@ -139,10 +141,13 @@ class CasCommands {
     private static String usage(String cmd) {
         final String head = cmd ? "unknown command 'nf-blocks:${cmd}'" : 'no command given'
         return "${head}; usage: nextflow plugin nf-blocks:<command>\ncommands:\n" +
+            '  copy <selection:<cid>|run:<ref>|<cid>> --to <alias> [--from <alias>] [--depth results|lineage|all]\n' +
+            '       [--claims names,pins,projects,annotations|none] [--dry-run] [--accept-audit true] [--format text|json]\n' +
+            '                         copy a Selection or run, with its run records and Claims, into another member, and log a Transfer\n' +
             '  explore [--port <n>]   serve the explorer and this composition\'s members on loopback\n' +
             '  items <output> [<path>=<value>|<path>!=<value> ...] --run <ref>[,<ref>...] [--pipeline <id>] [--format csv|json|occurrences|selection]\n' +
             '                         one output\'s items across runs, as a samplesheet, occurrences or a put request; read-only\n' +
-            '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection or Claim from DAG-JSON;\n' +
+            '  put <file|/dev/stdin> [--dry-run] [--name <name>]  build and write one Selection, Claim or Project from DAG-JSON;\n' +
             '                         a member may be an Item Occurrence, cas://<collection>/<item>; --name then names the Selection:\n' +
             '                         nextflow -q plugin nf-blocks:items ... --format selection | nextflow -q plugin nf-blocks:put /dev/stdin --name <name>\n' +
             '  snapshot               rewrite the writable member\'s Index Snapshot at any size\n' +
@@ -173,7 +178,7 @@ class CasCommands {
             if( kind != null && kind != Records.SELECTION )
                 throw new UsageException("--name names a Selection; this request is a ${kind}")
         }
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         // Ticket 03 decision 2: a ClockSkewException reaches run(), which prints it and exits 1.
         cas.checkClock()
         final Index index = cas.openIndex()
@@ -281,10 +286,10 @@ class CasCommands {
     }
 
     /** Catches the index up from every member's Store Log, then rewrites the writable member's snapshot. */
-    private static int snapshot(Options options, Map config, PrintStream out) {
+    private static int snapshot(Options options, Map config, PrintStream out, PrintStream err) {
         if( options.positionals )
             throw new UsageException("snapshot takes no arguments, got ${options.positionals}")
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         final SnapshotBase base = cas.snapshotBase()
         final Index index = cas.openIndex()
         try {
@@ -292,9 +297,10 @@ class CasCommands {
             final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed)
             // Exit 0 either way: the snapshot is derived, and the old one stands.
             if( result.skipped )
-                out.println("nf-blocks:snapshot: not rewritten: ${result.skipped}")
+                out.println("nf-blocks:snapshot: not rewritten: ${result.skipped}${IndexSnapshot.skipAdvice(result)}")
             else
-                out.println("wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.bytes} bytes, ${result.runs} runs, watermark ${result.watermark ?: 'none'})")
+                out.println("wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.bytes} bytes, ${result.runs} runs, watermark ${result.watermark ?: 'none'})" +
+                    leanNote(result))
             return 0
         }
         finally {
@@ -303,17 +309,37 @@ class CasCommands {
     }
 
     /**
+     * Says a written snapshot is lean, and why (fix round 2, B2); empty for
+     * one with its storage figures. A cache seeded from a lean snapshot has
+     * no content edges, and only a reindex that does not seed restores them.
+     */
+    private static String leanNote(IndexSnapshot.Result result) {
+        if( !result.omitted )
+            return ''
+        final String note = "; written without storage figures (${result.omitted})"
+        if( result.seededLean )
+            return "${note}: this cache was seeded from a snapshot without them; `nextflow plugin nf-blocks:reindex --seed false` rebuilds it with them".toString()
+        if( result.omitted == IndexSnapshot.OUT_OF_MEMORY && result.heapExhausted )
+            // The cache remembers a heap that ran out, so the same -Xmx here goes lean again without trying.
+            return "${note}: computing them ran out of heap, in this build or an earlier one at as many references and no more heap; " +
+                "${IndexSnapshot.MORE_HEAP}, and run it again".toString()
+        if( result.omitted == IndexSnapshot.OUT_OF_MEMORY )
+            return "${note}: computing them ran out of memory outside the heap; the next build tries them again".toString()
+        return note.toString()
+    }
+
+    /**
      * DESIGN.md §20 decision 12: deletes the cache file of this composition and
      * catches every member up cold, then rewrites the writable member's snapshot
      * as a rebuild: a base with a newer watermark or more runs does not keep it.
      */
-    private static int reindex(Options options, Map config, PrintStream out) {
+    private static int reindex(Options options, Map config, PrintStream out, PrintStream err) {
         if( options.positionals )
             throw new UsageException("reindex takes no arguments, got ${options.positionals}")
         final String seed = options.flag('seed')
         if( !(seed in [null, 'true', 'false']) )
             throw new UsageException("--seed is true or false, got '${seed}'")
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         final Path file = IndexPaths.cachePath(cas.config.locationTexts(), cas.config.indexOverride)
         for( String suffix : ['', '-wal', '-shm', '-journal'] )
             Files.deleteIfExists(file.resolveSibling(file.fileName.toString() + suffix))
@@ -324,8 +350,8 @@ class CasCommands {
             final IndexSnapshot.Result result = cas.snapshotWritable(index, 0L, base, failed, true)
             out.println("reindexed ${file}${failed ? '; could not catch up ' + failed.join(', ') : ''}")
             final String was = base == null ? 'none' : base.runs < 0 ? 'uncounted' : base.runs.toString()
-            out.println(result.skipped ? "snapshot not rewritten: ${result.skipped}" :
-                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.runs} runs, was ${was})")
+            out.println(result.skipped ? "snapshot not rewritten: ${result.skipped}${IndexSnapshot.skipAdvice(result)}" :
+                "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${result.runs} runs, was ${was})${leanNote(result)}")
             return failed ? 1 : 0
         }
         finally {

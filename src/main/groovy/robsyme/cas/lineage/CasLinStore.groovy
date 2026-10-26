@@ -37,7 +37,8 @@ import robsyme.cas.core.StoreRef
  * Publish Coordinate (`cas://<alias>/…`) is a mutable name the next run
  * overwrites, so it is rewritten to the immutable Store URI (`cas://<cid>/…`)
  * the coordinate now resolves to, and the fingerprint recomputed against it so
- * a `lid://` read does not warn.
+ * a `lid://` read does not warn. Every other record loses the launching
+ * machine's paths, home directory and user name first ({@link NfRecordScrub}).
  */
 @Slf4j
 @CompileStatic
@@ -62,6 +63,11 @@ class CasLinStore implements LinStore {
      * because reads consult them all, first hit wins (DESIGN.md §12).
      */
     private List<DefaultLinStore> readers
+
+    /** The scrub for {@link #scrubSession}, built on the first save that has WorkflowMetadata to build it from. */
+    private NfRecordScrub scrub
+
+    private Session scrubSession
 
     CasConfig getCasConfig() { casConfig }
 
@@ -143,14 +149,15 @@ class CasLinStore implements LinStore {
                 // The WorkflowRun save is where Nextflow first tells us its run
                 // key (LinObserver.executionHash); the observer's join needs it.
                 CasSession.current().setNextflowRunKey(key)
-                delegate.save(key, value)
+                delegate.save(key, scrubbed(key, value))
                 return
             }
             if( value instanceof FileOutput ) {
+                // Its path is what a lid:// read opens, so it is never redacted.
                 delegate.save(key, addressed((FileOutput) value))
                 return
             }
-            delegate.save(key, value)
+            delegate.save(key, scrubbed(key, value))
         }
         catch( IOException e ) {
             // Nextflow interrupts the finalizer thread saving a run's records when
@@ -163,6 +170,51 @@ class CasLinStore implements LinStore {
             }
             throw new AbortRunException("Unable to save lineage record '${key}': ${e.message}", e)
         }
+    }
+
+    /**
+     * The record to save: scrubbed, or, when the scrub fails, the record as
+     * Nextflow handed it over (the scrub assigns no field until it has computed
+     * them all). Losing the record would be worse than leaking a path: Session
+     * swallows the exception at debug level, and a lost WorkflowRun leaves the
+     * run with no history line and its TaskRuns naming a run that is not there.
+     * A newer Nextflow whose model changed shape fails here with a LinkageError.
+     * A StackOverflowError is the one VirtualMachineError a regex scrub raises
+     * on a long enough value, so it falls back too; the others are rethrown.
+     */
+    private LinSerializable scrubbed(String key, LinSerializable value) {
+        try {
+            return scrubber().scrub(value)
+        }
+        catch( StackOverflowError e ) {
+            log.warn("nf-blocks: could not scrub lineage record '${key}' (stack overflow); saving it unscrubbed")
+            return value
+        }
+        catch( VirtualMachineError e ) {
+            throw e
+        }
+        catch( Throwable t ) {
+            log.warn("nf-blocks: could not scrub lineage record '${key}' (${t}); saving it unscrubbed")
+            return value
+        }
+    }
+
+    /**
+     * The scrub for the current session, kept while {@code Global.session} is
+     * the session it was built from and that session has WorkflowMetadata (a
+     * bare test session has none, and is asked again on the next save).
+     */
+    private NfRecordScrub scrubber() {
+        final Session session = Global.session as Session
+        final NfRecordScrub cached = scrub
+        if( cached != null && scrubSession.is(session) )
+            return cached
+        final NfRecordScrub built = NfRecordScrub.forSession(session)
+        if( session?.workflowMetadata != null ) {
+            scrub = built
+            scrubSession = session
+        }
+        return built
     }
 
     /**

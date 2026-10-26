@@ -115,7 +115,7 @@ cas {
         // shared { location = '/mnt/bundle' }    // read-only member
     }
     resolve = ['lab']          // optional; default = every alias, writable first
-    asserted_by = 'anonymous'  // optional opaque label; default 'anonymous'. Never defaults to the OS user name.
+    asserted_by = 'gate'       // optional; overrides every other source. Unset: Seqera Platform, NXF_BLOCKS_USER, git user.email, then 'anonymous', resolved on first use (docs/identity.md)
     index { path = null }      // optional override of the SQLite cache path (the Gate sets XDG_CACHE_HOME instead)
     snapshot { maxBytes = 64.MB }   // optional; a run writes the Index Snapshot only while it is under this (§15)
     tmpDir = null              // optional; scratch for S3 uploads of unknown length, default java.io.tmpdir
@@ -197,6 +197,20 @@ cas {
   block then waits before a later sweep deletes it. `ageFloor` must be at
   least the Live Writer stale threshold (10 minutes, §19); `grace` may be 0.
   Either under a day warns once, on stderr, from the `sweep` verb.
+- *Amended 2026-10-25 (explorer v0.3 P3, decision D1):*
+  `cas.stores.<alias>.readOnly` (Boolean, default false). A value other than
+  `true` or `false` is refused naming the store, and `readOnly = true` on the
+  writable member (the alias in `lineage.store.location`) is refused at
+  config time. A member with `readOnly = true` is never a copy target (§21):
+  the copy verb (below) and the explorer never write to it.
+  `CasConfig.readOnly(alias)` reads it. `robsyme.cas.CopyTargets.judge(config,
+  alias)` judges each member alone and returns `{target, reason}`: `readOnly`
+  gives the reason `readOnly is set for this store`; a local member whose
+  directory (or, when it does not exist yet, its nearest existing ancestor)
+  this process cannot write gives `this process can't write the directory`;
+  an S3 member is always a target, since there is no cheap write probe and a
+  denied write fails the copy itself. Excluding the source member is the
+  request's business, not the judgement's.
 
 ## 3. Content identity
 
@@ -296,13 +310,33 @@ store-id                Since 2026-10-09 (§20): one line, 32 hex characters, th
 Nothing under `sweep.lock`, `live/` or `trash/` is a block: they are not
 content-addressed, not swept themselves, and a dry run writes none of them.
 
+*Amended 2026-10-25 (explorer v0.3 P3):* the Store Log kinds are `run`,
+`selection`, `claim`, `forget` (§20) and `transfer`
+(`StoreLogKind.TRANSFER`): `log/<rts>-transfer-<cid>`, the cid of a Transfer
+block (§6). A copy writes it into its destination member last, after every
+block and every ordinary entry it made (§21), so a `transfer` entry never
+names content the member lacks. A build older than P3 warns once per entry
+that its kind is unknown and ignores it (§19 has what that means for its
+sweep).
+
+*Amended 2026-10-25 (explorer v0.3 P4, §22):* two more kinds, `project`
+(`log/<rts>-project-<cid>`, a Project block) and `handoff`
+(`log/<rts>-handoff-<cid>`, a Handoff block). Put writes the first, `POST
+/api/handoff` the second, each last, after the blocks it names. A build
+older than P4 ignores both, so its sweep trashes Project and Handoff blocks
+(§22). `StoreLog.list()` returns the entries this build reads and, apart,
+the names of well-formed entries whose kind it does not know; a sweep
+refuses to apply beside any (§19, §22). The plugin reads `nf/` only
+through `LineageRecords` (`LocalLineageRecords` over `<member>/nf/<key>/.data.json`,
+`S3LineageRecords` over `<prefix>nf/<key>/.data.json`), which never writes.
+
 `CompositeStore(List<BlockStore> members)`: reads resolve in order, first hit
 wins; writes go only to `members[0]`, which must be writable; a write is never
 skipped because a read-only member holds the block.
 
 *Amended 2026-09-28 (milestone 4):* `S3BlockStore(ops, prefix, alias,
 writable, tmpDir)` keeps the local layout byte for byte under the member
-prefix: `blocks/<xx>/<cid>`, `log/`, `coords/`, `nf/`, `index/v3.sqlite`,
+prefix: `blocks/<xx>/<cid>`, `log/`, `coords/`, `nf/`, `index/v<N>.sqlite`,
 `index.html`, plus `tmp/` (staging keys of the `s3-copy` provider, §8). A
 block of 1 MiB or more is looked for with `HeadObject` first (S3 reads a
 whole body before answering a conditional PUT's 412, ticket 14), and
@@ -394,10 +428,14 @@ type Block union {
   | Selection "Selection"
   | Claim "Claim"
   | Forget "Forget"
+  | Transfer "Transfer"
+  | InputSet "InputSet"
+  | Project "Project"
+  | Handoff "Handoff"
 } representation inline {
   discriminantKey "kind"
 }
-# Reserved kinds, specified in the lineage spec, not yet built: InputSet, Attestation.
+# Reserved kind, specified in the lineage spec, not yet built: Attestation.
 
 type DirectoryManifest struct {
   schema Int
@@ -560,6 +598,58 @@ type Forget struct {
   asserted_by String
   deleted [&Any]                # sorted by cid string, no duplicates (§20)
 }
+
+# Explorer v0.3 P3 (§21): what one copy put into its destination member.
+type Transfer struct {
+  schema Int                    # 1
+  asserted_by String            # the copying principal
+  roots [&Any]                  # the roots asked for, sorted by cid string, no duplicates
+  from String                   # source member alias
+  to String                     # destination member alias
+  depth String                  # "results" | "lineage" | "all"
+  claims [String]               # the claim categories carried, sorted, no duplicates
+  runs [&RunCompletion]         # every run whose records the copy carried, sorted by cid string, no duplicates (D8)
+  blocks Int                    # blocks in the plan
+  copied Int                    # blocks written (the rest were already there)
+  bytes Int                     # bytes written
+  timestamp String              # ISO-8601 UTC, when the copy finished
+}
+
+# Explorer v0.3 P4 (§22): the files a run read, linked from RunCompletion.input_set.
+type InputSet struct {
+  schema Int                    # 1
+  asserted_by String
+  inputs [Input]                # sorted by (role, name, address, sample, reason, size), nulls first; no two equal
+}
+type Input struct {
+  role String                   # "samplesheet" (params.input), "param:<name>", "asset" (under projectDir) or "task"
+  name nullable String          # the file's base name, never a path
+  address nullable &Any         # the content's raw cid, computed for a local file even when the store does not keep the bytes
+  size nullable Int
+  sample nullable String        # meta.id of the task input tuple that staged it
+  reason nullable String        # why address is null: "unaddressed", "unreadable", "remote", "unfinished"
+}
+
+# Explorer v0.3 P4 (§22): a project's root record. Its name and policies change by Claims.
+type Project struct {
+  schema Int                    # 1
+  asserted_by String            # who created it
+  name String                   # 1..256 characters, the name at creation
+  description String            # may be empty, at most 4,096 characters
+  created_at String             # ISO-8601 UTC with milliseconds, from the request
+}
+
+# Explorer v0.3 P4 (§22): one hand-off to a downstream pipeline, rooting the files it generated.
+type Handoff struct {
+  schema Int                    # 1
+  asserted_by String
+  template String               # e.g. "nf-core/differentialabundance"
+  selection &Selection
+  project nullable &Project
+  files [Leaf]                  # the generated files, sorted by name; each reason is null
+  params {String:String}        # the downstream params, scrubbed; a generated file as cas://<cid>/<name>
+  timestamp String              # ISO-8601 UTC with milliseconds, from the request
+}
 ```
 
 ### DirectoryManifest
@@ -712,6 +802,438 @@ name, a user name other than the OS user's, a relative path, and a secret
 under a key that names none of the words above. Both passes are idempotent.
 Nothing reads `config` by machine: it is provenance for people.
 
+*Amended 2026-10-25 (explorer v0.3 P3, plan section 1.6):* the scrub has
+three more rules, found by the audit below and built test-first
+(`ScrubTest`, `RunManifestAuditTest`).
+
+- Credential-shaped values are replaced by `[secret]` wherever they sit, in
+  `params` strings and in the config text, before any other rule
+  (`Leaks.redactCredentials`): an AWS access key id (`AKIA` or `ASIA` and 16
+  upper-case letters or digits), a GitHub token (`ghp_`, `gho_`, `ghu_`,
+  `ghs_` or `ghr_` and at least 20 letters or digits, or `github_pat_` and
+  at least 20 letters, digits or underscores), a Seqera Platform token (`eyJ0aWQi`, base64 of `{"tid"`,
+  and at least 6 more characters), and a whole PEM private key block
+  (`-----BEGIN ... PRIVATE KEY-----` to its `-----END ... PRIVATE KEY-----`).
+  Before this, such a value under a key naming no secret word survived into
+  the block.
+- In `params` (at any depth), a value under a secret-named key (the
+  `isSecretKey` rule the config text uses: a key containing `key`, `secret`,
+  `token`, `password`, `passwd` or `credential`, or with a segment `pat`)
+  becomes `[secret]` when it is a non-empty string, a number or a `Path`. An
+  empty string, a boolean and null are left as they are, and a list or map
+  under such a key is scrubbed by its contents only. As in the config text
+  the word match is a substring, so a value under `keyfile` or
+  `public_key_id` goes too.
+- A `params` string that is wholly an absolute path or a URI in a scheme
+  other than `lid://` or `cas://` (once credentials are redacted) is still
+  replaced whole, since it may hold spaces. Any other string is scrubbed
+  token by token exactly as the config text is (`scrubText`), so
+  `--ref /data/g.fa` becomes `--ref [redacted-location]` and
+  `-v /home/<user>:/data` has both paths redacted. Before this a string was
+  judged whole, so a path inside a longer string stayed.
+
+So the RunManifest of a new run gets a different address from the same run
+recorded before this change wherever its `params` or config held such a
+value. Blocks already written are not rewritten. *Amends the "Not redacted"
+sentence above:* not redacted are a host name, a user name other than the
+OS user's, a relative path, and a secret of no recognised shape under a key
+that names none of the secret words (in `params`, also one inside a list or
+map under a secret-named key).
+
+*Amended 2026-10-25 (P3 final fix wave, item 10; `Records.scrubSecret`):*
+in `params`, each string, number or `Path` element of a list or array under
+a secret-named key becomes `[secret]` too, in nested lists as well, so
+`params.tokens = ['abc']` is recorded as `['[secret]']`. A map inside such a
+list keeps the map rule: its own keys decide. This replaces "a list ...
+under such a key is scrubbed by its contents only" and the list case of the
+"Not redacted" sentence above. Open gap: a list in the config TEXT under a
+secret-named key (`tokens = ['a']`) is not redacted. `scrubConfigText`
+redacts the quoted string or bare word right after the separator, and a `[`
+is neither, so the elements stay; the audit's text rule uses the same
+pattern and does not flag them either.
+
+`RunManifestAudit.audit(Cid, Map manifestBlock)` (in `robsyme.cas.core`,
+pure, no I/O) reads a RunManifest block as stored and returns
+`List<Finding>`, each `{cid, kind: 'RunManifest', where, what}`
+(`Finding.toMap()` for JSON). It walks `params` recursively and the
+`config`: text line by line and token by token, or, for a config Map (a
+block from before 2026-09-27), the way it walks `params`. `where` is the
+dotted path (`params.outdir`, `params.inputs[2]`, `config.a.b`) or
+`config:<line>` for text, where findings are kept once per line and `what`.
+`what` is one of `absolute path`, `uri`, `os user`, `aws key id`,
+`private key`, `github token`, `seqera token` and `secret assignment`. A
+value under a secret-named key that is a number or a non-empty string other
+than `[secret]` is a `secret assignment`, or a `seqera token` when the key
+names a token and `tower` or `seqera`. In config text, secret assignments
+are matched over the whole text (a value may follow its key on the next
+line), PEM blocks are found whole and blanked before the lines are read,
+and a PEM header without its footer is still a `private key`. The markers
+`[redacted-location]`, `[redacted-user]` and `[secret]`, and `cas://` and
+`lid://` references, are clean. The audit and the scrub share one
+classifier, `robsyme.cas.core.Leaks` (the patterns, `classify`,
+`scanToken`): the scrub maps a kind to its marker, the audit maps it to a
+finding, so the two cannot drift. A RunManifest built through
+`RunManifest.toCbor()` from params and config holding every shape above
+audits clean (`RunManifestAuditTest`); the same values unscrubbed are each
+found. Over the roblab store's 4 RunManifests the audit finds nothing
+(`RoblabAuditTest`, opt-in by `-Droblab.store=`, over a copy of `blocks/`).
+The copy verb (below) audits the RunManifest of every run it would carry
+(§21). *Amended 2026-10-25 (fix wave item 10):* each element of a list
+under a secret-named `params` key that is a number or a non-empty string
+other than `[secret]` is a finding of its own, `where` `params.tokens[0]`,
+`what` `secret assignment` (or `seqera token`); an empty value under a
+secret-named key is no finding.
+
+*Amended 2026-10-25 (P3 final review, item 3; `Leaks.scanToken`,
+`Records.scrubConfigText`, `Records.secretListLiterals`):* the scrub and the
+audit find four more shapes, in `params` strings and config text alike, and
+both use the same code for each.
+
+- A piece is split at its first `=`, `:`, `,`, `;` or `@` (was `=` or `:`),
+  and each side judged again, so `a.csv,/home/x/b.csv` becomes
+  `a.csv,[redacted-location]`, `--bind a,/scratch/x` keeps `--bind a,`, and
+  `@/home/x/args.txt` becomes `@[redacted-location]`.
+- A path glued to a short flag, a `-`, one letter or digit, then `/`
+  (`-B/home/x`, `-I/usr/include`), has the path redacted and the flag kept.
+- The OS user name is redacted where it stands as a word of its own inside
+  a piece, bounded by characters other than letters, digits and `_`
+  (`<user>@example.org` becomes `[redacted-user]@example.org`; `~<user>/data`
+  is a home path and becomes `[redacted-location]`, see Paths below); a
+  longer word that only contains the name is kept. Before this only a piece equal to the name went.
+  A name directly after an `@` is a handle (`github:'@<user>'` in a
+  pipeline's manifest contributors), so it is neither redacted nor flagged;
+  a path after the `@` is still a path.
+- In config text, each string or number in a list assigned to a
+  secret-named key (`params.passwords = ['a', "b"]`, `process.secrets =
+  ['x']`, nested lists and maps in it included, a map key excepted) becomes
+  `'[secret]'`, keeping its quote; an empty string stays. The audit reports
+  each such element that is not `[secret]` as a `secret assignment` (or
+  `seqera token`) on its own line. This closes the open gap above.
+
+Still not found, by either: a Windows path (`C:\Users\x`), and tokens of
+shapes §1.6 does not list (`Bearer ...`, Slack `xoxb-...`, GitLab
+`glpat-...`), and a secret under a key with none of the secret words
+(`env.API_AUTH`). The final review's probe printed these; they were not in
+its fix list. *Replaced by the F2 amendment below, which finds all of them.*
+
+*Amended 2026-10-25 (explorer v0.3 P3 follow-up, F2, its fix rounds 1 to 5,
+and F6; `Leaks.RULES`, `Leaks.keyNames`, `Records.ASSIGNMENT`,
+`Records.secretAssignments`):* the scrub and the audit share one ordered
+list of secret rules, `Leaks.RULES`. The scrub applies it with
+`Leaks.redactCredentials`, the audit with `Leaks.maskCredentials`, which is
+the same code except that each marker keeps the line breaks of what it
+replaced and each secret is recorded as a hit, so the audit finds exactly
+what the scrub removes. A secret becomes `[secret]`, in the quotes it had;
+a rule that names its secret (a flag, a property, a key) keeps the name.
+The rules apply to `params` strings and to the config text alike (the config
+text reaches them through `scrubText`), in this order:
+
+- A whole PEM private key block, as before.
+- A `--<flag>` and its value (`Leaks.SECRET_FLAG`). With the value after
+  `=`, the flag counts when its name is secret-named (`isSecretKey`,
+  below): `--api-key=abc`. With the value in the next token (after spaces
+  or tabs), it counts only when the name's last segment is a secret word:
+  `key`, `secret`, `token`, `password`, `passwd`, `credential`,
+  `credentials`, `pat` or `auth`. So `--password hunter2` goes and
+  `--sort-keys in.json` stays. A last `auth` right after `skip`, `no`,
+  `disable`, `disabled` or `without` is a switch, so `--skip-auth x.bam`
+  stays. The value is a single- or double-quoted string, which keeps its
+  quotes, or a run of non-space characters. A value that starts with `-`
+  (another flag), `$` (a variable) or `[` (a marker), quoted or not, is no
+  value. A secret flag takes `Bearer <token>` or `Basic <token>` whole,
+  whatever the token (`--auth Basic Statistics`), quoted or not. A `Bearer`
+  or `Basic` with no token after it (what follows is a flag, a variable or
+  a marker) is the value on its own, so `--proxy-auth basic --threads 4`
+  keeps `--threads 4`. A flag that does not count is searched again from
+  the start of its value, so `--extra "foo --password x"` loses `x`.
+- A Java system property, `-D<name>=<value>` (`Leaks.SYSTEM_PROPERTY`),
+  when the name is secret-named. A quoted value keeps its quotes. A bare
+  value runs to a space or a quote and takes commas, stopping only before
+  `,-D`: `-Dfoo.password=hunter,2` goes whole, and
+  `-Dfoo.password=a,-Dbar.token=b` is two properties. A value that starts
+  with `[` or `$` is no value. A property whose name is not secret-named is
+  searched again from the start of its value, so a secret inside it is
+  still found (`-Ddb.props=user=a,password=x` loses `x` by the next rule).
+- A bare `name=value` inside a string (`Leaks.BARE_SECRET`), as a params
+  string or a quoted config value holds one: `user=bob password=hunter2`, a
+  libpq `host=h password=x`, `-Dx=a,token=abc`. The name's last segment
+  must be one of the secret words above, with the same negations, so
+  `SLIDINGWINDOW:4:15`, `ktrim=r` and `max_tokens=10` stay. A name right
+  after a word character, `.`, `-`, `/`, `$` or a marker's `]` is part of
+  something else (a flag, a property, a path, a variable). A value that
+  starts like a flag, a variable, a marker, a path or a URI is left to its
+  own rule. A bare value takes a `,` or `;` unless a space, a quote, the
+  end or another `name=` follows it, and a closing bracket only inside it
+  (`(token=x)` keeps its `)`). This rule runs last of all, so a token shape
+  in the value (`password=AKIA...`) is reported by its shape.
+- A quoted secret-named key, a `:` and its value, as JSON writes one
+  (`Leaks.JSON_SECRET`): `{"token": "abc123"}`. `true`, `false` and `null`
+  stay.
+- The credential shapes, wherever they stand:
+  - an AWS access key id: `AKIA` or `ASIA` and 16 upper-case letters or
+    digits;
+  - a GitHub token: `ghp_`, `gho_`, `ghu_`, `ghs_` or `ghr_` and 20 or more
+    letters or digits, or `github_pat_` and 20 or more letters, digits or
+    underscores;
+  - a Seqera Platform token: `eyJ0aWQi` and 6 or more characters;
+  - `Bearer <token>`, in any case. The token has 8 or more characters and
+    holds a digit, `+`, `/` or `=`, or an upper-case letter after its
+    first character, so prose (`the bearer instruments`) stays. The word
+    `Bearer` stays;
+  - `Basic <value>`, in any case, when the value (4 or more base64
+    characters, padding optional) decodes to RFC 7617 user-pass
+    (`Leaks.isUserPass`): well-formed UTF-8 (a strict decode), no control
+    character, and a `:` with at least one character before it. So
+    `Basic QualityControl`, `Basic Statistics` and `Basic Overview` stay
+    (a capitalised word whose bytes start 0x80 or more fails the strict
+    decode), and a non-ASCII credential (`jörg:pässwörd`) goes. The word
+    `Basic` stays;
+  - a JWT: `eyJ` and three dot-separated base64url segments;
+  - Slack `xoxa-`, `xoxb-`, `xoxp-` or `xoxr-` and 10 or more characters;
+    GitLab `glpat-` and 20 or more; Hugging Face `hf_` and 30 or more
+    letters or digits;
+  - the value of an Azure SAS `sig=` after a `?` or `&`; `sig=` stays;
+  - the AWS secret-key shape, last of the shapes: exactly 40 characters of
+    `[A-Za-z0-9/+=]` with an upper-case letter, a lower-case letter, and a
+    digit, `/` or `+`, standing alone. A hex digest (a git SHA, md5, sha1)
+    has one case and a CID is lower case, so both stay; a run that starts
+    with `/` is a path and is judged as one.
+
+`isSecretKey` moved to `Leaks` (`Records.isSecretKey` calls it) and counts
+`auth` as a whole segment, as `pat` is: `env.API_AUTH` and `basicAuth` are
+secret-named, `author` and `env.AUTHOR` are not.
+
+*Amended 2026-10-25 (explorer v0.3 P4, L1; `Leaks.isSecretKey`,
+`Leaks.endsInSecretWord`, `Leaks.BARE_SECRET`, `Leaks.withoutCredentials`):*
+secret names are matched by segment, not substring. A name splits at any
+run of characters other than letters and digits and at a camelCase
+boundary. A segment names a secret when it is one of `key`, `secret`,
+`token`, `password`, `passwd`, `passphrase`, `pass`, `pwd`, `credential`,
+`credentials`, `pat`, `auth`, `authorization`; in a map or config key only,
+a plural (`keys`, `tokens`, `secrets`, `passwords`, `passphrases`); one
+lower-case word ending in `token`, `secret`, `password`, `passwd`,
+`passphrase` or `credential(s)` (`accesstoken`, `dbpassword`); or `key`
+after a known prefix (`api`, `access`, `secret`, `private`, `ssh`,
+`account`, `master`, `client`, `auth`, `encryption`, `signing`, `license`,
+`storage`, `shared`, `sas`). It does not count right after a qualifier
+(`skip`/`no`/`disable` before `auth`; `sort`, `keep`, `max`, `num`, `join`,
+`primary` and the like before `key` or `token`; `low`, `high`, `two`,
+`multi` and the like before `pass`) or right before a reference word
+(`file`, `path`, `dir`, `filename`, ...). So `api_key`, `apiKey`,
+`ssh-key`, `DB_PASS`, `MYSQL_PWD` are secret-named, and `monkey_reads`,
+`keystone`, `turkey`, `keyword`, `bypass_qc`, `passage`, `keep_tokens`,
+`max_tokens`, `sort_keys`, `keyfile` and `password_file_name` are not; a
+`*_file` value is judged as any value, so an absolute path still goes as a
+location (`--secret-file=/x` is now `[redacted-location]`, was `[secret]`).
+`--passphrase`, `--pass` and `--pwd` lose their value.
+
+A bare `name: value` in a string is judged as `name=value` is, by the
+name's last segment; a `Bearer`, `Basic`, `token` or `Digest` scheme word
+after the colon stays, matched all or nothing. So `password: hunter2`,
+`-pass pass:hunter2`, `Authorization: token abc`, `-H 'x-api-key: abc'` and
+`-H "X-Auth-Token: abc"` lose their value, while `SLIDINGWINDOW:4:15`,
+`sort_key: asc` and `12:30` stay. Three more credential shapes, before the
+AWS secret-key shape: a Google API key (`AIza` and 35 of
+`[0-9A-Za-z_-]`), an Anthropic key (`sk-ant-` and 20 or more), an OpenAI
+key (`sk-proj-`, `sk-svcacct-`, `sk-admin-` and 20 or more, or `sk-` and 32
+or more letters and digits holding both), each its own audit kind.
+Accepted over-redaction: the colon form reads prose in error text too
+(`Missing key: sample` loses `sample`); `--pass 2` loses `2`. Still open:
+`mysql -p x` and `-px`, a bare base64 `user:pass`, an AWS session token,
+and one-word compounds such as `PGPASS` (closed by R2, below). A RunManifest a new build writes
+from values newly redacted, or newly kept, gets a new address; blocks
+already written are not rewritten. Over roblab's 4 RunManifests the audit
+still finds nothing.
+
+*Amended 2026-10-25 (explorer v0.3 P4 follow-up, R2; `Leaks.PASS_COMPOUND`,
+`Leaks.PASS_VERDICT`, `Leaks.SSHPASS`, `Leaks.COOKIE`, `Leaks.NUCLEOTIDES`):*
+three more shapes go and four false positives stay, in the scrub and the
+audit alike.
+
+- A segment that is one lower-case word made of a database or login tool's
+  name and `pass` or `pwd` names a secret; the tool names are `pg`,
+  `mysql`, `ssh`, `db`, `sql`, `mongo`, `redis`, `ldap`, `smb`, `ftp`,
+  `sftp`, `rsync`, `admin`, `root`. So `PGPASS`, `SSHPASS`, `MYSQLPWD` and
+  `DBPASS` are secret-named; `compass`, `bypass`, `overpass` and `oldpwd`
+  are not.
+- `pass` does not count right before or after a QC or data word
+  (`filter(s|ed)`, `only`, `fail(ed)`, `qc`, `read(s)`, `fastq`, `fq`,
+  `bam`, `cram`, `sam`, `vcf`, `bcf`, `pod5`, `fast5`): MinKNOW's
+  `fastq_pass`, `bam_pass`, `pod5_pass`, and `pass_filter` and
+  `vcf_pass_only` keep their values.
+- A flag, a bare `name=value` or `name: value`, or a JSON key whose only
+  secret word is `pat` does not count when its unquoted value is a word of
+  upper-case IUPAC nucleotide codes or of lower-case `acgtun`: `--pat GATC`
+  stays, `--pat abc123` and a token shape go. A `pat` map or config key
+  still loses any value.
+- The value of `sshpass -p` (after spaces or glued, `-v` flags allowed
+  before it) becomes `[secret]`; a `-p` of any other command stays.
+- The `name=value` pairs of a `Cookie` or `Set-Cookie` header, any case,
+  become `[secret]` together, up to a quote, a line end, or a space not
+  after a `;`; a header value that does not start with `name=` stays. Both
+  new rules are `secret assignment` findings and run after `SECRET_FLAG`,
+  before the token shapes.
+- Kept as they are: `id_key` is secret-named; `Missing key: sample` loses
+  `sample`. Still open: `mysql -p x`, `-px`, a bare base64 `user:pass`, an
+  AWS session token, `curl --cookie`/`-b` values.
+- The integrator's probe 3 (62 rows) is a test table beside probe 2. Over
+  roblab's RunManifests, audited on a copy, the audit finds nothing.
+
+*Amended 2026-10-25 (explorer v0.3 P4, second follow-up, B1;
+`Leaks.PASS_DATA`, `Leaks.PASS_VERDICT`, `Leaks.keepsValue`,
+`Leaks.CURL_COOKIE`):* secrets beat false positives.
+
+- A filter, only or read word (`filter(s|ed)`, `only`, `read(s)`) makes
+  `pass` a QC verdict only right after it (`pass_filter`, `vcf_pass_only`,
+  `pass_reads`). Before it the word qualifies nothing, so `DB_READ_PASS`,
+  `READ_ONLY_PASS`, `db_read_pass` and `FILTER_PASS` are secret-named again
+  (R2 had let them leak). The data words (`fail(ed)`, `qc`, `fastq`, `fq`,
+  `bam`, `cram`, `sam`, `vcf`, `bcf`, `pod5`, `fast5`) still count on
+  either side.
+- One predicate, `Leaks.keepsValue(name, value)`, decides in the scrub and
+  the audit alike when a value under a secret name is no secret, for flags,
+  bare `name=value`, JSON keys, `-D` properties, params and config keys and
+  each element of a list under one. Such a value is judged as any other. It
+  is one of: a plain boolean or number (`true`, `False`, `0.05`, `-1`,
+  `1e-5`, a whole number of at most three digits: a longer one can be a PIN
+  or a numeric password, so `password=12345678` and `apiKey: 12345` still
+  go, while `--pass 2` and `filter_pass = true` stay); one of the scrub's
+  own markers; a location the path rule replaces whole (`PWD=/home/x`
+  becomes `[redacted-location]`, reported as a location; `/x:hunter2` is
+  not whole and becomes `[secret]`); or, under a name that is `pat` alone
+  after its last `.`, a nucleotide word. The R2 sentences "A `pat` map or
+  config key still loses any value" and "`--pass 2` loses `2`" no longer
+  hold; a longer name ending in `pat` (`GITHUB_PAT`, `adapter-pat`) loses any
+  value.
+- `sshpass` allows a `-P <prompt>` option before `-p`. A `Cookie` or
+  `Set-Cookie` header may be a quoted JSON key with a quoted value. curl's
+  `-b <value>`, `--cookie <value>` and `--cookie=<value>` lose the value
+  when it opens with `name=`; a cookie file (`-b cookies.txt`) and another
+  tool's `-b b.bed` stay.
+- The reviewer's probe 4 is the test table `ScrubProbe4Test` (100 rows).
+  Still open: `mysql -p x`, a bare base64 `user:pass`, an AWS session
+  token, and `password=/abc:hunter2` in a params string (the path rule
+  splits at the `:`).
+
+Paths. `Leaks.locationKind` also takes as an absolute path a home path
+(`~/x`, `~user/x`), a Windows drive path (`C:\x`) and a UNC path
+(`\\host\share`, host and share 2 or more characters each, so regex escapes
+such as `\\d\\d` and `\\bword\\b` stay), with the doubled backslashes config
+text writes. It applies to values and to map keys. `~<user>/data` is now a
+home path and becomes `[redacted-location]` (it was
+`~[redacted-user]/data`). A short flag glued to a path is a letter only
+(`-[A-Za-z]/`), so `-1/3` stays.
+
+Map keys (`Leaks.keyNames`, `Leaks.keyMarker`). A map key the scrub would
+change, in `params` at any depth and in a config Map, is written under the
+marker for what it held: `[secret]` for a credential, else
+`[redacted-location]` for a path or a URI, else `[redacted-user]` for the
+OS user name. A second key with the same marker becomes `<marker>-2`, then
+`-3`, skipping any key the map keeps, so no entry is lost. A value under a
+key renamed to `[secret]` is a secret too, so a second scrub changes
+nothing. The audit judges each key as it judges a string, and names a
+finding by the key the scrub would write
+(`params.files.[redacted-location]`).
+
+Config text (`Records.ASSIGNMENT`). The assignment rule above (`key =
+value`, `key: value`, the key secret-named) reads its value so:
+
+- a quoted value may hold backslash escapes;
+- under a key that follows a single `-` (a `-D` property inside a
+  `'''`/`"""` string), a bare value takes the `-D` form above, to a space
+  or a quote and stopping only before `,-D`, when the `=` follows a key of
+  256 characters or fewer;
+- any other bare value keeps its commas except before a space, a quote, a
+  bracket, the end, `-D`, or another key and separator (punctuation between
+  them allowed), so `password=hunter,2` goes whole and `a=1,password=x`
+  keeps `a=1`. A `;` ends it only before a key and separator, the same way;
+- after its first character, a `(` or `{` ends a bare value when a key and
+  separator follow it, so a call's named argument (`x = f(token: 'y')`) is
+  matched on its own, and a whole `(...)` or `{...}` with no key at its
+  start is part of the value (`password=p(a)ss`). The first character is
+  never refused, so `password = (a:b)` goes whole. A URI's scheme is not a
+  key, so `token=(http://u:p@h/x)` keeps its value whole;
+- a key right after `--` is a flag and goes to the flag rule;
+- every form is possessive, so a value of any length is matched without
+  backtracking or recursion.
+
+`Records.secretAssignments` yields the matches whose key is secret-named.
+Under a key that is not, it searches again from the start of a `-D` value
+(`-Dx=a,token=abc` yields `token=abc`) and from just inside a bare value
+that opens with `(` or `{` (`x = (token=abc)` yields `token=abc`).
+
+One pass (`Leaks.scanPiece`). A piece is judged from its start, then from
+each place it splits (`=`, `:`, `,`, `;`, `@`), left to right in one loop,
+and the credential rules run once over the whole piece. Before this, each
+split recursed and classified the rest again, so a 50 KB comma-separated
+list took 20 to 40 s and `a,` 12,000 times overflowed the stack in the
+scrub; both now take under a second, with the same output (a 1.5M-token
+differential fuzz found no difference).
+
+The audit's `what` adds `aws secret key`, `bearer token`, `basic auth`,
+`jwt`, `slack token`, `gitlab token`, `hugging face token` and `azure sas
+signature`; a secret flag, property, JSON key or bare `name=value` is a
+`secret assignment` (`seqera token` when its name names a token and
+`tower` or `seqera`).
+
+Kept, as tests that the scrub leaves them unchanged and the audit finds
+nothing, through `RunManifest.toCbor()` and a DAG-CBOR round trip
+(`ScrubTest`, `RunManifestAuditTest`): an ordinary sample name; a relative
+path; `-1/3`; an email that is not the OS user's (`someone@example.org`);
+an IP address before a path (the path goes, the IP stays);
+`--account=projX`; a git SHA in either case; an md5; `cas://` and `lid://`
+references; `bafy`/`bafk` CIDs alone and in `cas://<cid>/name`;
+`sha256:<hex>` alone and as `image@sha256:<hex>`; a 40-character lower-case
+string; 40 letters of mixed case with no digit, `/` or `+`; `author` and
+`env.AUTHOR`; prose holding `bearer` and `hf_`; `~1.2`, `a~b/c`, `\d+` and
+`x:1/3`; `Basic QualityControl` and `Basic Overview`.
+
+Over-redaction accepted by ruling (the value is lost from the RunManifest;
+nothing leaks):
+
+- an R formula such as `~genotype/treatment` reads as a home path;
+- a dot-free relative path of exactly 40 characters, mixed case, with a
+  `/` matches the AWS secret-key shape;
+- a `--<x>-auth` flag followed by a positional takes the positional as its
+  value (`--proxy-auth sample.bam`);
+- a `-D` property's bare value runs to `,-D`, so
+  `-Dfoo.password=abc,user=bob` loses `,user=bob` too;
+- `--key 2` (GNU `sort`) and `--token-limit=100` read as secret flags;
+- a regex with a doubled-backslash run, such as `\\bSRR\\d+` in config
+  text, can still read as a UNC path;
+- config text's key rule is a substring match, so `skip_auth == false` in
+  a closure and some `;`-joined config statements lose a value.
+
+The address. A RunManifest a new build writes from params or config that
+held any shape above gets a different address from the same run recorded
+before; blocks already written are not rewritten. Over the roblab store's
+4 RunManifests the audit still finds nothing, and scrubbing them again
+changes nothing.
+
+*Amends the "Not redacted" sentences above.* Not redacted, and open:
+
+- a host name, a user name other than the OS user's, a relative path, and a
+  secret of no recognised shape under a name that names no secret word;
+- a JSON value with an escaped quote (`{"token": "ab\"cd"}`) keeps what
+  follows the escape;
+- a SAS `sig=` at the very start of a string, with no `?` or `&` before it;
+- a bare secret value that holds `,<key>=` keeps that tail
+  (`password=abc,user=x` reads as two entries), and in config text one
+  that runs into a call's `(` keeps what follows (`password=x(a=1)` keeps
+  `(a=1)`);
+- a `-D` key longer than 256 characters, or `-Dx.password = v` with spaces,
+  in config text, gets the ordinary bare form, which stops at a comma
+  before a key;
+- a path glued after a marker and its quote (`'[secret]'/home/x`) is not
+  split off and stays.
+
+Also open: on a few adversarial junk strings found by fuzzing (none of
+them holding a secret), a second scrub still changes the text, so "both
+passes are idempotent" holds for the configs we have seen, not for every
+string; and some config lines scrub in
+quadratic time: a 50 KB line of chained `-D` properties takes about 3.4 s,
+an `x=-D` line about 4.5 s per pass, and an `a-a-a...` line 12 to 26 s.
+
 ### RunCompletion
 ```
 { kind: "RunCompletion", schema: 2, asserted_by: string,
@@ -729,6 +1251,58 @@ Nothing reads `config` by machine: it is provenance for people.
 
 ### Claim, InputSet, Attestation
 Specified in the spec; not built in the skeleton. Reserve the kind names.
+*Amended 2026-10-25 (explorer v0.3 P4):* InputSet is built (§22). Every
+RunCompletion a P4 or later build writes links one in `input_set`, an empty
+one when the run read nothing, so `input_set: null` means a run recorded
+before P4. Attestation stays reserved.
+
+### Project, InputSet, Handoff
+*Added 2026-10-25 (explorer v0.3 P4, `robsyme.cas.core.Project`,
+`InputSet`, `Handoff`):* the shapes are in the schema above; the rules are
+in §22. Each class's constructor refuses what its schema forbids: a Project
+name that is blank or over 256 characters, a description over 4,096 or
+null; an input with neither address nor reason, or both; a Handoff file
+without a name or address, or named twice. InputSet sorts its inputs by
+(role, name, address, sample, reason, size), nulls first, and drops
+repeats; Handoff sorts its files by name and its params by key. The same
+content built in any order is one block.
+
+### Transfer
+*Added 2026-10-25 (explorer v0.3 P3, plan section 1.5 and decision D8;
+`robsyme.cas.core.Transfer`):*
+```
+{ kind: "Transfer", schema: 1, asserted_by: string,   // the copying principal
+  roots: [Cid, ...],             // the roots asked for, sorted by cid string, no duplicates, at least one
+  from: string, to: string,      // source and destination member aliases
+  depth: string,                 // "results" | "lineage" | "all"
+  claims: [string, ...],         // the claim categories carried (names, pins, projects, annotations), sorted, no duplicates
+  runs: [Cid, ...],              // every RunCompletion whose records the copy carried, sorted by cid string, no duplicates
+  blocks: int,                   // blocks in the plan at that depth
+  copied: int,                   // blocks written; the rest were already there
+  bytes: int,                    // bytes written
+  timestamp: string }            // ISO-8601 UTC with milliseconds, when the copy finished
+```
+One block per copy, written into the destination member by the copy verb
+(below) after everything it names, then announced by a `transfer` Store Log
+entry (§5, §21). The constructor sorts `roots`, `runs` and `claims` and drops
+repeats, so the same copy built in any order is one block. It refuses an
+empty `asserted_by`, `from`, `to`, `depth` or `timestamp`, no roots, a null
+address in `roots` or `runs`, and a negative count; `runs` and `claims` may
+be empty. `fromCbor` checks `kind`, `schema` 1 and the shape of every field,
+and refuses a wrong one with `IllegalArgumentException`. `depth` and the
+`claims` values are not checked on read, so a later depth or category stays
+readable. *Amended 2026-10-25 (fix wave item 7):* with one exception: a
+claim category that is null, blank or holds a `,` is refused, by the
+constructor and so by `fromCbor` too, since the index keeps the categories comma-joined
+(§12); catch-up warns once and skips such a block, as any unreadable
+Transfer. The copied blocks keep their own `asserted_by` and `timestamp`
+(they travel verbatim); only the Transfer carries the copier.
+
+`from` and `to` are member aliases on purpose, a stated exception to "nothing
+store-local" above. A Transfer records a move between two configured
+members, and the explorer's "Copied here from" line names the source by
+its alias. Dedup across copies is not a goal: the `timestamp` already makes
+each copy a distinct block.
 
 ## 7. URIs, coordinates and the join key
 
@@ -950,6 +1524,19 @@ for overwrite logic, `upload()` once per published path including directories,
 `readAttributes` twice per file for the fingerprint, and `newInputStream` when
 `overwrite 'sha256'` is set.
 
+*Note for users, 2026-10-25 (explorer v0.3 P4, second follow-up):* with
+Nextflow's default `workflow.output.overwrite = 'standard'`, every `-resume`
+re-copies every published file into `cas://`, and the plugin hashes each
+one again, cached tasks included: the provider reports a block's own mtime,
+so no published file ever looks unchanged (`copyAttributes` does not help,
+and `overwrite 'sha256'` reads the source bytes to compare). The cost is a
+read and a hash of the run's published bytes per resume; nothing is stored
+twice. `overwrite = false` avoids the re-copy, but then a task that re-runs
+on resume never republishes its changed output, so a resumed run would
+record the old files. The Gate's `gate/resume.config` sets it for its
+`resumed` run only, where every task is cached by construction (§14); it is
+not a recommendation for pipelines.
+
 ## 9. Per-run shared state: `robsyme.cas.CasSession`
 
 One instance per Nextflow `Session`, obtained by `CasSession.of(session)`
@@ -998,6 +1585,135 @@ is built on first publish over the composite and the writable member, with
   operate on decoded `LinSerializable` objects so `type: ['FileOutput']` works
   (this is what `channel.fromLineage` sends).
 - `close()` is never called by Nextflow; nothing may depend on it.
+
+*Amended 2026-10-25 (explorer v0.3 P3 follow-up, F3 and F6;
+`robsyme.cas.lineage.NfRecordScrub`):* "Everything else -> delegate
+unchanged" no longer holds. A member's `nf/` is read by everyone who can
+read the member, so every record `save` hands on except a `FileOutput`
+first loses the launching machine's paths, home directory and user name.
+Strings are judged by the RunManifest's rules (`Records.scrub`,
+`Records.scrubText` and `Records.isSecretKey`, so `Leaks`, §6). Only
+`nf-lineage` reads these records at 26.04.6.
+
+`FileOutput` records are never scrubbed, so the `nf/` records in a shared
+lineage store still carry host paths in `FileOutput.path`: the work-dir
+path of every task output (`s3://bucket/work/...` on S3), and any path
+outside the store. Nextflow needs them: `FileOutput.path` is the file a
+`lid://` read opens and `nextflow lineage check` hashes, and
+`channel.fromLineage` stages it. Measured on 26.04.6: with a work-dir path
+redacted, `lineage check` exits 1 and a downstream `lid://` read fails with
+"Target path [redacted-location] does not exist". A published
+`FileOutput.path` is still rewritten to `cas://<cid>/...` as above.
+
+Scrubbed, each field replaced on the record (values copied, never changed
+in place, since a TaskRun's `val` inputs are the run's own objects):
+
+- `WorkflowRun.metadata`: every string in it, so `homeDir`, `launchDir`,
+  `workDir`, `projectDir`, `scriptFile` and `configFiles` become
+  `[redacted-location]`, and the manifest's URLs go as non-portable URIs
+  do in a RunManifest. `commandLine` is scrubbed token by token
+  (`Records.scrubText`), so a command line that starts with the launcher's
+  path keeps the rest of its shape. `userName` becomes `[redacted-user]`
+  whatever its value (a head job's user is often not the person who
+  launched it). A local container image (`/x/bwa.sif`, `file:...`) becomes
+  `[redacted-location]`; a registry image stays.
+- `WorkflowRun.workflow.scriptFiles`: each path, unless it is under the
+  run's repository URL; checksums stay.
+- `WorkflowRun.params` and `WorkflowRun.config`: every string judged as a
+  RunManifest's `params` strings are, and a value under a secret-named key
+  becomes `[secret]`; no scope is dropped.
+- `TaskRun`: the paths of its `input` DataPaths, its `val` values (copied,
+  no secret-name rule on an input's name, since a `val(key)` input is a
+  sample key), `conda`, `spack`, `globalVars` (with the secret-name rule:
+  Nextflow records each `params.x` a script reads as
+  `globalVars['params.x']`, so `params.db_password` and `task.ext.token`
+  become `[secret]`), the paths of `binEntries`, a local `container`, and
+  `script` (below). Any string in any of these records (a `val` input, a
+  `globalVars` value, a DataPath path, an output value, WorkflowRun config
+  and metadata) that equals what the scrub redacted in the run's params
+  becomes that marker, so `val(params.db_password)` goes; as in a script, a
+  secret a name carried counts only from 8 characters. Known limit: this
+  step does not exempt `lid://` and `cas://` addresses, so a secret-named
+  param that holds one (`params.genome_key = 'lid://…'`) also turns that
+  address into `[secret]` where a task input or output repeats it.
+- `TaskOutput.output` and `WorkflowOutput.output`: every value, as a
+  TaskRun's inputs.
+
+Keys and parameter names go through `Leaks.keyNames`, as a RunManifest's
+map keys do (§6): a map key, or the `name` of a top-level `Parameter` in
+`params`, `input` or `output`, that the scrub would change becomes the
+marker for what it held, numbered `-2`, `-3` past any key the map keeps.
+Every other key keeps its text. A key under the run's repository URL
+stays and takes no number.
+
+Kept: record keys, `lid://` and `cas://` references, checksums,
+`repository`, `commitId` and `revision` (the pipeline's identity, as the
+RunManifest keeps it), ids, numbers, booleans and dates, and any path
+under the run's repository URL (a public source link). A field a newer
+Nextflow adds passes through unscrubbed.
+
+Scripts. A TaskRun's `script` is not scrubbed token by token, since
+`Records.scrubText` would read the `/.* /` in `sed 's/.* //'` as a path and
+the record would misreport what ran. Three kinds of literal text are
+replaced, longest first, where each stands as a whole path or word: not
+after a letter, digit, `_`, `.`, `-`, `/`, `}`, `)` or `$` (text after
+`}`, `)` or `$` continues an expansion such as `${PWD}/tmp`), and not
+before a letter, digit, `_` or `-`.
+
+- What the scrub redacted in the run's `params` (from `session.params`),
+  with its marker.
+- What it redacted in this task's own values, with its marker.
+- The run's host directories (launch, project, work and home, and the
+  session's work directory), as plain paths and as `file://` or `s3://`
+  URIs, with `[redacted-location]`.
+
+A redacted piece is looked for only from 3 characters. A secret that a
+name carried (a value under a secret-named key, or one the flag,
+assignment, JSON-key, `-D` or bare `name=value` rules found) is looked for
+only from 8 characters, and a number never, because `--key sample` or
+`max_tokens = 1000` is as likely to be code; such a secret stays in the
+script while the record's params hold `[secret]` (ruling: `nf/` is outside
+the RunManifest's bar). A secret found by its own shape (a token, a key
+id, a Bearer or Basic credential, a PEM key) is looked for from 3. A piece
+that is a marker, holds one, or is a marker's inner word is never looked
+for. Any other absolute path a script spells stays, as does a password
+spelled alone in a script whose params held it inside a URL (the URL was
+redacted whole).
+
+The unscrubbed fallback. `NfRecordScrub` computes every replacement before
+it assigns any field, and `CasLinStore` catches anything it throws other
+than a `VirtualMachineError` (a newer Nextflow whose model changed shape
+throws a `LinkageError`), and a `StackOverflowError`, the one VM error a
+regex scrub raises on a long enough value (`OutOfMemoryError` and the other
+VM errors are rethrown). It warns "could not scrub lineage record '<key>'
+(...); saving it unscrubbed" and saves the record as Nextflow handed it
+over. Losing the record would be worse: `Session` swallows the exception
+at debug level, and a lost WorkflowRun leaves the run with no history
+line and its TaskRuns naming a run that is not there.
+
+Per session. `CasLinStore` builds the scrub from `Global.session`
+(`NfRecordScrub.forSession`: the repository, the host directories, the
+params) and keeps it while `Global.session` is that same session and the
+session has WorkflowMetadata; a new session builds a new one, and a bare
+session without metadata builds one per save.
+
+Not covered: `nf/` records written before this change are not rewritten.
+Nextflow computes the run key over the unscrubbed WorkflowRun. `nextflow
+lineage diff` no longer shows differences that were only in a redacted
+path, `lineage find` on a scrubbed field no longer matches the original
+value, and `lineage render` merges inputs that differ only in a redacted
+path.
+
+The gate check. `gate/nf-scrub/check.sh <SCRATCH_ROOT>` runs released
+Nextflow 26.04.6 with `NXF_HOME`, `NXF_PLUGINS_DIR` and `XDG_CACHE_HOME`
+under the scratch root (never `~/.nextflow`; the framework jar is copied
+from there when present, a read) and AWS credentials cut off. It runs the
+producer twice, then checks that `nextflow lineage list`, `view`, `find`,
+`diff` and `check` work, that a downstream run stages files through
+`lid://` and through `channel.fromLineage`, and that no record but a
+`FileOutput`'s `path` holds a host string (`records.py leftovers`). Run it
+directly: there is no make target. It refuses a scratch root that is not
+empty and holds no `.nf-scrub-root` marker.
 
 ## 11. `CasObserver` (`robsyme.cas.trace`)
 
@@ -1281,7 +1997,8 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   recomputes the writable member's Index Snapshot, so a cold reader is not
   seeded with runs whose blocks are gone (plan decision 7, §19).
   *Since 2026-10-09 (§20):* the cache records each member's `store-id`
-  and resets (every table emptied, `meta` cleared) when one changes, and
+  and resets (every table emptied, `meta` cleared except
+  `block_present_generation`, which moves on by one) when one changes, and
   catch-up applies the `forget` entries a sweep writes, so every cache
   forgets what any sweep deleted, not only the sweeper's.
 - *Amended 2026-09-25:* the three load-bearing queries' SQL is held in public
@@ -1291,6 +2008,126 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   `web/src/queries.json` is pinned equal to them by `ExplorerQueriesTest`, which
   also refuses any page query whose plan scans a table other than `run` through
   a covering index (§15).
+- *Amended 2026-10-25 (explorer v0.3 P3, plan section 1.5 and D8):* two
+  tables for `transfer` Store Log entries, last in `Index.ddl()` as
+  `Index.TRANSFER_DDL`, so the cache and the Index Snapshot both have them:
+
+  ```
+  transfer(cid PK, from_member, to_member, asserted_by, depth, claims,
+           blocks, copied, bytes, at)
+  transfer_root(transfer_cid, root_cid, role)
+    index transfer_root_root (root_cid)
+  ```
+
+  One `transfer` row per Transfer block (§6): `from_member` and `to_member`
+  are its `from` and `to`, `claims` its categories comma-joined, `at` its
+  `timestamp`, the rest its fields of the same name. `transfer_root` has a
+  row per root asked for (`role = 'root'`) and per RunCompletion in its
+  `runs` (`role = 'run'`). *Amended 2026-10-25 (explorer v0.3 P4, schema 5, now 6):* the
+  three objects are part of the base DDL (schema 5, now 6), so every cache and
+  snapshot has them.
+
+  Ingest (`ingestTransfer`): a `transfer` entry is read in catch-up and in
+  the `missing` retry like a `claim` entry, recorded in `log_entry` with kind
+  `transfer`, and ingested unless the Transfer is already indexed
+  (`isTransferIndexed`). The first block scan of a member and `rebuild` also
+  ingest every Transfer block they find (`Records.TRANSFER` is in
+  `SCANNED_KINDS`, after Claims), so a cache may hold a Transfer whose entry
+  a stopped copy never wrote; such a Transfer has no `log_entry`, so no
+  snapshot carries it and no sweep roots it (§19). Ingest deletes the
+  Transfer's rows and writes them again, so it is idempotent across the
+  catch-up overlap. A Transfer block not yet arrived is a `missing(NULL,
+  cid)` row, retried by later catch-ups; a read that fails is recorded the
+  same way. A block that is there but is not a Transfer this build reads (a
+  wrong shape, another kind, over the size cap) is warned once and skipped,
+  not retried, as a malformed Forget is. A Transfer changes no retention,
+  so its ingest leaves `block_present` alone. `Index.forget` removes the
+  `transfer` row and the `transfer_root` rows keyed by a forgotten Transfer
+  cid; `transfer_root` rows whose `root_cid` is forgotten stay, as producer
+  rows do. A seed copies the snapshot's `transfer` and `transfer_root` rows
+  of the Transfers the cache does not hold, before the other seed
+  statements. The seed's `missing(NULL, cid)` rule for unread Store Log
+  entries covers `transfer` entries too. A reset empties both tables with
+  the rest.
+
+
+  *Amended 2026-10-25 (P3 final review, item 4; `Index.open`):* two
+  openers of one cache file never delete it under each other. The explore
+  server opens a cache per request, so two dry runs and a copy could open
+  one at once, and the second could read a schema the first had not yet
+  written, call it stale, and delete the file and its `-wal` and `-shm`
+  under the first.
+
+  - Openers in one JVM take turns per file (a monitor per absolute path).
+  - A new cache is built under a temporary name beside the file
+    (`<name>.creating-<token>`), its whole schema and the version row in
+    one transaction, then hard-linked into place, so the file at the path
+    always has its schema. When another process linked one there first,
+    that one is opened. A file system without hard links gets a rename,
+    made only when the path is still free.
+  - A file that reads as stale (another version, or no `schema_version`
+    table) or cannot be opened is asked again holding the write lock
+    (`BEGIN IMMEDIATE`, which waits the busy timeout for a connection
+    still committing a schema) before it is recreated. When the lock or
+    the first look stays `SQLITE_BUSY` past the busy timeout, `open`
+    throws `IllegalStateException` ("busy ... try again") and deletes
+    nothing. Callers already treat an index failure as derived (§11).
+
+  Tested by `IndexOpenRaceTest`: two threads opening a new cache 20 times
+  over get one whole database; a cache whose schema another connection is
+  still committing is waited for; a stale cache another connection holds
+  past the timeout is left in place and the open throws. Not closed:
+  `rebuild` still replaces the file under other connections, and two
+  processes recreating one stale file at the same moment can still race
+  between the second look and the delete.
+
+  *Amended 2026-10-25 (explorer v0.3 P4, schema 5, then 6; replaces P3's F1
+  hook and P4's own rescan):* the index schema is version 6 (5 for the
+  P4 tables; 6 so that a v5 cache that ingested a Handoff before its files
+  were recorded as content is rebuilt). `Index.ddl()`
+  creates every table in one list: the base tables, then `transfer` and
+  `transfer_root` (P3), then `project`, `project_stats`, `run_input`,
+  `handoff` and the `claim_current_attribute_value` index (P4). A cache
+  whose `schema_version` is not 5 is deleted and recreated on open, and
+  the next catch-up of each member scans its blocks and reads its whole
+  Store Log, so Transfers, Projects, Handoffs and every run's InputSet are
+  ingested whatever an older build skipped. There is no in-place
+  migration: no tables are added to an existing cache and no member is
+  marked for a rescan; only the cache-only `block_absent` and
+  `block_present` are created if absent. The user's ruling for v0.3
+  ("I'm the only user so far, so always prioritize clean code over
+  backwards compatibility") replaced P3's `AddedTables` hook (which kept
+  schema 4 and added tables in place) and with it the problems it carried:
+  the snapshot hole (a session without the added tables could publish a
+  snapshot with empty tables and a watermark past their entries) and the
+  busy-session paths. Measured on a scratch copy of roblab: a cold v5
+  catch-up in 279 ms (including the open) and a snapshot write in 232 ms.
+  Tested by `IndexSchemaVersionTest` (a cache of an older version is recreated and its catch-up
+  ingests a Transfer, a Project, a Handoff and `run_input`; a v4 snapshot
+  is not seeded from; a run found only by the block scan gets its
+  `run_input` rows) and `TransferAfterV4Test` (P3's REV6 case through a
+  recreated cache: org counts 11 B in 2 blocks).
+- *Amended 2026-10-25 (explorer v0.3 P3):* lookups for the copy closure
+  (§21), each over a public SQL constant (no schema change; tested by
+  `IndexCopyQueriesTest`):
+  - `blockSize(Cid) -> Long` (`SQL_BLOCK_SIZE`): the `block` table's size, or
+    null.
+  - `attrsOf(Cid item, String path) -> List<AttrRow>` (`SQL_ITEM_ATTR`): an
+    item's untruncated `item_attr` rows at one path, by type and value.
+  - `runItemsWith(Cid completion, String path, String type, String value) ->
+    List<Cid>` (`SQL_RUN_ITEMS_WITH_ATTR`): every item of the run, in any of
+    its outputs, with an untruncated row equal on all three, by cid.
+  - `outputCollectionsOf(Cid item) -> Map<Cid collection, Cid completion>`
+    (`SQL_OUTPUT_COLLECTIONS_OF_ITEM`): the OutputCollections (kind
+    `output`) that list the item, with their runs.
+  - `claimsLoggedIn(String member) -> Map<Cid subject, List<ClaimState.Row>>`
+    (`SQL_CLAIMS_LOGGED_IN`, `SQL_CLAIM_SUPERSEDES_LOGGED_IN`): every Claim a
+    `claim` entry of that member's log announced, grouped by subject, each
+    with every link its `supersedes` makes, whoever logged the Claim it
+    names.
+  - `claimOf(Cid) -> Claim` (`SQL_CLAIM`, plus an inline query of
+    `claim_supersedes`): one Claim as the index holds it, value as text;
+    null when it is not indexed.
 
 ## 13. `fromStore` (`robsyme.cas.ext.CasExtension`)
 
@@ -1397,6 +2234,49 @@ overlapping T6 and the background nf-core/sarek run TS (§19). It is the only
 part of the Gate that talks to AWS, from a person's SSO session; its own unit
 tests (`python3 -m unittest discover -s gate/tier2`) do not.
 
+*Amended 2026-10-25 (explorer v0.3 P4 follow-up, R5, issue 17):* the
+`resumed` run resumes `cold` by its session UUID (read from
+`pipeline-a/.nextflow/history`), because Nextflow 26.04.6's `-resume
+<run name>` takes only `last` or a UUID and otherwise resumes the last
+session, which was `fail`'s: which of `fail`'s tasks had finished was a
+race, and so was A1. It also sets `workflow.output.overwrite = false`
+(`gate/resume.config`, for that run only), so PublishDir re-copies nothing
+into existing `cas://` coordinates on resume; `copyAttributes` does not
+help there (the cas provider reports a block's own mtime) and `overwrite
+'sha256'` reads the source bytes. Assertion 4c now holds when the resumed
+run carries `cold`'s session, every `cold` task is a cache hit, no
+PublishDir copy fails with every published source at mode 000, the run
+exits 0, and the plugin's addresser summary reports 0 bytes for 0 files.
+Because the plugin addresses a Leaf only from a publish made in the same
+run, the resumed run records every leaf `never_published` and is never a
+producer of any content (A1).
+
+*Amended 2026-10-25 (explorer v0.3 P4, second follow-up, S1 and S2):*
+assertion 4c also fails unless the resumed run's RunCompletion has
+`anomalies.never_published` equal to the number of Leaves in `cold`'s
+items (21 on the Test Pipeline), empty `providers`, and the same number of
+Leaves of its own, none addressed; and unless no line of the resumed
+`nextflow.log` holds `AccessDenied`, `Permission denied` or a locked source
+path. When a publish of a locked source fails, the Gate names the reader
+from the stack trace: the plugin's `upload()` (a `robsyme.cas` frame under
+`PublishDir.processFile:418`, the first copy) or PublishDir's re-copy
+(under `:432`, after `shouldOverwrite`; line numbers of 26.04.6). gate.sh
+exits 2 when `cold`'s session UUID is missing instead of falling back to
+`last`. Assertion 19 covers a resume after a failed run, in its own store,
+cache and launch directory: `recover-fail` runs `--fail` with
+`errorStrategy 'finish'` on MAYBE_FAIL and 16 local cpus (so every other
+task finishes; one that finishes after the session cancels still never
+reaches the workflow outputs, so which cached tasks the failed run
+published remains a race), and `recover-resumed` resumes that session by UUID
+without `--fail` and with the default overwrite: 12 tasks are cached and
+MAYBE_FAIL's 3 re-run. Each re-run task's `.report` must be addressed in
+the reports Leaf, the coords pointer and a store block, at the address the
+Gate computes from the work file; every Leaf the failed run recorded must
+keep its address, a Leaf only the resumed run has (a cached task the failed
+run finished after it cancelled) must be addressed, and none may be
+`never_published`. It reports, and does not
+assert, the cost §8 describes: 24 files addressed, 21 of them cached tasks'.
+
 ## 15. The block explorer (milestone 1)
 
 *Status 2026-09-25: milestone 1 accepted; Gate browser tier A 7 of 7 (local 5, cloud 2).*
@@ -1406,8 +2286,10 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
 
 ### Index Snapshot
 
-- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v3.sqlite`.
-  Class `robsyme.cas.core.IndexSnapshot`.
+- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v6.sqlite`
+  (`index/v3.sqlite` before explorer v0.3 P2, v4 before P4, v5 before its
+  second follow-up; the page reads only the current one and says an older
+  snapshot is too old). Class `robsyme.cas.core.IndexSnapshot`.
 - Rows: every `run` the member's Store Log announced (`log_entry.member`) or
   its blocks held at the first scan (`run.member`), and the rows reached from
   those runs, plus the member's `log_entry` rows with `member` NULL.
@@ -1423,6 +2305,129 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
   `snapshot_written_at` (ISO-8601 UTC, milliseconds) and, since 2026-10-09
   (§20), `store_id` (the member's `store-id`; absent when the member has
   none).
+- *Amended 2026-10-24 (explorer v0.3 P2, storage accounting;
+  `docs/plans/2026-10-24-explorer-v0.3-p2.md`, report
+  `docs/design/reports/p2.md`):* schema 4 adds content and storage tables.
+
+  The cache index fills two of them at ingest:
+  - `block(cid, size, codec)` holds raw file blocks, with sizes from Leaf and
+    DirectoryManifest entry records, and DirectoryManifests at their encoded size.
+  - `block_ref(owner_cid, cid, name)` holds item → Leaf and manifest → entry edges.
+
+  The snapshot copies both for its member's closure, so a seeded cache keeps
+  them.
+
+  The snapshot build then derives `root` (one row per run, Selection, and
+  pinned subject and asserter, with states `held`, `released`, `deleted` and
+  `pinned`, by `Mark`'s rules) and computes these per-store aggregates with
+  `StorageStats`: `root_stats`, `root_shared`, `store_stats`, `asserter_stats`,
+  `pipeline_stats`, `collection_size`, `item_size`, `kind_stats` and
+  `pinned_overlap`.
+
+  *Amended 2026-10-25 (explorer v0.3 P4 follow-up, R3):* a Handoff its
+  member logged is a root too (kind `handoff`), numbered after Selections
+  and before pins, by cid. It reaches its files and the items of its
+  Selection (through child Selections), whatever the Selection's own
+  state, and is `deleted` on a clean current `delete` from the member's own
+  Claims, `held` otherwise, as a Selection is. So a live Handoff's files
+  count in Stored, nothing it reaches is releasing, and `store_stats`
+  releasing is what a sweep of the member would take. The cache records a
+  Handoff's files at ingest as `block_ref(handoff, file, name)` with each
+  file's `block` row sized by its Leaf; the snapshot copies them with the
+  content edges, from the member's `handoff` rows as well as its items. A
+  Handoff is not an item: no `item_size` row; its files appear in
+  `kind_stats` and, since the second follow-up (below), in
+  `referenced_bytes`. The page sees `root.kind =
+  'handoff'` in `root_shared` rows. A Handoff whose Selection is logged
+  only in another member reaches only its files here, the per-store limit
+  of a cross-member release.
+
+  *Amended 2026-10-25 (explorer v0.3 P4, second follow-up, S3):*
+  `referenced_bytes` is the sum of the raw file references under every
+  holder, multiplicity kept and directories expanded. The holders are each
+  (output collection, item) membership (P2 R2, unchanged); each Handoff
+  root, one reference per file Leaf, whatever its state; and, once each,
+  every other cid a root starts from that no holder of the first two kinds
+  reaches (an item of another member's run that a Selection or Handoff
+  here holds, R8, or a pinned cid outside them). A cid under another holder
+  of the third kind is not a holder itself, so a pin, or a Selection of an
+  item this store's runs already list, adds nothing. Every stored block is
+  under some holder, so `referenced_bytes >= stored_bytes` for any content
+  and the page's dedup (`referenced / stored`, `web/src/model.js`
+  `storeStats`) is never below 1x. Tested by `IndexSnapshotHandoffStatsTest`
+  (a Handoff, a pinned Selection and a released run: stored 47 = referenced
+  47, was 38), the R8 case in `IndexSnapshotStorageTest` (referenced 51
+  against stored 47, was 19) and `StorageStatsTest`; roblab's figures are
+  unchanged (no Handoff, no R8 item).
+
+  Stored counts the raw blocks reachable from every root of the member, of
+  every kind. Two kinds of block are checked for presence (the writable
+  member's `has`, 16 at a time, a lookup that throws counting as present)
+  when the snapshot is built:
+  - a block reachable only through released or deleted roots, because a sweep
+    may have removed it;
+  - a block recorded absent that a held or pinned root now reaches, because a
+    Claim (`del retain`, `add pin`) brings no bytes back. A present answer
+    drops the record.
+
+  A block found absent leaves every storage figure, whatever its roots'
+  states. The cache remembers it per member in the cache-only table
+  `block_absent(member, cid)` (§20). Records that are no longer candidates
+  for either check are dropped.
+
+  `meta` gains:
+  - `sweep_grace_ms`: `cas.sweep.grace` when the writer knew it.
+  - `storage_omitted`, on a lean snapshot, one that leaves out the content
+    and storage tables (`block`, `block_ref`, `store_stats` and the other
+    aggregates), so the page explains why its storage figures are missing.
+    It takes one of three values:
+    - `over_cap`: the full snapshot was estimated, as the lean part plus
+      `block_ref` rows × the learned bytes per reference, to pass
+      `cas.snapshot.maxBytes`.
+    - `out_of_memory`: computing the figures ran out of memory.
+    - `seeded_lean`: the cache that wrote it was seeded from a lean snapshot,
+      so it has no content edges for those runs. `nextflow plugin
+      nf-blocks:reindex --seed false` rebuilds it from the store.
+
+    A `seeded_lean` build never replaces a base that has storage figures: it
+    is skipped as `seeded_lean_base_full`. It also never replaces a base it
+    could not read: that skip is `seeded_lean_base_unknown`.
+  - `snapshot_max_bytes`: on a lean snapshot, the cap in force, as decimal
+    text. Absent when no cap applied.
+
+  On S3 the snapshot object also carries `x-amz-meta-storage: full|lean`, so
+  a writer can tell from the `HEAD` whether the base has storage figures. An
+  object without it, written before explorer v0.3, counts as unknown.
+- *Amended 2026-10-25 (explorer v0.3 P3, plan section 1.5):* the snapshot
+  carries the `transfer` rows of the Transfers whose `log_entry` names the
+  member (kind `transfer`), and their `transfer_root` rows
+  (`IndexSnapshot.COPY_TRANSFERS`). A Transfer the cache holds from a block
+  scan alone, or from another member's log, is left out. Seeding copies
+  them back (§12).
+- *Amended 2026-10-25 (explorer v0.3 P3, decision D8):* a copy carries every
+  record of each run it touches (§21) but only the files its depth reaches,
+  so a destination can hold a run whose other items' files are elsewhere.
+  So every root and run a snapshot's `transfer_root` rows name (both roles;
+  these are only the Transfers the member's own log announces) is exposed
+  in the P2 sense, like a run or Selection ever released or deleted
+  (`IndexSnapshot.exposedSubjects`): a block that a held or pinned root
+  reaches under it, with no presence record either way, is looked up with the writable
+  member's `has` (16 at a time) and recorded in `block_absent` when gone
+  or `block_present` when there. The files a partial copy left behind then
+  leave every storage figure as swept ones do. A Transfer logged only in
+  another member exposes nothing here. Tested by
+  `IndexSnapshotTransferPresenceTest`: the destination's `store_stats`
+  counts only the copied item's files, and the same layout without the
+  Transfer counts them all.
+
+  Known cost, kept from P2 (ruling 2026-10-25): any Claim the cache ingests
+  drops every `block_present` row (§20 decision 4 amendment), and every
+  copied file is now an exposed candidate, so the next destination build
+  after any Claim re-asks every copied file once (on S3 one `HEAD` each, 16
+  at a time: about 625 rounds for 10,000 files). Recorded absences a held
+  root reaches are re-asked at every build (P2's rule: only a present answer
+  drops one), so each build of a partial copy's destination re-asks every
+  file the copy left behind. Neither changes a figure; both cost lookups.
 - Written by inserting into a fresh database, `PRAGMA page_size=4096`, then
   `VACUUM INTO` a temp file. One rollback-journal file, no sidecars.
   *Amended 2026-09-28:* the build is local (`IndexSnapshot.build`, in
@@ -1471,6 +2476,9 @@ nextflow [-c <config>] plugin nf-blocks:sweep [--apply true] [--wait true] [--bu
 nextflow [-c <config>] plugin nf-blocks:prune --keep-last <n> | --keep-newer <period> [--pipeline <id>] [--apply true]
 nextflow [-c <config>] plugin nf-blocks:untrash <cid> [<cid> ...] | --sweep <id>
 nextflow [-c <config>] plugin nf-blocks:reindex [--seed false]
+nextflow [-c <config>] plugin nf-blocks:copy <selection:<cid>|run:<ref>|<cid>> --to <alias> [--from <alias>]
+                                             [--depth results|lineage|all] [--claims names,pins,projects,annotations|none]
+                                             [--dry-run] [--accept-audit true] [--format text|json]
 ```
 
 `sweep` and `prune` default to a dry run; `--apply true` acts. `sweep
@@ -1522,6 +2530,35 @@ untouched, so `items ... | put /dev/stdin` still pipes.
 `CmdPlugin` turns `--name value` into the argument pair `--name`, `value` after
 the positional arguments. Exit 0 on success, 1 on a failure the verb reports, 2
 on a usage error.
+
+*Amended 2026-10-25 (explorer v0.3 P3, plan section 1.1; `cli/CopyCommand`):*
+`copy` plans a copy of a Selection or a run from one configured member into
+another and, without `--dry-run`, makes it (§21 has the contract). A bare
+`--dry-run` arrives as `--dry-run true`, as `put`'s does; `--dry-run` and
+`--accept-audit` take `true` or `false`, and any other value is a usage
+error. `--claims` is comma-joined, default `names,projects,annotations`;
+`none` carries no Claims. Exit codes:
+
+- 0: a plan, or a finished copy, including one that wrote nothing;
+- 2: a usage error: an option `copy` does not take, not exactly one root,
+  no `--to`, a `--format` other than `text` or `json`, or one of the 400
+  codes `bad_root`, `unknown_member`, `same_member`, `bad_depth`,
+  `bad_claims` and `bad_request` (`CopyService.USAGE_ERRORS`);
+- 1: the 400 codes `not_a_target`, `root_not_found` and `bad_config`; a
+  real copy refused before any write (409): a root or run released or
+  deleted at the destination (D9, §21; stderr names each, as `<role>
+  <name> <cid>: <state> in <to>`, and says to restore them there first),
+  or audit findings without `--accept-audit true`; a copy that failed part
+  way (500); and anything thrown, such as a config that does not parse or
+  a member that cannot be read.
+
+`--format json` prints the §21 body, or the 400 body, as one line on
+stdout. `--format text` (the default) prints the plan as the explorer
+design doc's section 7 words it, a line per group, a line per run, the
+Claim counts, the audit, a line per root or run the destination already
+knows (`in <to>: <role> <name> <cid> is <state>`, D9), and for a real copy
+a last line with what was copied, the Transfer and the snapshot outcome.
+Every message goes to stderr.
 
 `put` prints the response or error body (DAG-JSON) on stdout, exit 0 or 1.
 Nextflow 26.04.6's launcher refuses a bare `-` (`Unknown option: -`), so read
@@ -1618,7 +2655,7 @@ pinned in the `plugins {}` block directly, never through
 Relative to a member's base URL:
 
 ```
-index/v3.sqlite            the Index Snapshot, read with single-range GETs
+index/v6.sqlite            the Index Snapshot, read with single-range GETs (v3 before explorer v0.3, v4/v5 before P4's follow-ups)
 index.html                 the page
 blocks/<xx>/<cid>          a block, xx = the cid's last two characters
 log/                       the Store Log listing (one of the three forms below)
@@ -1660,17 +2697,61 @@ A directly browsed bucket needs the policy and CORS rule of spec section 6:
 A JDK `HttpServer` bound to `InetAddress.getLoopbackAddress()`, port `--port`
 or ephemeral. Prints `nf-blocks explorer: http://127.0.0.1:<port>/?token=<token>`
 on stdout once it is listening, then blocks until the JVM is interrupted.
+That line is all it prints on stdout. Right after it listens it resolves the
+identity on a background thread and prints the `signing as` line, or the
+warning, on stderr when that finishes; `members.json`, a write and (since
+P3) a real copy about to write its Transfer wait for it, and nothing else
+does. A write builds its block, which asks for the name,
+before it takes the lock it shares with a samplesheet export, so an export
+never waits on the resolution behind it (§16, the slf4j paragraph;
+docs/identity.md).
 
 | Request | Answer |
 |---|---|
 | `GET /`, `GET /index.html` | the page |
-| `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/"}, ...], "write": <bool>}`, writable first |
+| `GET /members.json` | `{"members": [{"alias", "writable", "base": "m/<alias>/", "kind", "location", "copy_target", "copy_reason"}, ...], "write": <bool>, "identity": {"principal", "source"}, "copy": <bool>}`, writable first; `identity` is who the session signs as (docs/identity.md) and is absent when the server was built without one; the per-member copy fields and `copy` are in the P3 amendment below |
 | `GET` or `HEAD /m/<alias>/index/v<N>.sqlite` | the file, honouring one `Range`, with an `ETag` |
 | `GET` or `HEAD /m/<alias>/blocks/<xx>/<cid>` | the block, honouring one `Range`; `xx` must equal the cid's last two characters |
 | `GET /m/<alias>/log/` | listing form 1 |
 | `POST /api/put[?dry_run=true]` | the same `Put` as `nf-blocks:put` (block explorer spec sections 9.2 and 9.5): `403` without the right `X-NF-Blocks-Token` header, `415` for a content type other than `application/json` or `application/vnd.ipld.dag-json` (parameters such as `charset` ignored), `413` over `Put.MAX_REQUEST_BYTES` (2 MiB), else the builder's status and DAG-JSON body with `Content-Type: application/vnd.ipld.dag-json` |
 | `GET` or `HEAD /api/samplesheet/<selection cid>.csv` or `.json` | a Selection's items as a samplesheet (decisions 1 and 18 of `docs/plans/2026-09-25-explorer-milestone-2.md`): `Content-Type: text/csv; charset=utf-8` or `application/json`, `Content-Disposition: attachment; filename="selection-<first 16 chars of the cid>.<ext>"`; `404` naming the reason when the address is not a Selection the index holds, or reaches one it does not |
-| anything else | `404`; a method other than `GET`, `HEAD` (or `POST` on `/api/put`) is `405` |
+| `POST /api/copy[?dry_run=true]` | one `CopyService` run (§21), synchronous, added 2026-10-25 (P3 plan section 1.7). `/api/put`'s transport refusals first, in plain text: `403` without the right `X-NF-Blocks-Token`, `415` for any content type other than `application/json` (DAG-JSON too; parameters ignored), `413` over 2 MiB. Every other answer is JSON with `Content-Type: application/json`: `200` the plan, or the finished copy; `400` `{"error", "message"}`, `bad_request` for a body that is not a JSON object, else a CopyService code (`bad_root`, `unknown_member`, `same_member`, `not_a_target`, `root_not_found`, `bad_depth`, `bad_claims`, `bad_request`, `bad_config`); `409` with the plan (`dry_run` false, no copy fields) and `"refused"` saying why, for a real copy refused before any write: `"not_kept"` when a root or run is released or deleted at the destination (D9, §21), else `"audit"` for audit findings without `"accept_audit": true`; `409` `{"error": "copy_running", "message"}` for a real copy while another runs here; `409` `{"error": "superseded", "message"}` for a dry run a newer one replaced while it waited (D10, below); `503` `{"error": "stopping", "message"}` for a dry run still waiting when the server stops; `500` in two shapes: the §21 body with its `failures` for a copy that failed part way, or `{"error": "copy_failed", "message"}` when CopyService threw. `405` when the server was started without copying |
+| anything else | `404`; a method other than `GET`, `HEAD` (or `POST` on `/api/put` or `/api/copy`) is `405`, with `Allow: GET, HEAD` |
+
+*Amended 2026-10-25 (explorer v0.3 P3, plan section 1.7, decision D1):*
+each `members.json` member also has `kind` (`local` or `s3`), `location`
+(an S3 member's `s3://<bucket>[/<prefix>]`; null for a local member, whose
+path is never exposed), `copy_target` and `copy_reason` (§2,
+`CopyTargets.judge`: null for a target, else `readOnly is set for this
+store` or `this process can't write the directory`), from
+`ExploreCommand.memberInfoOf`. A server built without that information
+reports a member as local and a copy target. The top level gains `copy`:
+true when the server can run copies, which takes a copier and the token.
+`nf-blocks:explore` always has both, so it is true there; a server built
+without them answers `POST /api/copy` with `405` and reports false.
+
+*Amended 2026-10-25 (explorer v0.3 P3, plan sections 1.7 and D6, as
+built):* `POST /api/copy` runs `CopyService` over the loaded config, so
+each request builds its own copy composition and index (§21) and never
+touches the server's own index or `Put`'s monitor: writes and exports go
+on while a copy runs. One real copy at a time per server: it holds the
+copy lock (`ExploreServer.copying`) for its whole run, and a real copy that
+arrives meanwhile is `409 copy_running`. Dry runs take no lock and share
+two slots (`ExploreServer.DRY_RUNS`); a dry run may run beside a real
+copy. *Amended 2026-10-25 (P3 final review item 5, decision D10; replaces
+"a third waits for a slot and is never refused"):* one more dry run may
+wait for a slot, and only one. A newer dry run takes the waiting place,
+and the one it replaced answers at once `409 {"error": "superseded",
+"message"}` without running; the page debounces its re-plans and ignores
+`superseded`. So re-plans never queue up on the server's eight threads.
+When `stop()` begins, a dry run still waiting answers `503 {"error":
+"stopping", "message"}` at once, and an interrupt ends its wait the same
+way, so it never holds the stop up. A
+copy signs its Transfer with this server's principal, the one
+`members.json` shows (§21, signing), so it resolves no identity of its own
+and prints no `signing as` line. Each copy's notices go to the server's
+stderr. After a copy the page re-reads the destination's snapshot and log;
+the server keeps nothing of the copy.
 
 `Host` must be `127.0.0.1:<port>` or `localhost:<port>`, and `Origin`, when
 sent, `http://127.0.0.1:<port>` or `http://localhost:<port>`; otherwise `403`.
@@ -1701,6 +2782,20 @@ close the index (final review finding 5). Stop a backgrounded `explore` with
 `SIGTERM`: a job `&`-backgrounded from a non-interactive shell (a script, CI,
 the Gate) inherits `SIGINT` ignored, HotSpot leaves it ignored, and no hook
 runs. An interactive Ctrl-C, or a shell with `set -m`, is unaffected.
+
+*Amended 2026-10-25 (explorer v0.3 P3, fix wave item 14):* a real copy in
+flight gets the copy grace, `copyGraceSeconds` (30 minutes), in place of
+the 10-second one, since a copy takes minutes and is worth finishing.
+`stop()` then prints on stderr that a copy is running, how long it waits,
+and how to stop now: `kill -9 <pid>`, with the server's pid, after which
+the destination keeps the blocks and entries already written and gets no
+Transfer, and running the copy again finishes it. Once `server.stop`
+returns, `stop()` asks the copy lock again before it waits on the
+executor, so a copy that took the lock during the stop also gets the copy
+grace and the notice. A copy still running when the grace ends is cut off,
+with a second line saying the destination has no Transfer for it. A dry
+run waiting for a slot ignores the stop's interrupt
+(`acquireUninterruptibly`).
 
 ### The page
 
@@ -1909,6 +3004,21 @@ text, never this body: `403` (no or wrong `X-NF-Blocks-Token`, or a foreign
 `413` (a body over `Put.MAX_REQUEST_BYTES`, 2 MiB). The CLI prints the same
 error body and exits 1. The page itself uses `invalid` for a rename with no
 name typed.
+
+*Amended 2026-10-25 (explorer v0.3 P3):* `POST /api/copy` (§15, §21) has
+its own error body, plain JSON `{"error": <code>, "message": <text>}` with
+no `at`, and its own codes: CopyService's 400 codes (`bad_root`,
+`unknown_member`, `same_member`, `not_a_target`, `root_not_found`,
+`bad_depth`, `bad_claims`, `bad_request`, `bad_config`), `copy_running`
+(`409`, a real copy while another runs on the same server),
+`superseded` (`409`, a dry run a newer one replaced while it waited, D10),
+`stopping` (`503`, a dry run still waiting when the server stops) and
+`copy_failed` (`500`, CopyService threw; a copy that failed part way is a
+`500` with the §21 body instead). A real copy refused before any write is
+a `409` whose body is the §21 plan with `refused` `not_kept` or `audit`,
+not this error body. Its transport refusals are the plain-text
+`403`, `415` and `413` above, except that it takes `application/json`
+only.
 
 ### `nf-blocks:put`
 
@@ -2221,11 +3331,25 @@ whose names start with a configured package, `nextflow` among them
 v26.04.6). So the lines written for the person at the terminal, §11's
 `onFlowError` hint and §2's `outputDir not set` line (and, since milestone
 4, the clock-skew warning, the node-hashing warnings of §11 and §12's
-seeding fallback), go through the logger `nextflow.cas` and appear on the
+seeding fallback; since P1b, the identity lines and the storage-class
+warning), go through the logger `nextflow.cas` and appear on the
 terminal as well; every other plugin log line, §0 rule 3's warnings
 included, is in `.nextflow.log` only. Gate
 assertion 6 requires the `outputDir` line in the consumer's `nextflow.log`
 and on its console (`logs/consumer/stdout.log`).
+
+That is a run. A `nextflow plugin nf-blocks:<verb>` command, `explore`
+included, writes no `.nextflow.log` and keeps stdout for its output, so its
+`CasSession` is a command session (`CasSession.forCommand(config, err)`):
+the same notices (the identity warnings, the `signing as` line, the
+storage-class warning, the clock check's, and the index's missing-snapshot
+and rebuild lines) go to the command's stderr, once each, and
+`--format json` stdout stays one JSON value. `explore`'s stdout is the
+`nf-blocks explorer: <url>` line and nothing else; its identity notices are
+on stderr. The identity itself is resolved on first use (docs/identity.md),
+so the verbs that ask Platform or git are the ones that sign (`put`,
+`sweep --apply`, `prune --apply`) and `explore`, which resolves once it is
+listening whether or not anything is written.
 
 Left out, per the map: plugin factories on the typed `channel` namespace
 (nextflow-io/nextflow#7694, upstream), self-registration of `fromStore` so
@@ -2858,14 +3982,36 @@ a reviewer could reject any of them.
    (`unreadableClaims`), never swept — wherever Claims disagree, content is
    kept. A RunCompletion's `input_set`, when it is a link (milestone 7
    writes one), is metadata of the run, kept with the RunManifest.
+   *Amended 2026-10-25 (P4 R1):* the InputSet is kept as itself only. Its
+   input addresses are not followed: a run does not own what it read, so
+   an input nothing else reaches is trashed even while the run is held.
 5. Only `set retain "lineage"` releases. A `set retain` with any other value
    keeps content, so a later value cannot be misread as consent by this
    build.
+   *Amended 2026-10-25 (explorer v0.3 P4, F5, behaviour change):* a pin may
+   name a Selection. Ticket 21 answer 6 is "pins on any subject"; Put's
+   `PINNABLE` had left Selections out as an implementation choice, not a
+   decision, and the P2 page's own Pin… on a Selection was refused with 400
+   `wrong_kind`. Put now accepts `add pin` and `del pin` on a RunCompletion,
+   OutputCollection, OutputItem, DirectoryManifest or Selection, and on any
+   raw block the composition holds. It refuses a pin on a Claim, Handoff,
+   RunManifest, InputSet or unknown kind as `wrong_kind`, on a Project as
+   `invalid` at /attribute, and on an absent raw block as `not_found`. A
+   pinned Selection keeps its whole closure even after a clean `delete`, as
+   a pinned run does, judged by D2 (a pin in any member's log keeps it); a
+   `del pin` superseding the last pin, then a clean `delete`, lets a sweep
+   take it. Mark and the storage figures needed no change: they already
+   judged pins per subject whatever its kind, so a pinned Selection is a
+   pin root seeded with its items and counts as pinned in `store_stats`,
+   `root_stats`, `asserter_stats`, `pinned_overlap` and `project_stats`.
+   The snapshot format is unchanged.
 6. A mark that cannot read a metadata block it needs refuses `--apply` (exit
    1, naming up to 20), because the blocks under it are unknown. A missing
    content block (raw or Directory Manifest) is reported, not refused: it is
    already gone, and what was under a gone manifest is protected only by
-   other roots. To get past the refusal, either restore the missing block
+   other roots. (*Amended 2026-10-25, found in P4:* as built, only a missing
+   Directory Manifest is reported. Mark never reads a raw block, so a
+   missing raw file, under an item or a Handoff, goes unreported.) To get past the refusal, either restore the missing block
    (from a copy, or by re-running what wrote it), or, if what needs it
    should go, `put` a `delete` Claim on the root that reaches it: the
    report's `needed by` names the block linking to it, which leads up to a
@@ -2976,6 +4122,62 @@ it (ticket 20 answer 7); and a Claim or Selection written in the narrow gap
 between a sweep's last re-check and the delete batch it guards is not
 caught by that re-check (plan decision 10, decision 11).
 
+*Amended 2026-10-25 (P3 final review item 2):* `nf-blocks:copy` writes
+like a run, so a real copy (never a dry run) registers as a Live Writer in
+its destination too: after `checkClock`, `CasSession.startLiveWriter` with
+`run_name` `nf-blocks:copy`, waiting out a held `sweep.lock`, and
+`stopLiveWriter` when the copy ends. A sweep's report lists it beside runs.
+The copy then asks `has` again of the blocks its plan counted present
+(§21, write order).
+
+### Across members (explorer v0.3 P3, decision D2, 2026-10-25)
+
+*Amended 2026-10-25 (plan section 1.8, as narrowed while building;
+`Mark.verdictOf`, `CrossMemberReleaseTest`):* before P3 the mark read every
+member's Claims as one set, so a release logged only in member B let a
+sweep of member A, from a session that included B, take content that A's
+own storage figures (§15, computed from A's own Claims) called held. The
+rule now:
+
+- A run or Selection that A's own Store Log lists (a `run` or `selection`
+  entry in the writable member's log) is released, or deleted, only when
+  both the whole composition's Claims and the Claims A's own log lists say
+  so.
+- A run or Selection logged only in other members is judged by the
+  composition's Claims alone, as before P3. A's figures do not cover it,
+  and judging it by A's (empty) own Claims would keep A's copies of its
+  content forever, with no way to release them from A.
+- Pins count from any view, for every subject: a subject is pinned when the
+  composition's Claims pin it, when A's own do, or when the Claims any one
+  member's log lists do. A `del pin` logged in one member does not unpin
+  what another member's log still pins.
+- A Claim cid logged in two members counts in both members' views. A Claim
+  already read that a later re-check (`extend`) finds newly listed in
+  another member's log, or in A's, re-roots its subject, and so does a run
+  or Selection that appears in A's log after the mark first saw it in
+  another member's.
+
+So, for what A's log lists, a sweep of A never takes what A's figures call
+held. Roots logged in other members still protect A's blocks during a sweep
+(unchanged). Two mismatches remain, and both are safe (the sweep keeps more
+than the figures say): A's "freed on release" can include a block that a
+pin in another member still keeps; and when A's own release is superseded
+elsewhere (a `del retain` logged in B), A's figures say freed while the
+sweep keeps the content. A copy never carries `retain` or deletion Claims
+and carries pins only when asked (§21), so copying does not move a
+retention decision between members.
+
+*Amended 2026-10-25 (plan section 1.5):* a `transfer` Store Log entry roots
+its own Transfer block only, as a `forget` entry does (§20 decision 8). Its
+`roots` and `runs` are not followed: the `run`, `selection` and `claim`
+entries the copy wrote root those. A `transfer` entry whose block is in no
+member is dangling, like any other root entry. A Transfer block with no
+entry (a copy stopped between the two) is not a root, so a sweep trashes it
+like any other dead block. Format note: a build older than P3 ignores
+`transfer` entries (§5), so its sweep would trash every Transfer block and
+leave its entry dangling; a later P3 sweep reports that entry and deletes
+it once past the age floor.
+
 ## 20. Cache coherence (2026-10-09)
 
 *Status: merged to main at `4a3294f` (PR #3) and released as 0.6.0-beta.1.
@@ -3060,6 +4262,67 @@ scope: nothing finds them without listing every block, so the answer is the
    `store_log_watermark:<m>`, `block_scan:<m>`, `seeded_from:<m>` and
    `store_id:<m>` from `meta`. A row another member also announced stays.
    Logged at info on `nextflow.cas`, naming the member and both ids.
+
+   *Amended 2026-10-25 (explorer v0.3 P2):* the cache also keeps, per member,
+   the cache-only table `block_absent(member, cid)` (§15, the presence
+   check), and these `meta` keys, which the Index Snapshot writer reads and
+   writes:
+   - `snapshot_bytes_per_ref:<m>`: the learned cost per `block_ref` row of the
+     content and storage tables, from a full build of at least 1,000 refs. The
+     estimate starts at 400 B.
+   - `snapshot_over_cap:<m>`: "cap bytes runs omitted" of a lean snapshot that
+     was still over the cap. Later writes skip the build while the cap is the
+     same and the member has no fewer runs.
+   - `snapshot_out_of_memory:<m>`: "refs heap" of a build whose figures ran
+     out of the Java heap ("Java heap space" or "GC overhead" only). At as many
+     references and no more heap, the next build goes lean at once.
+   - `snapshot_seeded_lean:<m>`: set when the cache was seeded from a lean
+     snapshot. Its value is that snapshot's `storage_omitted`.
+   - `snapshot_base_figures:<m>`: whether an S3 base snapshot without
+     `x-amz-meta-storage` has storage figures, keyed by its ETag, so a
+     lean-seeded cache reads such a base once and not at every write.
+
+   A second cache-only table, `block_present(member, cid)`, remembers blocks
+   found present among the ever-exposed ones. Those are blocks reachable from a
+   run or Selection whose Claim history holds a release or deletion, now also
+   reached by a held or pinned root. With it, a cold cache (after `reindex`,
+   say) checks them once rather than counting a swept one again.
+
+   A row goes:
+   - when its block becomes releasing-only, which is checked as before;
+   - when no held or pinned root reaches it.
+
+   Every member's rows go together:
+   - whenever the cache ingests any Claim. Any Claim may supersede a pin or a
+     release, whatever its attribute, so any Claim can change what a sweep
+     may take. This includes a Claim first logged in this member after another
+     member's log already brought it into the cache: catch-up records the
+     new `log_entry` and drops the rows in one transaction;
+   - at a seed;
+   - at a forget.
+
+   Each such drop bumps `block_present_generation` in `meta`. A build reads the
+   generation before it reads the roots, and records presences only if the
+   generation is still the same, in the transaction that inserts them. So a
+   process that ingests a Claim mid-build cannot have its drop undone.
+
+   A build also records no presences while the writable member's sweep lock
+   says a sweep may be deleting (`SweepLock.mayBeSweeping`, through
+   `RetentionStorage.readLock()`). That means a lock that isn't released, or one
+   released less than 60 seconds ago, which covers an abandoned sweep's
+   in-flight batch. It is checked at the build's start and again just before it
+   records. A lock that can't be read counts as held. A release rewrites
+   `sweep.lock` and never deletes it, so a lock that merely exists is not a
+   sign of a sweep. This covers a sweep whose mark came before a restore and is
+   still deleting: the build sees the restored block present just before the
+   sweep's batch deletes it. A sweep that takes the lock after the build
+   started marks from a Store Log that already holds the restore, so it keeps
+   the block.
+
+   A reset empties both tables and `meta` with the rest of the cache, except
+   `block_present_generation`, which it keeps and moves on by one, so a build
+   that began before the reset cannot write a memo into the emptied cache.
+   An unreadable generation counts as 0.
 5. The Index Snapshot's `meta` gains `store_id` (§15 lists `meta` as
    exactly two keys; it becomes three). The S3 snapshot also carries it as
    `x-amz-meta-store-id`, so the guard can read it from the `HEAD` it
@@ -3121,6 +4384,12 @@ scope: nothing finds them without listing every block, so the answer is the
    snapshot written from a stale cache, like the one in `scratch-workflow/`,
    names an entry from the old incarnation and fails it. A refused snapshot
    means the full scan, with the warning §12 already gives.
+
+   *Amended 2026-10-25 (explorer v0.3 P4, schema 5, now 6):* a seed accepts only
+   a snapshot whose `schema_version` is 6, at `index/v6.sqlite`; any other
+   is unusable and the member is caught up in full (§12). A snapshot always
+   carries the member's transfer, project, handoff and run_input rows, and a
+   seed always copies them.
 10. *Amended by decisions 10, 12, 19 to 21 below: no `forgotten` table, the
     guards run in a fixed order, a base from another incarnation is not
     compared, and `reindex` and a sweep with unannounced deletes waive
@@ -3204,7 +4473,8 @@ entries above. Each entry says what was built.
    (changes §20 decision 4). Dropping one member's rows needs the closure of
    every run (collections, items, attrs, producers) minus the rows another
    member still announces, and most tables have no per-member ownership. A
-   reset (every table emptied, `meta` cleared) followed by the usual cold
+   reset (every table emptied, `meta` cleared except
+   `block_present_generation`, which moves on by one) followed by the usual cold
    catch-up of every member is always right, and the other members reseed
    from their snapshots. An id changes only when a member is deleted and
    recreated, so the cost is rare.
@@ -3220,6 +4490,43 @@ entries above. Each entry says what was built.
    A cache with rows and no watermark (a member written before the Store
    Log, then scanned) cannot show it, so it resets. When the log check
    itself fails, the member is left out, as in decision 3.
+
+   *Amended 2026-10-25 (explorer v0.3 P3, plan task T10 and fix wave item
+   18; `Index.reconcileStoreIds`, `attributesRowsTo`):* the cache holds
+   nothing for a member when it has no watermark for it and no row it
+   attributes to it, whatever the `block_scan` mark says. A block scan now
+   records `block_scan:<m>` as `empty` when it found no RunCompletion,
+   Selection, Claim or Transfer, and as `done` otherwise; a seed and a
+   rebuild record `done`. The attributed rows are:
+   - the member's `log_entry` rows, whatever the mark says. Only a
+     catch-up of the member writes them, so an `empty` scan whose log
+     catch-up threw before it set a watermark still leaves rows that a
+     replaced member must not keep;
+   - after a `done` scan only, a `run` row with `run.member` equal to the
+     member, and any Selection, Claim or Transfer row that no `log_entry`
+     row announces, anywhere in the cache, since nothing records which
+     member's scan found it. This errs toward a reset. A session without
+     the transfer tables (§12) leaves Transfers out of this check.
+
+   So a member scanned while empty and with no `store-id` (a new copy
+   destination) adopts its first id with no reset, and the first copy
+   into it (§21) resets no cache that scanned it. Before this, such a
+   cache had the scan mark and no watermark, could not show its rows were
+   from this incarnation, and reset: the explore server's own cache, and
+   every composition sharing `cas.index.path`. A member still resets when
+   the cache holds a run or a log entry of it and its watermark is not in
+   its log. Rows a writer ingested itself (a run's `ingestRun`, a `put`)
+   are not counted, because the writer created the member's id before it
+   wrote (§20 decision 2). That leaves a window: a row ingested when the
+   id could not be created (`writableStoreId` warns once and the run goes
+   on), or a Selection `ensureSelectionIndexed` indexed after an `empty`
+   scan, is not attributed, so if the member were then replaced the cache
+   would adopt the new id and keep that row. Both need an earlier failure
+   or a block present without its entry. Tested by `IndexStoreIdTest`
+   and, end to end, by `CopyServiceTest`: an explore-style session over
+   `[lab, org]` sharing `cas.index.path` catches up while `org` is absent,
+   a real copy goes into `org`, and the next catch-up prints no rebuild
+   notice, records `store_id:org` and leaves `lab`'s rows as they were.
 5. `CasSession.writableStoreId()` creates the writable member's id. It is
    called from `catchUpIndex` and from `CasObserver.onFlowCreate` before the
    Live Writer registration. Every verb that holds the member writable goes
@@ -3365,3 +4672,890 @@ Decisions 19 to 25 come from the final review of the branch (2026-10-09).
     The fix, if one is wanted, is decision 9's rule in the writer: a base
     without `store_id` whose watermark entry is not in the member's Store
     Log is another incarnation's.
+27. *Added 2026-10-25 (P3 final review item 4).* Opening a cache never
+    deletes it under another opener: openers in one JVM take turns per
+    file, a new cache is linked into place whole, and a file that looks
+    stale is asked again under the write lock before it is recreated; a
+    lock that stays busy makes `open` throw rather than delete (§12, the
+    item 4 amendment). Decision 25's cross-process race is unchanged.
+
+## 21. Copy with provenance (explorer v0.3 P3, 2026-10-25)
+
+*Status: in progress on `explorer/p3-copy`. Spec
+`docs/plans/2026-10-24-explorer-v0.3-p3.md` sections 1 and 2 (decisions D1
+to D8); the plugin half's plan is
+`docs/plans/2026-10-24-explorer-v0.3-p3-plugin.md`, and the execution ledger
+`.superpowers/sdd/2026-10-24-explorer-v0.3-p3-plugin/progress.md`. Landed:
+the `readOnly` option and copy targets (§2), the `transfer` Store Log
+kind (§5), the Transfer block, the scrub change and `RunManifestAudit`
+(§6), the transfer tables and the closure's lookups (§12), Transfers in the
+Index Snapshot and their presence check (§15), `members.json`'s copy
+fields and `POST /api/copy` (§15), the copy error codes (§16), the
+cross-member release rule and the Transfer root (§19), the store-id rule
+for a member that held nothing (§20 decision 4), the closure, and the copy
+verb (below), with the final fix wave's 18 items. The final whole-branch
+review's fix wave (its items 1 to 8, 12, 13, 14 and 16; decisions D9 and
+D10, interface commit `9caddbd`) is marked "final review item N" below.*
+
+`nf-blocks:copy` copies a Selection or a run, with what it needs, from one
+configured member to another, and records the copy in the destination as a
+Transfer block (§6) announced by a `transfer` entry (§5). Copied blocks
+travel verbatim, so their addresses, `asserted_by` and `timestamp` do not
+change.
+
+### The closure (`robsyme.cas.core.CopyClosure`)
+
+`CopyClosure.compute(BlockStore source, Index index, String fromAlias, Root
+root, String depth, Set<String> claimCategories, LineageRecords nf) ->
+Result`. `Root` is `{kind: 'selection' | 'run', cid}`, a Selection or a
+RunCompletion; turning the verb's root argument into one is the verb's job.
+`depth` is `results`, `lineage` or `all`; `claimCategories` is a subset of
+`names`, `pins`, `projects` and `annotations` (empty for none); `nf` reads
+the source member's `nf/` records, or is null when it has none to offer.
+
+Reads and lookups. Blocks are read from `source`, the source member's own
+`BlockStore` and never the composite, 16 at a time in a pool that `compute`
+shuts down before it returns, so `missingAtSource` is the source's truth: a
+closure cid the source cannot open, or, for a block never read, one its
+`has` says it lacks. A block the source lacks is asked for once: a
+DirectoryManifest it lacks is given no children, so later expansions do
+not read it again. Lookups (`runByManifest`, `outputCollectionsOf`,
+`producersOf`, `attrsOf`, `runItemsWith`, `claimsLoggedIn`, `claimOf`,
+`blockSize`, §12) go to `index`, the copy session's cache, which the caller
+catches up first (the copy verb, below).
+
+Runs. For a `run` root, the run itself. For a `selection` root, every run
+that produced one of its items: each item member's `via` collections give
+their RunManifest (`run`) and `Index.runByManifest` its RunCompletion (the
+index's `collection` row stands in when the source lacks the collection);
+an item with no `via` (picked by a query) is reached through every
+OutputCollection of kind `output` the index says lists it, and their runs.
+
+D7, whole run metadata. At every depth, each such run's RunCompletion, its
+RunManifest, the manifest's `script` block, a non-null `input_set`, and
+every OutputCollection and OutputItem record the run links (records only)
+travel. Content (raw blocks and DirectoryManifests, with everything under
+them) follows the depth. A destination holding only the copy is then
+self-consistent: `Mark` can walk the run, a sweep there is not refused for
+missing metadata, and the items whose files did not travel show as
+missing. These records count in `run_records` unless an earlier group
+already has them. *Amended 2026-10-25 (fix wave items 1 to 3):* `Mark`
+follows every metadata link (§19 decision 4), so `run_records` also takes
+two cases the first build missed:
+
+- a `via` collection the source holds whose RunManifest no indexed
+  RunCompletion names (a run that never finished, or one the index lacks):
+  that RunManifest and its `script` travel, at `results`, though no run is
+  listed for it in `runs`. *Amended (final review item 7):* every `via`
+  collection the source holds brings its RunManifest and `script` this
+  way, also when the index knows the run: the source may lack that run's
+  RunCompletion, and then the run's records bring nothing (the
+  RunCompletion is missing at the source and the run is listed with no
+  manifest);
+- an item the lineage rule or the join key adds that no source collection
+  lists (the index lists it for the run): its OutputItem record travels at
+  `lineage`, the depth its files got.
+
+Groups, in the order of the plan's section 1.3: `root`, `items`, `files`,
+`collections`, `run_records`, `lineage`, `run_outputs`, `inputs`,
+`handoffs` (P4), `claims`. Each block is in the earliest group any rule
+gives it.
+
+- `root`: the root Selection and every Selection nested under it (ruling:
+  they are roots of the tree asked for); for a `run` root, its RunCompletion.
+- `items`: the item members of that Selection tree; for a `run` root, every
+  item of the run.
+- `files`: the root's own files, at every depth: each Leaf address of those
+  items, and each DirectoryManifest with everything under it; for a `run`
+  root, also each collection's `index` Leaf.
+- `collections`: the collections the root's items were picked through
+  (records only; the other items they name stay references unless D7 brings
+  their records); for a `run` root, the run's collections.
+- `run_records`: D7, above.
+- `lineage` (lineage and all): the files of the items the lineage rule
+  adds. Their records are in `run_records` (D7, above).
+- `run_outputs` (all only): the files of every other item of the producing
+  runs, and each collection's `index` Leaf.
+- `inputs`: reserved for input content once milestone 7 records it; empty
+  in this build. A non-null `RunCompletion.input_set` is run metadata and
+  goes in `run_records` (D7, and the ruling below).
+- `handoffs` (explorer v0.3 P4, follow-up R4): each Handoff citing a
+  Selection of the tree (the root or a nested one) that a `handoff` entry
+  of the source member's own log announced (`Index.handoffsLoggedIn`),
+  with its files (each Leaf address, sized by the Leaf), at every depth.
+  The Handoff is the Selection's citation and its command reads its files
+  (`--input cas://<cid>/samplesheet.csv`, the file's own cid; a path
+  through the Handoff's cid, `cas://<handoff-cid>/samplesheet.csv`, does not
+  resolve and is not meant to: the Handoff is a record, not a directory),
+  so a copied Selection's
+  hand-off resolves at the destination. A Handoff whose current Claims
+  among the source's own are a clean deletion with no pin stays behind
+  (deletions never travel, so it would arrive undeleted). Its `project`
+  link is not followed: a Project travels only through a carried
+  membership. A Handoff or a file the source lacks is listed in
+  `missingAtSource`. A `run` root carries none. A Handoff written into a
+  member other than the source is not carried, since a copy reads blocks
+  from the source member only.
+- `claims`: the carried Claims.
+
+Depths nest: `results` is inside `lineage`, which is inside `all`. One walk
+computes the `all` closure and tags every block and Claim with the
+shallowest depth that includes it. `Result.at(depth)` filters that walk,
+and `Result.depths` gives each depth's totals (`blocks`, `bytes`,
+`unsized`) from it, so a dry run answers all three depths at once. A block
+that a shallower rule reaches later moves to that depth, and a
+DirectoryManifest passes the better placement down to what is under it.
+
+Lineage. Measured on roblab (plan, "Lineage depth"): a run's writable
+member keeps Nextflow's records under `nf/` (1,734 FileOutput, 235 TaskRun,
+235 TaskOutput, 4 WorkflowRun). A published FileOutput
+(`nf/<nf_run_hash>/<publish path>`, path `cas://<cid>/<name>`) names its
+`source`, `lid://<task>/<file>`, and that task's TaskRun `input` names the
+files it read in the same form. Those are work-dir files, never `cas://`
+ones (1,905 of 1,905 resolved inputs), but many have a published
+counterpart: a FileOutput of the same run whose `source` is that lid. 366
+published sources have a published upstream (the plan counts 784 published
+sources; the reader's recount found 1,173 (run, source lid) pairs over the
+4 runs). The rule, per run:
+
+- Task rule (`runs[].lineage = "tasks"`): when `nf` is given, the run's
+  RunManifest has an `nf_run_hash` other than `unknown`, and the source
+  holds records under `nf/<nf_run_hash>/`. *Amended (final review item
+  8):* the hash must be hex digits (`[0-9a-f]+`), since it comes from block
+  content and names a directory; any other hash takes the join key. The
+  local `nf/` reader also refuses an absolute key, a backslash or a `..`
+  segment, so a key never resolves outside `nf/`. `TaskLineage.upstream(nf,
+  nfRunHash, addresses) -> Result{available, upstream}` reads every
+  FileOutput of the run, starts from the tasks that produced the run's
+  results Leaf addresses, and walks TaskRun inputs upstream, transitively
+  (each TaskRun read at most once, so cycles end); every input lid with a
+  published counterpart adds that address. It is called once per run with
+  every results address of the run; on S3 that is one GET per FileOutput
+  of the run, made even for a results copy. Lineage then adds each
+  OutputItem of that run holding such an address (the index's `producer`
+  rows, kept to that RunCompletion) that is not a results item.
+- Join-key fallback (`runs[].lineage = "join_key"`): when the task rule
+  does not apply (no `nf`, no usable hash, or `available` false). Lineage
+  adds every item of the same run, in any output, with an untruncated
+  `meta.id` `item_attr` row equal on path, type and value to one of that
+  run's results items (ruling: the same run only, as the task rule is).
+- `nf/` records never travel: they hold host paths (work-dir files) and are
+  not blocks, and the closure only reads them. So lineage depth from a
+  member that holds a run only as a copy always takes the fallback.
+- For a `run` root every item is already a results item: the plan names the
+  rule that would apply and adds nothing. A results view reports
+  `runs[].lineage` as null.
+
+Measured on a scratch copy of roblab (`RoblabCopyClosureTest`, opt-in by
+`-Droblab.store=`), the wigshop Selection
+`bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce`, one run
+(`distraught_murdock`): results 98 blocks and 1,349,065 bytes, lineage 174
+and 20,842,160, all 1,043 and 78,681,431. By group: root 1 (375 B), items 3
+(3,645 B), files 9 (1,135,852 B), collections 1 (1,041 B), run_records 83
+(207,975 B), lineage 76 (19,493,095 B), run_outputs 869 (57,839,271 B),
+claims 1 (177 B). The task rule adds 18 items; the join key on the same run
+would add 23 items, 303 blocks and 23,102,286 bytes. Nothing unsized or
+missing at the source; unaddressed Leaves 0, 3 and 5 by depth.
+
+Claims. Only Claims a `claim` entry of the source member's own log
+announced count (`Index.claimsLoggedIn(fromAlias)`); every block in the
+closure is a subject. Per subject, the current Claims are `ClaimState` over
+those, and each falls in a category by its attribute: `name` is `names`,
+`pin` is `pins`, `project` is `projects`, `retain` is retain, a null
+attribute (a deletion) is deletion, and any other is `annotations`.
+
+- A current `retain` or deletion Claim never travels: it is about the
+  source's retention. It is counted in `skippedClaims` (`retain`,
+  `deletion`) at its subject's depth and not listed. So a Project or
+  Selection deleted at the source arrives live at the destination when the
+  copy carries it (a Project through a carried membership, §22); delete it
+  there too.
+- Every current Claim of the four categories is listed, with every Claim it
+  supersedes, transitively (read from the source, else from the index;
+  `supersedes` is empty when neither holds the Claim). A superseded Claim
+  takes the category, the carried flag and the depth of the current one it
+  is history of. `current` is true for the current Claims and false for
+  their history. `carried` is true when the category was asked for.
+  Uncarried Claims are listed so the page can show a category's Claims
+  before it is ticked. *Amended (final review item 14):* a current Claim
+  the source lacks (its log and the index still name it) is not carried,
+  and neither is its history: a destination that logged what it
+  supersedes without it would take an older value as current.
+- Only carried Claims are blocks (group `claims`) and count in the totals.
+  A Claim's depth is its subject's shallowest depth. Claims whose subject
+  is itself a Claim are not looked for.
+
+Sizes, in this order: the cache's `block` table; the Leaf's or directory
+entry's `size` for a raw block; the encoded length of a record the walk
+read; else the source's `size(cid)`. Every block the walk never read is
+checked with the source's `has`, 16 at a time, and sized there when nothing
+above gave a size. A block with no size is `unsized`, and byte totals
+are then "at least". `unaddressed` counts Leaves with no address in the
+items whose files the depth copies.
+
+`input_set` ruling (2026-10-25, ledger; built in fix wave item 3): a
+non-null `RunCompletion.input_set` link is run metadata, as `Mark` treats
+it (§19 decision 4), so it travels in `run_records` at every depth, read
+like a record, with nothing under it followed, since InputSet is a reserved
+kind. The `inputs` group is for input content once milestone 7 records it.
+`input_set` is null in every RunCompletion written today, so no copy
+carries one yet.
+
+Known gaps, as built: `blockSize` is one query per block; on S3 a block the
+walk never read costs a `HEAD` for `has` and, when nothing else sized it,
+another for `size`. The audit covers every RunManifest in the copy,
+including one that travels only through a `via` collection (the first D7
+case above) and so has no `runs` entry.
+
+### The copy verb and `POST /api/copy`
+
+*Added 2026-10-25 (plan tasks T6, T8 and T10, and the final fix wave).*
+
+`robsyme.cas.CopyService` is the one implementation. `nf-blocks:copy`
+(`cli/CopyCommand`, §15 has its flags and exit codes) and the explore
+server's `POST /api/copy` (§15) only turn their input into a request and
+its answer into an exit code or a response. `CopyService.execute(Map
+config, Map request, boolean dryRun, PrintStream err)` returns
+`Outcome{status, body}`; a fifth argument, `Supplier<Principal> signer`,
+signs the Transfer (below). The request has the endpoint's JSON keys:
+`root`; `from`, null for the default; `to`; `depth`, default `results`;
+`claims`, a list, default `names`, `projects`, `annotations`, or
+`['none']`; and `accept_audit`, a boolean. The status is 200 (a plan or a
+finished copy), 400 (`{error, message}`), 409 (`CopyService.REFUSED`: a
+real copy refused before any write, the body the plan with `refused`
+`not_kept` or `audit`, below) or 500 (a copy that failed part way). Anything
+else, such as a config that does not parse or a member that cannot be
+read, is thrown; the CLI then exits 1 and the endpoint answers
+`copy_failed`.
+
+The 400 codes:
+
+- `bad_root`: no root; a root in none of the forms below; a `selection:`
+  that names another kind; a bare cid of a kind other than Selection,
+  RunCompletion or RunManifest; `run:latest` (copy has no `--pipeline`); a
+  `run:` reference `RunRef` refuses as malformed.
+- `bad_request`: no `to`; a field of the wrong JSON type; an
+  `accept_audit` that is not a boolean. The endpoint also uses it for a
+  body that is not a JSON object.
+- `bad_depth`: a depth other than `results`, `lineage` or `all`.
+- `bad_claims`: `claims` not a list, an empty list, `none` beside another
+  category, or a category not among the four (`retain` and `deletion` say
+  they never travel).
+- `unknown_member`: `to`, or a given `from`, is not under `cas.stores`.
+- `same_member`: `from` and `to` are the same.
+- `bad_config` (fix wave item 11): `readOnly` on any configured member is
+  something other than `true` or `false`. `CasConfig` would throw on it.
+- `not_a_target`: `CopyTargets.judge` refuses `to` (§2).
+- `root_not_found`: no member holds the root; the named `from` does not
+  hold it; no member other than the destination does; a RunManifest that
+  no RunCompletion names (the run did not finish); a `run:` reference
+  `RunRef` cannot find.
+
+The copy composition. A copy of the config whose `cas.resolve` is the
+configured list (every `cas.stores` alias when unset) with `from` appended
+when missing, opened with the destination as its writable member:
+`CasConfig.from(composition, 'cas://<to>')`, then `CasSession.forCommand`.
+So the destination is writable for this copy only (D1), and the
+composition's index sees the source and every resolve member. Its members
+are the destination, then the `cas.resolve` order.
+
+Roots. `selection:<cid>` must name a Selection; `run:<ref>` takes what
+`RunRef` resolves (`run:<cid>`, `run:cas://<cid>`, `run:lid://<hash>`), a
+bare cid read as `cas://<cid>`; a bare cid is taken by its kind: a
+Selection, a RunCompletion, or a RunManifest, whose RunCompletion
+`Index.runByManifest` finds. The kind is read through the composite, so
+any member holding the block will do. The source is `from` when given,
+and it must hold the root; otherwise it is the first member after the
+destination, in `cas.resolve` order, that holds it. The source is read
+through its own `BlockStore`, never the composite, and its `nf/` records
+through `LocalLineageRecords` or `S3LineageRecords`.
+
+Plans are write-free (ruling, 2026-10-25). Every plan, the dry run's and
+the real copy's, catches up the composition's index with the destination
+left out (`CasSession.catchUpIndex(index, true, [to])`): the destination is
+not caught up into the index, its `store-id` is neither read nor created,
+and nothing is written there or at the source. The closure is computed
+once at `all` and viewed at the depth asked for (above). Presence is the
+destination's own `has`, 16 at a time, for every closure block and every
+listed Claim, carried or not. The plan never reads presence from the
+cache. *Amended (final review item 13):* the cache can still hold the
+destination's rows from an earlier real copy (whose snapshot step catches
+the destination up), and from any other session over a composition that
+includes it; the plan reads only the cache's Claim rows from them (D9,
+below). The audit reads each RunManifest in the view from the source
+(`RunManifestAudit`, §6). A dry run, and a refused real copy, end here.
+Tested: a dry run into a local member that does not exist leaves it
+absent, and one into an S3 member sends it only `HEAD`, `GET` and `LIST`.
+
+Kept at the destination (D9, final review item 1). Present is not kept: a
+destination holds the blocks of a run it has released until its next
+sweep (trashed blocks stay in `blocks/` during the grace), and a copy that
+found them present, or wrote them, logged nothing new, so that sweep took
+them, and the page then offered to release the source's copy too. So every
+plan reads the destination's own state, write-free: its Store Log listing
+(a directory listing, or an S3 `LIST`; a member that does not exist yet
+reads as an empty log), and the Claim blocks that log lists, each from the
+cache when it holds that Claim (a Claim is its content) and otherwise from
+the destination (`GET`). Only Claims whose subject is a root or a run of
+the plan count. `plan.destination_state` has one entry per root (role
+`root`: the root asked for, then each nested Selection) and per run (role
+`run`: each `runs[].completion`; a `run:` root is listed once, as the root),
+`{cid, role, name, state}`. `name` is the run's `run_name`, or the
+Selection's current name among the source's Claims the plan lists, or
+null. `state` is `ClaimState` over the destination's own logged Claims on
+that subject, plus the Claims this copy carries on it that `announce`
+will log there, so it describes the destination after the copy (a carried
+`del pin` superseding the destination's pin on a run it released makes
+that run `released`); `absent` still looks at the destination's own Claims
+alone. Read as Mark reads them:
+
+- `pinned`: a current pin (a pin wins for content, so a pinned run that is
+  also released or deleted is `pinned`);
+- `deleted`: a clean current deletion;
+- `released`: a run (only a run) whose `retain` group is a clean `set
+  retain "lineage"`;
+- `absent`: none of those, no Claim on it at all, and no `run-` or
+  `selection-` entry for it in the destination's log;
+- `held`: anything else, a conflicted group included (Mark keeps on a
+  conflict).
+
+A subject with no log entry but a releasing or deleting Claim reads as
+`released` or `deleted`, not `absent` (ruling while building: once the copy
+logs it, that Claim decides). `plan.kept` is false when any entry is
+`released` or `deleted`. Copy never writes a restore Claim: the person
+restores in the destination first.
+
+Refusals. A real copy with `kept` false writes nothing and answers 409
+with `refused` `not_kept`, whatever the audit says (ruling: `not_kept`
+wins, since restoring at the destination comes first). Else a real copy
+whose audit has findings writes nothing and answers 409 with `refused`
+`audit`, unless `accept_audit` is true. Every other body has `refused`
+null. A dry run reports both and answers 200. Tested
+(`CopyServiceTest`, the D9 cases): a released run and a deleted Selection
+at the destination refuse the copy and leave the destination's files as
+they were; a held run, a pinned one, a pinned and released one and a
+pinned and deleted one are kept; a conflicted `retain` group holds; an
+absent destination reads `absent` throughout and stays absent; a release
+logged before the run itself refuses; an S3 destination is read with
+`HEAD`, `GET` and `LIST` only.
+
+The body is the plan's section 1.3 body. Each group also carries
+`present_bytes`, `transfer` and `transfer_bytes`; `transfer` counts blocks
+the destination lacks and the source holds. Claims not carried are listed
+but count in no total. `command` is the equivalent CLI line, with `from`
+resolved. A real copy adds `copied`, `copied_bytes`, `transfer_entry`,
+`failures` and `snapshot`. The 409 body is the plan with `dry_run` false,
+`refused` set, and none of those fields.
+
+Write order. After the refusals, `checkClock` (§11): a clock far from S3's
+would misdate the entries. *Amended (final review item 2):* then the copy
+registers as a Live Writer in the destination
+(`CasSession.startLiveWriter`, §19 rule 1, with `run_name`
+`nf-blocks:copy`), which waits out a sweep holding `sweep.lock`, and
+deregisters (`stopLiveWriter`) when it ends, in a `finally`. That sweep
+may have deleted trashed, past-deadline blocks the plan counted present,
+so after registering the copy asks the destination's `has` again of every
+block the plan counted present; any now gone is written like the rest,
+and the body's figures are those of the second look. Tested: a sweep that
+holds the lock and takes a present block before letting go; the copy
+waits, writes that block again, and leaves no registration. Then each
+block the destination lacks and the
+source holds, in seven steps: raw content; DirectoryManifests;
+OutputItems; OutputCollections; RunManifests with their scripts;
+RunCompletions; Selections, Projects, Handoffs and Claims. A step's blocks go 16 at a time in
+no fixed order, submitted in reverse closure order so a nested Selection
+or DirectoryManifest tends to go before the one naming it; only the steps
+are ordered. Each is `put(cid, source.open(cid), size)`, which hashes and
+refuses a mismatch (§5). A failed put stops the copy at the end of its
+step and nothing more is written: the answer is 500 with `copied`,
+`copied_bytes`, `failures` (`[{cid, error}]`), `transfer_entry` null and
+`snapshot` null. Running the copy again finishes it, since the blocks
+already written now count as present.
+
+Then one read of the destination's Store Log, and an entry of the existing
+kind for each root-like block the log lacks: `run-<completion>` per run of
+the view, `selection-<cid>` per Selection in it, `project-<cid>` per
+Project, `handoff-<cid>` per Handoff, `claim-<cid>` per carried
+Claim, leaving out a block the source lacked and the destination does not
+hold. Then the Transfer block (§6), with `roots` the one root, `runs`
+every run of the view whose RunCompletion the source held (D8: the runs
+whose records the copy carried; final review item 6), `blocks` the view's
+block count, `copied` the
+blocks written and `bytes` the bytes read from the source for them; then
+its `transfer-` entry, last. Each entry is stamped `max(clock, previous +
+1)`, starting after the newest entry already in the log, so the `transfer`
+entry sorts newest even when an entry there is stamped in the future.
+
+No-op copies (ruling, 2026-10-25). When the copy wrote no block and the
+log lacks no entry, nothing is appended and no Transfer is written:
+`copied` 0, `transfer_entry` null, `failures` empty, `snapshot` `skipped`,
+and stderr says the destination already holds everything. A copy that
+writes only missing entries, or only a newly carried Claim, writes a
+Transfer. *Amended 2026-10-25 (explorer v0.3 P3 follow-up, F4;
+`CopyService.anythingToWrite`):* such a copy registers no Live Writer.
+After the refusals, a real copy whose view has no block the destination
+lacks and the source holds, and whose destination log (read once more)
+lacks none of the run, Selection and carried Claim entries, goes straight
+to the copy step: no `checkClock`, no Live Writer and no second `has`. So a
+no-op copy into an S3 member sends no `PUT` and no `DELETE` under `live/`
+(tested against `MemoryS3Ops`). It reads the destination's log a second
+time to decide.
+
+*Amended 2026-10-25 (explorer v0.3 P3 follow-up, F4;
+`robsyme.cas.CopyErrors`):* a copy's error text never says where on the
+operator's disk the stores, the index cache or the spool directory are.
+`CopyErrors.describe(e, roots)` is `<ExceptionClass>: <message>` (the
+simple class name, the full name for an anonymous class, the bare name
+when there is no message), with each credential in the message replaced by
+`[secret]` (`Leaks.redactCredentials`, as the RunManifest scrub does) and
+the rest redacted by `CopyErrors.redact`, in this order:
+
+- a `file:` URI (`file:///p`, `file:/p`) is read as the path `p`;
+- each configured member's root, longest first, becomes `<alias>:`: a
+  local location as an absolute, normalized path (so `/data/./lab` matches
+  `/data/lab`), an S3 one as written
+  (`s3://bucket/prefix`), matched as a whole path, never inside a longer
+  path or a URL. `CopyErrors.rootsOf(config)` reads them from
+  `cas.stores`;
+- a Windows path (`C:\x`, `C:/x`, `\\host\x`) becomes `[local path]`,
+  before the home directory is looked for, so `C:/Users/<user>` goes whole;
+- a path under the home directory, the temp directory or the working
+  directory becomes `[local path]` up to the next terminator: a quote, a
+  backquote, a comma, a semicolon, a parenthesis, a line end, a `: ` (a
+  reason follows, as in `<path>: Not a directory`) or a space before a
+  `scheme://` URL. Such a path may hold spaces and names (`OneDrive -
+  Org/x`, `Screen Shot 2024.png`), so prose after it may go too (ruling:
+  over-redacting a trailing word beats leaking a name);
+- every other absolute POSIX path becomes `[local path]`, up to a space,
+  a quote, a bracket, a comma, a `;` or a `:`; a full stop that ends the
+  sentence stays. A URL, a relative path, `alias:/...`, `1/3` and `and/or`
+  stay. This rule and the home-directory one also take a path right after
+  `<word>:` (`jar:file:/x`, `jdbc:sqlite:/x`, `location:/x`), unless the
+  word is a member alias or the colon starts `://`.
+
+This text is each `failures[].error`, the snapshot outcome `failed:
+<ExceptionClass>: <message>` and its stderr line, and the 500
+`copy_failed` message. `CopyService.run` rethrows anything but a
+`Refused` or a `ClockSkewException` as `CopyService.Failed`, whose message
+is already redacted (the cause stays for the log); the CLI prints it and
+the explore server answers it. Another exception reaching the server is
+described with no member roots, so its paths become `[local path]`.
+Before this, `failures[].error` was the bare message (`the bucket went
+away`), and a message could name a local path.
+
+Not covered: an absolute path outside home, temp and the working
+directory that holds a space is redacted only to the space; a terminator
+inside a path under home (`<home>/Smith, John/x`, `Photos (old)/x`,
+`Notes: 2024/x`) leaves the rest of that directory name after it, and so
+does ` b://` inside a path name (ruling: the home prefix and the user
+name never leak, part of a directory name can); a relative member
+location is matched only as its absolute form; a `ClockSkewException` is
+not wrapped.
+
+The snapshot. After the Transfer, the composition's index is caught up in
+full, which reads the destination's log and creates its `store-id` when
+it has none, and the destination's Index Snapshot is written at any size
+(`snapshotWritable(index, 0, base, failed)`). The snapshot base is taken
+before the plan's catch-up, so the guard covers the whole copy.
+`snapshot` is exactly `written`, `skipped` or `failed: <message>`; the
+reason for a skip, with `IndexSnapshot.skipAdvice`, goes to stderr (ruling:
+the page compares the value with `skipped`). The copy has succeeded
+whatever it says (§0 rule 3). The first copy into a member with no
+`store-id` resets no cache that scanned it while it was empty (§20
+decision 4, amended). *Amended (final review item 12):* a session whose
+cache opened without its transfer tables (§12) skips the snapshot, with
+`snapshot` `skipped` and the reason on stderr, since its snapshot would
+hold no Transfer rows and a build from it would skip D8.
+
+Signing. The CLI signs the Transfer as a command does
+(`CasSession.assertedBy`, docs/identity.md). Decision (P3 lead,
+2026-10-25; fix wave item 12): a copy through `POST /api/copy` signs with
+the explore server's own principal, the one `members.json` shows, passed
+as `CopyService`'s signer. It is asked only when the Transfer is written,
+so a dry run never waits for identity, and a copy resolves none of its own
+and prints no `signing as` line. A null answer falls back to the config's
+resolution. The copied blocks keep their own `asserted_by`.
+
+Concurrency on the explore server: one real copy at a time, and dry runs
+share two slots, with at most one more waiting; a newer dry run supersedes
+the waiting one (D10, §15). Each request opens the copy composition's
+cache, and openers of one file take turns (§12, final review item 4).
+
+The cache file. The copy composition's cache file is named by its members'
+locations, writable first (§12). Unless `cas.index.path` is set, it is the
+configured composition's file, and the explore server's, only when the two
+list the same members in the same order, as when the destination is the
+configured writable member and `cas.resolve` already lists the source.
+Otherwise the first copy into that destination from that config builds a
+cache of its own cold, seeding from the members' snapshots, and later
+copies catch it up; a server whose cache is another file sees the copy at
+its next catch-up of the destination's log. With `cas.index.path` set,
+every composition shares one file, and §20 decision 25's race between a
+reset and a catch-up of the same file applies to it. Measured (T8,
+local members): a cold dry run 15.6 ms for 10 items and 454 ms for 3,000
+items (about 6,000 blocks), a warm one 8.2 and 224 ms; a real copy 148 ms
+for the 10 items and 14.1 s for 3,005 blocks (about 4.7 ms a block). The
+P3 lead's local acceptance run at `daac0b0` copied 98 blocks, 1,349,065
+bytes (the wigshop `results` figures above); a second dry run found all 98
+present, and `fromStore` read the 9 files from the destination alone.
+
+## 22. Projects, input sets and hand-offs (explorer v0.3 P4, 2026-10-25)
+
+*Status: on `explorer/p4-projects`, plugin half. Contract
+`docs/plans/2026-10-24-explorer-v0.3-p4.md` sections 1 and 2; the plugin
+plan, with rulings R1 to R9, is
+`docs/plans/2026-10-25-explorer-v0.3-p4-plugin.md`. The explorer's side
+(the project pages, sample identity, the hand-off template) is the web
+half's, under `web/`.*
+
+A project is a small root record whose name, members, policies and
+project-scoped annotations are Claims. A run's InputSet records the files
+it read, by content address, so two runs that read the same bytes can be
+told to be the same sample. A Handoff records one hand-off to a downstream
+pipeline and roots the files generated for it.
+
+### Format changes
+
+- New block kinds Project, InputSet and Handoff (§6), and Store Log kinds
+  `project` and `handoff` (§5).
+- New RunCompletions link an InputSet. Old ones (`input_set: null`) read as
+  before everywhere.
+- A build older than P4 ignores `project` and `handoff` entries, so its
+  sweep trashes Project and Handoff blocks, and the files and Selection
+  only a Handoff reached, and leaves the entries dangling. It keeps an
+  InputSet (its Mark already kept `input_set` as run metadata). From this
+  build on, a sweep refuses to apply beside an entry kind it does not know
+  (below), so later kinds are safe against this build.
+- The index schema is version 6 (§12): every table in one DDL, the
+  snapshot at `index/v6.sqlite`. A cache of an older version is recreated and such a snapshot
+  is not seeded from; both are rebuilt from the Store Log.
+
+### Projects and the Claims about them
+
+`Put` builds a third kind: `{kind: "Project", name, description,
+created_at}`. The server fills `schema` and `asserted_by`. The name is
+non-blank and at most 256 characters, the description a string of at
+most 4,096 (empty allowed), `created_at` ISO-8601 UTC with milliseconds;
+a bad shape is `invalid` at the field, and a `created_at` more than 10
+minutes from the server clock is `clock_skew`, checked after "already
+written" as a Claim's timestamp is. The Project is logged as `project`.
+`nf-blocks:put` takes the same request; the request's `kind` picks what
+is built.
+
+Claims, amending §16 decision 6:
+
+| Claim | subject | verb, attribute | value |
+|---|---|---|---|
+| Membership | RunCompletion, Selection or OutputItem | `add project` | link to a Project |
+| Sample in the project | Project | `add sample` | SampleRef `{pipeline, id}` |
+| Annotation | Project | `add annotation` | `{sample: SampleRef, name, value}` |
+| Same sample as | Project | `add same_sample` | `{a: Occurrence, b: Occurrence, same: Bool}`, Occurrence `{pipeline, id, run: link}` |
+| Policies | Project | `set policy.default_store`, `set policy.retention`, `add policy.people` | a member alias; `"pin_selections"` or `"none"`; a principal |
+
+- `add` is for pin, project, sample, annotation, same_sample and
+  policy.people; `set` of any of these is `invalid` at /attribute. `add
+  pin` keeps its rules. Any other `add` may supersede Claims. A Claim
+  whose attribute is project, sample, annotation, same_sample or
+  `policy.*` supersedes only Claims of the same subject and attribute, and
+  is superseded only by a Claim of the same attribute (`wrong_kind` at
+  /supersedes/N, either way). So a `set name`, a bare `del` or a `delete`
+  cannot remove a membership, a sample or a policy; a bare `del` still
+  undoes a `delete`. An edit is an `add` superseding the old value; a
+  removal is a `del` with the attribute.
+- Value shapes are checked before the store is read, `invalid` at /value:
+  SampleRef strings non-empty and at most 256 characters; annotation
+  `name` matching `[A-Za-z_][A-Za-z0-9_.]{0,63}` and `value` at most 256
+  characters; policy strings non-empty and at most 256;
+  `policy.retention` one of its two values. The pins the page writes for
+  `"pin_selections"` are `add pin` Claims on Selections, which Put accepts
+  since F5 (§19 item 5). `policy.default_store` is not
+  checked against `members.json`: a project travels between explorers with
+  different members, and the policy never overrides a member's `readOnly`
+  (R9).
+- Against the store: a held Project subject takes only those attributes,
+  `name`, and `delete` with its `del` (else `invalid` at /attribute). The
+  project-scoped attributes need a held Project subject; `add project`
+  needs a held run, Selection or item subject and a held Project value;
+  each Occurrence's `run` is a held RunCompletion (`not_found` or
+  `wrong_kind` at the field).
+- Sample, annotation and same-sample Claims hang off the Project because
+  a Claim's subject is a cid and a sample has none (plan D1). A global
+  sample identity, outside any project, waits on input addresses (below)
+  and would need a sample subject.
+- The page groups occurrences into samples itself (plan 1.6, D2); the
+  index supplies `run_input`.
+
+### InputSet: what a run read (`robsyme.cas.trace.InputRecorder`)
+
+`CasObserver.onTaskComplete` and `onTaskCached` pass each task to
+`InputRecorder`. A file in the task's `inputFiles` is an input when its
+source is a Path and neither its staged path nor its source lies under the
+run's work directory (compared as given and through `toRealPath`), except
+the `stage-*` subtree, where Nextflow copies foreign (http, s3) files.
+Files the run's own tasks made are not inputs, nor is a file under the
+`storeDir` of any task the run recorded (`task.config.storeDir`, as given
+and through `toRealPath`), whichever task is recorded first. `params.input` is recorded
+at `onFlowBegin`, idempotently again at completion.
+
+- Role: `samplesheet` when the base name equals `params.input`'s; else
+  `param:<name>` for the first top-level param, in name order, whose value
+  has a URI scheme, contains `/` or names an existing file, and has that
+  base name; else `task`, except that a `task` file under the pipeline's
+  `projectDir` is `asset` with no sample (nf-core stages its
+  `multiqc_config.yml` in a tuple with meta id `multiqc_report`, which
+  would otherwise make any two runs of the pipeline share a sample's input).
+- Sample (R3): from the task's declared inputs, typed processes through
+  `ProcessConfigV2` (records, tuples, plain inputs), classic processes
+  grouped by `BaseParam.index`. A record's sample is `meta.id`, else its
+  `id`. A tuple's is the `id` of its component named `meta`, else its `id`
+  component; a map component under any other name (`meta2`, `meta3`,
+  `ref_meta`) gives none, since nf-core passes a reference as `tuple
+  val(meta2), path(fasta)` with `meta2.id` naming the reference. A record
+  field other than `meta` or `id` gives none either. A file gets the sample
+  of each input that holds it; a file only a separate `path` input holds
+  gets null, so a reference staged beside per-sample reads names no sample.
+- Address: a `cas://` source keeps its cid, unhashed. Which local path to
+  read is chosen from the store path, then the source, by text only: a
+  path on the default file system whose text is not under `/fusion`
+  (Fusion's mount, where a read is a download). On the pool, each
+  candidate's real path is resolved (`toRealPath`, links followed) first;
+  the first real path not under `/fusion` is read, and when every
+  candidate leads into `/fusion` (a local link into Fusion's mount) the file
+  is `remote` and its real path only stat'ed. A candidate with no real path
+  (realpath fails, or gives no absolute path) is judged by one stat that
+  follows its links: a failed stat (a missing file, a dangling link, a
+  parent this user cannot search) is `unreadable`; a regular file is
+  `unreadable` with its size (without a real path it cannot be told from a
+  link into `/fusion`); anything else is `unaddressed`. Only a regular file
+  is opened, and only to hash it (raw, §3), with its size. A directory, a
+  FIFO or a device is `unaddressed` with no size and is never opened. This
+  covers `--input <(...)` and a piped `/dev/stdin`: on macOS `/dev/fd/N`
+  resolves to a FIFO, on Linux it is a link to `pipe:[n]` or `socket:[n]`
+  that realpath cannot follow. So a pipe with no writer cannot hold
+  completion, and a piped `params.input` is never raced for its bytes. The
+  `stage-*` copy of a foreign file is a regular local file Nextflow already
+  downloaded for the task, so it is hashed and nothing is downloaded for
+  hashing; a local source staged to a remote work directory is hashed from
+  that source. Any other file (s3, gs, az, http(s), `/fusion`),
+  `params.input` included, is never opened (orchestrator ruling, P4): it
+  is `remote`, with its size when a stat answers. When a task staged
+  `params.input` itself, the hashed `stage-*` copy stands for it and the
+  unaddressed `params.input` entry of the same name is dropped.
+- Name: the base name of the path only. A URI's query and fragment are
+  dropped, and its userinfo whole. When the URI's first segment (up to the
+  first `/`) holds a userinfo (an `@`, or a `:` that starts no port number)
+  and a later segment holds an `@`, the userinfo runs to the last `@` of
+  the first such segment, so a password holding an unescaped `/` or `@`
+  never becomes the name: `https://user:p@a/ss@host` gives `host`, and
+  `https://user:pa/ss@host/dir/a@b.fq` gives `a@b.fq`. Such URIs are
+  ambiguous, and this reading costs a plain userinfo followed by an `@` in
+  the path its text up to that `@` (`https://user:pass@host/data/x@1.fq`
+  gives `1.fq`). Any other userinfo is dropped by `Leaks.withoutCredentials`,
+  and a URI with no path gives its host. A remote name is also cut at its
+  first `?`, `#` or `;` (path parameters such as `;jsessionid=`); a local
+  name keeps them. On a Box shared link (host `box.com` or under it, last
+  segment directly under `/s/` or `/shared/static/`) the stem (the name up
+  to its first `.`) becomes `[secret]` whatever its shape, with its
+  extension kept: `https://app.box.com/s/abcdef` is named `[secret]`.
+  Elsewhere a stem of 24 or more letters and digits that is neither all
+  hex nor a CID becomes `[secret]` the same way when it switches between
+  letters and digits often enough: at least twice in a remote URL path,
+  where tokens are handed out (a random 32-character token passes with
+  probability 1 - 6.8e-5, and a separator-free remote name with a number
+  inside, such as `run20261025combinedreads`, is redacted too), and at least
+  four times in a local file name, so that same name on local disk stays
+  readable (orchestrator ruling; a random token passes with probability
+  1 - 1.3e-3). Known token shapes are caught anywhere by the next step. Last, the name goes
+  through `Leaks.redactCredentials`, so a GitHub token in a file name
+  becomes `[secret]`. The same rule gives the param base names and the
+  samplesheet name, so roles still match by name.
+- Cost: the task thread touches no file system. Each input's stat, then its
+  hash, run on 4 daemon threads, once per path per run; a storeDir's
+  symlinks are resolved on the same pool. At `onFlowComplete` the InputSet
+  is written just before the RunCompletion that links it. A successful run
+  waits at most `cas.inputs.waitSeconds` for the stats, hashes and storeDir
+  resolution together, a failed run at most 30 s of it. An input still
+  being stat'ed or hashed then has reason `unfinished`, with its size if
+  the stat had answered: an InputSet is partial exactly when an input has
+  reason `unfinished` (a new value of `reason`, no new field). The console
+  says how many and names the option, and the run's status and
+  RunCompletion are unchanged. The pool's daemon threads are stopped
+  without waiting, so a read blocked on a hung mount holds neither the
+  plugin stop nor the JVM exit. If the InputSet cannot be made, the console
+  says so once and the RunCompletion links `input_set: null`; a failure
+  writing the InputSet block aborts the run (rule 3). Measured on an M3 Pro
+  with a warm page cache: `Hashing.hashRaw` runs at 1.8 GiB/s on one thread
+  and 5.6 GiB/s on four, and a run with 4 GiB of local inputs waited 0.38
+  to 0.43 s for hashing at completion.
+- `cas.inputs.hash` (Boolean, default true; anything else refused; `cas.inputs`
+  must be a scope): false reads nothing. Local inputs keep name, size, role
+  and sample with reason `unaddressed`; `cas://` inputs keep their address;
+  remote files, `params.input` included, stay `remote`.
+- `cas.inputs.waitSeconds` (a whole number, 0 or more, default 600;
+  anything else refused): how long a completing run waits for the stats and
+  hashes of its inputs; 0 waits for nothing still queued. The measured cost
+  above is for a warm page cache. A cold read of large local inputs on
+  shared storage, or a resume where every task is cached and the run ends
+  at once, pays the full read at completion, up to this bound, and every
+  run hashes its inputs again (nothing is remembered across runs).
+- `params.input` stays `[redacted-location]` in the RunManifest; the
+  InputSet has it under role `samplesheet`, with its address when it is a
+  local file.
+- The same reads give the same InputSet block: a resumed run, and the same
+  pipeline written as classic or typed processes, give one cid.
+
+### Index (§12)
+
+Tables, part of schema 6's base DDL (§12; an older cache is recreated and
+rebuilt from the Store Log):
+
+```
+project(project_cid PRIMARY KEY, name, description, created_by, created_at)
+project_stats(project_cid PRIMARY KEY, reachable_bytes, pinned_bytes, held_bytes, releasing_bytes, roots)
+run_input(completion_cid, role, name, address, size, sample)
+  index run_input_address (address, role, completion_cid)   -- covers the page's shared-input query
+  index run_input_completion (completion_cid)
+handoff(cid PRIMARY KEY, template, selection_cid, project_cid, asserted_by, at)
+index claim_current_attribute_value ON claim_current(attribute, value)
+```
+
+- A `project` entry fills `project` (`created_by` is the block's
+  `asserted_by`); a `handoff` entry fills `handoff` (`project_cid` NULL
+  without a project, `at` the Handoff's `timestamp`) and records its files
+  as content, `block_ref(handoff, file, name)` and `block(file, size,
+  'raw')`, once per Handoff (§15, R3). Both are read in
+  catch-up, the missing retry, the first block scan and `rebuild`, exactly
+  as Transfers are: idempotent; an absent block waits as `missing(NULL,
+  cid)`; one that does not read as its kind is warned about once and
+  skipped.
+- `ingestRun` reads a linked InputSet: one `run_input` row per input
+  (address as the cid string or NULL) and one `consumer(content_cid,
+  completion_cid, name, how)` row per distinct addressed (address, name,
+  role), `how` the role. An input address is never a `missing`, `block` or
+  `block_ref` row (R2): input content the store lacks is not missing
+  metadata and is not this store's storage. An InputSet absent or
+  unreadable for now is never a `missing` row either, since it says nothing
+  of stored bytes and must not make `store_stats` or `root_stats` partial.
+  It leaves a wait record, meta `inputset_wait:<completion>` = the
+  InputSet's cid. `retryMissingInputSets` asks about each record of the
+  member's runs at every catch-up, one `has` each, and ingests the InputSet
+  once it is there. The record is cleared by that ingest, by a re-ingest of
+  the run, by `forget` and by `reset`. A malformed InputSet is warned about
+  once, leaves no record, and the run is indexed without inputs. A snapshot
+  carries its runs' wait records in its meta, and a seed copies them for
+  the seeded runs.
+- `forget` removes `run_input` and `consumer` by completion, `project` and
+  `handoff` by cid; `reset` empties them.
+- Mixed builds: a pre-v6 build recreates a v6 cache it opens (and a v6
+  build recreates an older one), so two builds sharing one cache file rebuild
+  it in turn; give each build its own `cas.index.path`.
+- Lookups: `isProjectIndexed`, `isHandoffIndexed`, `runInputs(completion)`.
+  The page's P4 queries are in `ExplorerQueriesTest`'s no-scan check.
+
+Snapshot (§15). A snapshot copies the `project` and `handoff` rows its
+member's Store Log announced and the `run_input` and `consumer` rows of its
+runs, always; a seed copies them for the seeded runs.
+
+`project_stats` is written by each snapshot that has storage figures, from
+the current `add project` Claims in the cache's `claim_current`: the whole
+composition's, whichever member logged them, read before the cache is
+detached. A member counts in this store when it is a run or Selection root
+here (any state) or an OutputItem of one of this store's output
+collections. A run reaches its output items, a Selection its items, an item
+itself, with the closures `root_stats` uses, so a one-member project's
+figures equal that root's, and a block a sweep took is left out. Per
+project, each raw block a member here reaches counts once: pinned when a
+pin root reaches it, else held when a held root does, else releasing; the
+`store_stats` partition restricted to the project. `reachable_bytes` is the
+sum of the three, so a released member's bytes count, as releasing; this
+differs from `asserter_stats`, whose reachable counts content roots only.
+Root states come from the member's own Claims, as in P2. `roots` is how
+many distinct members are here; a project with none here has no row. A
+lean snapshot has no rows (`project_stats` is one of the tables a lean
+snapshot empties). Cost, on `gen_year.py`'s year
+(547,500 references, 41 projects, 4,209 memberships, one project of all
+1,825 runs): about +0.3 to 0.5 s on a 2 s figures computation, with no
+extra pass over `block_ref`. There is no `partial` column, so a project that
+reaches a missing item shows no "at least".
+
+### `POST /api/handoff` (`robsyme.cas.core.HandoffWriter`)
+
+Same transport as `/api/put` (§16): 403 without the token or with a foreign
+Host/Origin, 415 for anything but `application/json`, 413 over 2 MiB, 405
+when the explorer has no writable member; those answers are plain text.
+Every other answer is JSON. The writer runs under Put's monitor.
+
+```
+request:  { template, selection: "<cid>" | {"/": "<cid>"}, project: "<cid>" | {"/": "<cid>"} | null,
+            files: [ { name, text } ], params: { <name>: "<string>" | { "file": "<name>" } }, timestamp }
+200:      { address, files: [ { name, address, size } ], params, entry, written }
+refusals: { error, message }: 400 bad_request | clock_skew | not_found | wrong_kind | too_large; 409 not_writable
+```
+
+- Refused as `bad_request`: unknown fields; a template outside
+  `[A-Za-z0-9._/-]{1,256}` (a pipeline name); no files; a file name outside `[A-Za-z0-9._-]{1,128}`, `.`,
+  `..` or repeated; text that is not a string; a param that is neither a
+  string nor `{file: <one of files>}`; a lone surrogate; a timestamp not
+  ISO-8601 UTC with milliseconds. A selection that is not a held Selection,
+  or a project that is not a held Project, is `not_found` or `wrong_kind`.
+- Each file is a raw block of its text's UTF-8 bytes, unchanged, in a Leaf
+  with `reason: null`. The Handoff's `params` resolve file references to
+  `cas://<cid>/<name>` and then go through `Records.scrub`, as RunManifest
+  params do: a local path becomes `[redacted-location]`, a credential is
+  redacted, and store-local top-level keys (`workDir`, `outputDir`, ...)
+  are left out. The response's `params` are resolved and not scrubbed;
+  they are never stored, and the page builds the run command from them.
+- Order, as Put's: shape and address, dry run (writes nothing, `entry:
+  null`), "already written" (success, `written: false`, the existing entry),
+  then the clock, the Selection and the Project. Then raw blocks the
+  writable member lacks, the Handoff, the `handoff` entry last, and ingest.
+  `asserted_by` is the server's signer.
+
+### Sweep (§19)
+
+- A `project` entry roots its Project and nothing under it. A `handoff`
+  entry roots its Handoff, which keeps its files as content and its
+  Selection whole, as a nested Selection member is kept; its `project` link
+  is not followed (R5, R6). Both follow the Selection rule, across members
+  too (§19, D2): a clean current `delete` frees one; a `del` superseding the
+  delete, a conflicted deletion or a pin keeps it. The report counts them
+  (`projects`, `deleted_projects`, `handoffs`, `deleted_handoffs` under
+  `roots`). The snapshot's storage figures follow the same rule (§15, R3),
+  so a store's releasing figure is what its sweep takes.
+- Unknown entry kinds (R8). An entry name is a Store Log entry when it
+  starts with 13 digits and `-`. One this build cannot read (an unknown
+  kind, a hyphenated kind such as `input-set`, or a cid form it cannot
+  parse) is of an unknown kind; its kind is the text between the first `-`
+  and the last `-`, or the whole rest when there is no other `-`. Other
+  names in `log/` are ignored. A sweep dry run lists, per member, the kinds
+  of the Store Log entries this build does not know (`unknown_kinds`
+  in JSON, an `unknown` line in text). An applied sweep that finds any, in
+  any member's log, the writable one or a read-only one, refuses before it
+  marks and exits 1: "the Store Log of member <alias> holds entries of
+  kind(s) <list> that this build does not know, so a sweep could delete
+  blocks they keep; upgrade nf-blocks". A re-check that finds one logged
+  during the sweep stops it the same way before its next step. Such entries
+  are never deleted, even as dangling. The CLI `sweep` verb is the only
+  caller that starts a sweep.
+
+### Copy (§21)
+
+`CopyClosure.categoryOf`: `project` and any `policy.*` attribute are
+`projects`; `sample`, `annotation` and `same_sample` are `annotations`;
+`name` stays `names`. With `projects` carried, each Project named by a
+carried current `add project` Claim whose value is a link travels too: in
+the `claims` group with kind `Project`, at the depth of its shallowest
+membership, sized like any block. It is then a Claim subject like any
+closure block, so its name Claims, policies and project-scoped annotations
+travel with their history, and a destination opened alone can name the
+project. Claims on a Project are not searched for further memberships. A
+Project the source lacks is listed in `missingAtSource`, and its membership
+still travels. The copy writes a carried Project with the Selections and
+Claims and gives it a `project` entry when the destination's log lacks one.
+Deletions never travel (§21), so a Project with a clean `delete` at the
+source that a carried membership names arrives undeleted at the
+destination; delete it there too, or remove the membership before copying.
+A carried Selection brings the Handoffs that cite it and that the source's
+log announced, with their files, in the `handoffs` group at every depth,
+and the copy logs each with a `handoff` entry before the Transfer (§21). A
+Handoff deleted at the source (clean, unpinned) does not travel.

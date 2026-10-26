@@ -1,8 +1,10 @@
 // A DOM just large enough for html.js's `h` and the row code in views.js to
 // run under node:test: elements with attributes, dataset, classList,
 // children, listeners and querySelectorAll over simple compound selectors
-// (`tag`, `.class`, `[attr]`, `[attr=value]`). Not a browser: no layout, no
-// connected tree (isConnected is always false), no event bubbling.
+// (`tag`, `.class`, `[attr]`, `[attr=value]`), and listeners on `document`
+// that a test fires with `document.dispatch`. Not a browser: no layout (no
+// getBoundingClientRect), no connected tree (isConnected is always false),
+// no event bubbling.
 
 class FakeNode {}
 
@@ -22,6 +24,7 @@ class FakeElement extends FakeNode {
     this.childNodes = []
     this.listeners = new Map()
     this.checked = false
+    this.style = {}
     const el = this
     this.dataset = new Proxy({}, {
       get: (_, k) => el.attributes.get(`data-${kebab(String(k))}`),
@@ -53,8 +56,14 @@ class FakeElement extends FakeNode {
 
   get textContent() { return this.childNodes.map(n => n.textContent).join('') }
   set textContent(v) { this.childNodes = [new FakeText(v)] }
+  /** Markup is not parsed: the setter keeps the string (the Seal's SVG) and empties the children, as a browser would replace them. */
+  get innerHTML() { return this.html ?? '' }
+  set innerHTML(v) { this.html = String(v); this.childNodes = [] }
 
   addEventListener(type, fn) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]) }
+  removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) ?? []).filter(f => f !== fn)) }
+  /** Whether `node` is this element or inside it. */
+  contains(node) { return node === this || this.childNodes.some(c => c instanceof FakeElement && c.contains(node)) }
   /** Runs this element's own listeners for `type` and returns what they return (a Promise for an async handler). */
   fire(type) { return Promise.all((this.listeners.get(type) ?? []).map(fn => fn({ currentTarget: this, target: this, preventDefault() {} }))) }
   click() { return this.fire('click') }
@@ -97,10 +106,40 @@ class FakeElement extends FakeNode {
   querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null }
 }
 
-/** Installs the fake `document` and `Node` on globalThis. */
+/**
+ * Installs the fake `document` and `Node` on globalThis. `document.dispatch(type,
+ * fields)` runs the document's listeners for `type` with an event carrying
+ * `fields` (e.g. `{ key: 'Escape' }` or `{ target: el }`);
+ * `document.listenerCount(type)` says how many there are.
+ */
 export function installDom() {
   globalThis.Node = FakeNode
-  globalThis.document = { createElement: (tag) => new FakeElement(tag) }
+  const listeners = new Map()
+  globalThis.document = {
+    createElement: (tag) => new FakeElement(tag),
+    addEventListener(type, fn) { listeners.set(type, [...(listeners.get(type) ?? []), fn]) },
+    removeEventListener(type, fn) { listeners.set(type, (listeners.get(type) ?? []).filter(f => f !== fn)) },
+    dispatch(type, fields = {}) {
+      for (const fn of [...(listeners.get(type) ?? [])]) fn({ type, target: globalThis.document, preventDefault() {}, ...fields })
+    },
+    listenerCount: (type) => (listeners.get(type) ?? []).length,
+  }
+}
+
+/**
+ * The text nodes under `el` that read "null" or "undefined". A real DOM's
+ * append, prepend and replaceChildren write a null child as the text "null",
+ * and so does this shim; this finds them, since a page shows them as words.
+ */
+export function strayTexts(el) {
+  const out = []
+  const walk = (n) => {
+    for (const c of n.childNodes ?? []) {
+      if (c instanceof FakeText) { if (c.data === 'null' || c.data === 'undefined') out.push(c.data) } else walk(c)
+    }
+  }
+  walk(el)
+  return out
 }
 
 /** Resolves after watchRows's frame (setTimeout 16 ms without requestAnimationFrame) and any fetch before it. */

@@ -42,7 +42,8 @@ rm -rf "${GATE_ROOT:?}/store" "${GATE_ROOT:?}/store-out" "${GATE_ROOT:?}/store-o
        "${GATE_ROOT:?}/browser-b" "${GATE_ROOT:?}/selection" "${GATE_ROOT:?}/selection-typed" \
        "${GATE_ROOT:?}/seeding.json" "${GATE_ROOT:?}/snapshot-aside.sqlite" \
        "${GATE_ROOT:?}/store-retention" "${GATE_ROOT:?}/retention" "${GATE_ROOT:?}/retention-repo" \
-       "${GATE_ROOT:?}/cache-retention"
+       "${GATE_ROOT:?}/cache-retention" \
+       "${GATE_ROOT:?}/store-recovery" "${GATE_ROOT:?}/cache-recovery"
 mkdir -p "$NXF_PLUGINS_DIR" "$XDG_CACHE_HOME" "$GATE_STORE" "$GATE_STORE_OUT" \
          "$GATE_ROOT/store-outputs" "$GATE_ROOT/logs" \
          "$GATE_ROOT/store-retention" "$GATE_ROOT/retention" "$GATE_ROOT/retention-repo"
@@ -190,7 +191,23 @@ cp "$GATE_STORE"/index/v*.sqlite "$GATE_ROOT/snapshot-after-fail.sqlite" 2> /dev
 # resumed run. -resume needs only the directory entries and .command.*, so a
 # run that touches no content byte succeeds; anything that re-reads a published
 # file to re-address it gets AccessDenied and the run fails.
+#
+# Resume cold by its session UUID. Nextflow 26.04.6 takes -resume's argument
+# only when it is `last` or looks like a UUID; `-resume cold` resumes the last
+# session, which is fail's, and fail's finished tasks are a race (issue 17).
+# gate/resume.config sets workflow.output.overwrite = false for this run only:
+# the output DSL's default 'standard' overwrite re-copies every file on resume.
 mkdir -p "$GATE_ROOT/logs/resumed"
+cold_session="$(awk -F'\t' '$3 == "cold" { s = $6 } END { print s }' \
+    "$GATE_ROOT/pipeline-a/.nextflow/history" 2> /dev/null || true)"
+echo "$cold_session" > "$GATE_ROOT/logs/resumed/resume-session"
+# Without cold's UUID there is no resume worth asserting on: `-resume last`
+# would resume fail's session, the race issue 17 removed. Stop here.
+if [[ -z "$cold_session" ]]; then
+    echo "gate: no session for run cold in $GATE_ROOT/pipeline-a/.nextflow/history," >&2
+    echo "gate: so the resumed run cannot resume it; see $GATE_ROOT/logs/cold/" >&2
+    exit 2
+fi
 published_sources > "$GATE_ROOT/logs/resumed/sources-locked"
 locked_count=$(wc -l < "$GATE_ROOT/logs/resumed/sources-locked" | tr -d ' ')
 echo "--- locking $locked_count published source file(s) at mode 000"
@@ -201,7 +218,7 @@ unlock() {
         < "$GATE_ROOT/logs/resumed/sources-locked"
 }
 trap unlock EXIT
-run "$GATE_ROOT/pipeline-a" resumed -resume cold
+run "$GATE_ROOT/pipeline-a" resumed -resume "$cold_session" -c "$REPO/gate/resume.config"
 unlock
 trap - EXIT
 
@@ -215,6 +232,26 @@ for p in outputs outputs-badindex; do
 done
 GATE_STORE="$GATE_ROOT/store-outputs" run "$GATE_ROOT/outputs" outputs -c "$REPO/gate/outputs/overlay.config"
 GATE_STORE="$GATE_ROOT/store-outputs" run "$GATE_ROOT/outputs-badindex" outputs-badindex -c "$REPO/gate/outputs/overlay.config"
+
+# Assertion 19: a resume after a failed run, in a store, cache and launch
+# directory of its own so lab's runs, index and browser stores are untouched.
+# recover-fail fails on MAYBE_FAIL's exit 7 with every other task finished
+# (gate/recovery/fail.config); recover-resumed resumes its session by UUID
+# without --fail and with the default overwrite, so MAYBE_FAIL's three tasks
+# run again and the other twelve are cache hits.
+rm -rf "${GATE_ROOT:?}/pipeline-r"; mkdir -p "$GATE_ROOT/pipeline-r" "$GATE_ROOT/store-recovery"
+cp "$PIPELINE_SRC/main.nf" "$PIPELINE_SRC/nextflow.config" "$GATE_ROOT/pipeline-r/"
+GATE_STORE="$GATE_ROOT/store-recovery" XDG_CACHE_HOME="$GATE_ROOT/cache-recovery" \
+    run "$GATE_ROOT/pipeline-r" recover-fail --fail -c "$REPO/gate/recovery/fail.config"
+recover_session="$(awk -F'\t' '$3 == "recover-fail" { s = $6 } END { print s }' \
+    "$GATE_ROOT/pipeline-r/.nextflow/history" 2> /dev/null || true)"
+if [[ -n "$recover_session" ]]; then
+    GATE_STORE="$GATE_ROOT/store-recovery" XDG_CACHE_HOME="$GATE_ROOT/cache-recovery" \
+        run "$GATE_ROOT/pipeline-r" recover-resumed -resume "$recover_session"
+else
+    # Not worth stopping the Gate for: assertion 19 fails on the missing run.
+    echo "    no session for recover-fail in pipeline-r/.nextflow/history; assertion 19 will fail"
+fi
 
 # --------------------------------------------------------------------------
 # Assertion 9 (milestone 6): release, pin, sweep, restore, delete past the deadline

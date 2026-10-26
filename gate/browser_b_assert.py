@@ -88,6 +88,12 @@ SHARED_MILLIS = 1767225600000
 HORIZON_MILLIS = 9999999999999   # StoreLog.HORIZON_MILLIS
 # B20 (Task 11, ticket 21 answer 6): the note B.retain types into the run page's Pin form.
 RETAIN_PIN_NOTE = "kept while investigating"
+# B.retain's actions on the run page's Storage tab: Pin, Release content and Restore content, one Claim write each.
+# Since explorer v0.3 P2 (Task 7) #release opens an inline confirmation that says what releasing frees;
+# #release-confirm writes the release Claim.
+RETAIN_ACTIONS = [{"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
+                  {"click": "#release"}, {"click": "#release-confirm"}, {"waitWrite": True},
+                  {"click": "#restore"}, {"waitWrite": True}, {"extract": "after"}]
 
 
 def _put_block(root, block):
@@ -279,10 +285,9 @@ def prepare(root):
          "actions": [{"snippetMode": "untyped"}, {"extract": "untyped"}]},
         # B20 (Task 11): Pin, Release content and Restore content on the run page. Each write's
         # own re-render (waitWrite) already shows the updated badges before the next click.
-        {"id": "B.retain", "server": "explore", "path": "", "query": q, "hash": "#/run/%s" % cold.completion_cid,
-         "actions": [{"click": "[data-fold=storage] > summary"}, {"fill": ["#pin-note", RETAIN_PIN_NOTE]}, {"click": "#pin"}, {"waitWrite": True},
-                     {"click": "#release"}, {"waitWrite": True},
-                     {"click": "#restore"}, {"waitWrite": True}, {"extract": "after"}]},
+        # The run page's Storage tab (explorer v0.3 P0, Task 4) holds the retention panel; a write's re-render keeps the tab.
+        {"id": "B.retain", "server": "explore", "path": "", "query": q, "hash": "#/run/%s?tab=storage" % cold.completion_cid,
+         "actions": RETAIN_ACTIONS},
     ]
     _write_json(os.path.join(out, "expected.json"), expected)
     _write_json(os.path.join(out, "scenario.json"), {"steps": steps})

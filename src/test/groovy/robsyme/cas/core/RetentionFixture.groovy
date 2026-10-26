@@ -1,6 +1,8 @@
 package robsyme.cas.core
 
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.attribute.FileTime
 
 /**
  * A writable member with runs built from real blocks: each run's items hold
@@ -29,9 +31,18 @@ class RetentionFixture {
     Cid raw(String text) { store.putStreaming(new ByteArrayInputStream(text.getBytes('UTF-8'))) }
 
     Cid dir(Map<String, Cid> files) {
-        final List<ManifestEntry> entries = files.collect { String n, Cid c -> ManifestEntry.regular(n, c, 1L) }
+        final List<ManifestEntry> entries = files.collect { String n, Cid c -> ManifestEntry.regular(n, c, sizeOf(c)) }
         return store.putDagCbor(new DirectoryManifest(entries).toCbor())
     }
+
+    /**
+     * When true, every Leaf and manifest entry says its block's real size
+     * rather than 1 byte, so the figures can be compared with what a sweep
+     * deletes.
+     */
+    boolean trueSizes = false
+
+    long sizeOf(Cid c) { trueSizes ? store.size(c) : 1L }
 
     /**
      * A run with one output `out` whose items each hold the given leaves;
@@ -44,7 +55,7 @@ class RetentionFixture {
         final Cid script = raw("script of ${name}")
         final Cid manifest = store.putDagCbor(RetentionFixture.manifest(name, script, options))
         final List<Cid> itemCids = items.collect { Map<String, Cid> leaves ->
-            store.putDagCbor(OutputItem.of(leaves.collectEntries { String n, Cid c -> [(n): Leaf.of(n, c, 1L)] }).toCbor())
+            store.putDagCbor(OutputItem.of(leaves.collectEntries { String n, Cid c -> [(n): Leaf.of(n, c, sizeOf(c))] }).toCbor())
         }.sort { it.toString() }
         final Cid collection = store.putDagCbor(new OutputCollection('test', manifest, 'out', itemCids, itemCids.collect { [] as List<String> }).toCbor())
         final Cid completion = store.putDagCbor(RetentionFixture.completion(manifest, [collection], options))
@@ -74,6 +85,41 @@ class RetentionFixture {
         final Cid s = store.putDagCbor(new Selection('test', [Selection.selection(inner)], []).toCbor())
         StoreLog.append(store, StoreLogKind.SELECTION, s, ++clock)
         return s
+    }
+
+    /** A Project block, logged as a `project` root (P4 R6). */
+    Cid project(String name) {
+        final Cid p = store.putDagCbor(new Project('test', name, '', Index.isoMillis(++clock)).toCbor())
+        StoreLog.append(store, StoreLogKind.PROJECT, p, clock)
+        return p
+    }
+
+    /** A Handoff block of `selection` with the given generated files, logged as a `handoff` root (P4 R5). */
+    Cid handoff(Cid selection, Cid project, Map<String, Cid> files) {
+        final List<Leaf> leaves = files.collect { String n, Cid c -> Leaf.of(n, c, sizeOf(c)) }
+        final Cid h = store.putDagCbor(new Handoff('test', 'rnaseq', selection, project, leaves,
+            [input: 'cas://x/samplesheet.csv'], Index.isoMillis(++clock)).toCbor())
+        StoreLog.append(store, StoreLogKind.HANDOFF, h, clock)
+        return h
+    }
+
+    /** An InputSet block naming each address as a task input; not logged (a RunCompletion links it). */
+    Cid inputSet(List<Cid> inputs) {
+        return store.putDagCbor(new InputSet('test', inputs.collect { Cid c ->
+            new InputSet.Input(InputSet.TASK, "in-${c.toString().takeRight(6)}".toString(), c, 1L, null, null) }).toCbor())
+    }
+
+    /**
+     * Backdates a local member's released sweep.lock past
+     * SweepLock.RELEASE_SETTLE_MILLIS, so a build records presences again
+     * as it would a minute after the sweep.
+     */
+    void settleSweepLock() {
+        if( root == null )
+            return
+        final Path lock = root.resolve('sweep.lock')
+        if( Files.exists(lock) )
+            Files.setLastModifiedTime(lock, FileTime.fromMillis(System.currentTimeMillis() - 2 * SweepLock.RELEASE_SETTLE_MILLIS))
     }
 
     List<MemberLog> logs() { [new MemberLog(store.alias(), true, StoreLog.read(store))] }

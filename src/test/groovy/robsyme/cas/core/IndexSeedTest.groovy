@@ -59,7 +59,7 @@ class IndexSeedTest extends Specification {
         return Index.ddl().findResults { String sql ->
             final java.util.regex.Matcher m = sql =~ /^CREATE TABLE (\w+)\(/
             m.find() ? m.group(1) : null
-        }.findAll { it != 'meta' && it != 'schema_version' } as List<String>
+        }.findAll { !(it in ['meta', 'schema_version']) } as List<String>
     }
 
     /** A table's rows, each as its columns' text, sorted, so two indexes compare as multisets. */
@@ -270,6 +270,7 @@ class IndexSeedTest extends Specification {
         why                        | prepare
         'absent'                   | { Path root -> }
         'unreadable'               | { Path root -> Files.createDirectories(root.resolve('index')); Files.writeString(IndexSnapshot.pathIn(root), 'not sqlite') }
+        'schema_version 4'         | { Path root -> snapshotAtVersion(root, 4) }
         'schema_version 99'        | { Path root -> snapshotAtVersion(root, 99) }
     }
 
@@ -449,5 +450,40 @@ class IndexSeedTest extends Specification {
 
         cleanup:
         cold.close()
+    }
+
+    def 'a directory missing when the snapshot was written is seeded as missing, and filled as a full scan fills it once it arrives'() {
+        given: 'a run whose item names a DirectoryManifest that has not arrived'
+        final Cid y = lab.putStreaming(new ByteArrayInputStream('yyyyy'.bytes))
+        final Map dirBlock = new DirectoryManifest([ManifestEntry.regular('y.txt', y, 5L)]).toCbor()
+        final Cid dir = Fixtures.cidOf(dirBlock)
+        final Cid item = lab.putDagCbor(Fixtures.outputItem2([[sample: 'A'], Fixtures.leaf2('reads', dir, 5)]))
+        final Cid m = lab.putDagCbor(Fixtures.runManifest(run_name: 'r1', nf_run_hash: 'r1'))
+        final Cid coll = lab.putDagCbor(Fixtures.outputCollection(m, 'aligned', [[item, ['aligned/reads']]]))
+        final Cid rc = lab.putDagCbor(Fixtures.runCompletion(m, [coll]))
+        StoreLog.append(lab, StoreLogKind.RUN, rc, System.currentTimeMillis())
+        final Index source = producer()
+        IndexSnapshot.write(source, 'lab', new LocalSnapshotStorage(lab.root), 0L, null, tmp.resolve('t'))
+        Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when: 'a cold cache seeds from the snapshot'
+        cold.seedFrom(IndexSnapshot.pathIn(lab.root), 'lab')
+
+        then: 'it holds the missing row, as the writer did'
+        rowsOf(cold, 'missing') == ["${item}|${dir}".toString()]
+        rowsOf(cold, 'block_ref') == ["${item}|${dir}|reads".toString()]
+
+        when: 'the manifest arrives, and both caches catch up'
+        lab.putDagCbor(dirBlock)
+        cold.catchUp(lab, StoreLog.of(lab), 'lab')
+        Index full = producer()
+
+        then: 'the seeded cache holds what a full scan holds, the directory file included'
+        differingTables(cold, full) == []
+        rowsOf(cold, 'missing') == []
+        rowsOf(cold, 'block_ref').contains("${dir}|${y}|y.txt".toString())
+
+        cleanup:
+        source?.close(); cold?.close(); full?.close()
     }
 }

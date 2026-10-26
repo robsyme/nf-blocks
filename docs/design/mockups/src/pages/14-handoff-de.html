@@ -1,0 +1,98 @@
+<!--META
+{
+ "file":"14-handoff-de.html","title":"Hand off · differentialabundance","phase":"P4 · hand-off templates","route":"#/handoff/nf-core-differentialabundance?from=<run_cid>&where=…",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":2,"railLabel":"Run it",
+ "summary":"A hand-off template knows the downstream pipeline's inputs. Starting from the Samples filter (≥ 50,000 reads), it asks for what's missing (a condition per sample, a contrast), validates against the pipeline's rules, and writes the samplesheet and contrasts as blocks so --input is itself an address. Interactive: toggle samples, edit conditions and the contrast.",
+ "data":"Real: samples, read counts, the merged gene-count matrix CID. Example: condition values. The GTF is not stored in roblab (rnaseq params.gtf is redacted), so the template asks for it.",
+ "spec":{
+  "Template contract":[
+   "A template declares: required samplesheet columns, matrix source (output + file role), extra files (contrasts, GTF), and validation rules.",
+   "differentialabundance: samplesheet <code>sample</code> + ≥1 grouping column; contrasts <code>id,variable,reference,target</code>; <code>--matrix</code> counts TSV; <code>--gtf</code>.",
+   "Validation shown live: ≥ 2 replicates per contrast level, every samplesheet sample present as a matrix column, GTF provided."
+  ],
+  "Open question":["Check whether differentialabundance subsets the matrix to samplesheet samples. If not, the template must add a subset step and say so here."],
+  "Outputs":["Saving writes: a Selection (samples + matrix item), samplesheet.csv and contrasts.csv as blocks, and condition claims scoped to the project if one is active."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="03-run-outputs.html">distraught_murdock</a>/<a href="07-run-samples.html">Samples</a>/<b>Hand off</b></nav>
+  <div class="title"><h1>Hand off to nf-core/differentialabundance</h1></div>
+  <div class="subline"><span>From <b>distraught_murdock</b></span><span>filter: reads (trimmed) ≥ 50,000</span><span>matrix: <span class="addr" data-ref="cas://bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym/salmon.merged.gene_counts.tsv"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="14"></span>salmon.merged.gene_counts.tsv</span></span></div>
+</div>
+
+<div class="grid-2">
+  <section class="panel flush">
+    <div class="ph"><h2>1 · Samples and conditions</h2><span class="spacer"></span><button class="btn sm" id="all" type="button">Include all 5</button></div>
+    <div class="pb tbox">
+      <table class="t"><thead><tr><th></th><th>sample</th><th class="r">Reads (trimmed)</th><th>condition</th></tr></thead><tbody id="rows"></tbody></table>
+    </div>
+  </section>
+  <div class="stack">
+    <section class="panel">
+      <div class="ph"><h2>2 · Contrast</h2></div>
+      <div class="pb">
+        <div class="row" style="font-size:13px">Compare <select id="target" style="height:30px;font:inherit;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink)"></select> against <select id="ref" style="height:30px;font:inherit;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink)"></select></div>
+        <p class="muted mono" style="font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere" id="cid"></p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>3 · Checks</h2></div>
+      <div class="pb" id="checks" style="gap:8px"></div>
+    </section>
+  </div>
+</div>
+<section class="panel flush">
+  <div class="ph"><h2>samplesheet.csv</h2><span class="muted">saved as a block on Save</span></div>
+  <div class="pb"><pre class="code" id="ss" style="border:0;border-radius:0"></pre></div>
+</section>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const S=[['RAP1_IAA_30M_REP1',49791,'auxin_30m'],['RAP1_UNINDUCED_REP1',49969,'uninduced'],['RAP1_UNINDUCED_REP2',99971,'uninduced'],['WT_REP1',99566,'wild_type'],['WT_REP2',49760,'wild_type']];
+ const inc=Object.fromEntries(S.map(s=>[s[0],s[1]>=50000])); const cond=Object.fromEntries(S.map(s=>[s[0],s[2]]));
+ const tgt=document.getElementById('target'),ref=document.getElementById('ref');
+ function levels(){return [...new Set(S.filter(s=>inc[s[0]]).map(s=>cond[s[0]]))]}
+ function opts(){const L=levels(),t=tgt.value,r=ref.value;
+  tgt.innerHTML=L.map(l=>`<option ${l===t?'selected':''}>${l}</option>`).join('');ref.innerHTML=L.map(l=>`<option ${l===r?'selected':''}>${l}</option>`).join('');
+  if(!L.includes(t)&&L.includes('uninduced'))tgt.value='uninduced'; if(!L.includes(r)&&L.includes('wild_type'))ref.value='wild_type';}
+ function render(){
+  document.getElementById('rows').innerHTML=S.map(([id,r])=>`<tr class="${inc[id]?'':'dim'}"><td><input type="checkbox" data-id="${id}" ${inc[id]?'checked':''} aria-label="Include ${id}"></td><td class="mono nowrap" style="font-size:12.5px">${id}</td><td class="r num">${r.toLocaleString('en-US')}</td><td><span class="claim" style="padding-right:4px"><span class="av sm rs">RS</span><input data-c="${id}" value="${cond[id]}" aria-label="condition for ${id}" style="border:0;background:transparent;font:inherit;color:var(--ink);width:100px"></span></td></tr>`).join('');
+  opts();
+  const chosen=S.filter(s=>inc[s[0]]); const n=l=>chosen.filter(s=>cond[s[0]]===l).length;
+  const t=tgt.value,r=ref.value; const ok1=t&&r&&t!==r, ok2=n(t)>=2&&n(r)>=2;
+  const C=[[ok1,ok1?`Contrast ${t} vs ${r}`:'Pick two different conditions'],
+   [ok2,ok2?`Replicates: ${t} ${n(t)}, ${r} ${n(r)}`:`Each side needs at least 2 replicates: ${t||'—'} has ${n(t)}, ${r||'—'} has ${n(r)}. The ≥ 50,000-read filter leaves one sample per condition.`],
+   [true,`All ${chosen.length} samples are columns in the matrix`],
+   [false,'GTF not in roblab: rnaseq read it by path (redacted). Add it to a store or give a path.']];
+  document.getElementById('checks').innerHTML=C.map(([ok,m])=>`<div class="note ${ok?'ok':'warn'}"><span>${ok?'✓':'!'}</span><span>${m}</span></div>`).join('');
+  document.getElementById('cid').textContent=ok1?`contrasts.csv → id,variable,reference,target\n${t}_vs_${r},condition,${r},${t}`:'';
+  document.getElementById('ss').textContent='sample,condition\n'+chosen.map(s=>`${s[0]},${cond[s[0]]}`).join('\n');
+  const ready=ok1&&ok2; document.getElementById('save').disabled=!ready;
+  document.getElementById('cmd').textContent=`nextflow run nf-core/differentialabundance \\
+  -profile docker \\
+  --input    cas://bafk…(samplesheet)/samplesheet.csv \\
+  --contrasts cas://bafk…(contrasts)/contrasts.csv \\
+  --matrix   cas://bafkreibxyh…gz3oym/salmon.merged.gene_counts.tsv \\
+  --gtf      <add GTF> \\
+  --study_type rnaseq`;
+ }
+ document.getElementById('rows').addEventListener('change',e=>{if(e.target.dataset.id){inc[e.target.dataset.id]=e.target.checked;render()}});
+ document.getElementById('rows').addEventListener('input',e=>{if(e.target.dataset.c){cond[e.target.dataset.c]=e.target.value;opts();}});
+ document.getElementById('rows').addEventListener('focusout',e=>{if(e.target.dataset.c)render()});
+ tgt.addEventListener('change',render);ref.addEventListener('change',render);
+ document.getElementById('all').addEventListener('click',()=>{S.forEach(s=>inc[s[0]]=true);render()});
+ render();
+});
+</script>
+<!--RAIL-->
+<div class="sec">
+  <h3>Saves</h3>
+  <div class="row"><span class="fact"><span class="k">selection</span>samples + matrix</span><span class="fact"><span class="k">block</span>samplesheet.csv</span><span class="fact"><span class="k">block</span>contrasts.csv</span><span class="claim"><span class="verb">condition</span>× samples</span></div>
+  <button class="btn primary" id="save" type="button">Save hand-off</button>
+</div>
+<div class="sec">
+  <h3>Run command</h3>
+  <pre class="code" id="cmd"></pre>
+  <button class="btn sm" type="button">Copy command</button>
+</div>

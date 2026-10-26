@@ -21,3 +21,18 @@ for (const v of vectors) {
     if ('pinned' in v.expect) assert.equal(s.pinned, v.expect.pinned)
   })
 }
+
+const RETAIN = { cid: 'bafyreirel', verb: 'set', attribute: 'retain', value: 'lineage', supersedes: [],
+  asserted_by: 'ada.lovelace@example.org', timestamp: '2026-10-24T11:00:00Z' }
+
+test('releaseClaim is the current retain claim of a released subject, else null', () => {
+  const released = claimState([RETAIN])
+  assert.equal(released.releaseClaim.cid, RETAIN.cid)
+  assert.equal(released.releaseClaim.asserted_by, 'ada.lovelace@example.org')
+  assert.equal(released.releaseClaim.timestamp, '2026-10-24T11:00:00Z')
+  assert.equal(claimState([]).releaseClaim, null)
+  const restored = claimState([RETAIN, { cid: 'bafyreiundo', verb: 'del', attribute: 'retain', value: null, supersedes: [RETAIN.cid] }])
+  assert.equal(restored.releaseClaim, null)
+  const conflicted = claimState([RETAIN, { ...RETAIN, cid: 'bafyreirel2' }])
+  assert.equal(conflicted.releaseClaim, null)
+})

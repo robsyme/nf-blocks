@@ -1,0 +1,97 @@
+<!--META
+{
+ "file":"09-storage.html","title":"Storage","phase":"P2 · storage accounting","route":"#/storage?store=roblab",
+ "nav":"storage","navContext":"none","store":"all","stores":["a","b","c"],"picked":0,
+ "summary":"How much each store holds, how much is pinned, how much is yours. One card per store, never summed across stores, because pins and cleanup happen per store. Below, the selected store (roblab) broken down by run, by file kind and by person. 'Freed on release' is per store and only appears where you can act on it.",
+ "data":"roblab numbers are real: 142 MB stored in 1,285 file blocks, 220 MB referenced, 1.55× dedup, no pins, per-run unique and exclusive bytes, per-kind bytes. org-s3 and ana-hpc are example stores to show multi-store layout.",
+ "spec":{
+  "Definitions (per store)":[
+   "Stored = Σ size of unique blocks present. Referenced = Σ size over every reference from every record. Dedup = Referenced ÷ Stored.",
+   "Pinned = unique bytes reachable from current pin claims in this store. Held = reachable from un-released runs/Selections, not pinned. Releasing = released, inside grace period.",
+   "Yours = unique bytes in this store reachable from roots you asserted.",
+   "Freed on release (per run/person) = bytes reachable only from that root/person in this store."
+  ],
+  "Behaviour":[
+   "Clicking a store card selects it for the breakdown below (URL <code>?store=</code>).",
+   "Read-only stores show a lock and no Release/Pin actions.",
+   "Numbers come from snapshot-time aggregates (<code>store_stats</code>, <code>asserter_stats</code>); show 'as of snapshot time'."
+  ],
+  "Empty states":["No pins: say so and explain what pinning does, as shown.","Single store open: hide the store cards row and show the breakdown directly."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <div class="title"><h1>Storage</h1><span class="muted" style="font-size:13px">as of snapshot · 2 min ago</span></div>
+  <p class="muted" style="font-size:13px;max-width:80ch">Each store keeps its own pins and runs its own cleanup, so every number here belongs to one store.</p>
+</div>
+
+<div class="grid-3">
+  <button class="panel" type="button" style="text-align:left;cursor:pointer;border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)">
+    <div class="pb">
+      <div class="row" style="justify-content:space-between"><b><span class="dot a"></span> roblab</b><span class="mono muted" style="font-size:11px">local · writable</span></div>
+      <div><span class="bignum">142 MB</span> <span class="muted" style="font-size:12px">stored · 220 MB referenced · 1.55×</span></div>
+      <div data-bar='{"total":142134100,"pinned":0,"held":142134100,"releasing":0,"yours":142134100}'></div>
+    </div>
+  </button>
+  <button class="panel" type="button" style="text-align:left;cursor:pointer">
+    <div class="pb">
+      <div class="row" style="justify-content:space-between"><b><span class="dot b"></span> org-s3</b><span class="mono muted" style="font-size:11px">s3://lab-blocks · writable</span></div>
+      <div><span class="bignum">1.82 TB</span> <span class="muted" style="font-size:12px">stored · 5.6 TB referenced · 3.1×</span></div>
+      <div data-bar='{"total":1820000000000,"pinned":640000000000,"held":1020000000000,"releasing":160000000000,"yours":212000000000}'></div>
+    </div>
+  </button>
+  <button class="panel" type="button" style="text-align:left;cursor:pointer">
+    <div class="pb">
+      <div class="row" style="justify-content:space-between"><b><span class="dot c"></span> ana-hpc</b><span class="mono muted" style="font-size:11px">posix · read-only</span></div>
+      <div><span class="bignum">410 GB</span> <span class="muted" style="font-size:12px">stored · 610 GB referenced · 1.5×</span></div>
+      <div data-bar='{"total":410000000000,"pinned":0,"held":120000000000,"releasing":290000000000,"yours":0}'></div>
+    </div>
+  </button>
+</div>
+
+<h2 style="font-size:17px;display:flex;gap:8px;align-items:center"><span class="dot a"></span> roblab in detail</h2>
+
+<div class="grid-2">
+  <section class="panel flush">
+    <div class="ph"><h2>By run</h2><span class="muted">62.8 MB is shared by more than one run</span></div>
+    <div class="pb tbox">
+    <table class="t">
+      <thead><tr><th>Run</th><th>Durability</th><th class="r">Reachable<small>unique bytes</small></th><th class="r">Freed on release<small>this store</small></th><th></th></tr></thead>
+      <tbody>
+        <tr><td><div class="namecell"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg></span><a href="10-run-storage.html">distraught_murdock</a></div><span class="sub">nf-core/rnaseq · Oct 24</span></td><td><span class="state s-held">Held</span></td><td class="r num">78.4 MB</td><td class="r num">63.7 MB</td><td class="r"><a class="btn sm" href="10-run-storage.html">Release…</a></td></tr>
+        <tr><td><div class="namecell"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg></span><a href="#">sad_yonath</a></div><span class="sub">nf-core/rnaseq · Oct 23</span></td><td><span class="state s-held">Held</span></td><td class="r num">78.4 MB</td><td class="r num">15.6 MB</td><td class="r"><button class="btn sm" type="button">Release…</button></td></tr>
+        <tr><td><div class="namecell"><span class="status fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg></span><a href="10-run-storage.html">sharp_magritte</a></div><span class="sub">nf-core/rnaseq · failed · Oct 23</span></td><td><span class="state s-held">Held</span></td><td class="r num">53.4 MB</td><td class="r num">0 B <span class="sub" title="Every file is also held by sad_yonath or distraught_murdock">· all shared</span></td><td class="r"><a class="btn sm" href="10-run-storage.html">Release…</a></td></tr>
+        <tr><td><div class="namecell"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg></span><a href="#">sleepy_heyrovsky</a></div><span class="sub">main.nf · Oct 24</span></td><td><span class="state s-held">Held</span></td><td class="r num">0 B</td><td class="r num">0 B</td><td></td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <div class="stack">
+    <section class="panel flush">
+      <div class="ph"><h2>By kind</h2></div>
+      <div class="pb tbox">
+      <table class="t" id="kinds"><thead><tr><th>Kind</th><th class="r">Files</th><th class="r">Stored</th></tr></thead><tbody></tbody></table>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>Pinned in roblab</h2></div>
+      <div class="pb"><div class="empty"><b>Nothing pinned yet</b>Pinned items stay in this store even after their runs are released. Pin from any run, item, file or Selection.</div></div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>By person</h2></div>
+      <div class="pb">
+        <div class="row" style="justify-content:space-between"><span class="row"><span class="av rs">RS</span>You</span><span class="mono">142 MB · 100%</span></div>
+        <p class="muted" style="font-size:12px">You're the only person who has written to roblab.</p>
+      </div>
+    </section>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const K=[['BAM','bam',10,38868638],['HTML reports','html',60,32697303],['Zip (FastQC)','zip',48,17516088],['Text','txt',259,15530087],['JSON','json',43,10238002],['PDF plots','pdf',256,3122289],['bigWig','bigWig',15,1982931],['Other','',594,22178762]];
+ const max=K[0][3];
+ document.querySelector('#kinds tbody').innerHTML=K.map(([l,e,n,b])=>`<tr><td>${l} ${e?`<span class="kind">${e}</span>`:''}</td><td class="r num">${n.toLocaleString('en-US')}</td><td class="r nowrap"><div class="bar-cell"><span class="num">${NFB.bytes(b)}</span><span class="minibar"><span style="width:${(b/max*100).toFixed(1)}%"></span></span></div></td></tr>`).join('');
+});
+</script>

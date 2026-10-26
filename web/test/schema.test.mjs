@@ -6,9 +6,9 @@ import { validBlock, validLeaf, validLeafV1 } from '../src/schema.js'
 import { buildMember } from './fixture.mjs'
 import * as dagCbor from '@ipld/dag-cbor'
 
-test('DESIGN.md §6 parses to 24 types', () => {
+test('DESIGN.md §6 parses to 29 types', () => {
   const schema = extractSchema(readFileSync(new URL('../../DESIGN.md', import.meta.url), 'utf8'))
-  assert.equal(Object.keys(schema.types).length, 24)
+  assert.equal(Object.keys(schema.types).length, 29)
 })
 
 test('every fixture block is valid, and broken ones are not', async () => {

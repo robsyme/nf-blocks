@@ -4,7 +4,7 @@
 import { OVERLAP_MILLIS } from './config.js'
 
 const HORIZON = 9999999999999
-const NAME = /^(\d{13})-(run|selection|claim)-(b[a-z2-7]{58})$/
+const NAME = /^(\d{13})-(run|selection|claim|transfer|project|handoff)-(b[a-z2-7]{58})$/
 
 export function parseEntry(name) {
   const m = NAME.exec(name)

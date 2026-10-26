@@ -1,0 +1,72 @@
+{
+  "root": { "kind": "selection", "cid": "bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" },
+  "from": "roblab",
+  "to": "org-s3",
+  "depth": "results",
+  "claims": ["names", "projects", "annotations"],
+  "dry_run": true,
+  "plan": {
+    "blocks": 116,
+    "bytes": 1288571,
+    "present": 2,
+    "present_bytes": 9140,
+    "transfer": 114,
+    "transfer_bytes": 1279431,
+    "unsized": 0,
+    "missing_at_source": 0,
+    "unaddressed": 4,
+    "groups": [
+      { "group": "root", "blocks": 1, "bytes": 812, "present": 0, "present_bytes": 0, "transfer": 1, "transfer_bytes": 812 },
+      { "group": "items", "blocks": 3, "bytes": 2412, "present": 0, "present_bytes": 0, "transfer": 3, "transfer_bytes": 2412 },
+      { "group": "files", "blocks": 9, "bytes": 1135852, "present": 0, "present_bytes": 0, "transfer": 9, "transfer_bytes": 1135852 },
+      { "group": "collections", "blocks": 1, "bytes": 904, "present": 0, "present_bytes": 0, "transfer": 1, "transfer_bytes": 904 },
+      { "group": "run_records", "blocks": 101, "bytes": 148300, "present": 2, "present_bytes": 9140, "transfer": 99, "transfer_bytes": 139160 },
+      { "group": "lineage", "blocks": 0, "bytes": 0, "present": 0, "present_bytes": 0, "transfer": 0, "transfer_bytes": 0 },
+      { "group": "run_outputs", "blocks": 0, "bytes": 0, "present": 0, "present_bytes": 0, "transfer": 0, "transfer_bytes": 0 },
+      { "group": "inputs", "blocks": 0, "bytes": 0, "present": 0, "present_bytes": 0, "transfer": 0, "transfer_bytes": 0 },
+      { "group": "handoffs", "blocks": 0, "bytes": 0, "present": 0, "present_bytes": 0, "transfer": 0, "transfer_bytes": 0 },
+      { "group": "claims", "blocks": 1, "bytes": 291, "present": 0, "present_bytes": 0, "transfer": 1, "transfer_bytes": 291 }
+    ],
+    "runs": [
+      {
+        "completion": "bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq",
+        "manifest": "bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq",
+        "script": "bafkreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy",
+        "run_name": "distraught_murdock",
+        "pipeline": "nf-core/rnaseq",
+        "present": true,
+        "lineage": null
+      }
+    ],
+    "claims": [
+      {
+        "cid": "bafyreicfgsv7ngzmxk5spp6l2mbhwuxm4kfwnqczbbbqp3rbxr2ijeyuhy",
+        "category": "names",
+        "subject": "bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce",
+        "verb": "set",
+        "attribute": "name",
+        "value": "wigshop",
+        "asserted_by": "ada.lovelace@example.org",
+        "timestamp": "2026-10-24T19:40:16.459Z",
+        "present": false,
+        "carried": true,
+        "current": true,
+        "supersedes": []
+      }
+    ],
+    "skipped_claims": { "pins": 0, "retain": 0, "deletion": 0 },
+    "audit": { "checked": 1, "findings": [] },
+    "destination_state": [
+      { "cid": "bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce", "role": "root", "name": "wigshop", "state": "absent" },
+      { "cid": "bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq", "role": "run", "name": "distraught_murdock", "state": "held" }
+    ],
+    "kept": true
+  },
+  "refused": null,
+  "depths": {
+    "results": { "blocks": 116, "bytes": 1288571, "transfer": 114, "transfer_bytes": 1279431 },
+    "lineage": { "blocks": 238, "bytes": 21412960, "transfer": 236, "transfer_bytes": 21403820 },
+    "all": { "blocks": 1001, "bytes": 78545254, "transfer": 999, "transfer_bytes": 78536114 }
+  },
+  "command": "nextflow plugin nf-blocks:copy selection:bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce --from roblab --to org-s3 --depth results --claims names,projects,annotations --dry-run"
+}

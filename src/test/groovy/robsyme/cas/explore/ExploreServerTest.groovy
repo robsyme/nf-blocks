@@ -3,6 +3,12 @@ package robsyme.cas.explore
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.function.Supplier
 
 import groovy.json.JsonSlurper
 import spock.lang.Specification
@@ -70,9 +76,89 @@ class ExploreServerTest extends Specification {
         then:
         r.status == 200
         new JsonSlurper().parse(r.body) == [members: [
-            [alias: 'lab', writable: true, base: 'm/lab/'],
-            [alias: 'other', writable: false, base: 'm/other/'],
-        ], write: false]
+            [alias: 'lab', writable: true, base: 'm/lab/', kind: 'local', location: null, copy_target: true, copy_reason: null],
+            [alias: 'other', writable: false, base: 'm/other/', kind: 'local', location: null, copy_target: true, copy_reason: null],
+        ], write: false, copy: false]
+    }
+
+    def 'members.json carries kind, an S3 location, and the copy judgement given to the server'() {
+        given:
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        members.put('org', new LocalMemberFiles(tempDir.resolve('other')))
+        final ExploreServer judged = new ExploreServer(members, 'lab', page)
+            .memberInfo([lab: new ExploreServer.MemberInfo('local', null, true, null),
+                         org: new ExploreServer.MemberInfo('s3', 's3://lab-blocks/cas', false, 'readOnly is set for this store')])
+            .start(0)
+
+        when:
+        final def r = RawHttp.send(judged.port, 'GET', '/members.json')
+
+        then:
+        new JsonSlurper().parse(r.body).members == [
+            [alias: 'lab', writable: true, base: 'm/lab/', kind: 'local', location: null, copy_target: true, copy_reason: null],
+            [alias: 'org', writable: false, base: 'm/org/', kind: 's3', location: 's3://lab-blocks/cas', copy_target: false, copy_reason: 'readOnly is set for this store'],
+        ]
+        !r.text().contains(tempDir.toString())
+
+        cleanup:
+        judged?.stop()
+    }
+
+    def 'members.json carries the identity when the server has a principal'() {
+        given:
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir))
+        final ExploreServer signed = new ExploreServer(members, 'lab', page, null, null, null,
+            { -> new robsyme.cas.Principal('ada@example.org', 'git') } as Supplier<robsyme.cas.Principal>).start(0)
+
+        when:
+        final def r = RawHttp.send(signed.port, 'GET', '/members.json', [:])
+
+        then:
+        r.status == 200
+        new JsonSlurper().parse(r.body).identity == [principal: 'ada@example.org', source: 'git']
+
+        cleanup:
+        signed?.stop()
+    }
+
+    def 'the server answers / while the identity is still resolving, and members.json once it has'() {
+        given:
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir))
+        CountDownLatch resolved = new CountDownLatch(1)
+        ExploreServer signed = new ExploreServer(members, 'lab', page, null, null, null, { ->
+            resolved.await()
+            new robsyme.cas.Principal('ada@example.org', 'platform')
+        } as Supplier<robsyme.cas.Principal>).start(0)
+        def pool = Executors.newSingleThreadExecutor()
+
+        when: 'the page asks for members.json while the identity is blocked'
+        Future<RawHttp.Response> pending = pool.submit({ -> RawHttp.send(signed.port, 'GET', '/members.json', [:]) } as Callable<RawHttp.Response>)
+        final def root = RawHttp.send(signed.port, 'GET', '/', [:])
+
+        then: 'the page itself is served, and members.json waits'
+        root.status == 200
+        !pending.isDone()
+
+        when:
+        resolved.countDown()
+        final RawHttp.Response r = pending.get(5, TimeUnit.SECONDS)
+
+        then:
+        r.status == 200
+        new JsonSlurper().parse(r.body).identity == [principal: 'ada@example.org', source: 'platform']
+
+        cleanup:
+        resolved.countDown()
+        pool.shutdownNow()
+        signed?.stop()
+    }
+
+    def 'members.json has no identity key when the server was built without a principal'() {
+        expect:
+        !new JsonSlurper().parse(get('/members.json').body).containsKey('identity')
     }
 
     def 'the snapshot is served whole, and by single ranges'() {

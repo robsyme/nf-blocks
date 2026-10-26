@@ -18,4 +18,16 @@ class SweepSettingsTest extends Specification {
         then:
         thrown(IllegalArgumentException)
     }
+
+    def 'the grace alone: 14 days by default, read without the age floor, a bad value refused'() {
+        expect:
+        SweepSettings.graceMillis([:]) == 14 * SweepPolicy.DAY
+        SweepSettings.graceMillis([cas: [sweep: [grace: '3d', ageFloor: '5m']]]) == 3 * SweepPolicy.DAY
+
+        when:
+        SweepSettings.graceMillis([cas: [sweep: [grace: 'soon']]])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
 }

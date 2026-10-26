@@ -35,6 +35,10 @@ class LocalSnapshotStorage implements SnapshotStorage {
         return copy
     }
 
+    /** Locally the base's figures are read from the file in base(), so this is only a copy of what is there now. */
+    @Override
+    Path fetchVersion(SnapshotBase base, Path tempDir) { fetch(tempDir) }
+
     /** Locally the move is atomic and the guards are the caller's; base is not re-checked, and the file carries its own meta. */
     @Override
     boolean replace(Path built, SnapshotBase written, SnapshotBase base) {

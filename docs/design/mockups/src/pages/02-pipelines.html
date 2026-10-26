@@ -1,0 +1,86 @@
+<!--META
+{
+ "file":"02-pipelines.html","title":"Pipelines","phase":"P0 · polish","route":"#/",
+ "nav":"pipelines","navContext":"pipelines","store":"roblab","stores":["a"],"picked":0,
+ "summary":"Home view. Same information as today's Pipelines table, plus stored size, run health in plain language, the latest Selections, and recent store activity. Every run is named by its run name; CIDs appear only as secondary mono text or seals.",
+ "data":"Real: pipelines, run names, statuses, finish times, stored bytes (unique file blocks per run), the wigshop Selection, log entries. Identity is shown as RS (target state; the store currently records 'anonymous').",
+ "spec":{
+  "Behaviour":[
+   "Pipelines table sorts by latest run desc. Stored = unique bytes of file blocks reachable from that pipeline's runs in this store (dedup within the pipeline).",
+   "Run status uses icon + word (never colour alone). Failed runs show 'may be incomplete' only when <code>possibly_incomplete</code> is true.",
+   "Health line replaces the repeated 'N published files that are in no output'. Show it once per pipeline, worded as a fact plus whether action is needed.",
+   "Activity reads the store log (<code>log/</code>) newest first; each row is a claim tag or a fact tag."
+  ],
+  "Acceptance":[
+   "No CID is the primary label anywhere on the page.",
+   "Every byte figure uses NFB.bytes() formatting (3 significant figures, SI units).",
+   "Empty states: a pipeline with 0 outputs says 'No outputs published' instead of a size."
+  ],
+  "Do not":["Show filesystem paths.","Sum sizes across stores (only one store is open here)."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <div class="title"><h1>Pipelines</h1></div>
+  <div class="subline"><span><span class="dot a"></span> <b>roblab</b> · local store</span><span>4 runs</span><span><b>142 MB</b> stored · 220 MB referenced · 1.55× dedup</span></div>
+</div>
+
+<section class="panel flush">
+  <div class="pb tbox">
+  <table class="t">
+    <thead><tr><th>Pipeline</th><th>Runs</th><th>Latest good run</th><th>Last run</th><th class="r">Stored</th><th>Health</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><div class="namecell">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5"/></svg>
+          <a href="03-run-outputs.html">nf-core/rnaseq</a></div></td>
+        <td class="num nowrap">3 <span class="sub">· 2 ok · 1 failed</span></td>
+        <td class="nowrap"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><a href="03-run-outputs.html">distraught_murdock</a></span> <span class="sub">Oct 24, 1:29 PM</span></td>
+        <td class="nowrap"><span class="sub">Oct 24, 1:29 PM</span></td>
+        <td class="r num nowrap">142 MB</td>
+        <td><span class="sub">Inputs are referenced by path, not stored. Expected for local FASTQs.</span></td>
+      </tr>
+      <tr>
+        <td><div class="namecell">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5"/></svg>
+          <a href="#">main.nf</a></div></td>
+        <td class="num">1</td>
+        <td class="nowrap"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><a href="#">sleepy_heyrovsky</a></span> <span class="sub">Oct 24, 1:58 PM</span></td>
+        <td class="nowrap"><span class="sub">Oct 24, 1:58 PM</span></td>
+        <td class="r"><span class="sub">No outputs published</span></td>
+        <td></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <div class="ph"><h2>Selections</h2><span class="spacer"></span><a href="08-selection.html" class="btn ghost sm">All Selections</a></div>
+    <div class="pb">
+      <div class="row" style="justify-content:space-between">
+        <div class="row">
+          <span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="28"></span>
+          <div style="display:grid">
+            <a href="08-selection.html" style="font-weight:600">wigshop</a>
+            <span class="sub muted" style="font-size:12px">3 samples · bigwig from distraught_murdock · <span data-bytes="1135852"></span></span>
+          </div>
+        </div>
+        <span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span><span class="age">3h</span></span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="ph"><h2>Activity in roblab</h2></div>
+    <div class="pb" style="gap:10px">
+      <div class="row"><span class="mono muted" style="width:52px">3:40 PM</span><span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span>“wigshop”</span></div>
+      <div class="row"><span class="mono muted" style="width:52px">3:40 PM</span><span class="fact"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="16"></span><span class="k">selection</span>3 items</span></div>
+      <div class="row"><span class="mono muted" style="width:52px">1:58 PM</span><span class="fact"><span data-seal="bafyreiackkkvjk3njmwi4chqgmwse4q6tgburwz3xzxy6hd4in3rykhs54" data-size="16"></span><span class="k">run</span>sleepy_heyrovsky</span></div>
+      <div class="row"><span class="mono muted" style="width:52px">1:29 PM</span><span class="fact"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="16"></span><span class="k">run</span>distraught_murdock</span></div>
+      <div class="row"><span class="mono muted" style="width:52px">Oct 23</span><span class="fact"><span data-seal="bafyreidordqagvbzb63ew3h4xwykbkufpxufq7gyf6l567dbl5bhz7ac3q" data-size="16"></span><span class="k">run</span>sad_yonath</span></div>
+    </div>
+  </section>
+</div>

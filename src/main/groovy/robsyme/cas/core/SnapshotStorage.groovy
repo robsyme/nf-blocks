@@ -17,6 +17,8 @@ interface SnapshotStorage {
     SnapshotBase base(Path tempDir)
     /** A local copy for reading, or null when there is none; the caller deletes it. */
     Path fetch(Path tempDir)
+    /** A local copy of that version (base.tag), or null when there is none; it may throw when the snapshot was replaced. The caller deletes it. */
+    Path fetchVersion(SnapshotBase base, Path tempDir)
     /**
      * Puts built in place if the snapshot is still base (null: still absent); false when another writer got there first.
      * {@code written} describes the file: its runs, store id and watermark; its tag and bytes are ignored.
@@ -30,6 +32,8 @@ interface SnapshotStorage {
 /**
  * A version of a snapshot: an opaque tag (an ETag, or size:mtime:inode), its size, its run rows (-1 when uncountable),
  * and the store id and Store Log watermark it was written with (null when unknown, §20 decision 10).
+ * {@code figures} is true when it has storage figures, false when it is lean, and null when unknown
+ * (an S3 object written before x-amz-meta-storage, fix round 3 item 3).
  */
 @Canonical
 @CompileStatic
@@ -39,4 +43,5 @@ class SnapshotBase {
     int runs
     String storeId
     String watermark
+    Boolean figures
 }

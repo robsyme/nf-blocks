@@ -5,6 +5,7 @@
 // span painted by a CSS mask, so the page and the test DOM need no SVG
 // elements; ICON_CSS holds the shapes.
 import { h, link } from './html.js'
+import { shortCid } from './components.js'
 
 const SHAPES = {
   pipeline: '<path d="M2 4h4v8H2zM10 4h4v8h-4zM6 8h4" fill="none" stroke="#000" stroke-width="1.5"/>',
@@ -28,9 +29,9 @@ const dataUri = (shape) => `url("data:image/svg+xml,${encodeURIComponent(`<svg x
 
 export const ICON_CSS = [
   '.icon { display: inline-block; width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; flex: none;',
-  '  background-color: var(--muted); -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }',
+  '  background-color: var(--ink-3); -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }',
   '.ref { white-space: nowrap; }',
-  '.icon.tone-good { background-color: var(--good); } .icon.tone-bad { background-color: var(--bad); }',
+  '.icon.tone-good { background-color: var(--ok); } .icon.tone-bad { background-color: var(--fail); }',
   ...KINDS.map(k => `.icon-${k} { --icon: ${dataUri(SHAPES[k])}; }`),
 ].join('\n')
 
@@ -44,7 +45,8 @@ export function ref(kind, label, href = null, { tone = null } = {}) {
   return h('span', { class: 'ref' }, icon(kind, { tone }), href ? link(href, label) : label)
 }
 
-export const shortCid = (text) => (text.length > 20 ? `${text.slice(0, 10)}...${text.slice(-6)}` : text)
+// One short form everywhere: the kit's (`bafy…26ocxq`), as addrChip shows it.
+export { shortCid }
 
 /** A block's address (spec §3): quiet, always present, a link to the block page. */
 export function address(cidText) {

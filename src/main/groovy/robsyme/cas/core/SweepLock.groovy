@@ -102,6 +102,38 @@ class SweepLock {
         return current == null ? null : holderOf(current, storage.nowMillis())
     }
 
+    /**
+     * How long a released lock still counts for {@link #mayBeSweeping}. A
+     * sweep releases after its deletes, except {@link Sweep#abandon}, which
+     * releases from the stop hook while a delete batch may still be in flight.
+     */
+    static final long RELEASE_SETTLE_MILLIS = HEARTBEAT_MILLIS
+
+    /**
+     * Whether a sweep may be deleting blocks of this member, by
+     * {@link RetentionStorage#readLock}: true for any lock not released, fresh
+     * or stale, for a body that does not parse, and for one released less than
+     * {@link #RELEASE_SETTLE_MILLIS} ago by the store's clock. False only with
+     * no lock object, or one released before that. A release leaves the
+     * object, so any lock at all would mean forever after the first sweep. A
+     * failure to read reaches the caller, which must count it as true.
+     */
+    static boolean mayBeSweeping(RetentionStorage storage) {
+        final Versioned current = storage.readLock()
+        if( current == null )
+            return false
+        final Object parsed
+        try {
+            parsed = new JsonSlurper().parse(current.body)
+        }
+        catch( Exception e ) {
+            return true
+        }
+        if( !(parsed instanceof Map) || ((Map) parsed).state != 'released' )
+            return true
+        return storage.nowMillis() - current.lastModifiedMillis < RELEASE_SETTLE_MILLIS
+    }
+
     /** The holder when the lock is held and fresh; null when released or stale. */
     private static Holder holderOf(Versioned lock, long nowMillis) {
         Map parsed

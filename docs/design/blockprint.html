@@ -1,0 +1,714 @@
+<meta charset="utf-8">
+<title>nf-blocks Blockprint</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a long specimen sheet on a faint blueprint grid. Concepts → primitives → tokens → four product screens in app frames. */
+:root{
+  --bg:#f7f7fa; --surface:#ffffff; --sunken:#efeff4; --grid:rgba(32,22,55,.045);
+  --ink:#201637; --ink-2:#4d4566; --ink-3:#7a7390; --line:#dddbe6; --line-2:#c9c6d6;
+  --accent:#31c9ac; --accent-ink:#065647; --accent-soft:#e2f7f3; --on-accent:#201637;
+  --store-a:#6a55d8; --store-b:#1f7fbf; --store-c:#b8487f;
+  --pinned:#0b7a63; --held:#6e6787; --releasing:#a86400; --missing:#a23b3b;
+  --pinned-bg:#e2f4ef; --releasing-bg:#fbf0de; --missing-bg:#f8e6e6; --held-bg:#eeedf3;
+  --claim-bg:#fff8e8; --claim-line:#e2c98a;
+  --font-ui:"Inter",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --r-sm:4px; --r-md:6px; --r-lg:10px;
+  --shadow:0 1px 2px rgba(32,22,55,.06),0 6px 20px rgba(32,22,55,.06);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#130e22; --surface:#1b1530; --sunken:#100c1c; --grid:rgba(220,210,255,.04);
+  --ink:#eeebf6; --ink-2:#c3bdd6; --ink-3:#8f88a8; --line:#2f2747; --line-2:#433a60;
+  --accent:#31c9ac; --accent-ink:#5fe0c6; --accent-soft:#163a35; --on-accent:#130e22;
+  --store-a:#a596ff; --store-b:#5db3ea; --store-c:#e583b3;
+  --pinned:#45d6b8; --held:#a49ebb; --releasing:#f0a640; --missing:#ef8f8f;
+  --pinned-bg:#123630; --releasing-bg:#3a2a10; --missing-bg:#3a1a1e; --held-bg:#262040;
+  --claim-bg:#2c2514; --claim-line:#6e5a2a;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#130e22; --surface:#1b1530; --sunken:#100c1c; --grid:rgba(220,210,255,.04);
+  --ink:#eeebf6; --ink-2:#c3bdd6; --ink-3:#8f88a8; --line:#2f2747; --line-2:#433a60;
+  --accent:#31c9ac; --accent-ink:#5fe0c6; --accent-soft:#163a35; --on-accent:#130e22;
+  --store-a:#a596ff; --store-b:#5db3ea; --store-c:#e583b3;
+  --pinned:#45d6b8; --held:#a49ebb; --releasing:#f0a640; --missing:#ef8f8f;
+  --pinned-bg:#123630; --releasing-bg:#3a2a10; --missing-bg:#3a1a1e; --held-bg:#262040;
+  --claim-bg:#2c2514; --claim-line:#6e5a2a;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25); color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-ui);font-size:15px;line-height:1.55;
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+  background-size:24px 24px;}
+.wrap{max-width:1180px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0}
+h1,h2,h3,h4{text-wrap:balance;margin:0;letter-spacing:-.015em}
+h1{font-size:clamp(32px,5vw,52px);line-height:1.05;font-weight:700;letter-spacing:-.03em}
+h2{font-size:26px;font-weight:650;line-height:1.15}
+h3{font-size:17px;font-weight:600}
+p{margin:0}
+.mono{font-family:var(--font-mono);font-size:.86em}
+.eyebrow{font-family:var(--font-mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.lede{font-size:18px;color:var(--ink-2);max-width:62ch}
+.muted{color:var(--ink-3)}
+.num{font-variant-numeric:tabular-nums}
+a{color:var(--accent-ink)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* top nav */
+.topnav{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.topnav .wrap{display:flex;gap:18px;align-items:center;min-height:48px;overflow-x:auto;white-space:nowrap}
+.topnav b{font-weight:700;letter-spacing:-.01em}
+.topnav a{color:var(--ink-2);text-decoration:none;font-size:13.5px}
+.topnav a:hover{color:var(--ink)}
+
+section{padding-block:56px;border-bottom:1px solid var(--line)}
+.sec-head{display:grid;gap:10px;margin-bottom:28px;max-width:72ch}
+
+/* hero */
+.hero{padding-block:56px 48px}
+.hero-grid{display:grid;grid-template-columns:1.1fr 1fr;gap:40px;align-items:center}
+@media (max-width:860px){.hero-grid{grid-template-columns:1fr}}
+.hero .stack{display:grid;gap:18px}
+.moves{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow);padding:18px;display:grid;gap:12px;min-width:0}
+.move-row{display:grid;grid-template-columns:auto 1fr;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+.move-row .where{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-2)}
+.move-row code{display:block;font-family:var(--font-mono);font-size:12px;overflow-wrap:anywhere;color:var(--ink-3)}
+.verdict{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.verdict div{padding:10px 12px;border-radius:var(--r-md);font-size:13px}
+.v-bad{background:var(--missing-bg);color:var(--missing)}
+.v-good{background:var(--pinned-bg);color:var(--pinned)}
+.verdict code{font-family:var(--font-mono);font-size:11.5px;display:block;overflow-wrap:anywhere;margin-top:4px;color:var(--ink-2)}
+
+/* layer stack diagram */
+.layers{display:grid;gap:10px}
+.layer{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:start;padding:16px 18px;border-radius:var(--r-lg);background:var(--surface);border:1px solid var(--line)}
+@media (max-width:720px){.layer{grid-template-columns:1fr}}
+.layer.claims{background:var(--claim-bg);border:1px dashed var(--claim-line)}
+.layer h3{display:flex;gap:8px;align-items:center}
+.layer .what{font-size:13px;color:var(--ink-3);margin-top:4px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+.layer-arrow{font-family:var(--font-mono);font-size:12px;color:var(--ink-3);padding-left:18px}
+
+/* primitives */
+.prim-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px;display:grid;gap:12px;align-content:start;min-width:0}
+.card h3{font-size:15px}
+.card .rule{font-size:13px;color:var(--ink-2)}
+.card .demo{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:14px;background:var(--sunken);border-radius:var(--r-md);min-width:0}
+
+.seal{display:inline-block;vertical-align:middle;flex:none}
+.addr{display:inline-flex;align-items:center;gap:6px;font-family:var(--font-mono);font-size:12px;color:var(--ink-2);padding:3px 8px 3px 4px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);white-space:nowrap}
+.fact{display:inline-flex;align-items:center;gap:8px;padding:5px 10px 5px 6px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);font-size:13px;white-space:nowrap}
+.fact .k{font-family:var(--font-mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3)}
+.claim{display:inline-flex;align-items:center;gap:7px;padding:3px 10px 3px 7px;background:var(--claim-bg);border:1px solid var(--claim-line);border-radius:var(--r-sm) var(--r-md) var(--r-md) var(--r-sm);font-size:12.5px;white-space:nowrap}
+.claim::before{content:"";width:6px;height:6px;border-radius:50%;flex:none;background:var(--bg);border:1.5px solid var(--claim-line)}
+.claim .verb{font-weight:600}
+.av{display:inline-grid;place-items:center;width:18px;height:18px;border-radius:50%;font-size:9.5px;font-weight:700;color:var(--surface);background:var(--ink-2);flex:none}
+.av.ak{background:var(--store-b)} .av.rs{background:var(--store-a)} .av.jt{background:var(--store-c)}
+.presence{display:inline-flex;gap:4px;align-items:center}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex:none}
+.dot.a{background:var(--store-a)} .dot.b{background:var(--store-b)} .dot.c{background:var(--store-c)}
+.dot.ring{background:transparent;border:2px solid currentColor}
+.dot.ring.a{color:var(--store-a)} .dot.ring.b{color:var(--store-b)} .dot.ring.c{color:var(--store-c)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px}
+.state::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.s-pinned{color:var(--pinned);background:var(--pinned-bg)}
+.s-held{color:var(--held);background:var(--held-bg)}
+.s-releasing{color:var(--releasing);background:var(--releasing-bg)}
+.s-missing{color:var(--missing);background:var(--missing-bg)}
+.s-missing::before{background:transparent;border:1.5px solid currentColor}
+
+/* storage bar */
+.sbar{display:grid;gap:6px;min-width:0;width:100%}
+.sbar .track{position:relative;display:flex;height:14px;border-radius:3px;overflow:hidden;background:var(--sunken);border:1px solid var(--line)}
+.sbar .seg{height:100%}
+.seg.pinned{background:var(--pinned)} .seg.held{background:var(--held);opacity:.55} .seg.releasing{background:repeating-linear-gradient(135deg,var(--releasing) 0 4px,transparent 4px 7px)}
+.sbar .mine{display:grid;grid-template-columns:44px 1fr auto;gap:8px;align-items:center;font-size:11.5px;color:var(--ink-2)}
+.sbar .mine b{font-weight:600;color:var(--ink)}
+.sbar .mine .mt{position:relative;height:6px;border-radius:3px;background:var(--sunken);border:1px solid var(--line);overflow:hidden}
+.sbar .mine .mt span{position:absolute;left:0;top:0;bottom:0;background:var(--ink);opacity:.7}
+.sbar .storehd{display:flex;gap:6px;align-items:center;font-size:12.5px;font-weight:600}
+.sbar .legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--ink-2)}
+.sbar .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
+/* lineage thread */
+.thread{display:grid;gap:0;position:relative;padding-left:22px}
+.thread::before{content:"";position:absolute;left:8px;top:12px;bottom:12px;width:2px;background:var(--line-2)}
+.thread .node{position:relative;padding:6px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.thread .node::before{content:"";position:absolute;left:-18px;top:50%;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
+.thread .node.here::before{background:var(--accent);border-color:var(--accent-ink)}
+
+/* tokens */
+.tok-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
+.tok{border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:var(--surface)}
+.tok .sw{height:48px}
+.tok .meta{padding:8px 10px;font-size:12px;display:grid;gap:2px}
+.tok .meta b{font-family:var(--font-mono);font-size:11.5px;font-weight:500}
+.typescale{display:grid;gap:10px}
+.typescale div{display:grid;grid-template-columns:150px 1fr;gap:16px;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:8px}
+@media (max-width:600px){.typescale div{grid-template-columns:1fr}}
+
+/* app frame */
+.screen{margin-top:28px;display:grid;gap:12px}
+.screen-cap{display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.screen-cap h3{font-size:18px}
+.frame-scroll{overflow-x:auto;border-radius:var(--r-lg);box-shadow:var(--shadow);border:1px solid var(--line-2)}
+.app{min-width:940px;background:var(--surface);display:grid;grid-template-columns:200px 1fr;grid-template-rows:auto 1fr;font-size:13.5px}
+.app.with-rail{grid-template-columns:200px minmax(0,1fr) 300px;min-width:1100px}
+.app-main .tablebox{overflow-x:auto;min-width:0}
+.app-top{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--surface)}
+.app-top .logo{font-weight:700;letter-spacing:-.01em;display:flex;gap:8px;align-items:center}
+.storesw{display:inline-flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--line);border-radius:var(--r-md);font-size:13px}
+.search{flex:1;max-width:420px;padding:6px 10px;border:1px solid var(--line);border-radius:var(--r-md);color:var(--ink-3);font-size:13px;background:var(--sunken)}
+.app-top .right{margin-left:auto;display:flex;gap:10px;align-items:center}
+.pickbtn{font-size:12.5px;padding:5px 10px;border-radius:var(--r-md);background:var(--sunken);border:1px solid var(--line)}
+.app-nav{border-right:1px solid var(--line);padding:14px 10px;display:grid;align-content:start;gap:2px;background:var(--bg)}
+.app-nav .h{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:12px 8px 4px}
+.app-nav a{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:5px 8px;border-radius:var(--r-sm);color:var(--ink-2);text-decoration:none;font-size:13px}
+.app-nav a.on{background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.app-nav a small{color:var(--ink-3);font-size:11px}
+.app-main{padding:18px 22px 26px;display:grid;gap:16px;align-content:start;min-width:0}
+.app-rail{border-left:1px solid var(--line);padding:16px;display:grid;gap:14px;align-content:start;background:var(--bg);min-width:0}
+.crumbs{font-size:12.5px;color:var(--ink-3)}
+.crumbs b{color:var(--ink-2);font-weight:500}
+.title-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.title-row h2{font-size:22px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line)}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--ink-3);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs span.on{color:var(--ink);border-color:var(--ink);font-weight:600}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+.t th{text-align:left;font-weight:500;color:var(--ink-3);font-size:11.5px;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.t th small{display:block;font-family:var(--font-mono);font-size:10px;color:var(--ink-3);opacity:.8;font-weight:400}
+.t td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle;white-space:nowrap}
+.t td.r,.t th.r{text-align:right}
+.t tr.dim td{opacity:.38}
+.t tr.sel td{background:var(--accent-soft)}
+.has{display:inline-flex;flex-wrap:wrap;gap:4px;max-width:150px}
+.t td.hascell{white-space:normal}
+.has span{font-family:var(--font-mono);font-size:10.5px;padding:1px 5px;border-radius:3px;border:1px solid var(--line);color:var(--ink-2)}
+.filterbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fchip{display:inline-flex;gap:6px;align-items:center;padding:4px 6px 4px 10px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);font-size:12.5px}
+.fchip .src{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3)}
+.fchip input{width:78px;font:inherit;font-family:var(--font-mono);font-size:12.5px;padding:2px 6px;border:1px solid var(--line);border-radius:4px;background:var(--sunken);color:var(--ink)}
+.btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13px;font-weight:600;padding:7px 12px;border-radius:var(--r-md);border:1px solid var(--line-2);background:var(--surface);color:var(--ink);cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--ink-2);font-weight:500}
+.rail-sec{display:grid;gap:8px}
+.rail-sec .h{font-size:12px;font-weight:600;color:var(--ink-2)}
+.opt{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface)}
+.opt .sz{font-family:var(--font-mono);font-size:11px;color:var(--ink-3)}
+.opt .note{grid-column:2/-1;font-size:11.5px;color:var(--ink-3)}
+pre.code{margin:0;font-family:var(--font-mono);font-size:11.5px;line-height:1.5;background:var(--sunken);border:1px solid var(--line);border-radius:var(--r-md);padding:10px;overflow-x:auto;white-space:pre;color:var(--ink-2)}
+.warn{font-size:12px;padding:8px 10px;border-radius:var(--r-md);background:var(--releasing-bg);color:var(--releasing)}
+.annot{display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12.5px;align-items:center}
+.annot input{font:inherit;font-size:12.5px;padding:4px 6px;border:1px dashed var(--claim-line);background:var(--claim-bg);border-radius:4px;color:var(--ink);width:100%}
+.stores{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.store{border:1px solid var(--line);border-radius:var(--r-lg);padding:14px;display:grid;gap:10px;background:var(--surface)}
+.store .hd{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.store .hd b{font-size:14px}
+.store .kind{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);overflow-wrap:anywhere}
+.big{font-size:24px;font-weight:650;letter-spacing:-.02em}
+.kv{display:grid;grid-template-columns:1fr auto;gap:3px 10px;font-size:12.5px}
+.kv span:nth-child(even){font-variant-numeric:tabular-nums;text-align:right;color:var(--ink)}
+.kv span:nth-child(odd){color:var(--ink-3)}
+.plan{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.plan div{border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px;background:var(--surface)}
+.plan b{display:block;font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.plan span{font-size:12px;color:var(--ink-3)}
+.depth{display:grid;gap:8px}
+.depth label{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r-md);cursor:pointer;background:var(--surface)}
+.depth label.on{border-color:var(--accent-ink);box-shadow:inset 0 0 0 1px var(--accent-ink)}
+.depth label small{display:block;color:var(--ink-3);font-size:12px}
+.depth .sz{font-family:var(--font-mono);font-size:12px;color:var(--ink-2);text-align:right}
+.closure{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:12px;background:var(--sunken);border-radius:var(--r-md)}
+.closure .grp{display:flex;gap:4px;align-items:center;padding:4px 8px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);font-size:12px}
+.closure .grp.off{opacity:.35;border-style:dashed}
+.closure .arrow{color:var(--ink-3);font-family:var(--font-mono);font-size:12px}
+.activity{display:grid;gap:8px}
+.activity div{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px}
+.activity time{font-family:var(--font-mono);font-size:11px;color:var(--ink-3);min-width:44px}
+.two{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}
+.qs{display:grid;gap:12px;counter-reset:q}
+.qs li{list-style:none;padding:14px 16px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);display:grid;gap:4px}
+.qs li b{font-weight:600}
+.qs{padding:0;margin:0}
+.example-note{font-size:12px;color:var(--ink-3);font-style:italic}
+@media (prefers-reduced-motion:no-preference){.t tr td{transition:opacity .16s ease,background .16s ease}}
+</style>
+
+<nav class="topnav" aria-label="Sections"><div class="wrap">
+  <b>nf-blocks Blockprint</b>
+  <a href="#concepts">Concepts</a><a href="#primitives">Primitives</a><a href="#tokens">Tokens</a>
+  <a href="#storage">Storage</a><a href="#samples">Samples &amp; hand-off</a><a href="#copy">Copy to store</a><a href="#project">Projects</a><a href="#feedback">Feedback</a>
+</div></nav>
+
+<header class="hero"><div class="wrap hero-grid">
+  <div class="stack">
+    <span class="eyebrow">nf-blocks explorer · design system trial v0.2</span>
+    <h1>Data has an address, not&nbsp;a&nbsp;location.</h1>
+    <p class="lede">Every file and record in a block store is named by a hash of its bytes. Stores are just places that hold some of those names. Move the data and every link still works, because no link ever pointed at a place.</p>
+    <p class="muted" style="font-size:13.5px">This page tests a visual language for that idea, then applies it to four explorer screens. Sample rows come from <span class="mono">distraught_murdock</span> in <span class="mono">roblab</span>. Sizes and other stores are example figures.</p>
+  </div>
+  <div class="moves" aria-label="One file, three stores">
+    <div class="eyebrow">salmon.merged.gene_counts.tsv · held in three stores</div>
+    <div class="move-row"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="40"></span>
+      <div style="min-width:0"><div class="where"><span class="dot a"></span>roblab · Rob's laptop</div><code>~/work/rnaseq/results/star_salmon/salmon.merged.gene_counts.tsv</code></div></div>
+    <div class="move-row"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="40"></span>
+      <div style="min-width:0"><div class="where"><span class="dot b"></span>org-s3 · shared lab bucket</div><code>s3://lab-blocks/blocks/oy/bafkreibxyh4…gz3oym</code></div></div>
+    <div class="move-row"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="40"></span>
+      <div style="min-width:0"><div class="where"><span class="dot c"></span>ana-hpc · Ana's cluster scratch</div><code>/scratch/ak/blocks/oy/bafkreibxyh4…gz3oym</code></div></div>
+    <div class="verdict">
+      <div class="v-bad"><b>A path</b> breaks the moment the file moves.<code>results/star_salmon/…tsv</code></div>
+      <div class="v-good"><b>An address</b> resolves in any store that holds it.<code>cas://bafk…gz3oym</code></div>
+    </div>
+  </div>
+</div></header>
+
+<!-- CONCEPTS -->
+<section id="concepts"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">01 · Concept model</span>
+    <h2>Four layers. Only the top one changes.</h2>
+    <p class="muted">Everything a person can change is a <b>claim</b>: dashed, warm, signed. Everything a person can cite is a <b>fact</b>: solid, sealed, the same everywhere. Stores sit underneath both and are never the identity of anything.</p>
+  </div>
+  <div class="layers">
+    <div class="layer claims">
+      <div><h3>Claims</h3><p class="what">Signed statements about facts. They supersede each other; the current view is what the UI shows. Append-only, so history is the audit trail.</p></div>
+      <div class="chips">
+        <span class="claim"><span class="av rs">RS</span><span class="verb">named</span>“wigshop”</span>
+        <span class="claim"><span class="av rs">RS</span><span class="verb">pinned</span>“fig 3” · 2d</span>
+        <span class="claim"><span class="av ak">AK</span><span class="verb">added to</span>RAP1 depletion</span>
+        <span class="claim"><span class="av ak">AK</span><span class="verb">condition</span>= WT</span>
+        <span class="claim"><span class="av rs">RS</span><span class="verb">released</span>sharp_magritte</span>
+      </div>
+    </div>
+    <div class="layer-arrow">↓ about</div>
+    <div class="layer">
+      <div><h3>Records</h3><p class="what">Structured blocks that link other blocks: runs, outputs, items, Selections. Immutable; the CID covers every link inside.</p></div>
+      <div class="chips">
+        <span class="fact"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="20"></span><span class="k">run</span>distraught_murdock</span>
+        <span class="fact"><span data-seal="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq" data-size="20"></span><span class="k">manifest</span>nf-core/rnaseq</span>
+        <span class="fact"><span data-seal="bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty" data-size="20"></span><span class="k">item</span>preprocessed · WT_REP1</span>
+        <span class="fact"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="20"></span><span class="k">selection</span>3 items</span>
+      </div>
+    </div>
+    <div class="layer-arrow">↓ link</div>
+    <div class="layer">
+      <div><h3>Blocks</h3><p class="what">Bytes. Square-cell seals mark raw file content; round-cell seals mark structured records.</p></div>
+      <div class="chips">
+        <span class="addr"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="18"></span>bafk…gz3oym · gene_counts.tsv · 3.7 KB</span>
+        <span class="addr"><span data-seal="bafkreibr5nkdlnukzyfhxj2rcgtoxsfztlli2fr6lfmyxekn2iow22ol2u" data-size="18"></span>bafk…l2u · WT_REP1_raw_1_fastqc.zip · 369 KB</span>
+      </div>
+    </div>
+    <div class="layer-arrow">↓ held in</div>
+    <div class="layer">
+      <div><h3>Stores</h3><p class="what">Places that hold blocks plus a log and a snapshot index. A store is a property of a block, shown as presence, never as its name.</p></div>
+      <div class="chips">
+        <span class="fact"><span class="dot a"></span>roblab <span class="muted mono">local · writable</span></span>
+        <span class="fact"><span class="dot b"></span>org-s3 <span class="muted mono">s3 · writable</span></span>
+        <span class="fact"><span class="dot c"></span>ana-hpc <span class="muted mono">posix · read-only</span></span>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- PRIMITIVES -->
+<section id="primitives"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">02 · Primitives</span>
+    <h2>Seven marks carry the whole concept</h2>
+    <p class="muted">Each one answers a question people ask about stored data: is this the same thing? who said so? where is it? will it be kept? where did it come from?</p>
+  </div>
+  <div class="prim-grid">
+    <div class="card">
+      <h3>Seal</h3>
+      <p class="rule">A glyph drawn from the CID's bytes. Same bytes, same seal, in every store and every export. Square cells are raw file blocks; round cells are records. Always paired with the short CID in mono.</p>
+      <div class="demo">
+        <span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="44"></span>
+        <span data-seal="bafkreibr5nkdlnukzyfhxj2rcgtoxsfztlli2fr6lfmyxekn2iow22ol2u" data-size="44"></span>
+        <span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="44"></span>
+        <span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="44"></span>
+        <span data-seal="bafyreicb73nuj4ng3fjjy5jocyao2heswpmag63genlrddbz5rqjqdajhy" data-size="44"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Address chip</h3>
+      <p class="rule">Seal + short CID + optional name and size. The copy action copies the full <span class="mono">cas://</span> reference. Never shows a path.</p>
+      <div class="demo">
+        <span class="addr"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="18"></span>bafk…gz3oym</span>
+        <span class="addr"><span data-seal="bafyreicb73nuj4ng3fjjy5jocyao2heswpmag63genlrddbz5rqjqdajhy" data-size="18"></span>bafy…qdajhy · all_samples · 94 KB</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Fact vs claim</h3>
+      <p class="rule">Facts: solid hairline frame, seal, kind label. Claims: notched tag, warm fill, avatar, verb, age. A claim always points at a fact.</p>
+      <div class="demo">
+        <span class="fact"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="20"></span><span class="k">selection</span>3 bigWigs</span>
+        <span class="claim"><span class="av rs">RS</span><span class="verb">named</span>“wigshop” · 3h</span>
+        <span class="claim"><span class="av ak">AK</span><span class="verb">pinned</span>“paper fig 2”</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Presence</h3>
+      <p class="rule">One colour per store, shown wherever an address appears. Filled: held here. Ring: referenced but not held, such as pipeline inputs.</p>
+      <div class="demo" style="display:grid;gap:8px">
+        <div style="display:flex;gap:10px;align-items:center"><span class="presence"><span class="dot a"></span><span class="dot b"></span><span class="dot ring c"></span></span><span style="font-size:13px">in roblab, org-s3 · referenced from ana-hpc</span></div>
+        <div style="display:flex;gap:10px;align-items:center"><span class="presence"><span class="dot ring a"></span><span class="dot ring b"></span><span class="dot ring c"></span></span><span style="font-size:13px">input FASTQ · known by address, stored nowhere you can reach</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Durability</h3>
+      <p class="rule">Will this survive the next sweep? Semantic colour, kept separate from store colours. Releasing always shows its date.</p>
+      <div class="demo">
+        <span class="state s-pinned">Pinned</span>
+        <span class="state s-held">Held by run</span>
+        <span class="state s-releasing">Releasing · Oct 31</span>
+        <span class="state s-missing">Missing here</span>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Storage bar</h3>
+      <p class="rule">Always for one store, because pins and cleanup happen per store. The top bar stacks pinned, held and releasing bytes. The thin “Yours” bar below shows the share of this store reachable from your runs, pins and Selections.</p>
+      <div class="demo"><div class="sbar" data-bar='{"total":1820,"pinned":640,"held":1020,"releasing":160,"yours":212,"store":"b","storeName":"org-s3"}'></div></div>
+    </div>
+    <div class="card">
+      <h3>Lineage thread</h3>
+      <p class="rule">A vertical thread in the gutter: inputs at the top, the current thing highlighted, consumers below. Every node is an address, so the thread survives copies.</p>
+      <div class="demo" style="display:block">
+        <div class="thread">
+          <div class="node"><span class="presence"><span class="dot ring a"></span></span>WT_REP1_1.fastq.gz <span class="muted mono">input</span></div>
+          <div class="node">preprocessed · WT_REP1 <span class="muted mono">trimgalore</span></div>
+          <div class="node here"><b>quant_salmon · WT_REP1</b></div>
+          <div class="node">quant_merged · all_samples</div>
+          <div class="node">differentialabundance · <span class="muted">run by AK</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- TOKENS -->
+<section id="tokens"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">03 · Tokens</span>
+    <h2>Seqera ink and green, plus two separate colour sets</h2>
+    <p class="muted">The base comes from the Seqera system: dark-brand ink, brand green as the only accent, Inter and JetBrains Mono. Two extra sets do jobs the brand palette doesn't: <b>store colours</b> (categorical, different in lightness so they work for colour-blind readers) and <b>durability colours</b> (semantic). They never share a hue, so “which store” and “is it safe” can't be confused.</p>
+  </div>
+  <div class="tok-grid" id="tokgrid"></div>
+  <div style="height:22px"></div>
+  <div class="typescale">
+    <div><span class="eyebrow">Display · Inter 700</span><span style="font-size:32px;font-weight:700;letter-spacing:-.03em">distraught_murdock</span></div>
+    <div><span class="eyebrow">Title · Inter 650</span><span style="font-size:22px;font-weight:650">quant_salmon · 5 samples</span></div>
+    <div><span class="eyebrow">Body · Inter 400</span><span>Releasing keeps this run's lineage and frees 3.4 GB after a 7-day grace period.</span></div>
+    <div><span class="eyebrow">Address · Mono 400</span><span class="mono">cas://bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym/salmon.merged.gene_counts.tsv</span></div>
+    <div><span class="eyebrow">Label · Mono caps</span><span class="eyebrow" style="color:var(--ink-2)">preprocessed · num_trimmed_reads</span></div>
+  </div>
+</div></section>
+
+<!-- SCREEN: STORAGE -->
+<section id="storage"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">04 · Screen · Storage</span>
+    <h2>How much is stored, pinned, and yours</h2>
+    <p class="muted">One card per store, and nothing is summed across stores, because pins and cleanup happen per store. “Yours” counts bytes in that store reachable from your runs, pins and Selections. What a release would free is shown only on the Release button, for that store, because shared blocks make it differ from “yours”.</p>
+  </div>
+  <div class="frame-scroll"><div class="app">
+    <div class="app-top"><span class="logo"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="18"></span>nf-blocks</span>
+      <span class="storesw"><span class="presence"><span class="dot a"></span><span class="dot b"></span><span class="dot c"></span></span>All stores ▾</span>
+      <span class="search">Search samples, runs, files, CIDs…</span>
+      <span class="right"><span class="pickbtn">Picked · 0</span><span class="av rs" style="width:26px;height:26px;font-size:11px">RS</span></span></div>
+    <nav class="app-nav"><span class="h">Browse</span><a>Projects <small>3</small></a><a>Pipelines <small>2</small></a><a>Selections <small>4</small></a><a class="on">Storage</a>
+      <span class="h">Stores</span><a><span><span class="dot a"></span> roblab</span><small>38 GB</small></a><a><span><span class="dot b"></span> org-s3</span><small>1.8 TB</small></a><a><span><span class="dot c"></span> ana-hpc</span><small>410 GB</small></a></nav>
+    <main class="app-main">
+      <div class="title-row"><h2>Storage</h2><span class="muted" style="font-size:12.5px">signed in as rob.syme@seqera.io · snapshot 2 min ago</span></div>
+      <div class="stores" id="storecards"></div>
+      <div class="two">
+        <div>
+          <h3 style="font-size:14px;margin-bottom:8px">org-s3 by person</h3>
+          <table class="t"><thead><tr><th>Who</th><th class="r">Reachable<small>from their roots</small></th><th class="r">Freed on release<small>this store</small></th><th class="r">Pinned</th></tr></thead>
+          <tbody>
+            <tr><td><span class="av ak">AK</span> Ana Kovač</td><td class="r num">488 GB</td><td class="r num">301 GB</td><td class="r num">212 GB</td></tr>
+            <tr><td><span class="av jt">JT</span> Jon Tse</td><td class="r num">350 GB</td><td class="r num">190 GB</td><td class="r num">96 GB</td></tr>
+            <tr class="sel"><td><span class="av rs">RS</span> <b>You</b></td><td class="r num"><b>212 GB</b></td><td class="r num"><b>74 GB</b></td><td class="r num">41 GB</td></tr>
+            <tr><td><span class="av">CI</span> nf-core CI</td><td class="r num">770 GB</td><td class="r num">612 GB</td><td class="r num">0</td></tr>
+          </tbody></table>
+        </div>
+        <div>
+          <h3 style="font-size:14px;margin-bottom:8px">org-s3 by kind</h3>
+          <table class="t"><thead><tr><th>Kind</th><th class="r">Stored</th><th class="r">Dedup</th></tr></thead>
+          <tbody>
+            <tr><td>BAM / CRAM</td><td class="r num">1.21 TB</td><td class="r num">2.1×</td></tr>
+            <tr><td>FASTQ</td><td class="r num">402 GB</td><td class="r num">4.8×</td></tr>
+            <tr><td>bigWig</td><td class="r num">96 GB</td><td class="r num">1.3×</td></tr>
+            <tr><td>QC / reports</td><td class="r num">71 GB</td><td class="r num">6.0×</td></tr>
+            <tr><td>Counts / matrices</td><td class="r num">4.2 GB</td><td class="r num">3.1×</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+    </main>
+  </div></div>
+  <p class="example-note" style="margin-top:8px">Example figures. The roblab store you're running has 4 runs and 1 Selection.</p>
+</div></section>
+
+<!-- SCREEN: SAMPLES + HANDOFF -->
+<section id="samples"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">05 · Screen · Run → Samples → hand-off</span>
+    <h2>Filter samples once, take any output</h2>
+    <p class="muted">The run opens on a row-per-sample table joined on <span class="mono">meta.id</span> across every output, so one filter applies to every output. Change the threshold; the selection, sizes, samplesheet and snippet all update. Read counts are the real values from <span class="mono">preprocessed · num_trimmed_reads</span>.</p>
+  </div>
+  <div class="frame-scroll"><div class="app with-rail">
+    <div class="app-top"><span class="logo"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="18"></span>nf-blocks</span>
+      <span class="storesw"><span class="dot a"></span>roblab ▾</span>
+      <span class="search">Search samples, runs, files, CIDs…</span>
+      <span class="right"><span class="pickbtn" id="pickcount">Picked · 2</span><span class="av rs" style="width:26px;height:26px;font-size:11px">RS</span></span></div>
+    <nav class="app-nav"><span class="h">Browse</span><a>Projects</a><a class="on">Pipelines</a><a>Selections</a><a>Storage</a>
+      <span class="h">nf-core/rnaseq</span><a class="on" style="background:transparent;color:var(--ink);font-weight:600">distraught_murdock <small>Oct 24</small></a><a>sad_yonath <small>Oct 23</small></a><a style="color:var(--ink-3)">sharp_magritte <small>failed</small></a></nav>
+    <main class="app-main">
+      <div class="crumbs">nf-core/rnaseq / <b>distraught_murdock</b></div>
+      <div class="title-row"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="26"></span><h2>distraught_murdock</h2>
+        <span class="state s-held">Held by run</span><span class="presence" title="present in roblab"><span class="dot a"></span><span class="dot ring b"></span></span>
+        <span class="muted" style="font-size:12.5px">Succeeded · Oct 24, 1:29 PM · 3.2.1 · 61 MB stored</span></div>
+      <div class="tabs"><span class="on">Samples · 5</span><span>Outputs · 17</span><span>Provenance</span><span>Storage</span></div>
+      <div class="filterbar">
+        <span class="fchip"><span>reads (trimmed)</span><span class="src">preprocessed</span> ≥ <input id="thr" type="number" value="50000" step="1000" aria-label="minimum trimmed reads"></span>
+        <span class="btn ghost">+ Add filter</span>
+        <span class="muted" style="margin-left:auto;font-size:12.5px" id="matchtext">2 of 5 samples</span>
+      </div>
+      <div class="tablebox"><table class="t" id="sampletable"><thead><tr>
+        <th></th><th>Sample</th><th class="r">Reads (trimmed)<small>preprocessed</small></th><th>Layout<small>meta.single_end</small></th><th>Strand<small>salmon inferred</small></th><th>Outputs</th>
+      </tr></thead><tbody></tbody></table></div>
+      <p class="muted" style="font-size:12px">Long-tail fields (34 from <span class="mono">bam_qc</span>, 9 from <span class="mono">markdup</span>…) live in the column picker, grouped by output and tool.</p>
+    </main>
+    <aside class="app-rail">
+      <div class="rail-sec"><div class="h">Hand off <span id="nsel">2</span> samples</div>
+        <div class="opt"><input type="checkbox" checked aria-label="quant_salmon"><span>quant_salmon</span><span class="sz" id="sz-quant">4.1 MB</span></div>
+        <div class="opt"><input type="checkbox" checked aria-label="quant_merged"><span>quant_merged</span><span class="sz">94 KB</span><span class="note" id="merged-note">Holds all 5 samples. The samplesheet limits it to your 2.</span></div>
+        <div class="opt"><input type="checkbox" aria-label="markdup"><span>markdup <span class="muted">BAM</span></span><span class="sz" id="sz-bam">18.6 MB</span></div>
+      </div>
+      <div class="rail-sec"><div class="h">For nf-core/differentialabundance</div>
+        <div class="annot" id="annot"></div>
+        <div class="warn" id="dewarn">Each condition needs at least 2 replicates. WT and RAP1_uninduced have 1 each.</div>
+      </div>
+      <div class="rail-sec"><div class="h">Saves as</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap"><span class="fact"><span class="k">selection</span>rap1-de-input</span><span class="fact"><span class="k">samplesheet</span>block</span></div>
+        <pre class="code" id="snippet"></pre>
+        <div style="display:flex;gap:8px"><button class="btn primary" type="button">Save Selection</button><button class="btn" type="button">Copy to…</button></div>
+      </div>
+    </aside>
+  </div></div>
+</div></section>
+
+<!-- SCREEN: COPY -->
+<section id="copy"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">06 · Screen · Copy to store</span>
+    <h2>Move results, keep their story</h2>
+    <p class="muted">Copying a Selection always brings the run records that produced it, so provenance can't be dropped by accident. Claims are blocks too, so they're copied verbatim and keep their original authors. The plan shows what's already at the destination before anything moves.</p>
+  </div>
+  <div class="frame-scroll"><div class="app">
+    <div class="app-top"><span class="logo"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="18"></span>nf-blocks</span>
+      <span class="storesw"><span class="dot a"></span>roblab ▾</span><span class="search">Search samples, runs, files, CIDs…</span>
+      <span class="right"><span class="av rs" style="width:26px;height:26px;font-size:11px">RS</span></span></div>
+    <nav class="app-nav"><span class="h">Browse</span><a>Projects</a><a>Pipelines</a><a class="on">Selections</a><a>Storage</a></nav>
+    <main class="app-main">
+      <div class="crumbs">Selections / rap1-de-input / <b>Copy</b></div>
+      <div class="title-row"><h2>Copy rap1-de-input</h2>
+        <span class="addr"><span data-seal="bafyreia7q2rap1deinputexamplecidxxxxxxxxxxxxxxxxxxxxxxxxx" data-size="18"></span>bafy…xxxxxx</span>
+        <span>from <span class="dot a"></span> roblab → to</span><span class="storesw"><span class="dot b"></span>org-s3 · s3://lab-blocks ▾</span></div>
+      <div class="two">
+        <div style="display:grid;gap:14px;min-width:0">
+          <div class="depth" id="depth">
+            <label class="on"><input type="radio" name="d" checked><span><b>Results + run records</b><small>2 quant dirs, the merged matrix, the samplesheet, and the RunCompletion, manifest and config that produced them.</small></span><span class="sz">38 blocks<br>4.3 MB</span></label>
+            <label><input type="radio" name="d"><span><b>+ upstream lineage</b><small>Also the trimmed reads, BAMs and QC these results were derived from.</small></span><span class="sz">214 blocks<br>41 MB</span></label>
+            <label><input type="radio" name="d"><span><b>Everything stored</b><small>Also anything else this run wrote. Inputs aren't in roblab, so they stay as references.</small></span><span class="sz">236 blocks<br>58 MB</span></label>
+          </div>
+          <div class="closure" aria-label="What travels">
+            <span class="grp"><span data-seal="bafyreia7q2rap1deinputexamplecidxxxxxxxxxxxxxxxxxxxxxxxxx" data-size="14"></span>selection</span><span class="arrow">→</span>
+            <span class="grp">5 items</span><span class="arrow">→</span><span class="grp">29 files</span><span class="arrow">+</span>
+            <span class="grp"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="14"></span>run</span>
+            <span class="grp"><span data-seal="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq" data-size="14"></span>manifest</span>
+            <span class="grp off">BAMs</span><span class="grp off"><span class="dot ring a"></span>10 input FASTQs</span>
+          </div>
+          <div class="plan">
+            <div><b>38</b><span>blocks in plan</span></div>
+            <div><b>12</b><span>already in org-s3</span></div>
+            <div><b>26</b><span>to transfer</span></div>
+            <div><b>3.9 MB</b><span>to upload</span></div>
+          </div>
+        </div>
+        <div style="display:grid;gap:12px;align-content:start;min-width:0">
+          <h3 style="font-size:14px">Claims to carry</h3>
+          <div class="opt"><input type="checkbox" checked aria-label="names"><span class="claim"><span class="av rs">RS</span><span class="verb">named</span>“rap1-de-input”</span><span></span></div>
+          <div class="opt"><input type="checkbox" checked aria-label="annotations"><span class="claim"><span class="av rs">RS</span><span class="verb">condition</span>×2</span><span></span></div>
+          <div class="opt"><input type="checkbox" checked aria-label="project"><span class="claim"><span class="av rs">RS</span><span class="verb">added to</span>RAP1 depletion</span><span></span></div>
+          <div class="opt"><input type="checkbox" aria-label="pins"><span class="claim"><span class="av rs">RS</span><span class="verb">pinned</span>“DE input”</span><span class="sz">re-confirm</span><span class="note">Pins say what you want kept in your store. In a shared store, someone with write access confirms them.</span></div>
+          <h3 style="font-size:14px;margin-top:6px">Same command from the CLI</h3>
+          <pre class="code">nextflow plugin nf-blocks:copy \
+  selection:bafy…xxxxxx --to org-s3 \
+  --depth results --claims names,annotations,projects \
+  --dry-run</pre>
+          <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" type="button">Copy 26 blocks</button><button class="btn" type="button">Copy, then release here</button></div>
+          <p class="muted" style="font-size:12px">After the copy, org-s3's log gets a transfer entry (roots, source, you, depth). That entry is a block too, so “how did this get here?” has an address.</p>
+        </div>
+      </div>
+    </main>
+  </div></div>
+  <p class="example-note" style="margin-top:8px">Example figures. The Selection CID is a placeholder.</p>
+</div></section>
+
+<!-- SCREEN: PROJECT -->
+<section id="project"><div class="wrap">
+  <div class="sec-head">
+    <span class="eyebrow">07 · Screen · Project</span>
+    <h2>A project is a living folder made of claims</h2>
+    <p class="muted">Selections are frozen lists you cite. Projects are where you work: membership, people and sample annotations are claims, so anything can be added or removed with full history. A project lists addresses, so it can span stores. Samples are grouped across runs by <span class="mono">meta.id</span> today. Once the plugin records input CIDs, they can be grouped by input reads instead: same bytes in, same sample.</p>
+  </div>
+  <div class="frame-scroll"><div class="app">
+    <div class="app-top"><span class="logo"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="18"></span>nf-blocks</span>
+      <span class="storesw"><span class="presence"><span class="dot a"></span><span class="dot b"></span><span class="dot c"></span></span>All stores ▾</span><span class="search">Search samples, runs, files, CIDs…</span>
+      <span class="right"><span class="av rs" style="width:26px;height:26px;font-size:11px">RS</span></span></div>
+    <nav class="app-nav"><span class="h">Projects</span><a class="on">RAP1 depletion <small>yeast</small></a><a>Organoid atlas</a><a>Methods paper</a><a style="color:var(--ink-3)">Not in a project</a>
+      <span class="h">Browse</span><a>Pipelines</a><a>Selections</a><a>Storage</a></nav>
+    <main class="app-main">
+      <div class="title-row"><h2>RAP1 depletion</h2><span class="claim"><span class="av rs">RS</span><span class="verb">created</span>Oct 23</span>
+        <span style="display:inline-flex;gap:-4px"><span class="av rs">RS</span><span class="av ak">AK</span></span>
+        <span class="muted" style="font-size:12.5px">default store <span class="dot b"></span> org-s3 · pins every Selection</span></div>
+      <div class="tabs"><span>Overview</span><span class="on">Samples · 5</span><span>Runs · 3</span><span>Selections · 2</span><span>Activity</span></div>
+      <div class="two">
+        <div style="min-width:0;overflow-x:auto">
+          <table class="t"><thead><tr><th>Sample</th><th>Input reads<small>needs input_set</small></th><th>Runs</th><th>condition<small>project claim</small></th><th>Where</th></tr></thead><tbody id="projsamples"></tbody></table>
+        </div>
+        <div style="display:grid;gap:14px;align-content:start;min-width:0">
+          <div class="store" style="gap:12px"><div class="hd"><b>Project storage</b><span class="muted mono" style="font-size:11px">per store</span></div>
+            <div class="sbar" data-bar='{"total":9.4,"pinned":0.2,"held":8.1,"releasing":1.1,"unit":"GB","store":"a","storeName":"roblab"}'></div>
+            <div class="sbar" data-bar='{"total":58.6,"pinned":21.8,"held":36.8,"releasing":0,"unit":"GB","store":"b","storeName":"org-s3"}'></div>
+            <p class="muted" style="font-size:11.5px">Each store keeps its own pins and runs its own cleanup, so the project shows them side by side and never adds them up.</p></div>
+          <div><h3 style="font-size:14px;margin-bottom:8px">Activity</h3>
+            <div class="activity">
+              <div><time>2h</time><span class="claim"><span class="av ak">AK</span><span class="verb">condition</span>= RAP1_IAA_30M</span></div>
+              <div><time>3h</time><span class="claim"><span class="av rs">RS</span><span class="verb">copied</span>rap1-de-input → org-s3</span></div>
+              <div><time>1d</time><span class="claim"><span class="av rs">RS</span><span class="verb">released</span>sharp_magritte</span></div>
+              <div><time>1d</time><span class="claim"><span class="av rs">RS</span><span class="verb">added</span>3 runs</span></div>
+            </div></div>
+        </div>
+      </div>
+    </main>
+  </div></div>
+</div></section>
+
+<!-- FEEDBACK -->
+<section id="feedback" style="border-bottom:none"><div class="wrap">
+  <div class="sec-head"><span class="eyebrow">08 · Decisions</span><h2>Settled in review round 1</h2></div>
+  <ul class="qs">
+    <li><b>Seal: keep.</b><span class="muted">The CID glyph is a core primitive and appears beside every address.</span></li>
+    <li><b>Fact / claim split: keep for now.</b><span class="muted">Claims are drawn as tags with a punched hole and a full border.</span></li>
+    <li><b>Storage is per store.</b><span class="muted">“Only yours” is dropped from bars and project views. Pins and cleanup differ per store, so a cross-store “freed” number would mislead. “Freed on release” appears only on the Release action and in a store's person table, scoped to that store.</span></li>
+    <li><b>Config always travels.</b><span class="muted">RunManifest (params, config, script) is always part of a copy, at every depth.</span></li>
+    <li><b>Visual identity: Seqera product.</b></li>
+    <li><b>Input CIDs are not recorded yet.</b><span class="muted">In <span class="mono">roblab</span>, every RunCompletion has <span class="mono">input_set: null</span>, the <span class="mono">consumer</span> and <span class="mono">missing</span> tables are empty, and <span class="mono">params.input</span> is <span class="mono">[redacted-location]</span>. Cross-run sample identity starts from <span class="mono">meta.id</span> until the plugin fills <span class="mono">input_set</span>.</span></li>
+  </ul>
+</div></section>
+
+<script>
+(function(){
+  // ---- seal: deterministic glyph from CID ----
+  function hash(str){let h=2166136261>>>0;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619)>>>0}return h}
+  function rng(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+  function seal(cid,size){
+    const raw=/^bafk/.test(cid); const body=cid.slice(4); const r=rng(hash(body));
+    const n=5, pad=size*0.14, cell=(size-pad*2)/n; let cells='';
+    for(let y=0;y<n;y++){for(let x=0;x<3;x++){ if(r()<0.5){ [x, n-1-x].filter((v,i,a)=>a.indexOf(v)===i).forEach(cx=>{
+      const px=pad+cx*cell, py=pad+y*cell;
+      cells+= raw ? `<rect x="${(px+cell*.08).toFixed(2)}" y="${(py+cell*.08).toFixed(2)}" width="${(cell*.84).toFixed(2)}" height="${(cell*.84).toFixed(2)}" rx="${(cell*.12).toFixed(2)}"/>`
+                  : `<circle cx="${(px+cell/2).toFixed(2)}" cy="${(py+cell/2).toFixed(2)}" r="${(cell*.42).toFixed(2)}"/>`; }); }}}
+    // corner tick encodes 2 more bits so mirrored twins differ
+    const tick=Math.floor(r()*4); const tx=[pad*0.5,size-pad*0.5][tick&1], ty=[pad*0.5,size-pad*0.5][tick>>1];
+    return `<svg class="seal" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="seal for ${cid.slice(0,4)}…${cid.slice(-6)}">
+      <rect x=".5" y=".5" width="${size-1}" height="${size-1}" rx="${size*0.2}" style="fill:var(--surface);stroke:var(--line-2)"/>
+      <g style="fill:var(--ink)">${cells}</g><circle cx="${tx}" cy="${ty}" r="${Math.max(1.2,size*0.035)}" style="fill:var(--accent)"/></svg>`;
+  }
+  document.querySelectorAll('[data-seal]').forEach(el=>{el.innerHTML=seal(el.dataset.seal,+el.dataset.size||24);el.style.display='inline-flex'});
+  window.__seal=seal;
+
+  // ---- storage bars ----
+  function bar(el){const d=JSON.parse(el.dataset.bar);const u=d.unit||'GB';const p=v=>(v/d.total*100).toFixed(2)+'%';
+    const fmt=v=>v>=1000&&u==='GB'?(v/1000).toFixed(2)+' TB':(+v).toLocaleString('en-US')+' '+u;
+    const pct=v=>Math.round(v/d.total*100);
+    el.innerHTML=`${d.store?`<div class="storehd"><span class="dot ${d.store}"></span>${d.storeName} <span class="muted" style="font-weight:400">· ${fmt(d.total)}</span></div>`:''}
+      <div class="track" role="img" aria-label="${fmt(d.pinned)} pinned, ${fmt(d.held)} held, ${fmt(d.releasing)} releasing of ${fmt(d.total)}">
+      <div class="seg pinned" style="width:${p(d.pinned)}"></div><div class="seg held" style="width:${p(d.held)}"></div><div class="seg releasing" style="width:${p(d.releasing)}"></div></div>
+      <div class="legend"><span><i style="background:var(--pinned)"></i>Pinned ${fmt(d.pinned)}</span><span><i style="background:var(--held);opacity:.55"></i>Held ${fmt(d.held)}</span><span><i style="background:repeating-linear-gradient(135deg,var(--releasing) 0 3px,transparent 3px 5px)"></i>Releasing ${fmt(d.releasing)}</span></div>
+      ${d.yours!==undefined?`<div class="mine"><b>Yours</b><span class="mt" role="img" aria-label="yours: ${fmt(d.yours)}, ${pct(d.yours)}% of this store"><span style="width:${p(d.yours)}"></span></span><span class="num">${fmt(d.yours)} · ${pct(d.yours)}%</span></div>`:''}`;}
+  document.querySelectorAll('[data-bar]').forEach(bar);
+
+  // ---- store cards ----
+  const stores=[
+    {k:'a',name:'roblab',kind:'local · ~/.nf-blocks · writable',stored:'38.4 GB',ref:'96.1 GB',dedup:'2.5×',bar:{total:38.4,pinned:6.2,held:27.9,releasing:4.3,yours:38.4,unit:'GB'},extra:[['Runs','4'],['Selections','1'],['Next sweep','Oct 31']]},
+    {k:'b',name:'org-s3',kind:'s3://lab-blocks · writable',stored:'1.82 TB',ref:'5.6 TB',dedup:'3.1×',bar:{total:1820,pinned:640,held:1020,releasing:160,yours:212},extra:[['Runs','412'],['Selections','58'],['People','9']]},
+    {k:'c',name:'ana-hpc',kind:'/scratch/ak/blocks · read-only',stored:'410 GB',ref:'610 GB',dedup:'1.5×',bar:{total:410,pinned:0,held:120,releasing:290,yours:0},extra:[['Runs','37'],['Selections','3'],['Sweep','nightly']]}];
+  const sc=document.getElementById('storecards');
+  stores.forEach(s=>{const d=document.createElement('div');d.className='store';
+    d.innerHTML=`<div class="hd"><b><span class="dot ${s.k}"></span> ${s.name}</b><span class="kind">${s.kind}</span></div>
+      <div><span class="big num">${s.stored}</span> <span class="muted" style="font-size:12.5px">stored · ${s.ref} referenced · ${s.dedup} dedup</span></div>
+      <div class="sbar" data-bar='${JSON.stringify(s.bar)}'></div>
+      <div class="kv">${s.extra.map(([a,b])=>`<span>${a}</span><span>${b}</span>`).join('')}</div>`;
+    sc.appendChild(d); bar(d.querySelector('.sbar'));});
+
+  // ---- tokens ----
+  const toks=[['--ink','Ink','Text, seal cells'],['--bg','Ground','Page'],['--surface','Surface','Cards, facts'],['--accent','Brand green','Primary action, seal tick'],['--accent-ink','Deep green','Accent text'],['--claim-bg','Claim','Mutable statements'],
+    ['--store-a','Store A','roblab'],['--store-b','Store B','org-s3'],['--store-c','Store C','ana-hpc'],
+    ['--pinned','Pinned','Kept'],['--held','Held','Kept while root lives'],['--releasing','Releasing','Swept after grace'],['--missing','Missing','Referenced, absent']];
+  const tg=document.getElementById('tokgrid');
+  toks.forEach(([v,n,u])=>{const d=document.createElement('div');d.className='tok';d.innerHTML=`<div class="sw" style="background:var(${v});${v==='--surface'||v==='--bg'?'border-bottom:1px solid var(--line)':''}"></div><div class="meta"><b>${v}</b><span>${n}</span><span class="muted">${u}</span></div>`;tg.appendChild(d)});
+
+  // ---- samples demo (real values from distraught_murdock) ----
+  const S=[
+    {id:'RAP1_IAA_30M_REP1',reads:49791,se:false,strand:'reverse',cond:'RAP1_IAA_30M'},
+    {id:'WT_REP1',reads:99566,se:false,strand:'reverse',cond:'WT'},
+    {id:'RAP1_UNINDUCED_REP1',reads:49969,se:true,strand:'reverse',cond:'RAP1_uninduced'},
+    {id:'WT_REP2',reads:49760,se:false,strand:'reverse',cond:'WT'},
+    {id:'RAP1_UNINDUCED_REP2',reads:99971,se:true,strand:'reverse',cond:'RAP1_uninduced'}];
+  const tb=document.querySelector('#sampletable tbody'), thr=document.getElementById('thr');
+  const nf=new Intl.NumberFormat('en-US');
+  function render(){
+    const t=+thr.value||0; const keep=S.filter(s=>s.reads>=t);
+    tb.innerHTML=S.map(s=>{const on=s.reads>=t;return `<tr class="${on?'sel':'dim'}"><td><input type="checkbox" ${on?'checked':''} aria-label="select ${s.id}"></td><td><b>${s.id}</b></td><td class="r num">${nf.format(s.reads)}</td><td>${s.se?'single':'paired'}</td><td>${s.strand}</td><td class="hascell"><span class="has"><span>quant</span><span>BAM</span><span>bigWig</span><span>QC</span></span></td></tr>`}).join('');
+    document.getElementById('matchtext').textContent=`${keep.length} of ${S.length} samples`;
+    document.getElementById('nsel').textContent=keep.length;
+    document.getElementById('pickcount').textContent=`Picked · ${keep.length}`;
+    document.getElementById('sz-quant').textContent=(keep.length*2.05).toFixed(1)+' MB';
+    document.getElementById('sz-bam').textContent=(keep.length*9.3).toFixed(1)+' MB';
+    document.getElementById('merged-note').textContent=`Holds all 5 samples. The samplesheet limits it to your ${keep.length}.`;
+    const an=document.getElementById('annot');
+    an.innerHTML='<span class="muted">sample</span><span class="muted">condition</span>'+keep.map(s=>`<span class="mono" style="font-size:11.5px;overflow:hidden;text-overflow:ellipsis">${s.id}</span><input value="${s.cond}" aria-label="condition for ${s.id}">`).join('');
+    const counts={};keep.forEach(s=>counts[s.cond]=(counts[s.cond]||0)+1);
+    const short=Object.entries(counts).filter(([,c])=>c<2).map(([k])=>k);
+    const w=document.getElementById('dewarn');
+    if(keep.length===0){w.hidden=false;w.textContent='No samples match. Lower the threshold.'}
+    else if(short.length){w.hidden=false;w.textContent=`Each condition needs at least 2 replicates. ${short.join(', ')} ${short.length>1?'have':'has'} only 1.`}
+    else w.hidden=true;
+    document.getElementById('snippet').textContent=
+`include { fromStore } from 'plugin/nf-blocks'
+
+samples = channel.fromStore(
+  run: 'bafyreibim…26ocxq',
+  samples: [where: ['reads_trimmed >=': ${t}]])
+
+quant  = samples.output('quant_salmon')
+matrix = samples.output('quant_merged')
+// samplesheet: cas://bafk…(generated)/samplesheet.csv`;
+  }
+  thr.addEventListener('input',render); render();
+
+  // ---- project samples ----
+  const ps=document.getElementById('projsamples');
+  ps.innerHTML=S.map((s,i)=>`<tr><td><b>${s.id}</b></td><td><span class="addr" style="padding:2px 6px 2px 3px"><span>${seal('bafkreiinput'+s.id.toLowerCase()+'xxxxxxxxxxxxxxxxxxxx',14)}</span>${s.se?'1':'2'} FASTQ</span></td><td class="num">${i===1?'3':'2'}</td><td><span class="claim" style="font-size:11.5px"><span class="av ${i%2?'rs':'ak'}" style="width:15px;height:15px;font-size:8px">${i%2?'RS':'AK'}</span>${s.cond}</span></td><td><span class="presence"><span class="dot a"></span>${i<3?'<span class="dot b"></span>':'<span class="dot ring b"></span>'}</span></td></tr>`).join('');
+
+  // depth radio styling
+  document.querySelectorAll('#depth label').forEach(l=>l.addEventListener('click',()=>{document.querySelectorAll('#depth label').forEach(x=>x.classList.toggle('on',x===l))}));
+})();
+</script>

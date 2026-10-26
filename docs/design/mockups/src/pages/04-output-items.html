@@ -1,0 +1,110 @@
+<!--META
+{
+ "file":"04-output-items.html","title":"Output · items","phase":"P0 · polish","route":"#/items/<completion_cid>/preprocessed?where=[[\"num_trimmed_reads\",\"int\",\"50000\",\">=\"]]",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":0,
+ "summary":"One output's items, filtered. Keeps today's strengths (typed filter builder, URL state, live snippet, 'same for every item' strip) and fixes the problems: sample ID first and clickable, stable column order, formatted numbers, file chips labelled by tool and extension, explicit Pick and Open buttons, per-item size.",
+ "data":"Real: preprocessed items of distraught_murdock, num_trimmed_reads, single_end, inferred strandedness, file counts by tool, bytes per item.",
+ "spec":{
+  "Column order (stable)":[
+   "Checkbox · Sample (id) · promoted fields · file groups · Size · actions. Promoted fields come from pipeline config, then remaining fields alphabetically in the column picker.",
+   "Order never changes when filters are added or removed.",
+   "Long dotted paths are shown by their last segment with the full path in a tooltip and in the column picker (grouped by prefix)."
+  ],
+  "Formatting":[
+   "Integers: thousands separators, no trailing .0 (<code>99566.0</code> → 99,566).",
+   "Floats: 3 significant figures; percentages get a % sign.",
+   "Booleans as words (paired/single), not true/false, when a promoted field defines labels."
+  ],
+  "Interactions":[
+   "Sample ID click opens the item (05-item.html). Filtering by a value moves to the small funnel button that appears on hover.",
+   "Pick adds the item to Picked; the top-bar count updates. Open opens the item.",
+   "File chips are links to the file page (06-file.html); hovering shows name and size.",
+   "'Pick all 2' respects the filter. '3 hidden by filter' row clears the filter when clicked."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="02-pipelines.html">nf-core/rnaseq</a>/<a href="03-run-outputs.html">distraught_murdock</a>/<b>preprocessed</b></nav>
+  <div class="title"><h1>preprocessed</h1><span class="muted" style="font-size:15px">2 of 5 items · 7.93 MB</span><span class="spacer"></span><button class="btn" type="button">Pick all 2</button></div>
+</div>
+
+<div class="filterbar">
+  <span class="fchip"><span>Reads (trimmed)</span><span class="op">≥</span><input value="50,000" aria-label="minimum trimmed reads"><button class="x" type="button" aria-label="Remove filter">×</button></span>
+  <button class="btn ghost sm" type="button">+ Add filter</button>
+  <a href="#" class="muted" style="font-size:12.5px">Clear all</a>
+</div>
+<div class="constants">Same for every item:
+  <span class="field"><span class="k">strandedness</span><span class="v">reverse</span></span>
+  <span class="field"><span class="k">has_genome_bam</span><span class="v">no</span></span>
+  <span class="field"><span class="k">has_transcriptome_bam</span><span class="v">no</span></span>
+  <span class="muted">· no stored file in any item: <span class="mono">reads_cat</span></span>
+</div>
+
+<section class="panel flush">
+  <div class="pb tbox">
+  <table class="t">
+    <thead><tr>
+      <th><input type="checkbox" checked aria-label="Select all"></th>
+      <th>Sample</th>
+      <th class="r">Reads (trimmed)<small>num_trimmed_reads</small></th>
+      <th>Layout<small>meta.single_end</small></th>
+      <th>Strand<small>…inferred_strandedness</small></th>
+      <th>Files</th>
+      <th class="r">Size</th>
+      <th></th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td><input type="checkbox" checked aria-label="Select WT_REP1"></td>
+        <td class="nowrap"><div class="namecell"><span data-seal="bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty" data-size="18"></span><a href="05-item.html">WT_REP1</a></div></td>
+        <td class="r num">99,566</td>
+        <td>paired</td>
+        <td>reverse</td>
+        <td><div class="kinds">
+          <a class="fileb" href="06-file.html" title="FastQC: 12 files, 5.22 MB">fastqc <span class="ext">zip×6 html×6</span></a>
+          <a class="fileb" href="06-file.html" title="Trim Galore: 2 logs">trim <span class="ext">txt×2</span></a>
+          <a class="fileb" href="06-file.html" title="BBSplit stats">bbsplit <span class="ext">txt</span></a>
+        </div></td>
+        <td class="r num nowrap">5.29 MB</td>
+        <td class="nowrap"><button class="btn sm" type="button">Pick</button> <a class="btn sm ghost" href="05-item.html">Open</a></td>
+      </tr>
+      <tr>
+        <td><input type="checkbox" checked aria-label="Select RAP1_UNINDUCED_REP2"></td>
+        <td class="nowrap"><div class="namecell"><span data-seal="bafyreies7bcfa2igyjfpnt6bjxvz2pvf5ab4bh4kwmv3zq77awmsnwj2ou" data-size="18"></span><a href="05-item.html">RAP1_UNINDUCED_REP2</a></div></td>
+        <td class="r num">99,971</td>
+        <td>single</td>
+        <td class="muted">—</td>
+        <td><div class="kinds">
+          <a class="fileb" href="06-file.html" title="FastQC: 6 files">fastqc <span class="ext">zip×3 html×3</span></a>
+          <a class="fileb" href="06-file.html">trim <span class="ext">txt×1</span></a>
+          <a class="fileb" href="06-file.html">bbsplit <span class="ext">txt</span></a>
+        </div></td>
+        <td class="r num nowrap">2.64 MB</td>
+        <td class="nowrap"><button class="btn sm" type="button">Pick</button> <a class="btn sm ghost" href="05-item.html">Open</a></td>
+      </tr>
+      <tr class="group"><td colspan="8"><a href="#" class="muted">3 items hidden by the filter · RAP1_IAA_30M_REP1 (49,791), RAP1_UNINDUCED_REP1 (49,969), WT_REP2 (49,760)</a></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+<p class="muted" style="font-size:12.5px">6 more fields in the column picker: <span class="mono">forwardFragments</span>, <span class="mono">reverseFragments</span>, <span class="mono">unstrandedFragments</span>, <span class="mono">seq_center</span>, <span class="mono">seq_platform</span>, <span class="mono">id</span>.</p>
+<!--RAIL-->
+<div class="sec">
+  <h3>Use in a workflow</h3>
+  <p class="muted" style="font-size:12.5px">2 items of preprocessed where reads (trimmed) ≥ 50,000</p>
+  <div class="row"><div class="seg-toggle"><button class="on" type="button">This run</button><button type="button">Latest good run</button></div><div class="seg-toggle"><button class="on" type="button">Untyped</button><button type="button">Typed</button></div></div>
+<pre class="code"><span class="k">include</span> { fromStore } <span class="k">from</span> <span class="s">'plugin/nf-blocks'</span>
+
+channel.fromStore(
+  run: <span class="s">'bafyreibim…26ocxq'</span>,
+  output: <span class="s">'preprocessed'</span>,
+  where: [<span class="s">'num_trimmed_reads >='</span>: 50000])</pre>
+  <button class="btn sm" type="button">Copy snippet</button>
+</div>
+<div class="sec">
+  <h3>Want another output for these samples?</h3>
+  <p class="muted" style="font-size:12.5px">This filter only sees <b>preprocessed</b>. To take <b>quant_salmon</b> for the same 2 samples, filter on the run's Samples tab instead.</p>
+  <a class="btn sm" href="07-run-samples.html">Open Samples with this filter</a>
+</div>

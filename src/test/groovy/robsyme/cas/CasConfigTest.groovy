@@ -22,13 +22,12 @@ class CasConfigTest extends Specification {
         config.writableLocation == Path.of('/data/cas')
     }
 
-    def 'defaults asserted_by to anonymous and never to the OS user name'() {
+    def 'leaves asserted_by null when unset so the session can resolve a principal'() {
         when:
         def config = CasConfig.from(storeConfig(), 'cas://lab')
 
         then:
-        config.assertedBy == 'anonymous'
-        config.assertedBy != System.getProperty('user.name')
+        config.assertedBy == null
     }
 
     def 'takes asserted_by from the config when set'() {
@@ -301,6 +300,80 @@ class CasConfigTest extends Specification {
         then:
         final IllegalArgumentException e = thrown()
         e.message.contains('cas.nodeHash')
+    }
+
+    def 'cas.inputs.hash defaults to true and can be turned off'() {
+        expect:
+        CasConfig.from(storeConfig(), 'cas://lab').inputsHash
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [hash: true]]], 'cas://lab').inputsHash
+        !CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [hash: false]]], 'cas://lab').inputsHash
+    }
+
+    def 'a cas.inputs.hash that is not a boolean, or a cas.inputs that is not a scope, is refused'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: value]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains(named)
+
+        where:
+        value         | named
+        [hash: 'no']  | 'cas.inputs.hash'
+        [hash: 0]     | 'cas.inputs.hash'
+        false         | 'cas.inputs'
+    }
+
+    def 'cas.inputs.waitSeconds defaults to 600 and can be set, 0 included'() {
+        expect:
+        CasConfig.from(storeConfig(), 'cas://lab').inputsWaitSeconds == 600
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [hash: false]]], 'cas://lab').inputsWaitSeconds == 600
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [waitSeconds: 30]]], 'cas://lab').inputsWaitSeconds == 30
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [waitSeconds: 0]]], 'cas://lab').inputsWaitSeconds == 0
+    }
+
+    def 'a cas.inputs.waitSeconds that is not a non-negative whole number is refused'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas']], inputs: [waitSeconds: value]]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('cas.inputs.waitSeconds')
+
+        where:
+        value << [-1, '600', 1.5, true]
+    }
+
+    def 'cas.stores.<alias>.readOnly defaults to false and is read per member'() {
+        when:
+        def config = CasConfig.from([cas: [stores: [lab: [location: '/data/cas'],
+            shared: [location: '/data/shared', readOnly: true], org: [location: 's3://bucket/x', readOnly: true],
+            open: [location: '/data/open', readOnly: false]]]], 'cas://lab')
+
+        then:
+        !config.readOnly('lab')
+        config.readOnly('shared')
+        config.readOnly('org')
+        !config.readOnly('open')
+    }
+
+    def 'a readOnly that is not a boolean is refused'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas'], shared: [location: '/data/shared', readOnly: 'yes']]]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('cas.stores.shared.readOnly')
+    }
+
+    def 'the writable member cannot be readOnly'() {
+        when:
+        CasConfig.from([cas: [stores: [lab: [location: '/data/cas', readOnly: true]]]], 'cas://lab')
+
+        then:
+        final IllegalArgumentException e = thrown()
+        e.message.contains('cas.stores.lab.readOnly')
+        e.message.contains('writable')
     }
 
     def 'an S3 location with a query string is refused, since it would parse differently than it validated'() {

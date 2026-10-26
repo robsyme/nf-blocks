@@ -1,0 +1,55 @@
+<!--META
+{
+ "file":"12-search.html","title":"Search","phase":"P1 · samples + identity","route":"#/search?q=WT_REP1",
+ "nav":"pipelines","navContext":"pipelines","store":"roblab","stores":["a"],"picked":0,"query":"WT_REP1",
+ "summary":"Global search, today disabled ('later'). It's the cheapest fix for most navigation problems in the review. Results are grouped by kind: samples across runs first, then items, files, Selections, and address matches. Pressing / focuses the box from anywhere.",
+ "data":"Real: WT_REP1 appears in all three nf-core/rnaseq runs; output names and file names are from distraught_murdock.",
+ "spec":{
+  "Index":["Sample IDs (item_attr path id / meta.id), run names, output names, file names (Leaf.name and directory entry names), Selection names (claims), CID prefixes (≥ 6 chars after the multibase prefix)."],
+  "Behaviour":[
+   "Typeahead dropdown with the top 3 per group; Enter opens this full results page.",
+   "A sample result opens that run's Samples tab filtered to the sample (07).",
+   "An address query (starts with 'baf') jumps straight to the object when it matches exactly one CID.",
+   "Results run against the snapshot index in the browser; no server round trip."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <div class="title"><h1>Results for “WT_REP1”</h1><span class="muted">in roblab</span></div>
+  <nav class="tabs"><a class="on" href="#">All<small>28</small></a><a href="#">Samples<small>3</small></a><a href="#">Items<small>11</small></a><a href="#">Files<small>14</small></a><a href="#">Selections<small>0</small></a></nav>
+</div>
+
+<section class="panel flush">
+  <div class="ph"><h2>Samples</h2><span class="muted">same sample ID in 3 runs</span></div>
+  <div class="pb tbox"><table class="t"><tbody>
+    <tr><td><div class="namecell"><a href="07-run-samples.html">WT_REP1</a></div></td><td><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>distraught_murdock</span></td><td class="num">99,566 reads · 89.0% mapped</td><td class="muted">17 outputs</td><td class="muted r">Oct 24</td></tr>
+    <tr><td><div class="namecell"><a href="#">WT_REP1</a></div></td><td><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>sad_yonath</span></td><td class="num">99,566 reads · 89.0% mapped</td><td class="muted">17 outputs</td><td class="muted r">Oct 23</td></tr>
+    <tr><td><div class="namecell"><a href="#">WT_REP1</a></div></td><td><span class="status fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>sharp_magritte</span></td><td class="muted">run failed · partial outputs</td><td class="muted"></td><td class="muted r">Oct 23</td></tr>
+  </tbody></table></div>
+</section>
+
+<div class="grid-2">
+  <section class="panel flush">
+    <div class="ph"><h2>Items</h2><span class="muted">latest run first</span></div>
+    <div class="pb tbox"><table class="t"><tbody>
+      <tr><td><a href="04-output-items.html">preprocessed</a> · WT_REP1</td><td class="muted">distraught_murdock</td><td class="r num">5.29 MB</td></tr>
+      <tr><td><a href="#">markdup</a> · WT_REP1</td><td class="muted">distraught_murdock</td><td class="r num">7.24 MB</td></tr>
+      <tr><td><a href="#">bam_qc</a> · WT_REP1</td><td class="muted">distraught_murdock</td><td class="r num">3.46 MB</td></tr>
+      <tr><td><a href="#">bigwig</a> · WT_REP1</td><td class="muted">distraught_murdock</td><td class="r num">447 KB</td></tr>
+      <tr><td><a href="#">quant_salmon</a> · WT_REP1</td><td class="muted">distraught_murdock</td><td class="r num">30.0 KB</td></tr>
+      <tr class="group"><td colspan="3"><a href="#" class="muted">6 more items</a></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="panel flush">
+    <div class="ph"><h2>Files</h2></div>
+    <div class="pb tbox"><table class="t"><tbody>
+      <tr><td><div class="namecell"><span data-seal="bafkreibr5nkdlnukzyfhxj2rcgtoxsfztlli2fr6lfmyxekn2iow22ol2u" data-size="16"></span><a class="mono" style="font-weight:500;font-size:12px" href="06-file.html">WT_REP1_raw_1_fastqc.zip</a></div></td><td class="r num">369 KB</td></tr>
+      <tr><td><div class="namecell"><span data-seal="bafkreig64et4ftjhwvgajq6i6phb4zsvbuqo76jzyto42nfcnltmymmncm" data-size="16"></span><a class="mono" style="font-weight:500;font-size:12px" href="06-file.html">WT_REP1_raw_1_fastqc.html</a></div></td><td class="r num">600 KB</td></tr>
+      <tr><td><div class="namecell"><span data-seal="bafkreicmsrxd6waia4agmirgd5lfrheoorxe5c43wt6mq4wsf6qkmveyu4" data-size="16"></span><a class="mono" style="font-weight:500;font-size:12px" href="06-file.html">WT_REP1.stats.txt</a></div></td><td class="r num">195 B</td></tr>
+      <tr class="group"><td colspan="2"><a href="#" class="muted">11 more files · same bytes in every run, listed once</a></td></tr>
+    </tbody></table></div>
+  </section>
+</div>
+<p class="muted" style="font-size:12.5px">No Selections contain WT_REP1. Tip: paste an address (starts with <span class="mono">baf</span>) to jump straight to it.</p>

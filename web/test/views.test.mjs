@@ -14,7 +14,7 @@ import { Explorer } from '../src/model.js'
 import { BlockFetcher } from '../src/blocks.js'
 import { claimState } from '../src/claims.js'
 import { block, rawCid } from './fixture.mjs'
-import { loadSqlite, makeDb, snapshotDb } from './helpers.mjs'
+import { loadSqlite, makeDb, snapshotDb, FAKE_STORAGE } from './helpers.mjs'
 import { memberWithIndexedCollection, memberWithUnjoinedRun } from './fixture.mjs'
 
 test('copyText: a via-less member copies its bare address; a via\'d one copies cas://<via>/<address>', () => {
@@ -95,7 +95,7 @@ function rowModel({ allItems = null } = {}) {
   const asked = []
   return {
     asked,
-    item: async (collectionCid, itemCid) => {
+    itemBlock: async (collectionCid, itemCid) => {
       asked.push(itemCid)
       return { view: { sample: `S-${itemCid}`, lane: 2, ok: true }, leaves: [{ name: `${itemCid}.bam` }] }
     },
@@ -154,7 +154,7 @@ test('a row past the preview cap still links to its item page from its icon', as
 
 test('an item with no Meta Map is labelled by its files', async () => {
   installDom()
-  const ex = { ...rowModel(), item: async () => ({ view: null, leaves: [{ name: 'A.bam' }] }) }
+  const ex = { ...rowModel(), itemBlock: async () => ({ view: null, leaves: [{ name: 'A.bam' }] }) }
   const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex) })
   await frame()
   assert.equal(node.querySelector('.row-label').textContent, 'A.bam')
@@ -163,7 +163,7 @@ test('an item with no Meta Map is labelled by its files', async () => {
 test('a directory leaf gets the directory icon and a file leaf the file icon, in leaf order', async () => {
   installDom()
   const leaves = [{ name: 'A_qc', address: block({ kind: 'DirectoryManifest' }).cid }, { name: 'A.bam', address: rawCid('a') }]
-  const ex = { ...rowModel(), item: async () => ({ view: null, leaves }) }
+  const ex = { ...rowModel(), itemBlock: async () => ({ view: null, leaves }) }
   const node = itemRows(ex, rowCtx(), { items: ['i1'], collectionCid: 'coll', previews: new Previews(ex) })
   await frame()
   assert.deepEqual(node.querySelector('.row-files').querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['directory', 'file'])
@@ -215,7 +215,7 @@ test('a run that published nothing says so under Outputs, with no snippet toggle
   installDom()
   const completion = { status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-27T02:26:05.935Z', error: null,
     anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 } }
-  const ex = { run: async () => ({ row: { run_name: 'extravagant_boltzmann', pipeline: 'custom.nf', nf_run_hash: 'abc' }, completion, collections: [],
+  const ex = { ...FAKE_STORAGE, run: async () => ({ row: { run_name: 'extravagant_boltzmann', pipeline: 'custom.nf', nf_run_hash: 'abc' }, completion, collections: [],
     state: claimState([]) }) }
   const node = await run(ex, 'bafyrun', ctx())
   const empty = node.querySelector('[data-no-outputs]')
@@ -262,8 +262,8 @@ test('a collection whose index was never written says so', async () => {
 
 test('the run page counts unjoined publishes', async () => {
   const { ex, ids } = await memberWithUnjoinedRun(2)
-  const page = await render(run(ex, ids.completion, ctx()))
-  assert.match(page.textContent, /2 published files that are in no output/)
+  const page = await render(run(ex, ids.completion, ctx(), { tab: 'provenance' }))
+  assert.match(page.textContent, /2 published files are outside any workflow output/)
 })
 
 // Task 11: release/restore on a run, pin/unpin on any subject (ticket 21
@@ -297,7 +297,7 @@ function fixture({ runClaims = [], collectionClaims = [], itemClaims = [], conte
   const calls = []
   const completion = { status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-01T00:00:00.000Z', error: null,
     anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 } }
-  const ex = {
+  const ex = { ...FAKE_STORAGE,
     run: async () => ({ row: { run_name: 'cold', pipeline: 'demo', nf_run_hash: null }, completion, collections: [],
       state: claimState(runClaims) }),
     collection: async () => ({ cid: COLLECTION, output: 'aligned', completion: null, index: null, items: [], total: 0,
@@ -323,7 +323,7 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 test('a released run shows the badge and Restore content; restore supersedes the release', async () => {
   installDom()
   const { ex, ctx, calls } = fixture({ runClaims: [{ cid: C1, verb: 'set', attribute: 'retain', value: 'lineage', supersedes: [] }] })
-  const node = await run(ex, RUN, ctx)
+  const node = await run(ex, RUN, ctx, { tab: 'storage' })
   assert.ok(node.querySelector('[data-badge="content-released"]'))
   assert.equal(node.querySelector('#release'), null)
   node.querySelector('#restore').click()
@@ -331,11 +331,14 @@ test('a released run shows the badge and Restore content; restore supersedes the
   assert.deepEqual(calls, [['restore', RUN, [C1]]])
 })
 
-test('a run not released offers Release content with its current retain claims', async () => {
+test('a run not released offers Release content; confirming it writes with its current retain claims', async () => {
   installDom()
   const { ex, ctx, calls } = fixture({ runClaims: [] })
-  const node = await run(ex, RUN, ctx)
+  const node = await run(ex, RUN, ctx, { tab: 'storage' })
   node.querySelector('#release').click()
+  await settle()
+  assert.deepEqual(calls, [], 'Release opens the confirmation')
+  node.querySelector('#release-confirm').click()
   await settle()
   assert.deepEqual(calls, [['release', RUN, []]])
 })
@@ -345,7 +348,7 @@ test('a hidden run that is pinned says so', async () => {
   const { ex, ctx } = fixture({ runClaims: [
     { cid: C1, verb: 'delete', attribute: null, value: null, supersedes: [] },
     { cid: C2, verb: 'add', attribute: 'pin', value: 'paper', supersedes: [] }] })
-  const node = await run(ex, RUN, ctx)
+  const node = await run(ex, RUN, ctx, { tab: 'storage' })
   assert.ok(node.querySelector('[data-badge="hidden-but-pinned"]'))
   assert.equal(node.querySelector('[data-pin]').textContent.includes('paper'), true)
 })
@@ -368,7 +371,7 @@ test('pin asks for a note, and each pin can be removed on its own', async () => 
 test('outside the writable member the badges show and no write is offered', async () => {
   installDom()
   const { ex, ctx } = fixture({ runClaims: [{ cid: C1, verb: 'set', attribute: 'retain', value: 'lineage', supersedes: [] }], writable: false })
-  const node = await run(ex, RUN, ctx)
+  const node = await run(ex, RUN, ctx, { tab: 'storage' })
   assert.ok(node.querySelector('[data-badge="content-released"]'))
   assert.equal(node.querySelector('#restore'), null)
   assert.ok(node.querySelector('[data-unavailable]'))
@@ -380,12 +383,12 @@ test('outside the writable member the badges show and no write is offered', asyn
 test('a run page outside the writable member shows the note with a link to the same route in the writable member', async () => {
   installDom()
   const { ex, ctx } = fixture({ writable: false })
-  const node = await run(ex, RUN, ctx)
+  const node = await run(ex, RUN, ctx, { tab: 'storage' })
   const note = node.querySelector('[data-unavailable]')
   assert.equal(note.textContent, 'Pin, release and restore write to the writable member, lab. Open this run there.')
   const a = note.querySelector('a')
   assert.equal(a.textContent, 'Open this run there')
-  assert.equal(a.getAttribute('href'), ctx.write.hrefFor(`#/run/${RUN}`))
+  assert.equal(a.getAttribute('href'), ctx.write.hrefFor(`#/run/${RUN}?tab=storage`))
 })
 
 test('a collection page pins the same way, below its heading', async () => {

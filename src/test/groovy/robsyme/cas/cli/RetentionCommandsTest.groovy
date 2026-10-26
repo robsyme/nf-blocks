@@ -114,6 +114,45 @@ class RetentionCommandsTest extends Specification {
         ((Map) json.roots).runs == 1
     }
 
+    /** A Store Log entry of a kind this build does not know, as a newer build would write it. */
+    private void unknownEntry(String kind) {
+        Files.createFile(store.resolve('log').resolve("${StoreLog.reverseTimestamp(++f.clock)}-${kind}-${theRun.completion}".toString()))
+    }
+
+    def 'a dry run beside an unknown kind exits 0 and names it, in text and in json'() {
+        given:
+        unknownEntry('frob')
+
+        when:
+        final int code = run('sweep', [])
+        final String text = out.toString()
+        out.reset()
+        final int jsonCode = run('sweep', ['--format', 'json'])
+        final Map json = (Map) new JsonSlurper().parseText(out.toString())
+
+        then:
+        code == 0 && jsonCode == 0
+        text.contains('unknown    the Store Log of member lab holds entries of kind(s) frob that this build does not know')
+        json.unknown_kinds == [lab: ['frob']]
+        json.stopped == null
+    }
+
+    def 'sweep --apply beside an unknown kind exits 1, says to upgrade, and trashes nothing'() {
+        given:
+        f.claim(theRun.completion, 'set', 'retain', 'lineage')
+        ageAll()
+        unknownEntry('frob')
+
+        when:
+        final int code = run('sweep', ['--apply', 'true'])
+
+        then:
+        code == 1
+        out.toString().contains('stopped    the Store Log of member lab holds entries of kind(s) frob that this build does not know, ' +
+            'so a sweep could delete blocks they keep; upgrade nf-blocks')
+        !Files.exists(store.resolve('trash')) || Files.list(store.resolve('trash')).count() == 0
+    }
+
     def 'sweep --apply after a release writes a ledger and exits 0'() {
         given:
         f.claim(theRun.completion, 'set', 'retain', 'lineage')
@@ -275,7 +314,7 @@ class RetentionCommandsTest extends Specification {
         then:
         status == 0
         ((String) json.snapshot).startsWith('wrote')
-        runsIn(store.resolve('index/v3.sqlite')) == [kept.completion.toString()]
+        runsIn(store.resolve('index/v6.sqlite')) == [kept.completion.toString()]
         runsIn(indexPath) == [kept.completion.toString()]
         StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
     }
@@ -294,7 +333,7 @@ class RetentionCommandsTest extends Specification {
 
         then:
         line.startsWith('wrote')
-        runsIn(store.resolve('index/v3.sqlite')) == [kept.completion.toString()]
+        runsIn(store.resolve('index/v6.sqlite')) == [kept.completion.toString()]
         runsIn(indexPath) == [kept.completion.toString()]
     }
 }

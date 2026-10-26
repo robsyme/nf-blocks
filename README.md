@@ -74,9 +74,14 @@ cas {
         }
     }
     resolve = ['lab']                  // optional; default is every alias, writable first
-    asserted_by = 'anonymous'          // optional opaque label; never the OS user name
+    asserted_by = 'ada@example.org'    // optional; who the blocks say asserted them
 }
 ```
+
+`asserted_by` is optional. Left unset, nf-blocks uses your Seqera Platform
+identity, then `NXF_BLOCKS_USER`, then `git config user.email`, and warns if
+none of them gives a name. A value of `anonymous` counts as unset. See
+[docs/identity.md](docs/identity.md) for the order and what each source reads.
 
 An alias matches `^[a-z][a-z0-9_-]{0,31}$` and must not parse as a content
 address. `outputDir` may be left out: unset, it means the alias in
@@ -283,7 +288,7 @@ a minute it warns, over five minutes it stops and asks for NTP.
 A head node without the index cache (a Batch head job, a Seqera Platform
 launch) would have to read every block of a large member once. Instead the
 first catch-up seeds the cache from the member's Index Snapshot
-(`index/v3.sqlite`) and reads only the Store Log entries written after it.
+(`index/v6.sqlite`) and reads only the Store Log entries written after it.
 Runs keep the snapshot current while it is under `cas.snapshot.maxBytes`
 (64 MiB by default); for a large shared member, run
 `nextflow plugin nf-blocks:snapshot` against it on a schedule. With no usable

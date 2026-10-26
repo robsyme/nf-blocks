@@ -47,7 +47,7 @@ class ItemsCommand {
 
     static int run(List<String> args, Map config, PrintStream out, PrintStream err) {
         final Request request = parse(args)
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         final Index index = cas.openIndex()
         try {
             cas.catchUpIndex(index)

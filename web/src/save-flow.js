@@ -8,7 +8,7 @@ const failure = (step, e, extra = {}) => ({ step, code: e?.code ?? 'write_failed
 
 export async function saveSequence(writer, members, choice, typedName, { onSaved } = {}) {
   const written = await writer.selection(members)
-  onSaved?.()
+  onSaved?.(written.address)
   const failures = []
   const naming = namingRequest(choice, typedName)
   if (naming) {

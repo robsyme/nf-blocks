@@ -24,8 +24,8 @@ test('a tone colours an icon by status, and ref passes it on; no tone stays grey
   assert.ok(icon('run', { tone: 'good' }).classList.contains('tone-good'))
   assert.ok(!icon('run').getAttribute('class').includes('tone-'))
   assert.ok(ref('run', 'x', '#/run/x', { tone: 'bad' }).querySelector('[data-icon]').classList.contains('tone-bad'))
-  assert.match(ICON_CSS, /\.icon\.tone-good\s*\{[^}]*var\(--good\)/)
-  assert.match(ICON_CSS, /\.icon\.tone-bad\s*\{[^}]*var\(--bad\)/)
+  assert.match(ICON_CSS, /\.icon\.tone-good\s*\{[^}]*var\(--ok\)/)
+  assert.match(ICON_CSS, /\.icon\.tone-bad\s*\{[^}]*var\(--fail\)/)
 })
 
 test('an unknown kind throws', () => {
@@ -55,6 +55,6 @@ test('address: the address icon and the short CID, a quiet link to its block pag
   assert.equal(a.getAttribute('title'), cid)
   assert.equal(a.dataset.address, cid)
   assert.equal(a.querySelector('[data-icon]').dataset.icon, 'address')
-  assert.equal(a.textContent, 'bafyreian3...ac6uye')
+  assert.equal(a.textContent, 'bafy…ac6uye', 'the kit short form, as addrChip shows it')
   assert.equal(shortCid('short'), 'short')
 })

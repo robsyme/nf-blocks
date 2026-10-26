@@ -12,7 +12,7 @@ function fakeEx() {
   const asked = []
   let most = 0
   const ex = {
-    item(collectionCid, itemCid) {
+    itemBlock(collectionCid, itemCid) {
       asked.push([collectionCid, itemCid])
       return new Promise((resolve, reject) => {
         open.push({ itemCid, resolve: () => resolve({ view: { sample: itemCid, lane: 1 }, leaves: [{ name: `${itemCid}.bam` }] }), reject })
@@ -84,7 +84,7 @@ test('a preview that fails is recorded with its code and counted, and listeners 
   assert.deepEqual(p.stats, { fetched: 0, failed: 1, inFlight: 0, queued: 0 })
   assert.deepEqual(told, ['gone'])
   assert.deepEqual(f.asked, [[null, 'gone']])
-  const throwing = new Previews({ item: () => { throw new Error('boom') } })
+  const throwing = new Previews({ itemBlock: () => { throw new Error('boom') } })
   throwing.ask(null, 'x')
   await tick()
   assert.deepEqual(throwing.get('x'), { error: 'query_failed', message: 'boom' })
@@ -108,7 +108,7 @@ test('cancel drops the queue and keeps what is in flight; an unsubscribed listen
 })
 
 test('a preview carries the item value\'s file slots, or none when the item has no value', async () => {
-  const ex = { item: async (c, i) => (i === 'i1'
+  const ex = { itemBlock: async (c, i) => (i === 'i1'
     ? { view: null, leaves: [], value: { bam: { kind: 'Leaf', name: 'a.bam', address: rawCid('a'), size: 3, reason: null } } }
     : { view: null, leaves: [] }) }
   const p = new Previews(ex)
@@ -121,7 +121,7 @@ test('a preview carries the item value\'s file slots, or none when the item has 
 test('dirs names the leaves whose address is a dag-cbor CID, given as an object or as text', async () => {
   const dir = block({ kind: 'DirectoryManifest' }).cid
   for (const given of [dir, dir.toString()]) {
-    const ex = { item: async () => ({ view: null, leaves: [{ name: 'A_qc', address: given }, { name: 'A.bam', address: rawCid('a') }, { name: 'B' }] }) }
+    const ex = { itemBlock: async () => ({ view: null, leaves: [{ name: 'A_qc', address: given }, { name: 'A.bam', address: rawCid('a') }, { name: 'B' }] }) }
     const p = new Previews(ex)
     p.ask('coll', 'i1')
     await tick()

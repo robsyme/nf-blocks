@@ -63,8 +63,9 @@ block, not as a silently different value. Order violations raise
    | `cold` | pipeline-a | the baseline; snapshot to `blocks-after-cold.txt` |
    | `again` | pipeline-a | same store again, plus `-c gate/node-hash.config` (`cas.nodeHash = true`); snapshot to `blocks-after-again.txt` |
    | `fail` | pipeline-a | `--fail`, MAYBE_FAIL exits 7 for sample B; non-zero exit is expected and does not stop the script |
-   | `resumed` | pipeline-a | `-resume cold`, with every published source file at mode 000 |
+   | `resumed` | pipeline-a | `-resume <cold's session UUID>` plus `-c gate/resume.config` (`workflow.output.overwrite = false`), with every published source file at mode 000 |
    | `elsewhere` | pipeline-b | a second launch directory into the same store |
+   | `recover-fail`, `recover-resumed` | pipeline-r | assertion 19: `--fail` with `-c gate/recovery/fail.config`, then `-resume <recover-fail's session UUID>` with the default overwrite; their own store and cache, `GATE_STORE=$GATE_ROOT/store-recovery`, `XDG_CACHE_HOME=$GATE_ROOT/cache-recovery` |
    | `outputs` | gate/outputs | milestone 5: `tuples`/`records` with a JSON and a CSV index, and `LEGACY`'s `publishDir`; its own store, `GATE_STORE=$GATE_ROOT/store-outputs` |
    | `outputs-badindex` | gate/outputs-badindex | milestone 5: a CSV `index { header true }` on a tuple channel, which Nextflow fails to write while the run still exits 0; same `store-outputs` |
    | `retention-b`, `retention-a` | gate/retention | milestone 6: `--tag b` then `--tag a`, sharing `shared.txt` and `dir_*/two.txt`, each with files of its own; its own store, `GATE_STORE=$GATE_ROOT/store-retention`. After them `gate.sh` drives assertion 9's steps through the real `sweep`, `prune`, `untrash` and `put` verbs (below) |
@@ -83,8 +84,8 @@ block, not as a silently different value. Order violations raise
    (`gate/browser/tier.sh`) and browser tier B (`gate/browser/tier_b.sh`),
    both below. Exits non-zero when any tier fails.
 
-Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `store-outputs/`, `store-retention/`, `cache/`,
-`cache-retention/`, `logs/`, `browser/`, `browser-b/`, `selection/`, `selection-typed/`,
+Reusing a `GATE_ROOT` wipes `store/`, `store-out/`, `store-outputs/`, `store-retention/`,
+`store-recovery/`, `cache/`, `cache-retention/`, `cache-recovery/`, `logs/`, `browser/`, `browser-b/`, `selection/`, `selection-typed/`,
 `retention/`, `retention-repo/` and the snapshots first. Every one of them is evidence, and stale
 evidence is worse than none. The plugin in `$GATE_ROOT/plugins` is replaced by
 the zip just built on every run that builds.
@@ -114,7 +115,7 @@ skips it.
 After `fail`, gate.sh keeps that run's Index Snapshot as
 `snapshot-after-fail.sqlite`. `browser_assert.py prepare` then lays out four
 member copies under `$GATE_ROOT/browser/site/stores/`, each holding what a
-member publishes (`blocks/`, `log/`, `index/v3.sqlite`, `index.html`, never
+member publishes (`blocks/`, `log/`, `index/v6.sqlite`, `index.html`, never
 `coords/` or `nf/`):
 
 | store | snapshot | for |
@@ -122,7 +123,7 @@ member publishes (`blocks/`, `log/`, `index/v3.sqlite`, `index.html`, never
 | `current` | the store's own, after `elsewhere` | A1, A5 |
 | `stale` | the one kept after `fail`, two runs behind | A3 |
 | `tampered` | as `stale`, with one byte of `elsewhere`'s RunCompletion changed | A4 |
-| `year` | only `index/v3.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
+| `year` | only `index/v6.sqlite`: `gen_year.py`'s year of 1,825 runs | A2, A5 |
 
 The year snapshot takes minutes to generate, so it is cached in
 `GATE_YEAR_CACHE` (default `$TMPDIR/nf-blocks-gate-year`), keyed by
@@ -318,6 +319,7 @@ store/                   the cas:// member `lab`: blocks/ log/ coords/ nf/
 store-out/               the consumer's member `out`
 store-outputs/           milestone 5's `outputs`/`outputs-badindex` runs, seen by nothing else
 store-retention/         milestone 6's `retention-b`/`retention-a` runs, swept by assertion 9 and seen by nothing else
+store-recovery/ cache-recovery/  assertion 19's `recover-fail`/`recover-resumed` runs and their index, seen by nothing else
 retention/ retention-repo/  assertion 9's launch directory and the plugins.json its verbs start the plugin from
 logs/retention/          one <step>.out/.err/.exit per verb, <step>.request per put, <checkpoint>.json per checkpoint
 store-recreate/ store-recreate-old/  assertion 17's member, recreated at the same location, and its first incarnation moved aside
@@ -331,6 +333,7 @@ selection-typed/         tier B's typed consumer launch directory
 selection-where/         tier B's B21 launch directory (the items view's filtered call)
 pipeline-a/ pipeline-b/  two launch directories of the Test Pipeline
 outputs/ outputs-badindex/  milestone 5's launch directories
+pipeline-r/              assertion 19's launch directory of the Test Pipeline
 consumer/                the second pipeline
 logs/<name>/             stdout.log stderr.log nextflow.log exit
 blocks-after-cold.txt    find blocks -type f, after `cold`
@@ -352,7 +355,7 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 3 | the failed run is marked failed, is partial and says so, and is not `latest` | requires `status: failed`, `possibly_incomplete: true`, an `anomalies` map, a `reports` collection with no `sample == 'B'` item and at most 2 items, and agreement between the index and the Store Log that `latest` is some other run |
 | 4 | the resumed run's output layer is complete | collection names exactly `{aligned, stats, qc, chunks, reports}`, each with 3 items |
 | 4 | the resumed run's task layer is populated through our own `onTaskCached` | `SKIP`: filling the task layer on resume is deferred out of the Walking Skeleton; native Nextflow leaves it empty (7 not 15, issue 17) |
-| 4 | the resumed run re-hashed nothing | proved by the filesystem: `gate.sh` sets every published source file in `pipeline-a/work` to mode 000 for the duration of the run, so anything that re-reads one to re-address it gets `AccessDenied`. No counter is trusted. See the caveat below |
+| 4 | the resumed run re-hashed nothing | proved by the filesystem: `gate.sh` sets every published source file in `pipeline-a/work` to mode 000 for the duration of the run, so anything that re-reads one to re-address it gets `AccessDenied`. The run must carry `cold`'s `Session UUID`, report every task `cold` submitted as `Cached` and none as `Submitted` (a task run again writes fresh outputs the lock never covered), log no `PublishDir - Failed to publish` line (a FAIL names the reader from the stack trace: the plugin's `upload()` on PublishDir's first copy, or PublishDir's own re-copy) and exit 0. No line of its `nextflow.log` may carry `AccessDenied` or `Permission denied` or name a locked path, since a read on a warn-only path (onTaskCached's input record) leaves exit 0. The plugin's own count, the `nf-blocks: the head node read N bytes to address M file(s)` line, must read 0 and 0. So that a run that published nothing cannot pass, the resumed RunCompletion must then account for every Leaf of `cold`'s items, counted from the store: `anomalies.never_published` equals that count (21 on the Test Pipeline), `providers` is empty, and the run's own Leaves are as many and carry no address. The logs come from `logs/cold/` and `logs/resumed/`, so it is `--offline`-skipped. See issue 17 below |
 | 5 | the published directory is a Directory Manifest matching an independent walk, with the internal symlink recorded as a link | walks `pipeline-a/work/**/A_qc` and compares names, modes, sizes and per-file raw CIDs, recursing into `nested/`; a manifest records no execute bit, so the walk calls every file `regular`; the PASS message states how many of each kind were compared |
 | 5 | every recorded publish path resolves | for each `paths[i][j]` in every `cold` collection, requires a `coords/` pointer whose Store URI is that leaf's own address and name |
 | 6 | `lid://` and `cas://` each stage into a second pipeline and hash to the expected address; the consumer, with no `outputDir` line, publishes into its store | requires exactly one file under each of `hashes/lid/` and `hashes/cas/` in `store-out`, compares its digest against the Gate's own sha256 of `A.bam`, and requires the consumer's lineage `WorkflowRun` (`store-out/nf/*/.data.json`, `name` `consumer`) to have `metadata.outputDir` `cas://out`; it also requires the consumer's `nextflow.log` to carry the plugin's `outputDir not set` line, which is also the proof that the plugin's own logging reaches Nextflow's log at all, and its console (`stdout.log` or `stderr.log`) to show the same line, which the plugin logs through `nextflow.cas` so Nextflow's console filter prints it |
@@ -365,18 +368,53 @@ any line is `FAIL`. A `SKIP` never fails the Gate.
 | 9 | a dry-run sweep straight after a run reports an empty dead set; after `set retain "lineage"` on one run, a real sweep trashes exactly its unshared content and none of its metadata, while a pinned item in it and content it shares with another run survive; `del retain` before the deadline brings the content back as live without `untrash`; a later sweep past the deadline deletes what is still released | `gate.sh` runs `retention-b` then `retention-a`, then: a dry `sweep --format json`; `prune --keep-last 1` (dry, then `--apply true`), which releases `b`; `put` of `add pin "figure 3"` on `b`'s `pin_b` item; a `sweep --apply true` beside a fresh fake `live/gate-fake` registration, which must exit 1 naming `gate_fake_run`; the registration made stale (mtime 11 minutes back) and every block backdated 15 days past the 14-day age floor (`--retention-age`); sweep 1; `untrash` of `b`'s `one.txt`; `put` of `del retain` (restore); sweep 2; `put` of `set retain` again; backdating again; sweeps 3 and 4 under `gate/retention/grace0.config` (`cas.sweep.grace = '0s'`). `--retention-checkpoint` records, between steps, every block address present, every `trash/` ledger, `sweep.lock` and `live/`, and the closures the Gate computes itself from the blocks (each read and re-hashed through `cas.Store`): each run's content (item Leaves, Directory Manifests and everything under them), `b`'s metadata (RunCompletion, RunManifest and script, collections, items) and the pinned item's content. Expected: `b`'s content less `a`'s and the pin's. A checkpoint's block list leaves out Forget blocks, which a deleting sweep writes as bookkeeping (§20). Of the plugin's own output only the dry run's `applied` and `dead` and each verb's exit status are read |
 | 17 | a member deleted and recreated at the same location shows only its own runs (DESIGN §20): the cache both incarnations used, which held the first incarnation's run after `recreate-1`, holds only the new run and records only the new `store-id`; the new snapshot holds only the new run and carries that `store-id` in its `meta`; a cold cache seeded from it holds only the new run | `gate.sh` runs `recreate-1` into `store-recreate` with `cache-recreate`, records that cache's `run` table (`--coherence-checkpoint after-recreate-1`), moves the member aside, recreates it empty, runs `recreate-2` with the same cache, then `snapshot` through that cache (`snap-2`) and through an empty `cache-recreate-c` (`cold`). The new run is the one `run` entry in the member's own Store Log, the first run the one in `store-recreate-old`'s, and the two must differ; its `store-id` is read from the file; each cache's `run` table and `store_id:<alias>` `meta` rows and the snapshot's `run` table and `meta` are read read-only with `sqlite3` |
 | 18 | a sweep through one cache reaches every cache (DESIGN §20): after a deleting sweep, a `forget` entry in the member's Store Log lists run `a`'s RunCompletion; the sweep's `snapshot` field says `wrote`, not `not rewritten: fewer_runs`; a cache that saw run `a` before the sweep (B) keeps no row for any listed cid once caught up; B, the rewritten snapshot and a cache that starts cold after the sweep (C) hold run `b` and not run `a` | `gate.sh` copies `store-retention` to `store-coherence` after assertion 9, removes its `store-id`, `index/` and `index.html` (a fresh incarnation), and takes a `snapshot` through caches A and B, recording B's `run` table (`--coherence-checkpoint b-0`), which must hold run `a`; `put` of a `delete` Claim on run `a`'s RunCompletion (`--coherence-refs`) through A; every block backdated 15 days (`--coherence-age`); two `sweep --apply true --format json` through A under `grace0.config` (trash, then delete); then `snapshot` through B and through an empty C. Both runs' RunCompletions come from `store-retention`'s Store Log and blocks; the listed cids are decoded from each `forget` entry's Forget block; cache B's `run`, `collection`, `item`, `claim` and `log_entry` tables are searched for each. Of the plugin's own output only the second sweep's `applied` and `snapshot` and each verb's exit status are read |
+| 19 | a resume after a failed run re-runs what changed, addresses and publishes the re-run tasks' outputs through `cas://`, and leaves the cached tasks' Leaves where the failed run put them | `gate.sh` runs the Test Pipeline from `pipeline-r` into `store-recovery` with its own `cache-recovery`, so `lab` and its index never see these runs: `recover-fail` with `--fail` and `gate/recovery/fail.config` (`errorStrategy 'finish'` on `MAYBE_FAIL` and 16 local cpus, so every other task finishes before the run fails; a task that finishes after the session cancels still never reaches the workflow outputs, so which cached tasks `recover-fail` published remains a race), then `recover-resumed` with `-resume` and `recover-fail`'s session UUID, no `--fail` and the default overwrite. `recover-fail` must exit non-zero and `recover-resumed` 0 in the same session; `recover-resumed` must cache every task `recover-fail` ran except `MAYBE_FAIL`'s, whose script reads `params.fail` and so must all three run again. For each re-run task the Gate hashes the `.report` in its work directory (found from the `Submitted` line's hash prefix) and requires `recover-resumed`'s `reports` Leaf, the `coords/reports/<sample>/<file>` pointer and a block in the store to carry that address. Every Leaf `recover-fail` recorded, keyed by output, Meta Map and name, must keep the address `recover-fail` gave it. A Leaf only `recover-resumed` has, a cached task `recover-fail` finished after it cancelled, must be addressed and is named in the PASS line (the first live Gate pair at `c10a9ce` hit it once: `QC_DIR (3)` finished 71 ms after "Execution cancelled"). None may be `never_published`. The plugin's addresser count must cover the re-run files; the PASS line reports the rest, which is the cost of the default overwrite (24 files addressed, 21 for cached tasks, measured on 26.04.6). `--offline`-skipped |
 | 8, 11, 12 | — | `SKIP (not in skeleton)`, printed with the spec's own wording |
 
-**Assertion 4c is inconclusive under `mode 'copy'`, and says so.** Measured on
-26.04.6: with the sources locked, the resumed run exits 1 because Nextflow's own
-`PublishDir` re-copies every published file on a resume (issue 17 measured the
-inode changing) and a copy needs read access, so the lock is hit upstream of the
-plugin. The assertion greps the resumed run's log: an exit caused by
-`PublishDir - Failed to publish` reports `SKIP` naming that cause, any other
-non-zero exit is a `FAIL`, and an exit of 0 is the `PASS` that proves no content
-byte was read. Assertion 0's exit check makes the same distinction. Clearing
-this properly needs the Test Pipeline to offer a non-copy publish mode for the
-resumed run, which is not the Gate's file.
+**Issue 17: how the resumed run is driven.** Two things made `resumed`, and
+with it assertion 4c and browser assertion A1, depend on timing. Both are
+fixed in the Gate, and the Test Pipeline is left as it is.
+
+First, `-resume cold` never resumed `cold`. Nextflow 26.04.6's launcher takes
+`-resume`'s argument only when it is `last` or looks like a session UUID; a run
+name is left as a stray positional argument and the run resumes the last
+session, which is `fail`'s. `fail` aborts on `MAYBE_FAIL`'s exit 7, so which of
+its tasks finished is a race. The resumed run cached those (outputs locked),
+ran the rest again in fresh work directories (outputs readable), and published
+from both. Each locked file PublishDir fails on logs 5 `PublishDir - Failed
+to publish` lines, so the count was the race made visible: 15 or 20 lines (3 or
+2 tasks cached) came with `ALIGN (1)` run again, `resumed` publishing `A.bam`
+and A1 failing; 80 (10 tasks cached, `ALIGN (1)` among them) came with A1
+passing (gate logs of 2026-10-25). `gate.sh` now reads `cold`'s session
+UUID from `pipeline-a/.nextflow/history` (kept in
+`logs/resumed/resume-session`) and resumes that, and all 15 tasks are cache
+hits on `cold`'s work directories.
+
+Second, under the output DSL's default `overwrite 'standard'` Nextflow's own
+`PublishDir` re-copies every published file on a resume (it compares name, size
+and mtime, and the copy's mtime never matches the source's), and a copy needs read access, so
+the lock was hit upstream of the plugin. `gate/resume.config`, applied to
+`resumed` alone, sets `workflow.output.overwrite = false`, which short-circuits
+`PublishDir.shouldOverwrite` with no I/O; the publish event still fires for
+every file. The research note (`resume-and-publish-events.md` §1.3) names
+`copyAttributes = true` and `overwrite 'sha256'` as ways out, measured against a
+local `outputDir`. Against `cas://lab`, with the sources locked and every task
+cached, neither holds (105 copy failures each, the same as no overlay):
+the provider reports a block's own mtime, so `copyAttributes` still sees every
+file differ, and `'sha256'` has to read the source bytes, which is the re-hash
+4c forbids. `'lenient'` (name and size) gets the files through but re-copies the
+three qc directories, whose pointer's size is the manifest block's. With `false`
+the resumed run exits 0 with no copy failure and the plugin addresses 0 files.
+The overlay is not for the other runs: `again`, `fail` and `elsewhere` publish
+into coordinates `cold` already wrote and must address them again (assertion 2,
+A1).
+
+Before this fix `resumed` also covered, by accident, a resume after a failed
+run with cached and re-run tasks mixed, and re-run tasks uploading through
+`cas://` on resume. Assertion 19 covers that on purpose, in a store of its
+own and without the lock or the overlay, and its PASS line reports what the
+default overwrite costs: every cached task's files are re-copied and the head
+node re-hashes them (21 of the 24 files it addresses).
 
 **Browser assertion A1's producer count is 3 or 4, and that is expected.** A1
 compares the page's producers of `A.bam`'s content with the Gate's own set, so
@@ -385,13 +423,13 @@ Nextflow notifies a workflow output only when its channel closes, and `fail`
 aborts on `MAYBE_FAIL`'s exit 7 before some channels have, so its RunCompletion
 holds `aligned` in some runs and nothing at all in others (six runs on
 2026-09-26: four with `fail`, one without, one not captured). `resumed` is
-never a producer: its `aligned` collection is complete, but the locked source
-stops PublishDir's copy, so its `A.bam` leaf is never-published and has no
-address. A1 therefore also requires the Gate's set to include `cold`, `again`
-and `elsewhere` and to exclude `resumed`, and its PASS line names the runs it
-matched. This is a different race from assertion 4's, and the Test Pipeline is
-left as it is: making `MAYBE_FAIL` wait on `ALIGN` would narrow the race
-without closing it.
+never a producer: it uploads nothing (issue 17 above), and the plugin addresses
+a Leaf only from a publish made in the same run, so its `aligned` collection is
+complete but its `A.bam` leaf is `never_published`. A1 therefore also requires
+the Gate's set to include `cold`, `again` and `elsewhere` and to exclude
+`resumed`, and its PASS line names the runs it matched. `fail`'s race is
+different from issue 17's and is left in: making `MAYBE_FAIL` wait on `ALIGN`
+would narrow it without closing it.
 
 Assertion 10's leak scan has **no exemptions**: every dag-cbor block is searched
 whole, `RunManifest.params` and `RunManifest.config` included. DESIGN §6
@@ -425,23 +463,34 @@ plugin produced before milestone 4, and it has not been regenerated since
 
 ```
 python3 gate/fixtures/make_fixture.py                  # regenerate (deterministic)
-python3 gate/assert.py gate/fixtures/root --offline    # 8 PASS, 3 FAIL, 7 SKIP
-python3 gate/assert.py gate/fixtures/root              # 9 PASS, 4 FAIL, 5 SKIP
+python3 gate/assert.py gate/fixtures/root --offline    # 6 PASS, 10 FAIL, 8 SKIP
+python3 gate/assert.py gate/fixtures/root              # 7 PASS, 13 FAIL, 4 SKIP
 ```
+
+Regenerate first: the work trees are under `work/`, which `.gitignore` keeps
+out of the checkout, so without them assertions 1 and 5 fail as well, and 7
+without `--offline` (4 PASS, 12 FAIL, 8 SKIP offline).
 
 The failures are the fixture's age, not the plugin's. Assertion 2 fails
 because its RunCompletions are schema 1 without `providers` and its work
 dirs hold no `.command.cas` (ticket 16, milestone 4). Assertion 3 fails
 because its RunManifest records `config` as a map, where DESIGN §6 records
 the resolved config text. Assertion 13 fails because the fixture has no
-`seeding.json` or Index Snapshot (milestone 4). Without `--offline`,
-assertion 6 also fails: the fixture's consumer store has no WorkflowRun
-named `consumer` under `store-out/nf`. A real `make gate` run is the evidence; this
+`seeding.json` or Index Snapshot (milestone 4). Assertion 0's exit check, 9
+and 14 to 18 fail because the fixture has none of the later milestones'
+runs: no `outputs` or `outputs-badindex` exit status or `store-outputs`, no
+retention checkpoints, no recreated member and no coherence store. Without
+`--offline`, assertion 6 also fails (the fixture's consumer store has no
+WorkflowRun named `consumer` under `store-out/nf`), and so do 4c and 19
+(no `nextflow.log` under `logs/cold/` or `logs/recover-fail/`). A real
+`make gate` run is the evidence; this
 fixture still exercises the PASS branches of the other assertions offline.
 Bringing it up to date means teaching `make_fixture.py` schema 2, the
 config text, `.command.cas` lines and a snapshot.
 
-`--offline` skips only the two assertions that need a real consumer run.
+`--offline` skips the four assertions that need logs of a real run: 6 and 7
+need the consumer's, 4c needs `cold`'s and `resumed`'s `nextflow.log` and
+the lock list, and 19 needs `recover-fail`'s and `recover-resumed`'s.
 The fixture is generated with `cas.py`'s own encoder, which the unit tests pin
 to the published CID vectors, so it cannot drift away from the real format
 without `test_cas.py` noticing.

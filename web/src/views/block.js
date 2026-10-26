@@ -7,12 +7,30 @@ import { CID } from 'multiformats/cid'
 import { h, link, copyOutcome, saveText } from '../html.js'
 import { address, icon } from '../icons.js'
 import { humanBytes } from '../words.js'
+import { presenceOf } from '../presence.js'
 
 const FORMAT = {
   'dag-cbor': 'structured data, which can link to other blocks',
   raw: 'bytes exactly as the file held them; no name, no links',
 }
 const ARRAY_SHOWN = 200
+
+/**
+ * The first `limit` bytes of a raw block for a preview, and its whole size:
+ * `{ bytes, size, truncated, verified }`. A block of `limit` bytes or fewer is
+ * read whole and hash-checked; a larger one comes back by Range, one byte past
+ * `limit` so a reader can tell it was cut, and unchecked. `bytes` is null when
+ * the server ignores Range on a large block.
+ */
+export async function readHead(ex, cid, limit = 65536) {
+  const head = await ex.blocks.partial(cid, limit + 1)
+  if (head.size !== null && head.size <= limit) {
+    const bytes = await ex.blocks.raw(cid)
+    return { bytes, size: bytes.length, truncated: false, verified: true }
+  }
+  if (head.size === null && head.bytes && head.bytes.length <= limit) return { bytes: head.bytes, size: head.bytes.length, truncated: false, verified: false }
+  return { bytes: head.bytes, size: head.size, truncated: true, verified: false }
+}
 const shortHex = (hex) => (hex.length > 16 ? `${hex.slice(0, 8)}...${hex.slice(-8)}` : hex)
 
 export async function block(ex, cidText, ctx) {
@@ -20,7 +38,7 @@ export async function block(ex, cidText, ctx) {
   const copy = h('button', { type: 'button', onclick: async (e) => { e.currentTarget.textContent = await copyOutcome(globalThis.navigator?.clipboard, cidText) } }, 'Copy')
   const read = b.check === 'verified' || b.check === 'unchecked'
   return h('section', { 'data-block': cidText, 'data-block-check': b.check },
-    h('h1', { class: 'block-cid' }, icon('address'), h('code', {}, cidText), ' ', copy),
+    h('h1', { class: 'block-cid' }, icon('address'), h('code', {}, cidText), ' ', copy, ' ', presenceOf(ctx).dots(cidText, { hereHeld: b.check !== 'missing' })),
     kindLine(b),
     h('h2', {}, 'What the address says'), partsList(b),
     h('h2', {}, 'Checked'), checkLine(b, ctx),

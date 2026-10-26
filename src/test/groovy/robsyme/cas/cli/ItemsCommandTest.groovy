@@ -2,8 +2,12 @@ package robsyme.cas.cli
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicInteger
 
 import groovy.json.JsonSlurper
+import robsyme.cas.CasSession
+import robsyme.cas.GitEmail
+import robsyme.cas.PlatformIdentity
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagJson
 import robsyme.cas.core.Fixtures
@@ -179,6 +183,31 @@ class ItemsCommandTest extends Specification {
         put == 0
         written.written == true
         written.block.members == [[item: [address: itemA, via: [coll1, coll2].sort()]]]
+    }
+
+    def 'items signs nothing, so a token with an unreachable Platform costs it no wait, no git and no warning'() {
+        given: 'no asserted_by, a token, and a Platform that takes 3 s to answer'
+        final AtomicInteger platformCalls = new AtomicInteger()
+        final AtomicInteger gitCalls = new AtomicInteger()
+        CasSession.env = [TOWER_ACCESS_TOKEN: 'tok']
+        CasSession.platformIdentity = { String e, String t -> platformCalls.incrementAndGet(); Thread.sleep(3000); 'slow@example.org' } as PlatformIdentity
+        CasSession.gitEmail = { -> gitCalls.incrementAndGet(); 'dev@example.org' } as GitEmail
+        final Map cfg = config()
+        ((Map) cfg.cas).remove('asserted_by')
+        and: 'the member has an Index Snapshot and the cache is fresh, so catch-up has nothing to warn about either'
+        assert new CasCommands().run('snapshot', [], cfg, new PrintStream(new ByteArrayOutputStream()), new PrintStream(new ByteArrayOutputStream())) == 0
+        Files.delete(tempDir.resolve('cache/index.sqlite'))
+
+        when:
+        final int status = new CasCommands().run('items', ['greetings', '--run', 'lid://hash2', '--format', 'json'], cfg,
+            new PrintStream(out, true, 'UTF-8'), new PrintStream(err, true, 'UTF-8'))
+
+        then: 'the counting seams saw no Platform call and no git spawn, so there was nothing to wait on'
+        status == 0
+        platformCalls.get() == 0
+        gitCalls.get() == 0
+        new JsonSlurper().parseText(stdout()) instanceof List
+        err.toString('UTF-8') == ''
     }
 
     def 'items writes nothing: no Store Log entry, no block, no Index Snapshot'() {

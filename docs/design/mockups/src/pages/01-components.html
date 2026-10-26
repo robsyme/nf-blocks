@@ -1,0 +1,73 @@
+<!--META
+{
+ "file":"01-components.html","title":"Components","phase":"All phases","route":"(reference sheet)","layout":"doc",
+ "css":".doc{max-width:1200px;margin:0 auto;padding:32px max(16px,env(safe-area-inset-right,0px)) 64px max(16px,env(safe-area-inset-left,0px));display:grid;gap:28px}.doc h1{font-size:28px}.doc h2{font-size:17px;margin-bottom:4px}.spec-row{display:grid;grid-template-columns:220px minmax(0,1fr);gap:20px;padding:18px 0;border-top:1px solid var(--line)}.spec-row .lbl{display:grid;gap:4px;align-content:start}.spec-row .lbl code{font-family:var(--font-mono);font-size:11.5px;color:var(--accent-ink)}.spec-row .lbl p{font-size:12.5px;color:var(--ink-3)}.demo{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:16px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);min-width:0}@media(max-width:760px){.spec-row{grid-template-columns:1fr}}",
+ "summary":"Every component the mockups use, with its class name, states and the rule that governs it. Port these first; screens are compositions of them.",
+ "data":"CIDs and names are real roblab values.",
+ "spec":{
+  "Rules":[
+   "Facts (immutable) use .fact / .addr / seals. Claims (mutable, signed) use .claim. Never style a claim like a fact or vice versa.",
+   "Store colours (.dot.a/.b/.c) identify stores only. Durability colours (.s-*) describe keeping only. They never share a hue.",
+   "Every byte figure uses NFB.bytes(). Every count uses thousands separators.",
+   "Status always pairs an icon with a word."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="doc">
+  <div style="display:grid;gap:6px"><span class="eyebrow">nf-blocks explorer · mockup kit</span><h1>Components</h1><p class="muted" style="max-width:70ch">Classes live in <span class="mono">mockups/src/kit.css</span>; behaviour (seals, storage bars, byte formatting) in <span class="mono">kit.js</span>. Use the Light/Dark buttons to check both themes.</p></div>
+
+  <div>
+  <div class="spec-row"><div class="lbl"><h2>Seal</h2><code>[data-seal][data-size]</code><p>Deterministic glyph from the CID. Squares = raw file blocks (bafk…); circles = records (bafy…). Sizes: 14, 16, 18, 20, 30, 36.</p></div>
+    <div class="demo"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="36"></span><span data-seal="bafkreibr5nkdlnukzyfhxj2rcgtoxsfztlli2fr6lfmyxekn2iow22ol2u" data-size="36"></span><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="36"></span><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="36"></span><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="20"></span><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="14"></span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Address chip</h2><code>.addr[data-ref]</code><p>Click copies the full reference in data-ref (cas://… or lid://…). Never shows a filesystem path.</p></div>
+    <div class="demo"><span class="addr" data-ref="cas://bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym/salmon.merged.gene_counts.tsv"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="14"></span>bafk…gz3oym <span class="copy">copy</span></span><span class="addr" data-ref="lid://e25b50f2755ea17dffe98a907420b06f">lid://e25b…b06f <span class="copy">copy</span></span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Fact tag</h2><code>.fact > .k</code><p>An immutable record: kind label + name, with seal.</p></div>
+    <div class="demo"><span class="fact"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="16"></span><span class="k">run</span>distraught_murdock</span><span class="fact"><span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="16"></span><span class="k">selection</span>3 items</span><span class="fact"><span data-seal="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq" data-size="16"></span><span class="k">manifest</span>nf-core/rnaseq</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Claim tag</h2><code>.claim > .av .verb .age</code><p>A signed statement. Full border, punched hole, avatar, verb, value, age. <code>.claim.conflict</code> when current claims disagree.</p></div>
+    <div class="demo"><span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span>“wigshop”<span class="age">3h</span></span><span class="claim"><span class="av sm ak">AK</span><span class="verb">pinned</span>“paper fig 2”<span class="age">2d</span></span><span class="claim"><span class="av sm rs">RS</span><span class="verb">released</span>sharp_magritte</span><span class="claim conflict"><span class="av sm jt">JT</span><span class="verb">named</span>“wig-final” · conflicts</span><span class="claim"><span class="av sm anon">?</span><span class="verb">named</span>by anonymous</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Avatar</h2><code>.av .rs/.ak/.jt/.anon · .sm/.lg</code><p>Initials of asserted_by. Anonymous uses a dashed outline and links to identity setup.</p></div>
+    <div class="demo"><span class="av lg rs">RS</span><span class="av ak">AK</span><span class="av sm jt">JT</span><span class="av anon">?</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Presence</h2><code>.presence > .dot.a|b|c (.ring)</code><p>Filled = held in that store. Ring = referenced, not held. Tooltip names the stores.</p></div>
+    <div class="demo"><span class="presence"><span class="dot a"></span><span class="dot b"></span><span class="dot ring c"></span></span><span class="muted" style="font-size:12.5px">roblab, org-s3 · referenced in ana-hpc</span><span class="presence"><span class="dot ring a"></span></span><span class="muted" style="font-size:12.5px">input, by path</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Durability</h2><code>.state .s-pinned|held|releasing|missing</code><p>Will it survive the next sweep in this store? Releasing always includes a date.</p></div>
+    <div class="demo"><span class="state s-pinned">Pinned</span><span class="state s-held">Held by run</span><span class="state s-releasing">Releasing · Oct 31</span><span class="state s-missing">Missing here</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Run status</h2><code>.status.ok|fail</code><p>Icon + word, never colour alone.</p></div>
+    <div class="demo"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>Succeeded</span><span class="status fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>Failed</span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Storage bar</h2><code>[data-bar]</code><p>One store only. Stacked pinned / held / releasing, then a separate thin “Yours” bar. JSON in bytes.</p></div>
+    <div class="demo" style="display:grid;gap:18px"><div data-bar='{"total":1820000000000,"pinned":640000000000,"held":1020000000000,"releasing":160000000000,"yours":212000000000,"store":"b","storeName":"org-s3"}'></div><div data-bar='{"total":142134100,"pinned":0,"held":142134100,"releasing":0,"yours":142134100,"store":"a","storeName":"roblab"}'></div></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>File chips</h2><code>.fileb · .kind · .field</code><p>Files grouped by tool with extensions and counts. Kind chips summarise outputs. Field chips show formatted values.</p></div>
+    <div class="demo"><a class="fileb" href="#">fastqc <span class="ext">zip×6 html×6</span></a><a class="fileb" href="#">trim <span class="ext">txt×2</span></a><span class="kind">bam<b>×5</b></span><span class="kind">bigWig<b>×15</b></span><span class="field"><span class="k">Reads (trimmed)</span><span class="v">99,566</span></span><span class="field"><span class="k">% mapped</span><span class="v">89.0%</span></span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Filter chip</h2><code>.fchip > .src .op input .x</code><p>Shows the source output for cross-output filters.</p></div>
+    <div class="demo"><span class="fchip"><span>Reads (trimmed)</span><span class="src">preprocessed</span><span class="op">≥</span><input value="50000" aria-label="value"><button class="x" type="button" aria-label="Remove">×</button></span><span class="fchip"><span>Layout</span><span class="op">=</span><input value="paired" aria-label="value"><button class="x" type="button" aria-label="Remove">×</button></span></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Lineage thread</h2><code>.thread > .node(.here|.ext)</code><p>Inputs at top, current node highlighted, consumers below. Dashed node = not stored.</p></div>
+    <div class="demo" style="display:block"><div class="thread"><div class="node ext">WT_REP1_1.fastq.gz <span class="muted">· input, by path</span></div><div class="node">preprocessed · WT_REP1</div><div class="node here"><b>quant_salmon · WT_REP1</b></div><div class="node">quant_merged · all_samples</div></div></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Buttons</h2><code>.btn .primary .ghost .danger .sm</code><p>Primary = the one forward action. Danger = release/delete. Labels state the outcome (“Release (frees 0 B)”).</p></div>
+    <div class="demo"><button class="btn primary" type="button">Copy 13 blocks</button><button class="btn" type="button">Pin…</button><button class="btn danger" type="button">Release (frees 63.7 MB)</button><button class="btn ghost" type="button">+ Add filter</button><button class="btn sm" type="button">Pick</button><button class="btn" disabled type="button">Pin 5.29 MB</button></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Notes &amp; empty states</h2><code>.note(.ok|.warn|.bad) · .empty</code><p>Explain, then say what to do.</p></div>
+    <div class="demo" style="display:grid;gap:10px"><div class="note ok"><span>Provenance is complete at the destination.</span></div><div class="note warn"><span>Each condition needs at least 2 replicates.</span></div><div class="note bad"><span>Block bafk…gz3oym isn't in roblab. It's held in org-s3.</span></div><div class="empty"><b>Nothing pinned yet</b>Pinned items stay in this store after their runs are released.</div></div></div>
+
+  <div class="spec-row"><div class="lbl"><h2>Tokens</h2><code>:root</code><p>Seqera base + store set + durability set. Both themes.</p></div>
+    <div class="demo" id="tok" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px"></div></div>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const T=['--ink','--ink-2','--ink-3','--bg','--surface','--sunken','--line','--accent','--accent-ink','--accent-soft','--claim-bg','--claim-line','--store-a','--store-b','--store-c','--pinned','--held','--releasing','--missing','--ok','--fail'];
+ document.getElementById('tok').innerHTML=T.map(t=>`<div style="border:1px solid var(--line);border-radius:6px;overflow:hidden"><div style="height:36px;background:var(${t})"></div><div class="mono" style="font-size:11px;padding:5px 7px">${t}</div></div>`).join('');
+});
+</script>

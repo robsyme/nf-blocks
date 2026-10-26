@@ -2,30 +2,37 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>nf-blocks explorer</title>
 </head>
 <body data-state="loading" data-render="0" data-route="open" data-nav="closed" data-panel="closed">
-<header id="bar">
-  <button type="button" id="nav-toggle" aria-label="pipelines and runs">☰</button>
-  <a class="brand" href="#/">nf-blocks</a>
-  <span class="spacer"></span>
-  <a id="tray" href="#/compose" data-count="0">Picked (0)</a>
-  <span id="tray-unsaved" class="warn" role="status" hidden></span>
-  <button type="button" id="use-toggle">Use</button>
+<div class="app has-rail">
+<header class="top" id="bar">
+  <button type="button" id="nav-toggle" class="iconbtn" aria-label="pipelines and runs">☰</button>
+  <a class="brand" href="#/"><span class="brand-mark" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 22 22"><rect width="22" height="22" rx="4.4" style="fill:var(--ink)"/><g style="fill:var(--surface)"><rect x="5" y="5" width="5" height="5" rx="1"/><rect x="12" y="5" width="5" height="5" rx="1"/><rect x="5" y="12" width="5" height="5" rx="1"/></g><rect x="12" y="12" width="5" height="5" rx="1" style="fill:var(--accent)"/></svg></span>nf-blocks</a>
+  <span class="store-wrap" id="store-wrap"><span class="store-switch" id="store-label" title="The store this page reads"><span class="dot a"></span><span id="store-name">store</span></span></span>
+  <label class="search"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg><input type="search" id="search" placeholder="Search samples or addresses…" aria-label="Search samples or addresses" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="search-menu" aria-expanded="false"><span class="kbd" aria-hidden="true">/</span><span id="search-menu" class="search-menu" role="listbox" aria-label="Search results" hidden></span></label>
+  <div class="right">
+    <span id="tray-unsaved" class="warn" role="status" hidden></span>
+    <a id="tray" class="picked" href="#/compose" data-count="0">Picked <span class="count">0</span></a>
+    <button type="button" id="use-toggle" class="btn sm">Use</button>
+  </div>
 </header>
-<div id="shell">
-  <nav id="nav" aria-label="pipelines, runs and Selections">
-    <div id="nav-body"></div>
-    <section id="store-status" class="muted" aria-label="store">
-      <nav id="members"></nav>
-      <div id="where"></div>
-      <div id="snapshot-mode"></div>
-      <div id="stale"></div>
-    </section>
-  </nav>
-  <main id="main"><p class="muted">Opening the snapshot...</p></main>
-  <aside id="panel" aria-label="Use in a workflow"><div id="panel-inner"></div></aside>
+<nav class="nav" id="nav" aria-label="Main">
+  <h2 class="h eyebrow">Browse</h2>
+  <a href="#/projects" data-nav-link="projects"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="lbl">Projects</span><small id="nav-project-count"></small></a>
+  <a href="#/" data-nav-link="pipelines"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5"/></svg><span class="lbl">Pipelines</span><small id="nav-pipeline-count"></small></a>
+  <a href="#/selections" data-nav-link="selections"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10a1 1 0 0 1 1 1v17l-6-4-6 4V4a1 1 0 0 1 1-1z"/></svg><span class="lbl">Selections</span></a>
+  <div id="nav-body"></div>
+  <h2 class="h eyebrow">Stores</h2>
+  <div id="members"></div>
+  <div class="foot" id="store-status" aria-label="store">
+    <span id="where"><span id="snapshot-age">Snapshot</span> · <span id="stale"></span></span>
+    <span id="snapshot-mode"></span>
+  </div>
+</nav>
+<main class="main" id="main"><p class="muted">Opening the snapshot...</p></main>
+<aside class="rail" id="panel" aria-label="Use in a workflow"><div id="panel-inner"></div></aside>
 </div>
 <!--APP-->
 </body>

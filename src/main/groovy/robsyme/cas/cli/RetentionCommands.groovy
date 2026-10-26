@@ -3,6 +3,7 @@ package robsyme.cas.cli
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.function.Supplier
 
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
@@ -57,9 +58,9 @@ class RetentionCommands {
         if( o.flag('budget') != null && budget <= 0L )
             throw new UsageException("--budget caps what one sweep trashes and must be above 0, got '${o.flag('budget')}'; leave --budget out for no cap")
         final SweepPolicy policy = policy(config, err)
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         cas.checkClock()
-        final Sweep sweeper = new Sweep(cas.store, policy, cas.assertedBy)
+        final Sweep sweeper = new Sweep(cas.store, policy, { -> cas.assertedBy } as Supplier<String>)
         if( !apply ) {
             final SweepReport r = sweeper.dryRun()
             out.println(format == 'json' ? JsonOutput.toJson(r.toJson()) : r.toText())
@@ -120,7 +121,7 @@ class RetentionCommands {
             index.forget(r.unannounced)
             final Set<String> failed = cas.catchUpIndex(index)
             final IndexSnapshot.Result s = cas.snapshotWritable(index, 0L, base, failed, !r.unannounced.isEmpty())
-            return s.skipped ? "not rewritten: ${s.skipped}".toString() :
+            return s.skipped ? "not rewritten: ${s.skipped}${IndexSnapshot.skipAdvice(s)}".toString() :
                 "wrote ${cas.snapshotsOf(cas.config.writableAlias).describe()} (${s.runs} runs)".toString()
         }
         catch( Exception e ) {
@@ -152,7 +153,7 @@ class RetentionCommands {
             throw new UsageException('prune needs --keep-last <n> or --keep-newer <period>, or both')
         final String pipeline = o.flag('pipeline')
 
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         final Index index = cas.openIndex()
         try {
             cas.catchUpIndex(index)
@@ -209,7 +210,7 @@ class RetentionCommands {
         }
         final Set<Cid> namedSet = new LinkedHashSet<Cid>(named)
 
-        final CasSession cas = new CasSession(CasConfig.fromSession(config))
+        final CasSession cas = CasSession.forCommand(CasConfig.fromSession(config), err)
         final BlockStore writable = cas.members()[0]
         if( !(writable instanceof RetainedStore) )
             throw new IllegalStateException("store member '${writable.alias()}' has no retention objects to untrash")

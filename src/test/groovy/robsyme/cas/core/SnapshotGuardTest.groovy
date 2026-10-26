@@ -80,7 +80,7 @@ class SnapshotGuardTest extends Specification {
         IndexSnapshot.write(index, 'lab', new LocalSnapshotStorage(store.root), 0L, null, tmp.resolve('t'))
 
         then:
-        Files.list(store.root.resolve('index')).toList()*.fileName*.toString() == ['v3.sqlite']
+        Files.list(store.root.resolve('index')).toList()*.fileName*.toString() == ['v6.sqlite']
         Files.list(tmp.resolve('t')).count() == 0
     }
 

@@ -1,0 +1,58 @@
+<!--META
+{
+ "file":"00-index.html","title":"Mockup index","fullTitle":"nf-blocks Mockups","phase":"All phases","route":"(index)","layout":"doc",
+ "css":".doc{max-width:1100px;margin:0 auto;padding:36px max(16px,env(safe-area-inset-right,0px)) 64px max(16px,env(safe-area-inset-left,0px));display:grid;gap:26px}.doc h1{font-size:30px;letter-spacing:-.03em}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}.card{display:grid;gap:6px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);color:var(--ink);text-decoration:none}.card:hover{border-color:var(--ink-3);text-decoration:none}.card b{font-size:14.5px}.card p{font-size:12.5px;color:var(--ink-3)}.ph-tag{font-family:var(--font-mono);font-size:10.5px;padding:1px 6px;border-radius:3px;background:var(--sunken);color:var(--ink-2);justify-self:start}.doc ol{margin:0;padding-left:20px;display:grid;gap:6px;font-size:13.5px;max-width:80ch}",
+ "summary":"Entry point for agents and reviewers.",
+ "data":"Mockups use real data from the roblab store (nf-core/rnaseq test runs, Oct 23–24 2026) wherever possible; each page's spec says which values are examples."
+}
+-->
+<!--MAIN-->
+<div class="doc">
+  <div style="display:grid;gap:8px">
+    <span class="eyebrow">nf-blocks explorer redesign · Blockprint v0.2</span>
+    <h1>Mockups</h1>
+    <p class="muted" style="max-width:72ch;font-size:14px">Standalone HTML targets for implementation agents. Each file opens on its own (fonts from Google Fonts, falling back to system fonts). Match layout, hierarchy, copy and states. Below each screen, a dashed <b>Spec notes</b> panel holds behaviour and acceptance criteria; the same notes are in an HTML comment at the top of each file.</p>
+  </div>
+
+  <div style="display:grid;gap:10px">
+    <h2 style="font-size:17px">How to use these</h2>
+    <ol>
+      <li>Start with <a href="01-components.html">Components</a> and port <span class="mono">src/kit.css</span> tokens and classes, plus the Seal algorithm in <span class="mono">src/kit.js</span> (normative).</li>
+      <li>Build the screens for your phase. Treat text and number formatting as part of the spec.</li>
+      <li>Check light and dark (buttons bottom-right). Target width 1280–1600 px; the shell collapses the rail under 1100 px and the nav under 820 px.</li>
+      <li>Elements outside <span class="mono">.app</span> (spec panel, theme buttons) are mockup chrome. Don't ship them.</li>
+      <li>Edit mockups in <span class="mono">src/pages/</span> and run <span class="mono">python3 src/build.py</span>.</li>
+    </ol>
+  </div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">Reference</h2>
+    <div class="cards"><a class="card" href="01-components.html"><span class="ph-tag">all</span><b>Components</b><p>Seal, address, fact/claim tags, presence, durability, storage bar, chips, filters, lineage, buttons, notes, tokens.</p></a></div></div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">P0 · Polish</h2><div class="cards">
+    <a class="card" href="02-pipelines.html"><span class="ph-tag">P0</span><b>Pipelines (home)</b><p>Sizes, plain-language health, Selections, store activity.</p></a>
+    <a class="card" href="03-run-outputs.html"><span class="ph-tag">P0</span><b>Run · Outputs</b><p>Header with seal, status, durability. Outputs with key fields, file kinds, sizes; empty outputs collapsed.</p></a>
+    <a class="card" href="04-output-items.html"><span class="ph-tag">P0</span><b>Output · items</b><p>Filtered items, stable columns, formatted numbers, labelled file chips, Pick/Open.</p></a>
+    <a class="card" href="05-item.html"><span class="ph-tag">P0</span><b>Item</b><p>Files grouped by record key, lineage, produced-by with names, pin with bytes.</p></a>
+    <a class="card" href="06-file.html"><span class="ph-tag">P0</span><b>File</b><p>TSV preview, address, runs that produced the same bytes.</p></a>
+    <a class="card" href="08-selection.html"><span class="ph-tag">P0/P1b</span><b>Selection</b><p>Fact vs claims, tidy samplesheet, entry to Copy.</p></a>
+  </div></div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">P1 · Samples, identity, search</h2><div class="cards">
+    <a class="card" href="07-run-samples.html"><span class="ph-tag">P1a · interactive</span><b>Run · Samples + hand-off</b><p>Row per sample across outputs; filters apply to any output; hand-off rail with sizes and snippet.</p></a>
+    <a class="card" href="12-search.html"><span class="ph-tag">P1</span><b>Search</b><p>Samples across runs, items, files, address prefixes.</p></a>
+  </div></div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">P2 · Storage</h2><div class="cards">
+    <a class="card" href="09-storage.html"><span class="ph-tag">P2</span><b>Storage</b><p>Per-store cards; roblab by run, kind and person; pinned empty state.</p></a>
+    <a class="card" href="10-run-storage.html"><span class="ph-tag">P2</span><b>Run · Release</b><p>Inline confirmation with bytes freed in this store (real example: 0 B).</p></a>
+  </div></div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">P3 · Multi-store + copy</h2><div class="cards">
+    <a class="card" href="11-copy.html"><span class="ph-tag">P3</span><b>Copy to store</b><p>Depth, claims to carry, dry-run plan, CLI parity. Run records always travel.</p></a>
+  </div></div>
+
+  <div style="display:grid;gap:10px"><h2 style="font-size:17px">P4 · Projects + hand-off templates</h2><div class="cards">
+    <a class="card" href="13-project.html"><span class="ph-tag">P4</span><b>Project</b><p>Claims-based membership, editable conditions, per-store storage, activity.</p></a>
+    <a class="card" href="14-handoff-de.html"><span class="ph-tag">P4 · interactive</span><b>Hand off · differentialabundance</b><p>Conditions, contrast, live validation, samplesheet as a block, run command.</p></a>
+  </div></div>
+</div>
