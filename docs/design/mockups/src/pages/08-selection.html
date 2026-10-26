@@ -1,0 +1,83 @@
+<!--META
+{
+ "file":"08-selection.html","title":"Selection","phase":"P0 polish + P1b identity + P3 copy entry point","route":"#/selection/<selection_cid>",
+ "nav":"selections","navContext":"pipelines","store":"roblab","stores":["a"],"picked":0,
+ "summary":"A Selection is a frozen, addressed list of items. The page separates the fact (the list, with its seal and size) from the claims about it (its name, who named it, pins). Samplesheet export gains a tidy format, and Copy to… is the entry point to 11-copy.html.",
+ "data":"Real: wigshop Selection CID, its 3 bigwig items from distraught_murdock, 9 bigWig files and their sizes, name claim time. Identity RS replaces today's 'anonymous'.",
+ "spec":{
+  "Fact vs claims":[
+   "The header shows the seal + short CID (the fact) and the name as a claim tag with author and age.",
+   "Rename writes a new name claim that supersedes the old one; the Claims list keeps history.",
+   "Delete writes a delete claim. The Selection stays addressable; it's hidden from lists until undone."
+  ],
+  "Samplesheet":[
+   "Tidy (default): one row per item; columns = id, promoted meta fields, then one column per file role with a <code>cas://</code> URI.",
+   "Raw: today's full flattening (46 columns), kept for compatibility.",
+   "The samplesheet itself is stored as a block when downloaded, so it has an address too (shown after first export)."
+  ],
+  "Acceptance":["No 'anonymous' when an identity is configured; if not, show the dashed anonymous avatar and a link to set identity."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="#">Selections</a>/<b>wigshop</b></nav>
+  <div class="title">
+    <span data-seal="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce" data-size="34"></span>
+    <h1>wigshop</h1>
+    <span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span><span class="age">Oct 24, 3:40 PM</span></span>
+    <span class="state s-held">Held by run</span><span class="presence"><span class="dot a"></span></span>
+    <span class="spacer"></span>
+    <button class="btn" type="button">Rename</button><button class="btn" type="button">Pin…</button><a class="btn primary" href="11-copy.html">Copy to…</a>
+  </div>
+  <div class="subline"><span><b>3 items</b> · 9 files · <b>1.14 MB</b></span><span>from <a href="03-run-outputs.html">distraught_murdock</a> / bigwig</span><span class="addr" data-ref="bafyreib2rljbxplvhdgbxoqfxujbc2bhztqueg7u35xuuurdrpn2id5hce">bafy…id5hce <span class="copy">copy</span></span></div>
+</div>
+
+<section class="panel flush">
+  <div class="ph"><h2>Items</h2><span class="muted">fixed list · can't change</span></div>
+  <div class="pb tbox">
+  <table class="t">
+    <thead><tr><th>Sample</th><th>Layout</th><th>Strand</th><th>Files</th><th>From</th><th class="r">Size</th></tr></thead>
+    <tbody>
+      <tr><td><div class="namecell"><span data-seal="bafyreibqmh7sof3fghtxiehvghvimlhkmnjr6sg2l6g4l2a6l2f2crpqju" data-size="18"></span><a href="05-item.html">RAP1_UNINDUCED_REP2</a></div></td><td>single</td><td>reverse</td><td><div class="kinds"><span class="fileb">forward <span class="ext">bigWig</span></span><span class="fileb">reverse <span class="ext">bigWig</span></span><span class="fileb">combined <span class="ext">bigWig</span></span></div></td><td class="nowrap muted">distraught_murdock · bigwig</td><td class="r num">417 KB</td></tr>
+      <tr><td><div class="namecell"><span data-seal="bafyreiewhmblm2hek3ikrou5ks3mqlqokmrnp7iqa444vtdmh24bti75j4" data-size="18"></span><a href="05-item.html">WT_REP2</a></div></td><td>paired</td><td>reverse</td><td><div class="kinds"><span class="fileb">forward <span class="ext">bigWig</span></span><span class="fileb">reverse <span class="ext">bigWig</span></span><span class="fileb">combined <span class="ext">bigWig</span></span></div></td><td class="nowrap muted">distraught_murdock · bigwig</td><td class="r num">377 KB</td></tr>
+      <tr><td><div class="namecell"><span data-seal="bafyreiey2d5hmr7b56ggm2kw7kg2p4i3anv3cpjonwy5lbwl35zzn6n3ki" data-size="18"></span><a href="05-item.html">RAP1_UNINDUCED_REP1</a></div></td><td>single</td><td>reverse</td><td><div class="kinds"><span class="fileb">forward <span class="ext">bigWig</span></span><span class="fileb">reverse <span class="ext">bigWig</span></span><span class="fileb">combined <span class="ext">bigWig</span></span></div></td><td class="nowrap muted">distraught_murdock · bigwig</td><td class="r num">341 KB</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="panel flush">
+  <div class="ph"><h2>Samplesheet</h2><div class="seg-toggle"><button class="on" type="button">Tidy</button><button type="button">Raw (46 columns)</button></div><span class="spacer"></span><button class="btn sm" type="button">Download CSV</button><button class="btn sm ghost" type="button">JSON</button></div>
+  <div class="pb tbox">
+  <table class="t" style="font-size:12px">
+    <thead><tr><th>sample</th><th>single_end</th><th>strandedness</th><th>forward</th><th>reverse</th><th>combined</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">RAP1_UNINDUCED_REP2</td><td class="mono">true</td><td class="mono">reverse</td><td class="mono muted">cas://bafk…issp4/RAP1_UNINDUCED_REP2.forward.bigWig</td><td class="mono muted">cas://bafk…/…reverse.bigWig</td><td class="mono muted">cas://bafk…/…bigWig</td></tr>
+      <tr><td class="mono">WT_REP2</td><td class="mono">false</td><td class="mono">reverse</td><td class="mono muted">cas://bafk…/WT_REP2.forward.bigWig</td><td class="mono muted">cas://bafk…/…reverse.bigWig</td><td class="mono muted">cas://bafk…/…bigWig</td></tr>
+      <tr><td class="mono">RAP1_UNINDUCED_REP1</td><td class="mono">true</td><td class="mono">reverse</td><td class="mono muted">cas://bafk…/RAP1_UNINDUCED_REP1.forward.bigWig</td><td class="mono muted">cas://bafk…/…reverse.bigWig</td><td class="mono muted">cas://bafk…/…bigWig</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+<!--RAIL-->
+<div class="sec">
+  <h3>Use in a workflow</h3>
+  <div class="row"><div class="seg-toggle"><button class="on" type="button">Untyped</button><button type="button">Typed</button></div></div>
+<pre class="code"><span class="k">include</span> { fromStore } <span class="k">from</span> <span class="s">'plugin/nf-blocks'</span>
+
+channel.fromStore(
+  selection: <span class="s">'bafyreib2r…id5hce'</span>)</pre>
+  <button class="btn sm" type="button">Copy snippet</button>
+  <p class="muted" style="font-size:11.5px">Works unchanged after the Selection is copied to another store. Only the store config changes.</p>
+</div>
+<div class="sec">
+  <h3>Claims</h3>
+  <div class="row"><span class="claim"><span class="av sm rs">RS</span><span class="verb">named</span>“wigshop”<span class="age">3h</span></span></div>
+  <p class="muted" style="font-size:12px">No pins in roblab. Held while distraught_murdock is held.</p>
+</div>
+<div class="sec">
+  <h3>Where it lives</h3>
+  <div class="row"><span class="dot a"></span>roblab<span class="spacer"></span><span class="mono muted">1.14 MB</span></div>
+  <a class="btn sm" href="11-copy.html">Copy to another store…</a>
+</div>

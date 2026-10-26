@@ -65,6 +65,7 @@ REGISTRY = []
 
 
 def assertion(number, title, online_only=False):
+    """online_only: True for "needs a real consumer run", or the reason itself."""
     def register(fn):
         REGISTRY.append({"number": number, "title": title, "fn": fn,
                          "online_only": online_only})
@@ -373,7 +374,6 @@ def assert_blocks_sound(gate):
 @assertion(0, "every run exited as the Gate drove it")
 def assert_runs_exited(gate):
     problems = []
-    notes = []
     for name in PRODUCER_RUNS + OUTPUTS_RUNS + ["consumer"]:
         code = gate.exit_code(name)
         if code is None:
@@ -384,24 +384,21 @@ def assert_runs_exited(gate):
                             "for sample %s, but it exited 0"
                             % (name, FAILING_SAMPLE))
         elif name != FAILING_RUN and code != 0:
-            # `resumed` runs with every published source at mode 000 so that
-            # assertion 4c can catch a re-hash. Under the output DSL's
-            # `mode 'copy'` Nextflow re-publishes those files on every resume
-            # (issue 17) and its own PublishDir hits the lock first, which is
-            # not a plugin failure and must not be scored as one.
-            if name == "resumed" and _publish_copy_failures(gate):
-                notes.append("resumed exited %d on Nextflow's own PublishDir copy "
-                             "of the files the Gate locked (issue 17), not on "
-                             "anything the plugin did" % code)
-                continue
-            problems.append("run %s exited %d; see %s/logs/%s/"
-                            % (name, code, gate.root, name))
+            # `resumed` runs with every published source at mode 000 and
+            # gate/resume.config's overwrite = false. A failed publish of a
+            # locked source fails here like any other exit; the hint says
+            # whose read hit the lock, and assertion 4c says more.
+            hint = ""
+            failures = _publish_copy_failures(gate) if name == "resumed" else []
+            if failures:
+                hint = " because %s" % _publish_copy_blame(gate, failures)
+            problems.append("run %s exited %d%s; see %s/logs/%s/"
+                            % (name, code, hint, gate.root, name))
     if problems:
         return FAIL, "; ".join(problems)
     expected_zero = [n for n in PRODUCER_RUNS + OUTPUTS_RUNS + ["consumer"] if n != FAILING_RUN]
-    return PASS, ("%s exited 0, %s exited non-zero as intended%s"
-                  % (", ".join(expected_zero), FAILING_RUN,
-                     ". " + "; ".join(notes) if notes else ""))
+    return PASS, ("%s exited 0, %s exited non-zero as intended"
+                  % (", ".join(expected_zero), FAILING_RUN))
 
 
 # --------------------------------------------------------------------------
@@ -851,20 +848,30 @@ def assert_four_tasks(gate):
                   "resume, measured 7 not 15 in issue 17%s" % detail)
 
 
-@assertion(4, "resumed run re-hashed nothing")
+@assertion(4, "resumed run re-hashed nothing",
+           online_only="needs the cold and resumed runs' nextflow.log and the lock list "
+                       "under logs/, which only a real Gate run writes")
 def assert_four_no_rehash(gate):
-    """Proved by the filesystem, not by a counter.
+    """Proved by the filesystem, and cross-checked against the plugin's own count.
 
     gate.sh makes every published source file in pipeline-a/work unreadable
     (chmod 000) for the duration of the resumed run, so anything that re-reads
     a published file to re-address it gets AccessDenied and the run fails.
 
-    One caveat, measured rather than assumed: under the workflow output DSL's
-    `mode 'copy'` Nextflow's own PublishDir re-copies every published file on a
-    resumed run (issue 17), and a copy needs read access. When that is what
-    failed, the lock caught Nextflow upstream of the plugin and this assertion
-    has measured nothing about us; it says so and skips rather than reporting a
-    red no plugin change can clear.
+    The lock proves something only when every task is a cache hit on cold's
+    work directories, so the resumed run must carry cold's session UUID and
+    report each of cold's tasks as cached and none as submitted: a task run
+    again writes fresh, readable outputs the lock never covered. `-resume cold`
+    once resumed fail's session instead (issue 17's race). gate/resume.config's
+    `workflow.output.overwrite = false` stops Nextflow's PublishDir re-copying
+    every file on resume (issue 17), so a failed publish is a FAIL, and so is
+    any AccessDenied, Permission denied or locked path in the run's log: a read
+    on a warn-only path (onTaskCached's input record) would leave exit 0.
+
+    Last, the run must not pass for having done nothing: the plugin's addresser
+    summary line must say it addressed 0 files, and the resumed RunCompletion
+    must account for every Leaf cold recorded as never_published (its anomalies
+    count, and each of its own Leaves unaddressed) with no providers.
     """
     marker = os.path.join(gate.root, "logs", "resumed", "sources-locked")
     if not os.path.isfile(marker):
@@ -877,38 +884,245 @@ def assert_four_no_rehash(gate):
         return FAIL, ("%s lists only %d locked source file(s); the Test Pipeline "
                       "publishes at least 15 (3 bam, 3 stats, 3 report, 9 chunk, "
                       "and the qc trees)" % (marker, len(locked)))
+    cold_log, resumed_log = _run_log(gate, "cold"), _run_log(gate, "resumed")
+    if cold_log is None or resumed_log is None:
+        return FAIL, ("no nextflow.log for %s under %s/logs/"
+                      % ("cold" if cold_log is None else "resumed", gate.root))
+    cold_session, session = _session_uuid(cold_log), _session_uuid(resumed_log)
+    if cold_session is None or session != cold_session:
+        return FAIL, ("the resumed run's session is %s, cold's is %s: it did not "
+                      "resume cold, so the locked sources prove nothing about the "
+                      "tasks it ran again (`-resume <run name>` resumes the last "
+                      "session in Nextflow 26.04.6; gate.sh passes cold's UUID)"
+                      % (session, cold_session))
     code = gate.exit_code("resumed")
-    if code == 0:
-        return PASS, ("resumed exited 0 with %d published source files at mode "
-                      "000: no content byte was read" % len(locked))
+    tasks = _task_lines(cold_log, "Submitted")
+    cached = _task_lines(resumed_log, "Cached")
+    submitted = _task_lines(resumed_log, "Submitted")
+    if not tasks or submitted or cached != tasks:
+        # A run that crashed early caches nothing; lead with its exit status.
+        crashed = ("the resumed run exited %r; " % (code,)) if code != 0 else ""
+        return FAIL, ("%scold ran %d task(s); the resumed run cached %d and ran %d again "
+                      "(%s): every task must be a cache hit on cold's work "
+                      "directories for the lock to cover what it publishes"
+                      % (crashed, len(tasks), len(cached), len(submitted),
+                         ", ".join(sorted(submitted | (tasks - cached))[:5]) or "none"))
     publish_failures = _publish_copy_failures(gate)
     if publish_failures:
-        return SKIP, ("inconclusive, and not a plugin fault: the resumed run "
-                      "exited %r because Nextflow's own PublishDir could not copy "
-                      "%d published file(s) it re-publishes on every resume "
-                      "(issue 17), e.g. %s. The lock is caught upstream of the "
-                      "plugin, so this run measured nothing about re-hashing. It "
-                      "needs the Test Pipeline to offer a non-copy publish mode, "
-                      "which is not the Gate's file."
-                      % (code, len(publish_failures), publish_failures[0]))
-    return FAIL, ("the resumed run exited %r with %d published source file(s) "
-                  "unreadable, and Nextflow's PublishDir reported no copy failure: "
-                  "something else read content that -resume should have taken from "
-                  "the cache. See %s/logs/resumed/"
-                  % (code, len(locked), gate.root))
+        return FAIL, ("the resumed run exited %r because %s"
+                      % (code, _publish_copy_blame(gate, publish_failures)))
+    denied = _lock_hits(resumed_log, locked)
+    if denied:
+        return FAIL, ("the resumed run exited %r and its nextflow.log has %d line(s) "
+                      "naming the lock (AccessDenied, Permission denied or a locked "
+                      "source's path): something read content that -resume should have "
+                      "taken from the cache. First: %s"
+                      % (code, len(denied), denied[0]))
+    if code != 0:
+        return FAIL, ("the resumed run exited %r with %d published source file(s) "
+                      "unreadable, and Nextflow's PublishDir reported no copy failure: "
+                      "something else read content that -resume should have taken from "
+                      "the cache. See %s/logs/resumed/"
+                      % (code, len(locked), gate.root))
+    summary = _addresser_summary(resumed_log)
+    if summary is None:
+        return FAIL, ("the resumed run's nextflow.log has no `nf-blocks: the head node "
+                      "read N bytes to address M file(s)` line, so the plugin's own "
+                      "count of what it hashed is missing")
+    read_bytes, files = summary
+    if files != 0 or read_bytes != 0:
+        return FAIL, ("the plugin's addresser says the resumed run read %d byte(s) to "
+                      "address %d file(s); a resume of cached tasks with overwrite = "
+                      "false publishes nothing new" % (read_bytes, files))
+    accounted = _resumed_leaf_accounting(gate)
+    if isinstance(accounted, str):
+        return FAIL, accounted
+    return PASS, ("the resumed run took cold's session %s with all %d task(s) cached, "
+                  "exited 0 with %d published source files at mode 000, PublishDir "
+                  "re-copied nothing, no log line names the lock, the plugin addressed "
+                  "0 files (0 bytes read), and its RunCompletion counts all %d Leaves "
+                  "cold recorded as never_published, with no providers"
+                  % (session, len(tasks), len(locked), accounted))
+
+
+def _resumed_leaf_accounting(gate):
+    """cold's Leaf count when resumed accounts for every one as never_published,
+    else a FAIL message. Leaves are counted from the store, over every item of
+    every collection, never from a log."""
+    try:
+        cold, resumed = gate.run("cold"), gate.run("resumed")
+    except cas.GateError as exc:
+        return str(exc)
+    cold_leaves = [leaf for _cid, item in cold.items(gate)
+                   for leaf in _leaves((item or {}).get("value"))]
+    if not cold_leaves:
+        return ("cold recorded no Leaves (completion %s), so the resumed run's "
+                "never_published count has nothing to be measured against"
+                % cold.completion_cid)
+    completion = resumed.completion or {}
+    if not completion:
+        return "the resumed run has no RunCompletion block"
+    problems = []
+    never_published = (completion.get("anomalies") or {}).get("never_published")
+    if never_published != len(cold_leaves):
+        problems.append("its anomalies.never_published is %r, expected cold's %d Leaves: "
+                        "every one of cold's files is published again only as an event "
+                        "the plugin does not address"
+                        % (never_published, len(cold_leaves)))
+    providers = completion.get("providers")
+    if providers:
+        problems.append("its providers are %s, expected none: something addressed "
+                        "content on resume"
+                        % {k: len(v or []) for k, v in sorted(providers.items())})
+    resumed_leaves = [leaf for _cid, item in resumed.items(gate)
+                      for leaf in _leaves((item or {}).get("value"))]
+    addressed = sorted(leaf.get("name") or "?" for leaf in resumed_leaves
+                       if _address_text(leaf.get("address")))
+    if addressed:
+        problems.append("its Leaves %s carry an address" % ", ".join(addressed[:5]))
+    if len(resumed_leaves) != len(cold_leaves):
+        problems.append("it records %d Leaves, cold %d"
+                        % (len(resumed_leaves), len(cold_leaves)))
+    if problems:
+        return ("the resumed run (completion %s) does not account for cold's %d Leaves "
+                "as never_published: %s"
+                % (resumed.completion_cid, len(cold_leaves), "; ".join(problems)))
+    return len(cold_leaves)
+
+
+def _run_log(gate, name):
+    """The lines of logs/<name>/nextflow.log, or None when gate.sh kept none."""
+    path = os.path.join(gate.root, "logs", name, "nextflow.log")
+    if not os.path.isfile(path):
+        return None
+    with open(path, errors="replace") as fh:
+        return fh.read().splitlines()
+
+
+def _session_uuid(lines):
+    for line in lines:
+        m = re.search(r"nextflow\.Session - Session UUID: (\S+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _task_lines(lines, verb):
+    """Task names ("ALIGN (1)") from `[ab/cdef01] <verb> process > NAME (n)` lines."""
+    out = set()
+    for line in lines:
+        m = re.search(r"\] %s process > (.+?)\s*$" % verb, line)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def _addresser_summary(lines):
+    """(bytes read, files addressed) from PublishAddresser.summary()'s line, the last one."""
+    found = None
+    for line in lines:
+        m = re.search(r"nf-blocks: the head node read (\d+) bytes to address (\d+) file\(s\)", line)
+        if m:
+            found = (int(m.group(1)), int(m.group(2)))
+    return found
 
 
 def _publish_copy_failures(gate):
-    """Lines where Nextflow's own PublishDir failed to copy, newest run first."""
-    path = os.path.join(gate.root, "logs", "resumed", "nextflow.log")
-    if not os.path.isfile(path):
-        return []
+    """The resumed run's `PublishDir - Failed to publish file` lines, whole: the
+    reason is at the end of each, after the source and target paths."""
     out = []
-    with open(path, errors="replace") as fh:
-        for line in fh:
-            if "PublishDir - Failed to publish file" in line:
-                out.append(line.strip()[:160])
+    for line in _run_log(gate, "resumed") or []:
+        if "PublishDir - Failed to publish file" in line:
+            out.append(line.strip())
     return out
+
+
+# A Nextflow log record starts "Oct-25 16:52:04.155 [thread] LEVEL"; a stack
+# trace's lines do not.
+_LOG_RECORD = re.compile(r"^[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} ")
+# Nextflow 26.04.6's PublishDir.processFile calls processFileImpl twice: at line
+# 418 for the first copy, and at 432, inside its FileAlreadyExistsException
+# handler, for the re-copy shouldOverwrite asked for (overwrite 'standard').
+_PROCESS_FILE_CALL = {"418": "first copy", "432": "re-copy"}
+
+
+def _publish_copy_reader(lines):
+    """Whose read hit the lock in the first failed publish that logged a stack
+    trace, as (reader, plugin frame, call). reader is "plugin" when a
+    robsyme.cas frame is in the trace (FileHelper.copyPath calls the plugin's
+    CasFileSystemProvider.upload() for a cas:// target), "nextflow" when none
+    is, None when the log holds no such trace (only PublishDir's DEBUG attempt
+    lines). call is "first copy", "re-copy" or None, from processFile's line."""
+    in_trace, traced, frame, call = False, 0, None, None
+    for line in lines:
+        if not in_trace:
+            in_trace = ("PublishDir - Failed to publish file" in line
+                        and " ERROR " in line)
+            continue
+        if _LOG_RECORD.match(line):
+            if traced:
+                break
+            in_trace = False      # an ERROR line with no trace; look for the next
+            continue
+        traced += 1
+        if "robsyme.cas." in line:
+            # The last one is the outermost plugin frame, the one Nextflow called.
+            frame = line.strip()
+            if frame.startswith("at "):
+                frame = frame[3:]
+        m = re.search(r"nextflow\.processor\.PublishDir\.processFile\(PublishDir\.groovy:(\d+)\)", line)
+        if m and call is None:
+            call = _PROCESS_FILE_CALL.get(m.group(1))
+    if not traced:
+        return None, None, None
+    return ("plugin" if frame else "nextflow"), frame, call
+
+
+_RESUME_CONFIG_HINT = ("gate/resume.config sets workflow.output.overwrite = false so "
+                       "that a resume re-copies nothing (issue 17); check the run "
+                       "applied it")
+
+
+def _publish_copy_blame(gate, failures):
+    """Why the resumed run's publish failed: the plugin's upload() reading on
+    PublishDir's first copy, Nextflow's PublishDir re-copying, or Nextflow
+    reading by itself, from the stack trace; with the first failure line whole."""
+    reader, frame, call = _publish_copy_reader(_run_log(gate, "resumed") or [])
+    example = "%d failed publish line(s), e.g. %s" % (len(failures), failures[0])
+    if reader == "plugin" and call == "first copy":
+        return ("the plugin's upload() read a locked source on PublishDir's first "
+                "copy, before refusing a target cold already wrote (%s is in the "
+                "stack trace, under processFile:418): %s" % (frame, example))
+    if reader == "plugin" and call == "re-copy":
+        return ("Nextflow's own PublishDir re-copied a locked source over a target "
+                "cold already wrote (processFile:432, after shouldOverwrite), and the "
+                "plugin's upload() read it for that copy (%s): %s. %s"
+                % (frame, example, _RESUME_CONFIG_HINT))
+    if reader == "plugin":
+        return ("the plugin's upload() read a locked source (%s is in the stack "
+                "trace, which does not say whether on PublishDir's first copy or its "
+                "re-copy): %s" % (frame, example))
+    if reader == "nextflow":
+        return ("Nextflow's own PublishDir read a locked source, with no plugin frame "
+                "in the stack trace: %s. %s" % (example, _RESUME_CONFIG_HINT))
+    return ("a publish of a locked source failed and no stack trace in the log says "
+            "whether the plugin's upload() or Nextflow's PublishDir read it "
+            "(gate/resume.config's overwrite = false should stop PublishDir "
+            "re-copying, issue 17): %s" % example)
+
+
+# How a read of a locked source shows in a log: Java's AccessDeniedException,
+# the errno text a FileInputStream or a shell reports, or the path itself.
+_LOCK_PHRASES = ("AccessDenied", "Permission denied")
+
+
+def _lock_hits(lines, locked_paths):
+    """Lines of a run's log that name the lock: an AccessDenied or Permission
+    denied anywhere, or any of the locked source paths. The resumed run's log
+    on 26.04.6 has none (two Gate runs, 2026-10-25)."""
+    return [line.strip() for line in lines
+            if any(phrase in line for phrase in _LOCK_PHRASES)
+            or any(p in line for p in locked_paths)]
 
 
 # --------------------------------------------------------------------------
@@ -1428,7 +1642,7 @@ def assert_thirteen(gate):
         if got != baseline:
             problems.append("%s staged %s, the first consumer %s: the answer changed"
                             % (name, got, baseline))
-    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
     seeding = _seeding_problems(gate.store, before["watermark"], _snapshot_completions(lab))
     problems.extend(seeding)
     seeded_log = _read(os.path.join(gate.root, "logs", "consumer-seeded", "nextflow.log"))
@@ -1453,7 +1667,7 @@ def assert_thirteen(gate):
             and "nf-blocks:snapshot" in scan_out):
         problems.append("consumer-scan printed no fallback warning naming lab and "
                         "nf-blocks:snapshot")
-    out_runs = _snapshot_runs(os.path.join(gate.store_out.root, "index", "v3.sqlite"))
+    out_runs = _snapshot_runs(os.path.join(gate.store_out.root, "index", "v6.sqlite"))
     if out_runs < before["out_runs_before"]:
         problems.append("store-out's snapshot fell from %d to %d runs"
                         % (before["out_runs_before"], out_runs))
@@ -1571,13 +1785,13 @@ def _consumer_hashes_of_run(gate, name):
 def seeding_before(gate):
     """seeding.json: lab's snapshot watermark, run count and write time, and
     store-out's snapshot run count, before the two cold-cache consumers."""
-    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
     meta = _snapshot_meta(lab)
     return {"watermark": meta.get("store_log_watermark"),
             "runs": _snapshot_runs(lab),
             "written_at": meta.get("snapshot_written_at"),
             "out_runs_before": _snapshot_runs(
-                os.path.join(gate.store_out.root, "index", "v3.sqlite"))}
+                os.path.join(gate.store_out.root, "index", "v6.sqlite"))}
 
 
 def delete_consumer_cache(gate):
@@ -1625,7 +1839,7 @@ def seeding_lock(gate):
     """Block paths of every RunManifest, RunCompletion and OutputCollection of
     the runs lab's Store Log lists at or before its snapshot's watermark,
     derived from the log, not from the snapshot's own run rows."""
-    lab = os.path.join(gate.store.root, "index", "v3.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
     watermark = _snapshot_meta(lab).get("store_log_watermark")
     return gate.store.metadata_blocks_of_runs(_store_log_runs_through(gate.store, watermark))
 
@@ -2391,8 +2605,8 @@ def _cache_runs(cache_home):
 
 
 def _snapshot(store_root):
-    """(sorted run completion cids, meta store_id or None) of the member's index/v3.sqlite."""
-    path = os.path.join(store_root, "index", "v3.sqlite")
+    """(sorted run completion cids, meta store_id or None) of the member's index/v6.sqlite."""
+    path = os.path.join(store_root, "index", "v6.sqlite")
     if not os.path.isfile(path):
         raise cas.GateError("no Index Snapshot at %s" % path)
     con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
@@ -2552,6 +2766,173 @@ def assertion_18(gate):
     if problems:
         return FAIL, "; ".join(problems[:5])
     return PASS, "run a forgotten by caches A, B and C and by the snapshot; run b kept"
+
+
+# --------------------------------------------------------------------------
+# Assertion 19: a resume after a failed run (review 2, S2)
+# --------------------------------------------------------------------------
+
+# gate.sh runs the Test Pipeline into a store of its own from pipeline-r:
+# recover-fail with --fail and gate/recovery/fail.config, then recover-resumed
+# with -resume <recover-fail's session UUID> and the default overwrite.
+RECOVERY_STORE = "store-recovery"
+RECOVERY_LAUNCH = "pipeline-r"
+RECOVERY_FAIL, RECOVERY_RESUMED = "recover-fail", "recover-resumed"
+# MAYBE_FAIL's script reads params.fail, so its task hash changes when the
+# resume drops --fail: all three re-run whatever recover-fail finished.
+RECOVERY_RERUN = "MAYBE_FAIL"
+
+
+def _submitted_dirs(lines):
+    """{task name: "ab/cdef01"} from `[ab/cdef01] Submitted process > NAME` lines."""
+    out = {}
+    for line in lines:
+        m = re.search(r"\[([0-9a-f]{2}/[0-9a-f]{6})\] Submitted process > (.+?)\s*$", line)
+        if m:
+            out[m.group(2)] = m.group(1)
+    return out
+
+
+def _task_dir(launch_dir, prefix):
+    """The one work directory whose hash starts with `prefix` ("ab/cdef01"), or None."""
+    shard, rest = prefix.split("/")
+    shard_dir = os.path.join(launch_dir, "work", shard)
+    found = [os.path.join(shard_dir, d) for d in _listdir(shard_dir) if d.startswith(rest)]
+    return found[0] if len(found) == 1 else None
+
+
+def _leaf_addresses(run, lookup, outputs):
+    """{(output, item's Meta Map as JSON, leaf name): address text} over the
+    named outputs' items. The Meta Map is in the key because one name recurs
+    across samples (chunk_1.txt)."""
+    out = {}
+    for output in outputs:
+        for _cid, item in run.items(lookup, output):
+            meta = json.dumps(metadata_view(item), sort_keys=True, default=str)
+            for leaf in _leaves((item or {}).get("value")):
+                out[(output, meta, leaf.get("name"))] = _address_text(leaf.get("address"))
+    return out
+
+
+@assertion(19, "a resume after a failed run re-addresses what it re-runs and keeps the rest",
+           online_only="needs recover-fail's and recover-resumed's nextflow.log, which "
+                       "only a real Gate run writes")
+def assert_nineteen(gate):
+    """recover-resumed resumes recover-fail's session: every task recover-fail
+    ran other than MAYBE_FAIL's is a cache hit, MAYBE_FAIL's three run again in
+    fresh work directories, and the Gate hashes the .report each one wrote and
+    requires resumed's reports Leaf, the coords pointer and a block in the store
+    to carry that address. The cached tasks' Leaves must keep the addresses
+    recover-fail gave them, and no Leaf may be never_published.
+
+    The default overwrite 'standard' re-copies every cached file on resume and
+    the plugin re-hashes each; the PASS line reports that cost from the
+    plugin's addresser count and requires only that it covers the re-run
+    tasks' files.
+    """
+    fail_log, resumed_log = _run_log(gate, RECOVERY_FAIL), _run_log(gate, RECOVERY_RESUMED)
+    if fail_log is None or resumed_log is None:
+        return FAIL, ("no nextflow.log for %s under %s/logs/"
+                      % (RECOVERY_FAIL if fail_log is None else RECOVERY_RESUMED, gate.root))
+    fail_code, resumed_code = gate.exit_code(RECOVERY_FAIL), gate.exit_code(RECOVERY_RESUMED)
+    if fail_code in (None, 0) or resumed_code != 0:
+        return FAIL, ("%s exited %r (expected non-zero: MAYBE_FAIL exits 7 for sample B) "
+                      "and %s exited %r (expected 0)"
+                      % (RECOVERY_FAIL, fail_code, RECOVERY_RESUMED, resumed_code))
+    fail_session, session = _session_uuid(fail_log), _session_uuid(resumed_log)
+    if fail_session is None or session != fail_session:
+        return FAIL, ("%s's session is %s, %s's is %s: it did not resume the failed run"
+                      % (RECOVERY_RESUMED, session, RECOVERY_FAIL, fail_session))
+    ran = _task_lines(fail_log, "Submitted")
+    rerun = {t for t in ran if t.split(" ")[0] == RECOVERY_RERUN}
+    kept = ran - rerun
+    cached = _task_lines(resumed_log, "Cached")
+    submitted = _task_lines(resumed_log, "Submitted")
+    if not rerun or not kept or cached != kept or submitted != rerun:
+        return FAIL, ("%s ran %d task(s); %s must cache the %d that are not %s and run "
+                      "%s's %d again, a mix of both, and it cached %d and ran %d again "
+                      "(wrongly cached: %s; wrongly run again: %s)"
+                      % (RECOVERY_FAIL, len(ran), RECOVERY_RESUMED, len(kept), RECOVERY_RERUN,
+                         RECOVERY_RERUN, len(rerun), len(cached), len(submitted),
+                         ", ".join(sorted(cached - kept)) or "none",
+                         ", ".join(sorted(submitted - rerun)) or "none"))
+    store = cas.Store(os.path.join(gate.root, RECOVERY_STORE))
+    try:
+        fail_run, fail_lookup = _run_of(store, RECOVERY_FAIL)
+        run, lookup = _run_of(store, RECOVERY_RESUMED)
+    except cas.GateError as exc:
+        return FAIL, str(exc)
+    problems = []
+    completion = run.completion or {}
+    never_published = (completion.get("anomalies") or {}).get("never_published")
+    if completion.get("status") != "succeeded" or never_published != 0:
+        problems.append("%s's RunCompletion has status %r and anomalies.never_published %r, "
+                        "expected 'succeeded' and 0" % (RECOVERY_RESUMED, completion.get("status"),
+                                                        never_published))
+    leaves = _leaf_addresses(run, lookup, sorted(run.collections(lookup)))
+    launch = os.path.join(gate.root, RECOVERY_LAUNCH)
+    dirs = _submitted_dirs(resumed_log)
+    rerun_files = 0
+    for task in sorted(rerun):
+        task_dir = _task_dir(launch, dirs.get(task, "zz/zzzzzz"))
+        reports = sorted(f for f in _listdir(task_dir or "") if f.endswith(".report"))
+        if not reports:
+            problems.append("no .report in %s's work directory (%s)" % (task, dirs.get(task)))
+            continue
+        for name in reports:
+            rerun_files += 1
+            with open(os.path.join(task_dir, name), "rb") as fh:
+                expected = cas.cid_raw(fh.read())
+            sample = name[:-len(".report")]
+            recorded = sorted(str(v) for k, v in leaves.items()
+                              if k[0] == "reports" and k[2] == name)
+            if recorded != [expected]:
+                problems.append("%s's reports Leaf %s has address(es) %s, but %s wrote %s"
+                                % (RECOVERY_RESUMED, name, ", ".join(recorded) or "none",
+                                   task, expected))
+            rel = "reports/%s/%s" % (sample, name)
+            pointer = _coords_raw_cid(store, rel)
+            if pointer != expected:
+                problems.append("coords/%s names %s, expected %s" % (rel, pointer, expected))
+            try:
+                store.read(expected)
+            except cas.GateError as exc:
+                problems.append("%s: %s" % (name, exc))
+    outputs = sorted(set(fail_run.collections(fail_lookup)) - {"reports"})
+    before = _leaf_addresses(fail_run, fail_lookup, outputs)
+    after = {k: v for k, v in leaves.items() if k[0] != "reports"}
+    # A task that completes after the session cancels (errorStrategy 'finish' lets it finish)
+    # never reaches recover-fail's workflow outputs, so which cached tasks recover-fail
+    # published is a race. On resume such a task publishes: a Leaf only recover-resumed has is
+    # right when it is addressed. Every Leaf recover-fail has must keep its address.
+    late = sorted(k for k in set(after) - set(before) if after.get(k))
+    moved = sorted("%s %s %s" % k for k in set(before) | set(after)
+                   if (k in before and before.get(k) != after.get(k)) or not after.get(k))
+    if moved:
+        problems.append("cached tasks' Leaves differ from %s's or are unaddressed: %s"
+                        % (RECOVERY_FAIL, ", ".join(moved[:5])))
+    summary = _addresser_summary(resumed_log)
+    if summary is None:
+        problems.append("%s's nextflow.log has no `nf-blocks: the head node read N bytes to "
+                        "address M file(s)` line" % RECOVERY_RESUMED)
+    elif summary[1] < rerun_files:
+        problems.append("the plugin's addresser says %s addressed %d file(s), fewer than the "
+                        "%d its re-run tasks wrote" % (RECOVERY_RESUMED, summary[1], rerun_files))
+    if problems:
+        return FAIL, "; ".join(problems[:6])
+    return PASS, ("%s took %s's session %s with %d task(s) cached and %s run again; the "
+                  "Gate's hashes of their %d .report file(s) match the reports Leaves, "
+                  "the coords pointers and blocks in the store, and %d cached Leaves "
+                  "kept their addresses%s. The plugin addressed %d file(s) (%d bytes), %d "
+                  "of them for cached tasks: overwrite 'standard' re-copies every cached "
+                  "file on resume"
+                  % (RECOVERY_RESUMED, RECOVERY_FAIL, session, len(kept),
+                     ", ".join(sorted(rerun)), rerun_files, len(before),
+                     ("; %d Leaf %s never published (its task finished after the session "
+                      "cancelled) is addressed now: %s"
+                      % (len(late), RECOVERY_FAIL, ", ".join("%s %s" % (k[0], k[2]) for k in late)))
+                     if late else "",
+                     summary[1], summary[0], summary[1] - rerun_files))
 
 
 # --------------------------------------------------------------------------
@@ -2727,8 +3108,10 @@ def main(argv):
     results = []
     for entry in REGISTRY:
         if offline and entry["online_only"]:
+            why = entry["online_only"]
             results.append((SKIP, entry["number"], entry["title"],
-                            "--offline: needs a real consumer run"))
+                            "--offline: %s" % (why if isinstance(why, str)
+                                               else "needs a real consumer run")))
             continue
         try:
             status, message = entry["fn"](gate)

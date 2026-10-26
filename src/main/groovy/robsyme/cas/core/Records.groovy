@@ -31,6 +31,10 @@ class Records {
     static final String CLAIM = 'Claim'
     static final String SELECTION = 'Selection'
     static final String FORGET = 'Forget'
+    static final String TRANSFER = 'Transfer'
+    static final String INPUT_SET = 'InputSet'
+    static final String PROJECT = 'Project'
+    static final String HANDOFF = 'Handoff'
 
     static final String REDACTED_LOCATION = '[redacted-location]'
     static final String REDACTED_USER = '[redacted-user]'
@@ -53,11 +57,6 @@ class Records {
         'homeDir', 'configFiles', 'scriptFile', 'commandLine', 'runName', 'resume',
     ] as Set
 
-    /** Schemes that name content rather than a place, so they survive the scrub. */
-    private static final Set<String> PORTABLE_SCHEMES = ['lid', 'cas'] as Set
-
-    private static final java.util.regex.Pattern SCHEME = ~/^([A-Za-z][A-Za-z0-9+.-]*):\/\//
-
     /**
      * The portability scrub of DESIGN.md §6. Drops the store-local top-level
      * scopes, turns Paths into strings, and replaces anything that names a
@@ -70,13 +69,53 @@ class Records {
     static Object scrub(Object value) {
         if( !(value instanceof Map) )
             return scrubValue(value)
-        final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
+        final Map<Object, Object> kept = new LinkedHashMap<Object, Object>()
         for( Map.Entry entry : ((Map<?, ?>) value).entrySet() ) {
-            if( DROPPED_SCOPES.contains(String.valueOf(entry.key)) )
-                continue
-            out.put(entry.key, scrubValue(entry.value))
+            if( !DROPPED_SCOPES.contains(String.valueOf(entry.key)) )
+                kept.put(entry.key, entry.value)
         }
+        return scrubMap(kept)
+    }
+
+    /**
+     * Each entry scrubbed by its own key and value, and written under the key
+     * {@link Leaks#keyNames} gives it: a key the scrub would change, such as
+     * `['/home/x/a.fq': 'a']`, becomes the marker for what it held (numbered when two collide).
+     */
+    private static Map<Object, Object> scrubMap(Map<?, ?> map) {
+        final Map<Object, Object> names = Leaks.keyNames(map.keySet())
+        final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
+        for( Map.Entry entry : map.entrySet() )
+            out.put(names.get(entry.key), scrubEntry(entry.key, names.get(entry.key), entry.value))
         return out
+    }
+
+    /**
+     * A value under a key that names a secret (`github_token`, `db_password`) is
+     * replaced by the secret marker, as config text does, and so is each
+     * element of a list under one (`tokens = ['a', 'b']`). A value the key keeps
+     * ({@link Leaks#keepsValue}: a plain boolean or number, a location, a marker,
+     * a nucleotide word under `pat`), an empty string and a map are left to their
+     * own contents. A key renamed to `[secret]` names a secret too, so a second
+     * scrub changes nothing.
+     */
+    private static Object scrubEntry(Object key, Object name, Object value) {
+        return isSecretKey(String.valueOf(key)) || isSecretKey(String.valueOf(name)) ? scrubSecret(String.valueOf(key), value) : scrubValue(value)
+    }
+
+    private static Object scrubSecret(String key, Object value) {
+        final Object v = value instanceof Path ? value.toString() : value
+        if( Leaks.keepsValue(key, v) )
+            return scrubValue(v)
+        if( (v instanceof CharSequence && v.length() > 0) || v instanceof Number )
+            return REDACTED_SECRET
+        if( v instanceof Collection || v instanceof Object[] ) {
+            final List<Object> out = new ArrayList<Object>()
+            for( Object item : (v instanceof Collection ? (Collection) v : Arrays.asList((Object[]) v)) )
+                out.add(scrubSecret(key, item))
+            return out
+        }
+        return scrubValue(v)
     }
 
     private static Object scrubValue(Object value) {
@@ -84,12 +123,8 @@ class Records {
             return scrubString(value.toString())
         if( value instanceof CharSequence )
             return scrubString(value.toString())
-        if( value instanceof Map ) {
-            final Map<Object, Object> out = new LinkedHashMap<Object, Object>()
-            for( Map.Entry entry : ((Map<?, ?>) value).entrySet() )
-                out.put(entry.key, scrubValue(entry.value))
-            return out
-        }
+        if( value instanceof Map )
+            return scrubMap((Map<?, ?>) value)
         if( value instanceof Collection ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object item : (Collection) value )
@@ -110,15 +145,17 @@ class Records {
         return scrubString(value.toString())
     }
 
+    /**
+     * A params string. One that is wholly a location ({@link Leaks#isLocation}:
+     * a path, a home, Windows or UNC path, or a non-portable URI) goes entirely
+     * (it may hold spaces); anything else is judged token by token, so
+     * `--ref /data/g.fa` keeps its flag.
+     */
     private static String scrubString(String text) {
-        if( text.startsWith('/') )
+        final String credentialFree = Leaks.redactCredentials(text)
+        if( Leaks.isLocation(credentialFree) )
             return REDACTED_LOCATION
-        final java.util.regex.Matcher matcher = SCHEME.matcher(text)
-        if( matcher.find() && !PORTABLE_SCHEMES.contains(matcher.group(1).toLowerCase()) )
-            return REDACTED_LOCATION
-        if( text == System.getProperty('user.name') )
-            return REDACTED_USER
-        return text
+        return scrubText(credentialFree)
     }
 
     /**
@@ -132,6 +169,7 @@ class Records {
     static String scrubText(String text) {
         if( text == null )
             return null
+        text = Leaks.redactCredentials(text)
         final String user = System.getProperty('user.name')
         final StringBuilder out = new StringBuilder(text.length())
         final int n = text.length()
@@ -141,7 +179,7 @@ class Records {
             while( i < n && !Character.isWhitespace(text.charAt(i)) )
                 i++
             if( i > start )
-                out.append(scrubToken(text.substring(start, i), user))
+                out.append(Leaks.scanToken(text.substring(start, i), user, null))
             while( i < n && Character.isWhitespace(text.charAt(i)) ) {
                 out.append(text.charAt(i))
                 i++
@@ -150,101 +188,182 @@ class Records {
         return out.toString()
     }
 
-    private static final String TRAILING_PUNCT = ':;,.)]}>\'"'
-
-    /** Quotes and brackets that open a value, as in `workDir = '/x'` or `['/a', '/b']`. */
-    private static final String LEADING_PUNCT = '\'"([{<='
-
-    private static String scrubToken(String token, String user) {
-        int begin = 0
-        while( begin < token.length() && LEADING_PUNCT.indexOf((int) token.charAt(begin)) >= 0 )
-            begin++
-        int end = token.length()
-        while( end > begin && TRAILING_PUNCT.indexOf((int) token.charAt(end - 1)) >= 0 )
-            end--
-        final String head = token.substring(0, begin)
-        final String core = token.substring(begin, end)
-        final String tail = token.substring(end)
-        if( core.isEmpty() )
-            return token
-        return head + scrubPiece(core, user) + tail
-    }
-
+    /** Punctuation, then a key and a separator: where a bare value's `,` or `;` ends it. */
+    private static final String KEY_AHEAD = /[^\s\w,;]*[A-Za-z_][\w.\-]*\s*[=:]/
     /**
-     * One token's core: redacted whole when it is a path, a non-portable URI or
-     * the user name; kept whole when it is a lid/cas reference; otherwise split
-     * at its first `=` or `:` and each side judged again, so `--volume=/a:/b`,
-     * `TMPDIR=/scratch/x` and `--account=<user>` lose the machine-local part.
+     * The same after a `(` or `{`, possessive and stopping at another one, so a run of them stays
+     * linear. A URI's scheme (`(http://x`) is no key.
      */
-    private static String scrubPiece(String piece, String user) {
-        if( piece.isEmpty() )
-            return piece
-        if( piece.startsWith('/') ) {
-            // A path list or a mount, `/a:/b`: each path goes, the colons stay.
-            final int colon = piece.indexOf(':')
-            return colon < 0 ? REDACTED_LOCATION : REDACTED_LOCATION + ':' + scrubPiece(piece.substring(colon + 1), user)
-        }
-        final java.util.regex.Matcher m = SCHEME.matcher(piece)
-        if( m.find() )
-            return PORTABLE_SCHEMES.contains(m.group(1).toLowerCase()) ? piece : REDACTED_LOCATION
-        if( user != null && !user.isEmpty() && piece == user )
-            return REDACTED_USER
-        int cut = -1
-        for( int i = 0; i < piece.length() && cut < 0; i++ ) {
-            final char c = piece.charAt(i)
-            if( c == (char) '=' || c == (char) ':' )
-                cut = i
-        }
-        if( cut < 0 )
-            return piece
-        int rest = cut + 1
-        while( rest < piece.length() && LEADING_PUNCT.indexOf((int) piece.charAt(rest)) >= 0 )
-            rest++
-        final String left = piece.substring(0, cut)
-        final String scrubbedLeft = user != null && !user.isEmpty() && left == user ? REDACTED_USER : left
-        return scrubbedLeft + piece.substring(cut, rest) + scrubPiece(piece.substring(rest), user)
-    }
+    private static final String CALL_KEY_AHEAD = /[^\s\w,;({]*+[A-Za-z_][\w.\-]*\s*[=:](?!\/\/)/
+    private static final String COMMA = /,(?![\s'"\[\]\})]|\z|-D|/ + KEY_AHEAD + ')'
+    private static final String SEMICOLON = ';(?!' + KEY_AHEAD + ')'
+    /** A `(...)` or `{...}` with no space, quote, bracket, comma or semicolon in it, and no key at its start. */
+    private static final String GROUP = /\((?!/ + CALL_KEY_AHEAD + /)[^\s()'"\[\]{},;]*+\)|\{(?!/ + CALL_KEY_AHEAD + /)[^\s{}'"\[\]\(\),;]*+\}/
 
     /**
      * An assignment or map entry whose key names a secret, as config text
      * writes one: `FOO_API_KEY = 'x'`, `azure.storage.accountKey = "x"`,
      * `[MY_TOKEN: 'x']`. Group 1 is the key, group 2 the separator, group 3
      * the value (a quoted string or a bare word; a `[` opens a list or map,
-     * whose entries are matched on their own).
+     * whose entries are matched on their own), group 4 the value when it takes
+     * the -D form below. A bare word, as a multi-line string holds one, takes its
+     * commas (`password=hunter,2`), except a comma before a space, a quote, a
+     * bracket, the end, another `-D` property or another key and separator,
+     * punctuation between them allowed; a `;` ends it only before a key and
+     * separator, the same way. After its first character, a `(` or `{` ends it
+     * the same way, so a call's named argument is matched on its own
+     * (`x = f(token: 'y')`), and a whole `(...)` or `{...}` with no key at its
+     * start is part of it (`password=p(a)ss`). The first character is never
+     * refused, so a secret's value that starts `(` (`password = (a:b)`) is
+     * matched; {@link #secretAssignments} looks inside such a value when the key
+     * names no secret (`x = (token=y)`). A URI's scheme is no key, so
+     * `token=(http://u:p@h/x)` keeps its value whole. So `[token: x, y: 1]`,
+     * `a=1,password=x`, `a=1;password=x` and `x=a,(token=y)` keep their entries
+     * apart. Every form is possessive, so a value of any length is matched
+     * without recursion. A key right after `--` is a flag (`--api-key=x`), which
+     * {@link Leaks#SECRET_FLAG} judges instead; one after a single `-` is a
+     * system property (`-Dfoo.password=x`) and is a key whose bare value takes
+     * the {@link Leaks#SYSTEM_PROPERTY} form: up to a space or a quote, stopping
+     * only before another `-D` property, so `-Dfoo.password=p,a:ss` goes whole
+     * in a multi-line string as it does in a params string. That form needs the
+     * `=` right after a key of 256 characters or fewer; a longer one gets the
+     * bare form. A -D value under a key that names no secret may hold secret
+     * assignments of its own (`-Ddb.props=user=a,password=x`), which
+     * {@link #secretAssignments} looks for.
      */
-    private static final java.util.regex.Pattern ASSIGNMENT = ~/(?<![\w.])([A-Za-z_][\w.\-]*)(\s*[=:]\s*)('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|[^\s,\[\]\})]+)/
+    static final java.util.regex.Pattern ASSIGNMENT = java.util.regex.Pattern.compile(
+        /(?<![\w.])(?<!--)([A-Za-z_][\w.\-]*)(\s*[=:]\s*)/ +
+        /('(?:[^'\\\n]++|\\.)*+'|"(?:[^"\\\n]++|\\.)*+"|/ +
+        /(?<=(?<![\w.\-])-[A-Za-z_][\w.\-]{0,255}=)(?!\[)((?:(?!,-D)[^\s'"])++)|/ +
+        '(?:' + GROUP + /|[^\s,;\[\]\})]|/ + COMMA + '|' + SEMICOLON + ')' +
+        '(?:' + GROUP + /|[^\s,;\[\]\}){(]|[({](?!/ + CALL_KEY_AHEAD + ')|' + COMMA + '|' + SEMICOLON + ')*+)')
 
-    /** A key names a secret: any segment contains one of these words, or a segment is exactly `pat`. */
-    private static final java.util.regex.Pattern SECRET_WORD = ~/(?i)key|secret|token|password|passwd|credential/
-
-    static boolean isSecretKey(String key) {
-        if( SECRET_WORD.matcher(key).find() )
-            return true
-        // `pat` only as a whole segment (GITHUB_PAT, git.pat, githubPat), never inside `path` or `pattern`.
-        for( String segment : key.split(/[._\-]|(?<=[a-z0-9])(?=[A-Z])/) ) {
-            if( segment.equalsIgnoreCase('pat') )
-                return true
+    /**
+     * Each {@link #ASSIGNMENT} in text whose key names a secret, in text order, less one whose
+     * value the key keeps ({@link Leaks#keepsValue}: `filter_pass = true`, `env.PWD = '/x'`). The
+     * -D value form of a key that names none is searched again from its start, so `-Dx=a,token=abc`
+     * still yields `token=abc`, and so is a bare value that opens with `(` or `{`, from just
+     * inside it, so `x = (token=abc)` yields `token=abc`.
+     */
+    static List<java.util.regex.MatchResult> secretAssignments(String text) {
+        final List<java.util.regex.MatchResult> out = new ArrayList<java.util.regex.MatchResult>()
+        final java.util.regex.Matcher m = ASSIGNMENT.matcher(text)
+        int from = 0
+        while( from <= text.length() && m.find(from) ) {
+            if( isSecretKey(m.group(1)) ) {
+                if( !Leaks.keepsValue(m.group(1), m.group(3)) )
+                    out.add(m.toMatchResult())
+                from = m.end()
+            }
+            else if( m.start(4) >= 0 )
+                from = m.start(4)
+            else if( m.end(3) > m.start(3) && (text.charAt(m.start(3)) == (char) '(' || text.charAt(m.start(3)) == (char) '{') )
+                from = m.start(3) + 1
+            else
+                from = m.end()
         }
-        return false
+        return out
+    }
+
+    /** A key that names a secret ({@link Leaks#isSecretKey}). */
+    static boolean isSecretKey(String key) {
+        return Leaks.isSecretKey(key)
     }
 
     /**
      * The RunManifest's config text (DESIGN.md §6): every assignment or map
      * entry whose key names a secret ({@link #isSecretKey}) has its value
-     * replaced by {@code '[secret]'}, then {@link #scrubText} redacts paths,
+     * replaced by {@code '[secret]'}, and each string in a list under such a
+     * key too, unless the key keeps it ({@link Leaks#keepsValue}: a plain
+     * boolean or number, a whole location); then {@link #scrubText} redacts paths,
      * non-portable URIs and the user name. Idempotent; null passes through.
      */
     static String scrubConfigText(String text) {
         if( text == null )
             return null
-        final java.util.regex.Matcher m = ASSIGNMENT.matcher(text)
-        final StringBuffer out = new StringBuffer(text.length())
-        while( m.find() ) {
-            final String replacement = isSecretKey(m.group(1)) ? m.group(1) + m.group(2) + "'" + REDACTED_SECRET + "'" : m.group(0)
-            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(replacement))
+        final StringBuilder out = new StringBuilder(text.length())
+        int copied = 0
+        for( java.util.regex.MatchResult a : secretAssignments(text) ) {
+            out.append(text, copied, a.start(3)).append("'").append(REDACTED_SECRET).append("'")
+            copied = a.end(3)
         }
-        m.appendTail(out)
-        return scrubText(out.toString())
+        out.append(text, copied, text.length())
+        // A list under a secret-named key (`passwords = ['a', 'b']`): each element, as params has it.
+        final StringBuilder listed = new StringBuilder(out)
+        final List<int[]> literals = secretListLiterals(listed.toString())
+        for( int i = literals.size() - 1; i >= 0; i-- ) {
+            final int[] at = literals[i]
+            final String literal = listed.substring(at[0], at[1])
+            final char quote = literal.charAt(0)
+            final boolean quoted = quote == (char) '\'' || quote == (char) '"'
+            if( quoted && literal.length() == 2 )
+                continue    // an empty string, as params leaves it
+            final String q = quoted ? String.valueOf(quote) : "'"
+            listed.replace(at[0], at[1], q + REDACTED_SECRET + q)
+        }
+        return scrubText(listed.toString())
+    }
+
+    /** A key, then `=` or `:`, then a list opening: `passwords = [`, `[TOKENS: [`. */
+    private static final java.util.regex.Pattern LIST_ASSIGNMENT = ~/(?<![\w.])([A-Za-z_][\w.\-]*)(\s*[=:]\s*)\[/
+
+    /**
+     * The string and number literals of every list that config text assigns
+     * to a secret-named key, nested lists and maps in it included, in text
+     * order, less those the key keeps ({@link Leaks#keepsValue}: a number, a
+     * quoted boolean, a location). Each is {start, end, keyStart, keyEnd}: the
+     * literal with its quotes, and the key it sits under.
+     */
+    static List<int[]> secretListLiterals(String text) {
+        final List<int[]> out = new ArrayList<int[]>()
+        final java.util.regex.Matcher m = LIST_ASSIGNMENT.matcher(text)
+        final int n = text.length()
+        int from = 0
+        while( from < n && m.find(from) ) {
+            int i = m.end()
+            if( !isSecretKey(m.group(1)) ) {
+                from = i
+                continue
+            }
+            int depth = 1
+            while( i < n && depth > 0 ) {
+                final char c = text.charAt(i)
+                if( c == (char) '\'' || c == (char) '"' ) {
+                    int j = i + 1
+                    while( j < n && text.charAt(j) != c && text.charAt(j) != (char) '\n' )
+                        j += text.charAt(j) == (char) '\\' ? 2 : 1
+                    final int end = Math.min(j + 1, n)
+                    if( !Leaks.keepsValue(m.group(1), text.substring(i, end)) )
+                        out.add([i, end, m.start(1), m.end(1)] as int[])
+                    i = end
+                    continue
+                }
+                if( Character.isDigit(c) && !wordChar(text.charAt(i - 1)) ) {
+                    int j = i
+                    while( j < n && (wordChar(text.charAt(j)) || text.charAt(j) == (char) '.') )
+                        j++
+                    // A map key (`[1: 'x']`) is not a value.
+                    int k = j
+                    while( k < n && text.charAt(k) == (char) ' ' )
+                        k++
+                    if( (k >= n || text.charAt(k) != (char) ':') && !Leaks.keepsValue(m.group(1), text.substring(i, j)) )
+                        out.add([i, j, m.start(1), m.end(1)] as int[])
+                    i = j
+                    continue
+                }
+                if( c == (char) '[' )
+                    depth++
+                else if( c == (char) ']' )
+                    depth--
+                i++
+            }
+            from = i
+        }
+        return out
+    }
+
+    private static boolean wordChar(char c) {
+        return Character.isLetterOrDigit(c) || c == (char) '_'
     }
 
     // ---- helpers shared by the kinds ----
@@ -789,7 +908,7 @@ class OutputCollection {
     }
 
     private static String key(List<String> paths) {
-        return paths == null ? '' : paths.collect { String p -> p == null ? '' : p }.join(' ')
+        return paths == null ? '' : paths.collect { String p -> p == null ? '' : p }.join('\u0000')
     }
 
     Map<String, Object> toCbor() {

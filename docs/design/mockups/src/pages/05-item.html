@@ -1,0 +1,114 @@
+<!--META
+{
+ "file":"05-item.html","title":"Item","phase":"P0 · polish (presence and claims arrive with P2/P3)","route":"#/item/<collection_cid>/<item_cid>",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":0,
+ "summary":"One output item: WT_REP1 in preprocessed. Fields shown as formatted chips, files grouped by the record's own structure (fastqc.raw_zip, trim.log…), each with its seal, size and presence. 'Produced by' uses run names. Pin shows bytes before you commit.",
+ "data":"Real: every file name, size and CID of this item; fields; the three runs that produced identical files.",
+ "spec":{
+  "Behaviour":[
+   "Group files by their top-level record key (fastqc / trim / bbsplit). Within a group, show the sub-key (<code>raw_zip[0]</code>) as muted mono text.",
+   "Preview opens text-like files (txt, tsv, csv, log, json, yml, html as sandboxed iframe) in a side sheet. Download stays.",
+   "'Same files also in' lists run names; clicking one opens that run's copy of this output.",
+   "Pin form: reason is required. Button label includes the bytes it keeps: 'Pin 5.29 MB'. If some bytes are already pinned in this store, say how much and by whom."
+  ],
+  "States":[
+   "Missing file (referenced, not in this store): row shows a ring presence dot and 'Missing here', Download disabled with a tooltip that names stores that hold it.",
+   "Pinned: durability badge becomes Pinned, pin claim tag appears under Claims with reason."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="02-pipelines.html">nf-core/rnaseq</a>/<a href="03-run-outputs.html">distraught_murdock</a>/<a href="04-output-items.html">preprocessed</a>/<b>WT_REP1</b></nav>
+  <div class="title">
+    <span data-seal="bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty" data-size="30"></span>
+    <h1>WT_REP1</h1><span class="muted" style="font-size:15px">preprocessed item</span>
+    <span class="state s-held">Held by run</span><span class="presence" title="Held in roblab"><span class="dot a"></span></span>
+    <span class="spacer"></span><button class="btn" type="button">Pick</button>
+  </div>
+  <div class="row">
+    <span class="field"><span class="k">Reads (trimmed)</span><span class="v">99,566</span></span>
+    <span class="field"><span class="k">Layout</span><span class="v">paired</span></span>
+    <span class="field"><span class="k">Strandedness</span><span class="v">reverse</span></span>
+    <span class="field"><span class="k">Inferred strand</span><span class="v">reverse · 89.6% rev</span></span>
+    <span class="field"><span class="k">Genome BAM</span><span class="v">no</span></span>
+    <span class="field"><span class="k">Transcriptome BAM</span><span class="v">no</span></span>
+  </div>
+</div>
+
+<section class="panel flush">
+  <div class="ph"><h2>Files</h2><span class="muted">15 files · 5.29 MB</span><span class="spacer"></span><button class="btn sm" type="button">Download all</button></div>
+  <div class="pb tbox">
+  <table class="t" id="files">
+    <thead><tr><th>File</th><th>Field</th><th class="r">Size</th><th>Where</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <div class="ph"><h2>Lineage</h2></div>
+    <div class="pb">
+      <div class="thread">
+        <div class="node ext"><span class="presence"><span class="dot ring a"></span></span>WT_REP1_1.fastq.gz, WT_REP1_2.fastq.gz <span class="muted">· input, referenced by path</span></div>
+        <div class="node here"><b>preprocessed · WT_REP1</b> <span class="muted">· FastQC, Trim Galore, BBSplit</span></div>
+        <div class="node"><a href="#">markdup · WT_REP1</a> <span class="muted">· 7.24 MB</span></div>
+        <div class="node"><a href="#">quant_salmon · WT_REP1</a> <span class="muted">· 30.0 KB</span></div>
+        <div class="node"><a href="06-file.html">quant_merged · all_samples</a></div>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="ph"><h2>Produced by</h2></div>
+    <div class="pb">
+      <div class="row"><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><a href="03-run-outputs.html">distraught_murdock</a></span><span class="muted">Oct 24</span></div>
+      <p class="muted" style="font-size:12.5px">The same 15 files were also produced by</p>
+      <div class="row"><a class="fact" href="#"><span data-seal="bafyreidordqagvbzb63ew3h4xwykbkufpxufq7gyf6l567dbl5bhz7ac3q" data-size="16"></span><span class="k">run</span>sad_yonath</a><a class="fact" href="#"><span data-seal="bafyreiaedzibppjsllztdb2wqg322harsiohnkmccapz2uemjervj5kcgu" data-size="16"></span><span class="k">run</span>sharp_magritte <span class="muted">failed</span></a></div>
+      <p class="muted" style="font-size:12px">Stored once. Content addressing keeps one copy for all three runs.</p>
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="ph"><h2>Keep this item</h2><span class="state s-held">Held by run</span></div>
+  <div class="pb">
+    <p style="font-size:13px">It stays while <b>distraught_murdock</b> is held. Pinning keeps it in <b>roblab</b> even if the run is released.</p>
+    <div class="row"><input id="pinreason" placeholder="Why keep it? e.g. QC figure in thesis ch. 3" style="flex:1;min-width:220px;height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink);font:inherit"><button class="btn primary" type="button" disabled>Pin 5.29 MB in roblab</button></div>
+    <p class="muted" style="font-size:12px">Nothing in this item is pinned in roblab yet. Pins apply to this store only.</p>
+  </div>
+</section>
+
+<details class="panel" style="padding:12px 16px"><summary style="cursor:pointer;font-weight:600">Address</summary>
+  <dl class="kv" style="margin-top:10px">
+    <dt>Item</dt><dd><span class="addr" data-ref="bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty"><span data-seal="bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty" data-size="14"></span>bafyreicooyl2pyo3ux3ieqj6kyhacb2zsxhijhfpiixexmu4sn3qxuzrty</span></dd>
+    <dt>In output</dt><dd class="mono">cas://bafyreiabfmoro4h5zrbnzltdc5u4bguxoptvjq2pkn32fkczz3woqtcyju/bafyreicooyl2…xuzrty</dd>
+  </dl>
+</details>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const F=[
+  ['fastqc','raw_zip[0]','WT_REP1_raw_1_fastqc.zip',368509,'bafkreibr5nkdlnukzyfhxj2rcgtoxsfztlli2fr6lfmyxekn2iow22ol2u'],
+  ['fastqc','raw_zip[1]','WT_REP1_raw_2_fastqc.zip',358983,'bafkreifkwfot3ir6g377ajvudm4piu7h57drdqwdfzjoihlnlocboggssa'],
+  ['fastqc','raw_html[0]','WT_REP1_raw_1_fastqc.html',600010,'bafkreig64et4ftjhwvgajq6i6phb4zsvbuqo76jzyto42nfcnltmymmncm'],
+  ['fastqc','raw_html[1]','WT_REP1_raw_2_fastqc.html',605614,'bafkreihhn2ex54xwupn72ez7kkrwgkyefqi5hik4hdf7wgcglucqgp32nm'],
+  ['fastqc','trim_zip[0]','WT_REP1_trimmed_1_val_1_fastqc.zip',366807,'bafkreihxammt4lsozrhyjt2za6g7pt2vhp3njd662b2js7wy2wztq5yy2y'],
+  ['fastqc','trim_zip[1]','WT_REP1_trimmed_2_val_2_fastqc.zip',359907,'bafkreics32j5oyo4huyunnzlk5odaly3szqsau6mby4qffdaxz7wazklpq'],
+  ['fastqc','trim_html[0]','WT_REP1_trimmed_1_val_1_fastqc.html',298172,'bafkreibn5pw357m3hifb7jnzwyobry4flx3ptyb3aahzbpirskdoe3vlqq'],
+  ['fastqc','trim_html[1]','WT_REP1_trimmed_2_val_2_fastqc.html',294038,'bafkreibbpwdbzicgyylmc3eu7zdbsu25u5awubl2ahx4egimamrasd47fa'],
+  ['fastqc','filtered_zip[0]','WT_REP1_filtered_1_fastqc.zip',371454,'bafkreifxhlsjb3a2n4xxslowepaqu6nd7zbcbbjxmlaoaj74yburnz4gly'],
+  ['fastqc','filtered_zip[1]','WT_REP1_filtered_2_fastqc.zip',361849,'bafkreiccgobphvprh4auinispx6rozkq2vntddhjlptyeohjaiqf6mljai'],
+  ['fastqc','filtered_html[0]','WT_REP1_filtered_1_fastqc.html',644041,'bafkreideur7y255xfmilujqu6cbmepwz2qiealf3zzuugyl5k7uexfcmw4'],
+  ['fastqc','filtered_html[1]','WT_REP1_filtered_2_fastqc.html',655313,'bafkreiaqdvi4vlnyeopuazi3fzxfiljs5n3yr6bjmila4munbnr7djjmmy'],
+  ['trim','log[0]','WT_REP1_trimmed_1.fastq.gz_trimming_report.txt',2663,'bafkreieyzp4oif6e74pxxgcthwxreclhjfde56wgiyh66qb4yvzkz3h7fm'],
+  ['trim','log[1]','WT_REP1_trimmed_2.fastq.gz_trimming_report.txt',2963,'bafkreic6mkqhkgsbz5u4ftttk6jc5ersfqlslfhsmkbmuygmiai5kxyjgm'],
+  ['bbsplit','stats','WT_REP1.stats.txt',195,'bafkreicmsrxd6waia4agmirgd5lfrheoorxe5c43wt6mq4wsf6qkmveyu4']];
+ const tb=document.querySelector('#files tbody'); let last='';
+ tb.innerHTML=F.map(([g,k,n,s,c])=>{const head=g!==last?`<tr class="group"><td colspan="5"><b style="color:var(--ink-2)">${g}</b></td></tr>`:'';last=g;
+   const prev=/\.(txt|html)$/.test(n);
+   return head+`<tr><td><div class="namecell"><span data-seal="${c}" data-size="18"></span><a href="06-file.html" class="mono" style="font-weight:500;font-size:12px">${n}</a></div></td><td class="mono muted" style="font-size:11.5px">${k}</td><td class="r num nowrap">${NFB.bytes(s)}</td><td><span class="presence"><span class="dot a"></span></span></td><td class="nowrap r">${prev?'<button class="btn sm ghost" type="button">Preview</button>':''}<button class="btn sm ghost" type="button">Download</button></td></tr>`}).join('');
+ NFB.hydrate(tb);
+ const inp=document.getElementById('pinreason'),btn=inp.nextElementSibling; inp.addEventListener('input',()=>btn.disabled=!inp.value.trim());
+});
+</script>

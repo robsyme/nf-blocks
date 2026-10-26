@@ -39,3 +39,37 @@ CREATE TABLE nf_record(
                  key TEXT PRIMARY KEY, kind TEXT, workflow_run TEXT, task_run TEXT,
                  labels_json TEXT, block_cid TEXT);
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE block(cid TEXT PRIMARY KEY, size INTEGER, codec TEXT);
+CREATE TABLE block_ref(owner_cid TEXT, cid TEXT, name TEXT);
+CREATE INDEX block_ref_owner ON block_ref(owner_cid);
+CREATE TABLE root(id INTEGER PRIMARY KEY, cid TEXT, kind TEXT, asserted_by TEXT, state TEXT, since TEXT);
+CREATE INDEX root_cid ON root(cid);
+CREATE INDEX root_kind ON root(kind);
+CREATE TABLE root_stats(root_id INTEGER PRIMARY KEY, reachable_bytes INTEGER, reachable_blocks INTEGER,
+                 exclusive_bytes INTEGER, exclusive_blocks INTEGER, pinned_bytes INTEGER, partial INTEGER);
+CREATE TABLE root_shared(root_id INTEGER, other_root_id INTEGER, bytes INTEGER);
+CREATE INDEX root_shared_root ON root_shared(root_id);
+CREATE TABLE store_stats(stored_bytes INTEGER, stored_blocks INTEGER, referenced_bytes INTEGER,
+                 pinned_bytes INTEGER, held_bytes INTEGER, releasing_bytes INTEGER, shared_bytes INTEGER, partial INTEGER);
+CREATE TABLE asserter_stats(asserted_by TEXT PRIMARY KEY, reachable_bytes INTEGER, exclusive_bytes INTEGER,
+                 pinned_bytes INTEGER, releasing_bytes INTEGER);
+CREATE TABLE pipeline_stats(pipeline TEXT PRIMARY KEY, runs INTEGER, bytes INTEGER, blocks INTEGER, releasing_bytes INTEGER);
+CREATE TABLE collection_size(collection_cid TEXT PRIMARY KEY, bytes INTEGER, blocks INTEGER);
+CREATE TABLE item_size(item_cid TEXT PRIMARY KEY, bytes INTEGER, blocks INTEGER);
+CREATE TABLE kind_stats(kind TEXT PRIMARY KEY, files INTEGER, bytes INTEGER);
+CREATE TABLE pinned_overlap(subject_cid TEXT, asserted_by TEXT, bytes INTEGER);
+CREATE INDEX pinned_overlap_subject ON pinned_overlap(subject_cid);
+CREATE TABLE transfer(
+             cid TEXT PRIMARY KEY, from_member TEXT, to_member TEXT, asserted_by TEXT, depth TEXT, claims TEXT,
+             blocks INTEGER, copied INTEGER, bytes INTEGER, at TEXT);
+CREATE TABLE transfer_root(transfer_cid TEXT, root_cid TEXT, role TEXT);
+CREATE INDEX transfer_root_root ON transfer_root(root_cid);
+CREATE TABLE project(project_cid TEXT PRIMARY KEY, name TEXT, description TEXT, created_by TEXT, created_at TEXT);
+CREATE TABLE project_stats(project_cid TEXT PRIMARY KEY, reachable_bytes INTEGER, pinned_bytes INTEGER,
+             held_bytes INTEGER, releasing_bytes INTEGER, roots INTEGER);
+CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT);
+CREATE INDEX run_input_address ON run_input(address, role, completion_cid);
+CREATE INDEX run_input_completion ON run_input(completion_cid);
+CREATE TABLE handoff(
+             cid TEXT PRIMARY KEY, template TEXT, selection_cid TEXT, project_cid TEXT, asserted_by TEXT, at TEXT);
+CREATE INDEX claim_current_attribute_value ON claim_current(attribute, value);

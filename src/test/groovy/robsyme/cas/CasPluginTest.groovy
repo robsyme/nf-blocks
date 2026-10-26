@@ -72,7 +72,7 @@ class CasPluginTest extends Specification {
 
         expect:
         plugin().exec('nf-blocks', 'snapshot', []) == 0
-        Files.isRegularFile(tempDir.resolve('store/index/v3.sqlite'))
+        Files.isRegularFile(tempDir.resolve('store/index/v6.sqlite'))
     }
 
     def 'the 3-argument exec is a public method a Nextflow >= 26.08.0-edge caller links to'() {

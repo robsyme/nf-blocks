@@ -1,5 +1,6 @@
 package robsyme.cas.core
 
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -14,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Stream
 
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import groovy.util.logging.Slf4j
 
 /**
@@ -32,7 +34,7 @@ import groovy.util.logging.Slf4j
 class Index implements Closeable {
 
     /** Bumped whenever the schema below changes; a mismatch deletes and recreates. */
-    static final int SCHEMA_VERSION = 3
+    static final int SCHEMA_VERSION = 6
 
     // The SQL the block explorer's page runs too (DESIGN.md §12, §15). The page
     // holds a copy in web/src/queries.json; ExplorerQueriesTest pins them equal.
@@ -98,8 +100,45 @@ class Index implements Closeable {
 
     private static final String SQL_ITEM_HITS_ORDER = ' ORDER BY ci.item_cid, ci.collection_cid'
 
+    // nf-blocks:copy's closure (P3 plan 1.4, CopyClosure).
+    static final String SQL_BLOCK_SIZE = 'SELECT size FROM block WHERE cid = ?'
+
+    static final String SQL_ITEM_ATTR =
+        'SELECT type, value FROM item_attr WHERE item_cid = ? AND path = ? AND truncated = 0 ORDER BY type, value'
+
+    static final String SQL_RUN_ITEMS_WITH_ATTR =
+        '''SELECT DISTINCT ci.item_cid FROM collection c
+           JOIN collection_item ci ON ci.collection_cid = c.collection_cid
+           JOIN item_attr a ON a.item_cid = ci.item_cid
+           WHERE c.completion_cid = ? AND a.truncated = 0 AND a.path = ? AND a.type = ? AND a.value = ?
+           ORDER BY ci.item_cid'''
+
+    static final String SQL_OUTPUT_COLLECTIONS_OF_ITEM =
+        """SELECT DISTINCT c.collection_cid, c.completion_cid FROM collection_item ci
+           JOIN collection c ON c.collection_cid = ci.collection_cid
+           WHERE ci.item_cid = ? AND c.kind = 'output' ORDER BY c.collection_cid"""
+
+    static final String SQL_CLAIMS_LOGGED_IN =
+        '''SELECT k.claim_cid, k.subject_cid, k.verb, k.attribute, k.value FROM claim k
+           JOIN log_entry e ON e.cid = k.claim_cid WHERE e.member = ? ORDER BY k.claim_cid'''
+
+    static final String SQL_CLAIM_SUPERSEDES_LOGGED_IN =
+        '''SELECT s.claim_cid, s.superseded_cid FROM claim_supersedes s
+           JOIN log_entry e ON e.cid = s.claim_cid WHERE e.member = ?'''
+
+    static final String SQL_HANDOFFS_LOGGED_IN =
+        '''SELECT h.selection_cid, h.cid FROM handoff h
+           JOIN log_entry e ON e.cid = h.cid WHERE e.member = ? AND e.kind = 'handoff' ORDER BY h.selection_cid, h.cid'''
+
+    static final String SQL_CLAIM =
+        'SELECT subject_cid, verb, attribute, value, timestamp, asserted_by FROM claim WHERE claim_cid = ?'
+
+    static final String SQL_CLAIM_SUPERSEDES = 'SELECT superseded_cid FROM claim_supersedes WHERE claim_cid = ?'
+
     private static final String META_WATERMARK = 'store_log_watermark'
     private static final String META_SCANNED = 'block_scan'
+    /** The `block_scan` value of a scan that found no block of the scanned kinds (P3 plan T10); otherwise 'done'. */
+    private static final String SCANNED_EMPTY = 'empty'
     private static final String META_STALE = 'stale'
     private static final String META_SEEDED = 'seeded_from'
     private static final String META_STORE_ID = 'store_id'
@@ -119,8 +158,29 @@ class Index implements Closeable {
         }
     }
 
+    /**
+     * Where the index sends its lines for the person at the terminal: the
+     * missing-snapshot warning and the rebuild notice. CasSession points it at
+     * its session's notices when it opens the index, so a command's lines go
+     * to the command's stderr and a run's to the console.
+     */
+    static interface Notice {
+        void warn(String message)
+        void info(String message)
+    }
+
+    /** Without a session's notices, the nextflow.cas console logger. */
+    static final Notice CONSOLE_NOTICE = new Notice() {
+        @Override void warn(String message) { CONSOLE.warn(message) }
+        @Override void info(String message) { CONSOLE.info(message) }
+    }
+
     private final Path file
     private Connection connection
+    private volatile Notice notice = CONSOLE_NOTICE
+
+    /** Sends this index's terminal lines to {@code notice} instead of the console logger. */
+    void setNotice(Notice notice) { this.notice = notice ?: CONSOLE_NOTICE }
 
     private Index(Path file, Connection connection) {
         this.file = file
@@ -132,32 +192,217 @@ class Index implements Closeable {
 
     // ------------------------------------------------------------- lifecycle
 
+    /** One monitor per cache file, so the openers in this JVM (the explore server's requests) take turns. */
+    private static final ConcurrentHashMap<Path, Object> OPENING = new ConcurrentHashMap<Path, Object>()
+
     /**
      * Opens the index at {@code sqliteFile}, creating the schema when it is
      * new and recreating it from empty when the stored schema version is not
      * this build's. There is no migration path, by design.
+     *
+     * Never deletes a database another opener is creating or writing (P3
+     * final review item 4). Openers in this JVM take turns per file. A new
+     * cache is built whole under a temporary name and linked into place, so
+     * the file at the path always has its schema. A file that reads as stale
+     * or unreadable is asked again under the write lock before it is
+     * recreated, which waits for a creator still committing its schema; a
+     * lock that stays busy past the busy timeout throws, and nothing is
+     * deleted.
      */
     static Index open(Path sqliteFile) {
-        if( sqliteFile.parent != null )
-            Files.createDirectories(sqliteFile.parent)
-        if( Files.exists(sqliteFile) ) {
-            Connection existing = null
-            try {
-                existing = connect(sqliteFile)
-                final int version = schemaVersionOf(existing)
-                if( version == SCHEMA_VERSION )
-                    return new Index(sqliteFile, existing)
-                log.warn("index at $sqliteFile has schema version $version, not $SCHEMA_VERSION; recreating it")
+        final Object turn = OPENING.computeIfAbsent(sqliteFile.toAbsolutePath().normalize()) { Path p -> new Object() }
+        synchronized( turn ) {
+            if( sqliteFile.parent != null )
+                Files.createDirectories(sqliteFile.parent)
+            for( int attempt = 1; ; attempt++ ) {
+                if( Files.exists(sqliteFile) ) {
+                    final Index index = openExisting(sqliteFile)
+                    if( index != null )
+                        return index
+                }
+                if( attempt == 2 )
+                    throw new IllegalStateException("index at $sqliteFile was created, but does not open as schema version $SCHEMA_VERSION")
+                publishNew(sqliteFile)
             }
-            catch( SQLException e ) {
-                log.warn("index at $sqliteFile could not be opened (${e.message}); recreating it")
-            }
-            closeQuietly(existing)
-            deleteDatabase(sqliteFile)
         }
-        final Connection created = connect(sqliteFile)
-        createSchema(created)
-        return new Index(sqliteFile, created)
+    }
+
+    /** The cache at {@code sqliteFile} when it is current, else null once it is deleted. */
+    private static Index openExisting(Path sqliteFile) {
+        Connection existing = null
+        boolean current = false
+        String why = null
+        try {
+            existing = connect(sqliteFile)
+            final int version = schemaVersionOf(existing)
+            current = version == SCHEMA_VERSION
+            if( !current )
+                why = "has schema version $version, not $SCHEMA_VERSION"
+        }
+        catch( SQLException e ) {
+            if( busy(e) ) {
+                closeQuietly(existing)
+                throw busyIndex(sqliteFile, e)
+            }
+            why = "could not be opened (${e.message})"
+        }
+        if( !current ) {
+            closeQuietly(existing)
+            existing = null
+            if( stillStale(sqliteFile) )
+                log.warn("index at $sqliteFile $why; recreating it")
+            else {
+                current = true
+                try {
+                    existing = connect(sqliteFile)
+                }
+                catch( SQLException e ) {
+                    throw busy(e) ? busyIndex(sqliteFile, e) : new IllegalStateException("index at $sqliteFile could not be opened: ${e.message}", e)
+                }
+            }
+        }
+        // A cache-only table that cannot be made is no reason to drop the cache.
+        if( current )
+            return withCacheOnly(new Index(sqliteFile, existing))
+        closeQuietly(existing)
+        deleteDatabase(sqliteFile)
+        return null
+    }
+
+    /**
+     * Asks the file's schema version again holding the write lock, which waits
+     * (the busy timeout) for a connection still committing a schema. True when
+     * it is still not this build's, or the file is unreadable; a lock that
+     * stays busy throws.
+     */
+    private static boolean stillStale(Path sqliteFile) {
+        Connection c = null
+        try {
+            c = connect(sqliteFile)
+            final Statement statement = c.createStatement()
+            try {
+                statement.execute('BEGIN IMMEDIATE')
+                try {
+                    return versionOrNone(c) != SCHEMA_VERSION
+                }
+                finally {
+                    statement.execute('ROLLBACK')
+                }
+            }
+            finally {
+                statement.close()
+            }
+        }
+        catch( SQLException e ) {
+            if( busy(e) )
+                throw busyIndex(sqliteFile, e)
+            return true
+        }
+        finally {
+            closeQuietly(c)
+        }
+    }
+
+    /** The schema version, or -1 when the file has no schema_version table. */
+    private static int versionOrNone(Connection connection) throws SQLException {
+        final Statement look = connection.createStatement()
+        try {
+            final ResultSet rs = look.executeQuery("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'")
+            if( !rs.next() || rs.getInt(1) == 0 )
+                return -1
+        }
+        finally {
+            look.close()
+        }
+        return schemaVersionOf(connection)
+    }
+
+    private static IllegalStateException busyIndex(Path sqliteFile, SQLException e) {
+        return new IllegalStateException("index at $sqliteFile is busy: another process is creating or writing it (${e.message}); " +
+            'it was left as it is, try again', e)
+    }
+
+    /**
+     * Builds a new cache under a temporary name beside the file, the schema
+     * and its version row in one transaction, then links it into place. When
+     * another process put a cache there first, that one stands. A file system
+     * without hard links gets a rename, made only when the path is still free.
+     */
+    private static void publishNew(Path sqliteFile) {
+        final Path temp = sqliteFile.resolveSibling(sqliteFile.fileName.toString() + '.creating-' + token())
+        try {
+            final Connection created = connect(temp)
+            try {
+                createSchema(created)
+            }
+            finally {
+                closeQuietly(created)
+            }
+            try {
+                Files.createLink(sqliteFile, temp)
+            }
+            catch( FileAlreadyExistsException e ) {
+                // Another process published its cache first; it is opened instead.
+            }
+            catch( UnsupportedOperationException | IOException e ) {
+                if( !Files.exists(sqliteFile) )
+                    Files.move(temp, sqliteFile, StandardCopyOption.ATOMIC_MOVE)
+            }
+        }
+        finally {
+            deleteDatabase(temp)
+        }
+    }
+
+    /**
+     * Tables this cache keeps for itself, outside {@link #ddl}, so a snapshot
+     * never carries them and a seeded cache starts without them. Created if
+     * absent, so a cache of this schema version gains them in place.
+     *
+     * `block_absent`: blocks a snapshot build of the member found gone from
+     * its store (fix round 2, B1). Keyed by member as well as cid, because one
+     * cache serves every member of a composition and a block one store lost
+     * may be in another.
+     *
+     * `block_present`: blocks a held or pinned root reaches, under a run or
+     * Selection that was ever released or deleted, that a snapshot build of
+     * the member found still in its store (fix round 3). Such a block is not
+     * asked about again while a held or pinned root reaches it, so a cold
+     * cache pays for the check once. Every row of every member goes when any
+     * Claim is ingested or newly logged, at a seed and at a forget: any Claim
+     * can supersede a pin or a release.
+     */
+    static final List<String> CACHE_ONLY_DDL = [
+        'CREATE TABLE IF NOT EXISTS block_absent(member TEXT, cid TEXT, PRIMARY KEY(member, cid))',
+        'CREATE TABLE IF NOT EXISTS block_present(member TEXT, cid TEXT, PRIMARY KEY(member, cid))',
+    ]
+
+    /** False when CACHE_ONLY_DDL could not run at open: this index then remembers no absent or present block. */
+    private boolean absentMemo = true
+
+    /**
+     * Runs CACHE_ONLY_DDL. When it fails (SQLITE_BUSY past the busy timeout,
+     * a read-only file), the index still opens with every row it holds, and
+     * only the absent-block memo is off: each snapshot build asks the store
+     * again. One warning per file.
+     */
+    private static Index withCacheOnly(Index index) {
+        try {
+            final Statement statement = index.connection.createStatement()
+            try {
+                for( String sql : CACHE_ONLY_DDL )
+                    statement.executeUpdate(sql)
+            }
+            finally {
+                statement.close()
+            }
+        }
+        catch( SQLException e ) {
+            index.absentMemo = false
+            warnOnce('cache-only:' + index.file, "index at ${index.file}: could not add its block_absent and block_present tables (${e.message}); " +
+                'snapshots of this session ask the store again about every block a sweep may have taken')
+        }
+        return index
     }
 
     @Override
@@ -211,6 +456,13 @@ class Index implements Closeable {
         }
     }
 
+    private static boolean busy(SQLException e) {
+        // The primary result code; extended codes (SQLITE_BUSY_SNAPSHOT, ...) keep it in the low byte.
+        return (e.errorCode & 0xff) == SQLITE_BUSY
+    }
+
+    private static final int SQLITE_BUSY = 5
+
     /** Every CREATE statement of the schema of DESIGN.md §12 and block explorer spec section 11, in order. */
     static List<String> ddl() {
         return [
@@ -261,26 +513,86 @@ class Index implements Closeable {
             // Not in §12's schema: the watermark and the stale mark, which are
             // this build's own bookkeeping rather than indexed block content.
             'CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)',
+            // Schema 4, storage accounting. Ingest fills block and block_ref:
+            // every block an item reaches through its Leaves and
+            // DirectoryManifests, and which item or manifest names it.
+            // codec: 'raw' | 'dag-cbor'.
+            'CREATE TABLE block(cid TEXT PRIMARY KEY, size INTEGER, codec TEXT)',
+            'CREATE TABLE block_ref(owner_cid TEXT, cid TEXT, name TEXT)',
+            'CREATE INDEX block_ref_owner ON block_ref(owner_cid)',
+            // The rest are written by the snapshot build only and stay empty in the cache.
+            'CREATE TABLE root(id INTEGER PRIMARY KEY, cid TEXT, kind TEXT, asserted_by TEXT, state TEXT, since TEXT)',
+            'CREATE INDEX root_cid ON root(cid)',
+            'CREATE INDEX root_kind ON root(kind)',
+            '''CREATE TABLE root_stats(root_id INTEGER PRIMARY KEY, reachable_bytes INTEGER, reachable_blocks INTEGER,
+                 exclusive_bytes INTEGER, exclusive_blocks INTEGER, pinned_bytes INTEGER, partial INTEGER)''',
+            'CREATE TABLE root_shared(root_id INTEGER, other_root_id INTEGER, bytes INTEGER)',
+            'CREATE INDEX root_shared_root ON root_shared(root_id)',
+            '''CREATE TABLE store_stats(stored_bytes INTEGER, stored_blocks INTEGER, referenced_bytes INTEGER,
+                 pinned_bytes INTEGER, held_bytes INTEGER, releasing_bytes INTEGER, shared_bytes INTEGER, partial INTEGER)''',
+            '''CREATE TABLE asserter_stats(asserted_by TEXT PRIMARY KEY, reachable_bytes INTEGER, exclusive_bytes INTEGER,
+                 pinned_bytes INTEGER, releasing_bytes INTEGER)''',
+            'CREATE TABLE pipeline_stats(pipeline TEXT PRIMARY KEY, runs INTEGER, bytes INTEGER, blocks INTEGER, releasing_bytes INTEGER)',
+            'CREATE TABLE collection_size(collection_cid TEXT PRIMARY KEY, bytes INTEGER, blocks INTEGER)',
+            'CREATE TABLE item_size(item_cid TEXT PRIMARY KEY, bytes INTEGER, blocks INTEGER)',
+            'CREATE TABLE kind_stats(kind TEXT PRIMARY KEY, files INTEGER, bytes INTEGER)',
+            'CREATE TABLE pinned_overlap(subject_cid TEXT, asserted_by TEXT, bytes INTEGER)',
+            'CREATE INDEX pinned_overlap_subject ON pinned_overlap(subject_cid)',
+            // What a `transfer` entry fills (P3 plan 1.5). `claims` is the
+            // Transfer's categories comma-joined, `at` its timestamp; `role` is
+            // 'root' for a root asked for and 'run' for one of its `runs`.
+            '''CREATE TABLE transfer(
+             cid TEXT PRIMARY KEY, from_member TEXT, to_member TEXT, asserted_by TEXT, depth TEXT, claims TEXT,
+             blocks INTEGER, copied INTEGER, bytes INTEGER, at TEXT)''',
+            'CREATE TABLE transfer_root(transfer_cid TEXT, root_cid TEXT, role TEXT)',
+            'CREATE INDEX transfer_root_root ON transfer_root(root_cid)',
+            // Explorer v0.3 P4 (plan 1.3-1.5). `project`: one row per Project
+            // block a `project` entry announced. `project_stats`: per project,
+            // written by the snapshot build only, from the current membership
+            // Claims. `run_input`: one row per InputSet input of an indexed
+            // run; `address` is null when the run did not hash it. `handoff`:
+            // one row per Handoff block a `handoff` entry announced.
+            // `claim_current_attribute_value`: "members of a project" without a scan.
+            'CREATE TABLE project(project_cid TEXT PRIMARY KEY, name TEXT, description TEXT, created_by TEXT, created_at TEXT)',
+            '''CREATE TABLE project_stats(project_cid TEXT PRIMARY KEY, reachable_bytes INTEGER, pinned_bytes INTEGER,
+             held_bytes INTEGER, releasing_bytes INTEGER, roots INTEGER)''',
+            'CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT)',
+            'CREATE INDEX run_input_address ON run_input(address, role, completion_cid)',
+            'CREATE INDEX run_input_completion ON run_input(completion_cid)',
+            '''CREATE TABLE handoff(
+             cid TEXT PRIMARY KEY, template TEXT, selection_cid TEXT, project_cid TEXT, asserted_by TEXT, at TEXT)''',
+            'CREATE INDEX claim_current_attribute_value ON claim_current(attribute, value)',
         ]
     }
 
-    /** The schema of DESIGN.md §12, verbatim in its column names. */
+    /** The schema of DESIGN.md §12, verbatim in its column names, and its version row, in one transaction. */
     private static void createSchema(Connection connection) {
-        final Statement statement = connection.createStatement()
+        connection.setAutoCommit(false)
         try {
-            for( String sql : ddl() )
-                statement.executeUpdate(sql)
+            final Statement statement = connection.createStatement()
+            try {
+                for( String sql : ddl() )
+                    statement.executeUpdate(sql)
+            }
+            finally {
+                statement.close()
+            }
+            final PreparedStatement version = connection.prepareStatement('INSERT INTO schema_version(version) VALUES (?)')
+            try {
+                version.setInt(1, SCHEMA_VERSION)
+                version.executeUpdate()
+            }
+            finally {
+                version.close()
+            }
+            connection.commit()
+        }
+        catch( SQLException e ) {
+            connection.rollback()
+            throw e
         }
         finally {
-            statement.close()
-        }
-        final PreparedStatement version = connection.prepareStatement('INSERT INTO schema_version(version) VALUES (?)')
-        try {
-            version.setInt(1, SCHEMA_VERSION)
-            version.executeUpdate()
-        }
-        finally {
-            version.close()
+            connection.setAutoCommit(true)
         }
     }
 
@@ -288,9 +600,11 @@ class Index implements Closeable {
 
     /**
      * Indexes one RunCompletion and its closure: the RunManifest, every
-     * OutputCollection, every OutputItem and every Leaf. Idempotent: the run's
-     * rows are replaced, not added to. A referenced block that has not arrived
-     * leaves a `missing(have, needed)` row and the rest of the run is indexed.
+     * OutputCollection, every OutputItem and every Leaf, the blocks the
+     * Leaves reach through DirectoryManifests, and its InputSet when it links
+     * one ({@link #ingestInputSet}). Idempotent: the run's rows are
+     * replaced, not added to. A referenced block that has not arrived leaves a
+     * `missing(have, needed)` row and the rest of the run is indexed.
      */
     void ingestRun(BlockStore store, Cid completion, String member) {
         final Map completionBlock = readBlock(store, completion, 'RunCompletion')
@@ -315,6 +629,10 @@ class Index implements Closeable {
                     continue
                 ingestCollection(store, completion, collectionCid)
             }
+            final Cid inputSet = asCid(completionBlock.get('input_set'))
+            if( inputSet != null )
+                ingestInputSet(store, completion, inputSet)
+            clearAbsentNamedBy(store, completion, member)
         }
     }
 
@@ -341,17 +659,22 @@ class Index implements Closeable {
                 insertMissing(collectionCid, itemCid)
                 continue
             }
-            ingestItem(itemCid, collectionCid, completion, item.get('value'))
+            ingestItem(store, itemCid, collectionCid, completion, item.get('value'))
         }
     }
 
-    private void ingestItem(Cid itemCid, Cid collectionCid, Cid completion, Object value) {
+    private void ingestItem(BlockStore store, Cid itemCid, Cid collectionCid, Cid completion, Object value) {
         // Attributes are a function of the item block alone, so they are
         // rewritten rather than accumulated across the runs that share it.
         update('DELETE FROM item_attr WHERE item_cid = ?', [itemCid.toString()])
         for( AttrRow row : MetadataView.flatten(MetadataView.of(value)) )
             update('INSERT INTO item_attr(item_cid, path, type, value, truncated) VALUES (?, ?, ?, ?, ?)',
                 [itemCid.toString(), row.path, row.type, row.value, (Object) row.truncated])
+        // block_ref rows are facts about an immutable block, written once per
+        // owner: another run sharing the item, or this run again, adds none.
+        // A directory that had not arrived is filled by retryMissingContent.
+        final boolean refsWritten = hasRefs(itemCid)
+        final Set<Cid> seen = new HashSet<Cid>()
         for( Map leaf : leavesOf(value) ) {
             final Cid address = asCid(leaf.get('address'))
             // An unaddressed, declined or never published leaf has nothing
@@ -361,7 +684,227 @@ class Index implements Closeable {
             update('INSERT INTO producer(content_cid, item_cid, collection_cid, completion_cid, filename) VALUES (?, ?, ?, ?, ?)',
                 [address.toString(), itemCid.toString(), collectionCid.toString(), completion.toString(),
                  text(leaf.get('name'))])
+            if( !refsWritten )
+                ingestContent(store, itemCid, address, text(leaf.get('name')), asLong(leaf.get('size')), seen)
         }
+    }
+
+    /** The meta key prefix of a run's wait record (see {@link #ingestInputSet}); IndexSnapshot and the seed copy them with the run. */
+    @PackageScope static final String INPUTSET_WAIT = 'inputset_wait:'
+
+    /**
+     * The run's InputSet (P4 plan 1.3): one `run_input` row per input, and
+     * one `consumer` row per distinct (address, name, role) of the addressed
+     * ones, `how` the role. Inputs are what the run read, not what it owns
+     * or the store holds, so an input address is never a `missing`, `block`
+     * or `block_ref` row (R2), and neither is the InputSet itself: an InputSet
+     * says nothing of stored bytes, so it must not make storage figures
+     * partial. One not arrived, or one that cannot be read for now, leaves a
+     * wait record, meta `inputset_wait:<completion>` = its cid, which
+     * {@link #retryMissingInputSets} asks about at every catch-up of the
+     * run's member. One that is there but does not read as an InputSet is
+     * warned about once and skipped, with no wait record; the run is indexed
+     * either way. The caller owns the transaction.
+     */
+    private void ingestInputSet(BlockStore store, Cid completion, Cid inputSetCid) {
+        final String wait = INPUTSET_WAIT + completion
+        final String c = completion.toString()
+        update('DELETE FROM run_input WHERE completion_cid = ?', [(Object) c])
+        update('DELETE FROM consumer WHERE completion_cid = ?', [(Object) c])
+        update('DELETE FROM meta WHERE key = ?', [(Object) wait])
+        InputSet set = null
+        String refused = null
+        try {
+            final Map block = readBlock(store, inputSetCid, Records.INPUT_SET, true)
+            if( block != null ) {
+                try {
+                    set = InputSet.fromCbor(block)
+                }
+                catch( RuntimeException e ) {
+                    refused = e.message
+                }
+            }
+            else if( store.has(inputSetCid) )
+                refused = "not an ${Records.INPUT_SET} block of at most ${MAX_BLOCK_BYTES} bytes"
+        }
+        catch( IOException | UncheckedIOException e ) {
+            warnOnce(inputSetCid.toString(), "input set ${inputSetCid} of run ${completion} could not be read (${e.message}); it will be retried")
+            setMeta(wait, inputSetCid.toString())
+            return
+        }
+        if( refused != null ) {
+            warnOnce('input-set-malformed:' + inputSetCid, "input set ${inputSetCid} of run ${completion} is not a readable InputSet block (${refused}); " +
+                'the run is indexed without its inputs')
+            return
+        }
+        if( set == null ) {
+            setMeta(wait, inputSetCid.toString())
+            return
+        }
+        final Set<List<String>> consumers = new LinkedHashSet<List<String>>()
+        for( InputSet.Input input : set.inputs ) {
+            update('INSERT INTO run_input(completion_cid, role, name, address, size, sample) VALUES (?, ?, ?, ?, ?, ?)',
+                [(Object) c, input.role, input.name, input.address?.toString(), input.size, input.sample])
+            if( input.address != null )
+                consumers.add([input.address.toString(), input.name, input.role])
+        }
+        for( List<String> each : consumers )
+            update('INSERT INTO consumer(content_cid, completion_cid, name, how) VALUES (?, ?, ?, ?)', [(Object) each[0], c, each[1], each[2]])
+    }
+
+    /**
+     * The wait records of the member's runs ({@link #ingestInputSet}): each
+     * InputSet is asked about at every catch-up of the member, one `has`
+     * each, and ingested once it is there, which clears the record (a
+     * malformed one clears it too, with its warning). Nothing else of a run
+     * is asked about here: a missing manifest or OutputCollection waits as
+     * before.
+     */
+    private void retryMissingInputSets(BlockStore store, String member) {
+        final List<Cid[]> waiting = new ArrayList<Cid[]>()
+        // The GLOB prefix is searched in meta's key index; a run is looked up by its key.
+        query('''SELECT r.completion_cid, m.value FROM meta m JOIN run r ON r.completion_cid = substr(m.key, ?)
+                 WHERE m.key GLOB ? AND (r.member = ? OR r.completion_cid IN (SELECT cid FROM log_entry WHERE member = ? AND kind = 'run'))
+                 ORDER BY r.completion_cid''', [(Object) (INPUTSET_WAIT.length() + 1), INPUTSET_WAIT + '*', member, member]) { ResultSet rs ->
+            waiting.add([Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2))] as Cid[])
+        }
+        for( Cid[] each : waiting ) {
+            final Cid completion = each[0]
+            final Cid inputSet = each[1]
+            try {
+                if( !store.has(inputSet) )
+                    continue
+            }
+            catch( IOException | UncheckedIOException e ) {
+                warnOnce(inputSet.toString(), "block ${inputSet} is still unreachable (${e.message}); will retry")
+                continue
+            }
+            withTransaction { ingestInputSet(store, completion, inputSet) }
+        }
+    }
+
+    /** Records that {@code owner} names {@code address}, then the block itself. */
+    private void ingestContent(BlockStore store, Cid owner, Cid address, String name, Long size, Set<Cid> seen) {
+        update('INSERT INTO block_ref(owner_cid, cid, name) VALUES (?, ?, ?)', [owner.toString(), address.toString(), name])
+        ingestBlock(store, owner, address, size, seen)
+    }
+
+    /**
+     * Records the block at {@code address}, which {@code owner} names. A raw
+     * block is a file, sized by the Leaf or entry when it says, else by the
+     * store when the block is there, else NULL. A dag-cbor one is read as a
+     * DirectoryManifest and its entries recorded the same way, each manifest
+     * once: `seen`, and the manifest's own block row, written only once it
+     * has been read as a DirectoryManifest, stop a cycle and a second read.
+     * One that has not arrived leaves `missing(owner, manifest)`, and so does
+     * one over MAX_BLOCK_BYTES, which is not read: its files are unknown.
+     */
+    private void ingestBlock(BlockStore store, Cid owner, Cid address, Long size, Set<Cid> seen) {
+        if( address.isRaw() ) {
+            insertBlock(address, size != null ? size : sizeIfPresent(store, address), 'raw')
+            return
+        }
+        if( !address.isDagCbor() || !seen.add(address) )
+            return
+        if( wasRead(address) || hasRefs(address) ) {
+            deleteMissing(owner, address)
+            return
+        }
+        final Map manifest
+        try {
+            manifest = readBlock(store, address, Records.DIRECTORY_MANIFEST, true)
+        }
+        catch( IOException | UncheckedIOException e ) {
+            // There but unreadable for now: missing, so retryMissingContent
+            // tries again. The owner's block_ref rows are written already.
+            warnOnce(address.toString(), "directory manifest ${address} could not be read (${e.message}); it will be retried")
+            if( !isMissing(owner, address) )
+                insertMissing(owner, address)
+            return
+        }
+        if( manifest == null ) {
+            if( !store.has(address) ) {
+                if( !isMissing(owner, address) )
+                    insertMissing(owner, address)
+                return
+            }
+            // There, but nothing readBlock could read. No block row, so the
+            // next owner reads it again: the null may have been a race with
+            // the store, or a limit a later build lifts. One over the limit
+            // names files nobody knows, so its owner waits for it.
+            if( store.size(address) > MAX_BLOCK_BYTES && !isMissing(owner, address) )
+                insertMissing(owner, address)
+            return
+        }
+        deleteMissing(owner, address)
+        insertBlock(address, store.size(address), 'dag-cbor')
+        for( Object each : asList(manifest.get('entries')) ) {
+            if( !(each instanceof Map) )
+                continue
+            final Map entry = (Map) each
+            // Only a directory entry (a manifest) and a regular one (a raw
+            // file; `executable` at schema 1) carry an address, so a symlink
+            // or an unresolvable entry is skipped, as web/src/sizes.js does.
+            final Cid entryAddress = asCid(entry.get('address'))
+            if( entryAddress != null )
+                ingestContent(store, address, entryAddress, text(entry.get('name')), asLong(entry.get('size')), seen)
+        }
+    }
+
+    /**
+     * A DirectoryManifest that had not arrived when its owner was indexed
+     * left `missing(owner, manifest)`. Retried on every catch-up, so the
+     * directory's files are recorded once the manifest lands. One over
+     * MAX_BLOCK_BYTES is looked at again too (a HEAD for its size, never a
+     * read), so a limit a later build lifts lets it in.
+     */
+    private void retryMissingContent(BlockStore store) {
+        final List<Cid[]> waiting = new ArrayList<Cid[]>()
+        query('''SELECT DISTINCT m.have_cid, m.needed_cid FROM missing m
+                 JOIN block_ref r ON r.owner_cid = m.have_cid AND r.cid = m.needed_cid''', []) { ResultSet rs ->
+            waiting.add([Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2))] as Cid[])
+        }
+        for( Cid[] each : waiting ) {
+            try {
+                if( store.has(each[1]) )
+                    withTransaction { ingestBlock(store, each[0], each[1], null, new HashSet<Cid>()) }
+            }
+            catch( IOException | UncheckedIOException e ) {
+                warnOnce(each[1].toString(), "directory manifest ${each[1]} is still unreachable (${e.message}); will retry")
+            }
+        }
+    }
+
+    /** True when a dag-cbor block row says the manifest was read: ingestBlock writes one only then. */
+    private boolean wasRead(Cid cid) {
+        return anyRow("SELECT 1 FROM block WHERE cid = ? AND codec = 'dag-cbor' LIMIT 1", [(Object) cid.toString()])
+    }
+
+    private boolean hasRefs(Cid owner) {
+        boolean found = false
+        query('SELECT 1 FROM block_ref WHERE owner_cid = ? LIMIT 1', [owner.toString()]) { ResultSet rs -> found = true }
+        return found
+    }
+
+    /** The first known size wins: a later size only fills a NULL. */
+    private void insertBlock(Cid cid, Long size, String codec) {
+        update('''INSERT INTO block(cid, size, codec) VALUES (?, ?, ?)
+                  ON CONFLICT(cid) DO UPDATE SET size = excluded.size WHERE block.size IS NULL''',
+            [cid.toString(), (Object) size, codec])
+    }
+
+    private static Long sizeIfPresent(BlockStore store, Cid cid) {
+        return store.has(cid) ? store.size(cid) : null
+    }
+
+    private boolean isMissing(Cid have, Cid needed) {
+        boolean found = false
+        query('SELECT 1 FROM missing WHERE have_cid = ? AND needed_cid = ? LIMIT 1', [have.toString(), needed.toString()]) { ResultSet rs -> found = true }
+        return found
+    }
+
+    private void deleteMissing(Cid have, Cid needed) {
+        update('DELETE FROM missing WHERE have_cid = ? AND needed_cid = ?', [have.toString(), needed.toString()])
     }
 
     private void insertRun(Cid completion, Cid manifestCid, Map manifest, Map completionBlock, String member) {
@@ -385,7 +928,10 @@ class Index implements Closeable {
         ])
     }
 
-    /** Everything this run asserted, so an ingest can replace rather than add. */
+    /**
+     * Everything this run asserted, so an ingest can replace rather than add.
+     * block and block_ref rows describe immutable blocks, not the run, and stay.
+     */
     private void clearRun(Cid completion) {
         final String text = completion.toString()
         update('''DELETE FROM missing
@@ -395,6 +941,9 @@ class Index implements Closeable {
             [text, text, text])
         update('DELETE FROM collection_item WHERE collection_cid IN (SELECT collection_cid FROM collection WHERE completion_cid = ?)', [text])
         update('DELETE FROM producer WHERE completion_cid = ?', [text])
+        update('DELETE FROM consumer WHERE completion_cid = ?', [text])
+        update('DELETE FROM run_input WHERE completion_cid = ?', [text])
+        update('DELETE FROM meta WHERE key = ?', [(Object) (INPUTSET_WAIT + text)])
         update('DELETE FROM collection WHERE completion_cid = ?', [text])
         update('DELETE FROM run WHERE completion_cid = ?', [text])
     }
@@ -408,8 +957,9 @@ class Index implements Closeable {
      * then advances the watermark to the newest entry listed. Re-reads the
      * overlap window before the watermark (StoreLog.OVERLAP_MILLIS) so an entry
      * written behind it is not skipped, and skips runs already indexed so the
-     * overlap costs a listing, never a block read. `run`, `selection` and
-     * `claim` entries are ingested; `forget` entries are applied.
+     * overlap costs a listing, never a block read. `run`, `selection`,
+     * `claim`, `transfer`, `project` and `handoff` entries are ingested;
+     * `forget` entries are applied.
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member) {
         catchUp(store, storeLog, member, store)
@@ -425,17 +975,35 @@ class Index implements Closeable {
         // advances independently (DESIGN.md §12).
         scanOnce(store, member)
         retryMissingLogged(store, member, holders)
+        retryMissingContent(store)
+        retryMissingInputSets(store, member)
         final String key = watermarkKey(member)
         final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
             return
         // entriesSince is newest first; ingest in the order they were written.
-        for( int i = entries.size() - 1; i >= 0; i-- ) {
-            final StoreLogEntry entry = entries[i]
-            recordLogEntry(entry, member)
-            ingestLogged(store, entry.kind, entry.cid, member, holders)
-        }
+        for( int i = entries.size() - 1; i >= 0; i-- )
+            ingestEntry(store, entries[i], member, holders)
         setMeta(key, entries[0].name)
+    }
+
+    /** Logs one Store Log entry for {@code member} and ingests its block unless already indexed. */
+    private void ingestEntry(BlockStore store, StoreLogEntry entry, String member, BlockStore holders) {
+        logEntry(entry, member)
+        ingestLogged(store, entry.kind, entry.cid, member, holders)
+    }
+
+    private void logEntry(StoreLogEntry entry, String member) {
+        // A Claim another member's log brought in is indexed already; logged here too, it now counts for
+        // this member's snapshot and may change what is held there, so its entry and the drop go together.
+        if( entry.kind == StoreLogKind.CLAIM && firstLogEntry(entry.cid, member) == null ) {
+            withTransaction {
+                recordLogEntry(entry, member)
+                dropPresent()
+            }
+        }
+        else
+            recordLogEntry(entry, member)
     }
 
     /** Why a snapshot could not seed the cache: absent, schema_version <n>, unreadable (ticket 04 decision 2). */
@@ -445,6 +1013,25 @@ class Index implements Closeable {
     }
 
     String metaValue(String key) { meta(key) }
+
+    /** Sets a cache meta value, or removes it when {@code value} is null. The snapshot build keeps its per-member notes here (fix round 2, B2). */
+    @PackageScope
+    void setMetaValue(String key, String value) {
+        if( value == null )
+            update('DELETE FROM meta WHERE key = ?', [(Object) key])
+        else
+            setMeta(key, value)
+    }
+
+    /** How many run rows a snapshot of {@code member} would copy: the same rows as IndexSnapshot's COPY_RUNS. */
+    @PackageScope
+    int memberRunCount(String member) {
+        final int[] n = new int[1]
+        query('''SELECT count(*) FROM run
+                 WHERE member = ? OR completion_cid IN (SELECT cid FROM log_entry WHERE member = ? AND kind = 'run')''',
+            [(Object) member, member]) { ResultSet rs -> n[0] = rs.getInt(1) }
+        return n[0]
+    }
 
     /**
      * catchUp, seeding first when this index has never caught `member` up
@@ -504,9 +1091,9 @@ class Index implements Closeable {
      * a run's own first entry is no evidence that a snapshot should already
      * exist.
      */
-    private static void warnUnusable(StoreLog storeLog, String member, String reason, Set<String> quietFor) {
+    private void warnUnusable(StoreLog storeLog, String member, String reason, Set<String> quietFor) {
         if( storeLog.read().any { StoreLogEntry e -> !quietFor.contains(e.cid.toString()) } )
-            CONSOLE.warn("store member '${member}' has no usable Index Snapshot (${reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.")
+            notice.warn("store member '${member}' has no usable Index Snapshot (${reason}); indexing it from every block instead, which is slow on a large member. `nextflow plugin nf-blocks:snapshot` against it writes one.".toString())
     }
 
     /** The per-owner copies, each limited to what this index does not hold yet (silent decision 17). */
@@ -527,6 +1114,15 @@ class Index implements Closeable {
         'INSERT INTO main.producer SELECT * FROM snap.producer WHERE completion_cid IN seed_run',
         'INSERT INTO main.consumer SELECT * FROM snap.consumer WHERE completion_cid IN seed_run',
         'INSERT INTO main.missing SELECT * FROM snap.missing WHERE have_cid IN seed_run OR have_cid IN seed_coll',
+        // Content, per owner (an item or a DirectoryManifest): an owner this
+        // index has block_ref rows for keeps them, as ingestItem would. A
+        // block's size follows insertBlock's rule: the first known size wins.
+        'CREATE TEMP TABLE seed_owner(cid TEXT PRIMARY KEY)',
+        'INSERT INTO seed_owner SELECT DISTINCT owner_cid FROM snap.block_ref WHERE owner_cid NOT IN (SELECT owner_cid FROM main.block_ref)',
+        'INSERT INTO main.block_ref SELECT owner_cid, cid, name FROM snap.block_ref WHERE owner_cid IN seed_owner',
+        '''INSERT INTO main.block(cid, size, codec) SELECT cid, size, codec FROM snap.block WHERE true
+             ON CONFLICT(cid) DO UPDATE SET size = excluded.size WHERE block.size IS NULL''',
+        'INSERT INTO main.missing SELECT * FROM snap.missing WHERE have_cid IN seed_owner',
         'INSERT INTO main.selection_child SELECT * FROM snap.selection_child WHERE parent_cid IN seed_coll',
         'INSERT INTO main.selection_derived SELECT * FROM snap.selection_derived WHERE selection_cid IN seed_coll',
         'INSERT INTO seed_claim SELECT claim_cid FROM snap.claim WHERE claim_cid NOT IN (SELECT claim_cid FROM main.claim)',
@@ -538,12 +1134,38 @@ class Index implements Closeable {
         // row the seeded watermark is past the entry and retryMissingLogged
         // never ingests the block once it arrives; a full scan would.
         '''INSERT INTO main.missing(have_cid, needed_cid) SELECT DISTINCT NULL, cid FROM snap.log_entry
-             WHERE kind IN ('run', 'selection', 'claim')
+             WHERE kind IN ('run', 'selection', 'claim', 'transfer', 'project', 'handoff')
                AND cid NOT IN (SELECT completion_cid FROM main.run)
                AND cid NOT IN (SELECT collection_cid FROM main.collection)
                AND cid NOT IN (SELECT claim_cid FROM main.claim)
+               AND cid NOT IN (SELECT cid FROM main.transfer)
+               AND cid NOT IN (SELECT project_cid FROM main.project)
+               AND cid NOT IN (SELECT cid FROM main.handoff)
                AND cid NOT IN (SELECT needed_cid FROM main.missing WHERE have_cid IS NULL)''',
     ]
+
+    /**
+     * The Transfers, run before SEED so its last statement sees them. Roots
+     * first, while main.transfer still tells a seeded Transfer from one this
+     * index holds.
+     */
+    private static final List<String> SEED_TRANSFERS = [
+        'INSERT INTO main.transfer_root SELECT * FROM snap.transfer_root WHERE transfer_cid NOT IN (SELECT cid FROM main.transfer)',
+        'INSERT INTO main.transfer SELECT * FROM snap.transfer WHERE cid NOT IN (SELECT cid FROM main.transfer)',
+    ]
+
+    /** The Projects and Handoffs, run before SEED so its last statement sees them. */
+    private static final List<String> SEED_P4_ROOTS = [
+        'INSERT INTO main.project SELECT * FROM snap.project WHERE project_cid NOT IN (SELECT project_cid FROM main.project)',
+        'INSERT INTO main.handoff SELECT * FROM snap.handoff WHERE cid NOT IN (SELECT cid FROM main.handoff)',
+    ]
+
+    /** The seeded runs' inputs, after SEED has filled seed_run. Their consumer rows are in SEED. */
+    private static final String SEED_RUN_INPUTS = 'INSERT INTO main.run_input SELECT * FROM snap.run_input WHERE completion_cid IN seed_run'
+
+    /** The seeded runs' InputSet wait records, which the snapshot carries in its meta. */
+    private static final String SEED_INPUTSET_WAITS = """INSERT OR REPLACE INTO main.meta(key, value)
+        SELECT key, value FROM snap.meta WHERE key GLOB '${INPUTSET_WAIT}*' AND substr(key, ${INPUTSET_WAIT.length() + 1}) IN seed_run""".toString()
 
     /**
      * Copies a member's Index Snapshot into this index (ticket 04 decision 1).
@@ -593,17 +1215,29 @@ class Index implements Closeable {
                 throw new SnapshotUnusable("its watermark ${snapWatermark} is not in the member's Store Log, so it may be from an earlier incarnation")
             try {
                 withTransaction {
+                    for( String sql : SEED_TRANSFERS + SEED_P4_ROOTS )
+                        update(sql, [])
                     for( String sql : SEED )
                         update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])
+                    update(SEED_RUN_INPUTS, [])
+                    update(SEED_INPUTSET_WAITS, [])
                     final List<String> subjects = []
                     query('SELECT DISTINCT subject_cid FROM main.claim WHERE claim_cid IN seed_claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
                     for( String subject : subjects )
                         ClaimCurrent.rewrite(connection, subject)
+                    // Seeded Claims arrive without ingestClaim: any of them may have made a block releasing-only.
+                    dropPresent()
                     if( snapMeta[IndexSnapshot.WATERMARK_KEY] )
                         setMeta(watermarkKey(member), snapMeta[IndexSnapshot.WATERMARK_KEY])
                     setMeta(META_SCANNED + ':' + member, 'done')
                     setMeta(META_SEEDED + ':' + member, snapMeta[IndexSnapshot.WRITTEN_AT_KEY] ?: 'unknown')
-                    for( String t : ['seed_run', 'seed_coll', 'seed_item', 'seed_claim'] )
+                    // A lean snapshot carries no content edges, so none were seeded, and storage
+                    // figures built from this cache would leave the seeded runs' files out. Its
+                    // snapshots stay lean (seeded_lean) until a reset and a full ingest:
+                    // `reindex --seed false`. The value kept is the seeding snapshot's reason.
+                    if( snapMeta[IndexSnapshot.STORAGE_OMITTED_KEY] )
+                        setMeta(IndexSnapshot.SEEDED_LEAN_KEY + ':' + member, snapMeta[IndexSnapshot.STORAGE_OMITTED_KEY])
+                    for( String t : ['seed_run', 'seed_coll', 'seed_item', 'seed_claim', 'seed_owner'] )
                         update("DROP TABLE temp.${t}".toString(), [])
                 }
             }
@@ -643,6 +1277,18 @@ class Index implements Closeable {
                 if( meta(forgetKey(member, cid)) == null )
                     ingestTolerant(store, kind, cid, member, holders)
                 return
+            case StoreLogKind.TRANSFER:
+                if( !isTransferIndexed(cid) )
+                    ingestTolerant(store, kind, cid, member, holders)
+                return
+            case StoreLogKind.PROJECT:
+                if( !isProjectIndexed(cid) )
+                    ingestTolerant(store, kind, cid, member, holders)
+                return
+            case StoreLogKind.HANDOFF:
+                if( !isHandoffIndexed(cid) )
+                    ingestTolerant(store, kind, cid, member, holders)
+                return
             default:
                 log.debug("store log entry for ${cid} is a ${kind.token}; not indexed by this build yet")
         }
@@ -652,7 +1298,9 @@ class Index implements Closeable {
      * The first catch-up for a member this index has never scanned finds its
      * runs from the blocks: a new index, one recreated for a schema change,
      * or a store written before the Store Log existed, whose runs no log
-     * lists. Recorded per member, so it happens once.
+     * lists. Recorded per member, so it happens once: 'empty' when it found
+     * none of the scanned kinds, which {@link #reconcileStoreIds} reads as no
+     * row of the member, else 'done'.
      */
     private void scanOnce(BlockStore store, String member) {
         final String key = META_SCANNED + ':' + member
@@ -673,7 +1321,13 @@ class Index implements Closeable {
             ingestLogged(store, StoreLogKind.SELECTION, selection, member, store)
         for( Cid claim : found.get(Records.CLAIM) )
             ingestLogged(store, StoreLogKind.CLAIM, claim, member, store)
-        setMeta(key, 'done')
+        for( Cid transfer : found.get(Records.TRANSFER) )
+            ingestLogged(store, StoreLogKind.TRANSFER, transfer, member, store)
+        for( Cid project : found.get(Records.PROJECT) )
+            ingestLogged(store, StoreLogKind.PROJECT, project, member, store)
+        for( Cid handoff : found.get(Records.HANDOFF) )
+            ingestLogged(store, StoreLogKind.HANDOFF, handoff, member, store)
+        setMeta(key, found.values().every { List<Cid> cids -> cids.isEmpty() } ? SCANNED_EMPTY : 'done')
     }
 
     /**
@@ -713,6 +1367,9 @@ class Index implements Closeable {
                 case StoreLogKind.SELECTION: ingestSelection(store, cid, member); break
                 case StoreLogKind.CLAIM: ingestClaim(store, cid, member); break
                 case StoreLogKind.FORGET: applyForget(store, holders, cid, member); break
+                case StoreLogKind.TRANSFER: ingestTransfer(store, cid); break
+                case StoreLogKind.PROJECT: ingestProject(store, cid); break
+                case StoreLogKind.HANDOFF: ingestHandoff(store, cid); break
                 default: return
             }
         }
@@ -815,9 +1472,9 @@ class Index implements Closeable {
 
     /**
      * True when this cache holds a row a forget of {@code cid} would remove:
-     * a run, collection, item or Claim keyed by it, or its Store Log entry.
-     * Anything else (a DirectoryManifest, a block this cache never indexed)
-     * is a no-op to forget, so it needs no `has` (review item 3).
+     * a run, collection, item, Claim, Transfer, Project or Handoff keyed by it, or its Store
+     * Log entry. Anything else (a DirectoryManifest, a block this cache never
+     * indexed) is a no-op to forget, so it needs no `has` (review item 3).
      */
     private boolean hasRowsKeyedBy(Cid cid) {
         final String t = cid.toString()
@@ -828,7 +1485,7 @@ class Index implements Closeable {
                  UNION ALL SELECT 1 FROM claim WHERE claim_cid = ?
                  UNION ALL SELECT 1 FROM log_entry WHERE cid = ?
                  LIMIT 1''', [(Object) t, t, t, t, t]) { ResultSet rs -> found = true }
-        return found
+        return found || isTransferIndexed(cid) || isProjectIndexed(cid) || isHandoffIndexed(cid)
     }
 
     /** True when a RunCompletion already has its `run` row. */
@@ -858,13 +1515,202 @@ class Index implements Closeable {
             for( Cid superseded : claim.supersedes )
                 update('INSERT INTO claim_supersedes(claim_cid, superseded_cid) VALUES (?, ?)', [claimCid.toString(), superseded.toString()])
             ClaimCurrent.rewrite(connection, claim.subject.toString())
+            dropPresent()
         }
+    }
+
+    /**
+     * Forgets every presence recorded, for every member (fix round 3). Any
+     * Claim can supersede a pin or a release, whatever its own attribute, and
+     * a Claim may count in a member other than the one it was ingested under,
+     * so after any Claim a block may have become releasing-only and a sweep
+     * taken it with no build in between. The next build of each member looks
+     * at its exposed held blocks again. The caller owns the transaction.
+     */
+    private void dropPresent() {
+        if( !absentMemo )
+            return
+        update('DELETE FROM block_present', [])
+        // A build that read the roots before this drop must not record what it found under them.
+        update('''INSERT INTO meta(key, value) VALUES (?, '1')
+                  ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1''', [(Object) PRESENT_GENERATION_KEY])
+    }
+
+    /**
+     * The cache meta key counting the drops of `block_present` (fix round 3):
+     * a build reads it before it copies the roots, and records presences only
+     * if it is unchanged, so a drop by another process in between wins.
+     */
+    static final String PRESENT_GENERATION_KEY = 'block_present_generation'
+
+    /** The current `block_present_generation`, '0' when no drop has happened yet. */
+    String presentGeneration() {
+        return meta(PRESENT_GENERATION_KEY) ?: '0'
     }
 
     boolean isClaimIndexed(Cid claimCid) {
         boolean found = false
         query('SELECT 1 FROM claim WHERE claim_cid = ?', [claimCid.toString()]) { ResultSet rs -> found = true }
         return found
+    }
+
+    /**
+     * Indexes one Transfer (P3 plan 1.5): its `transfer` row and a
+     * `transfer_root` row per root ('root') and per run ('run'). Idempotent.
+     * An absent block is a `missing` row, retried by later catch-ups; a read
+     * that fails is thrown, so ingestTolerant records it the same way. A block
+     * that is there but is not a Transfer this build reads is skipped with one
+     * warning and not retried, as a malformed Forget is. A Transfer changes
+     * no retention, so `block_present` stays as it is.
+     */
+    private void ingestTransfer(BlockStore store, Cid transferCid) {
+        final String text = transferCid.toString()
+        final Map block = readBlock(store, transferCid, Records.TRANSFER, true)
+        Transfer transfer = null
+        String refused = null
+        if( block != null ) {
+            try {
+                transfer = Transfer.fromCbor(block)
+            }
+            catch( IllegalArgumentException e ) {
+                refused = e.message
+            }
+        }
+        else if( store.has(transferCid) )
+            refused = "not a ${Records.TRANSFER} block of at most ${MAX_BLOCK_BYTES} bytes"
+        withTransaction {
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [(Object) text])
+            update('DELETE FROM transfer_root WHERE transfer_cid = ?', [(Object) text])
+            update('DELETE FROM transfer WHERE cid = ?', [(Object) text])
+            if( refused != null ) {
+                warnOnce('transfer-malformed:' + text, "transfer ${text} is not a readable Transfer block (${refused}); it is skipped")
+                return
+            }
+            if( transfer == null ) {
+                warnOnce(text, "transfer ${text} has not arrived; it is indexed when it does")
+                insertMissing(null, transferCid)
+                return
+            }
+            update('''INSERT INTO transfer(cid, from_member, to_member, asserted_by, depth, claims, blocks, copied, bytes, at)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                [(Object) text, transfer.from, transfer.to, transfer.assertedBy, transfer.depth, transfer.claims.join(','),
+                 transfer.blocks, transfer.copied, transfer.bytes, transfer.timestamp])
+            for( Cid root : transfer.roots )
+                update("INSERT INTO transfer_root(transfer_cid, root_cid, role) VALUES (?, ?, 'root')", [(Object) text, root.toString()])
+            for( Cid run : transfer.runs )
+                update("INSERT INTO transfer_root(transfer_cid, root_cid, role) VALUES (?, ?, 'run')", [(Object) text, run.toString()])
+        }
+    }
+
+    boolean isTransferIndexed(Cid transferCid) {
+        boolean found = false
+        query('SELECT 1 FROM transfer WHERE cid = ?', [(Object) transferCid.toString()]) { ResultSet rs -> found = true }
+        return found
+    }
+
+    /**
+     * Indexes one Project (P4 plan 1.4): its `project` row, `created_by` the
+     * block's `asserted_by`. As {@link #ingestTransfer}: idempotent, an
+     * absent block waits as `missing(NULL, cid)`, and a block that does not
+     * read as a Project is warned about once and skipped. A Project changes
+     * no retention.
+     */
+    private void ingestProject(BlockStore store, Cid projectCid) {
+        ingestP4Root(store, projectCid, Records.PROJECT, 'DELETE FROM project WHERE project_cid = ?',
+            'INSERT INTO project(project_cid, name, description, created_by, created_at) VALUES (?, ?, ?, ?, ?)') { Map block ->
+            final Project p = Project.fromCbor(block)
+            return [(Object) p.name, p.description, p.assertedBy, p.createdAt]
+        }
+    }
+
+    /**
+     * Indexes one Handoff (P4 plan 1.5, D7): its `handoff` row, `at` the
+     * block's `timestamp`, `project_cid` NULL when it names no Project. As
+     * {@link #ingestProject}. Its files are content it roots (P4 R5), so
+     * they are recorded as an item's leaves are: `block_ref(handoff, file,
+     * name)` and the file's `block` row sized by its Leaf, once per Handoff.
+     */
+    private void ingestHandoff(BlockStore store, Cid handoffCid) {
+        Handoff read = null
+        ingestP4Root(store, handoffCid, Records.HANDOFF, 'DELETE FROM handoff WHERE cid = ?',
+            'INSERT INTO handoff(cid, template, selection_cid, project_cid, asserted_by, at) VALUES (?, ?, ?, ?, ?, ?)', { Map block ->
+            final Handoff h = Handoff.fromCbor(block)
+            read = h
+            return [(Object) h.template, h.selection.toString(), h.project?.toString(), h.assertedBy, h.timestamp]
+        }) { ->
+            if( hasRefs(handoffCid) )
+                return
+            final Set<Cid> seen = new HashSet<Cid>()
+            for( Leaf f : read.files )
+                ingestContent(store, handoffCid, f.address, f.name, f.size, seen)
+        }
+    }
+
+    /**
+     * The shared part of {@link #ingestProject} and {@link #ingestHandoff}:
+     * {@code values} turns the block into the row after its cid, and throws
+     * when the block does not read as one. {@code also}, when given, runs in
+     * the same transaction once the row is in.
+     */
+    private void ingestP4Root(BlockStore store, Cid cid, String kind, String delete, String insert, Closure<List<Object>> values,
+                              Closure also = null) {
+        final String text = cid.toString()
+        final Map block = readBlock(store, cid, kind, true)
+        List<Object> row = null
+        String refused = null
+        if( block != null ) {
+            try {
+                row = values.call(block)
+            }
+            catch( RuntimeException e ) {
+                refused = e.message
+            }
+        }
+        else if( store.has(cid) )
+            refused = "not a ${kind} block of at most ${MAX_BLOCK_BYTES} bytes"
+        withTransaction {
+            update('DELETE FROM missing WHERE have_cid IS NULL AND needed_cid = ?', [(Object) text])
+            update(delete, [(Object) text])
+            if( refused != null ) {
+                warnOnce(kind + '-malformed:' + text, "${kind.toLowerCase()} ${text} is not a readable ${kind} block (${refused}); it is skipped")
+                return
+            }
+            if( row == null ) {
+                warnOnce(text, "${kind.toLowerCase()} ${text} has not arrived; it is indexed when it does")
+                insertMissing(null, cid)
+                return
+            }
+            final List<Object> parameters = new ArrayList<Object>()
+            parameters.add(text)
+            parameters.addAll(row)
+            update(insert, parameters)
+            if( also != null )
+                also.call()
+        }
+    }
+
+    boolean isProjectIndexed(Cid projectCid) {
+        return anyRow('SELECT 1 FROM project WHERE project_cid = ?', [(Object) projectCid.toString()])
+    }
+
+    boolean isHandoffIndexed(Cid handoffCid) {
+        return anyRow('SELECT 1 FROM handoff WHERE cid = ?', [(Object) handoffCid.toString()])
+    }
+
+    static final String SQL_RUN_INPUTS_OF =
+        'SELECT completion_cid, role, name, address, size, sample FROM run_input WHERE completion_cid = ? ORDER BY role, name, address, sample'
+
+    /** The run's inputs as its InputSet listed them (P4 plan 1.3); none for a run without one. */
+    List<RunInputRow> runInputs(Cid completion) {
+        final List<RunInputRow> out = new ArrayList<RunInputRow>()
+        query(SQL_RUN_INPUTS_OF, [(Object) completion.toString()]) { ResultSet rs ->
+            final String address = rs.getString(4)
+            final long size = rs.getLong(5)
+            final Long sized = rs.wasNull() ? null : size
+            out.add(new RunInputRow(Cid.parse(rs.getString(1)), rs.getString(2), rs.getString(3),
+                address == null ? null : Cid.parse(address), sized, rs.getString(6)))
+        }
+        return out
     }
 
     /**
@@ -1022,14 +1868,33 @@ class Index implements Closeable {
     /** The member's store-id as this cache last recorded it, or null (DESIGN.md §20 decision 3). */
     String storeIdOf(String member) { meta(META_STORE_ID + ':' + member) }
 
-    /** Empties every table but schema_version, meta included: a cold cache (plan decision 1). */
+    /**
+     * Empties every table but schema_version, meta included: a cold cache (plan
+     * decision 1). The one meta row kept is `block_present_generation`, moved
+     * on by one, so a build in another process that read it before the reset
+     * records no presence into the emptied cache.
+     */
     void reset() {
         withTransaction {
+            // A value that is not a number (by hand, or a damaged cache) counts as 0: the reset must not fail on derived data.
+            long generation = 0L
+            try {
+                generation = Long.parseLong(presentGeneration())
+            }
+            catch( NumberFormatException e ) {
+                log.debug("block_present_generation is not a number; counting it as 0")
+            }
             for( String sql : ddl() ) {
-                final java.util.regex.Matcher m = sql =~ /^CREATE TABLE (\w+)\(/
+                final java.util.regex.Matcher m = sql =~ /^CREATE TABLE (\w+)[\s(]/
                 if( m.find() && m.group(1) != 'schema_version' )
                     update("DELETE FROM ${m.group(1)}".toString(), [])
             }
+            if( absentMemo ) {
+                update('DELETE FROM block_absent', [])
+                update('DELETE FROM block_present', [])
+            }
+            update('INSERT INTO meta(key, value) VALUES (?, ?)',
+                [(Object) PRESENT_GENERATION_KEY, String.valueOf(generation + 1)])
         }
     }
 
@@ -1039,7 +1904,10 @@ class Index implements Closeable {
      * read is left out. {@code watermarkLogged(alias, watermark)} answers whether
      * that entry is still in the member's log, or null when it could not tell.
      * Resets the whole cache when any member was replaced, then records every
-     * id it may. Returns why it reset, or null.
+     * id it may. A member with no recorded id and no watermark that the cache
+     * attributes no row to holds nothing here, so its first id is recorded with
+     * no reset, whether or not its blocks were scanned (P3 plan T10). Returns
+     * why it reset, or null.
      */
     String reconcileStoreIds(Map<String, String> ids, Closure<Boolean> watermarkLogged) {
         String reason = null
@@ -1057,7 +1925,7 @@ class Index implements Closeable {
             if( now == null )
                 continue
             final String wm = watermark(alias)
-            final boolean holdsNothing = wm == null && meta(META_SCANNED + ':' + alias) == null
+            final boolean holdsNothing = wm == null && !attributesRowsTo(alias)
             if( holdsNothing ) {
                 record.put(alias, now)
                 continue
@@ -1070,12 +1938,52 @@ class Index implements Closeable {
             record.put(alias, now)
         }
         if( reason != null ) {
-            CONSOLE.info("rebuilding the cache index ${file}: ${reason}")
+            notice.info("rebuilding the cache index ${file}: ${reason}".toString())
             reset()
         }
         for( Map.Entry<String, String> e : record.entrySet() )
             setMeta(META_STORE_ID + ':' + e.key, e.value)
         return reason
+    }
+
+    /**
+     * Whether this cache holds a row it attributes to {@code member} (P3 plan
+     * T10). Only a scan, a seed or a rebuild of the member brings rows it
+     * cannot date, and each marks `block_scan`: 'empty' for a scan that found
+     * none of the scanned kinds, 'done' otherwise. After 'done', the member's
+     * rows are its run rows (`run.member`), its `log_entry` rows, and any
+     * Selection, Claim, Transfer, Project or Handoff no `log_entry` row announces, since nothing
+     * records which member such a row came from. Rows a writer ingested itself
+     * (a run's {@code ingestRun}, a put) are not counted: the writer created
+     * the member's id before it wrote (DESIGN.md §20 decision 2).
+     */
+    private boolean attributesRowsTo(String member) {
+        // Only a catch-up of the member writes its log_entry rows, so they count whatever the scan said:
+        // an 'empty' scan whose log catch-up threw before a watermark still leaves them.
+        if( anyRow('SELECT 1 FROM log_entry WHERE member = ? LIMIT 1', [(Object) member]) )
+            return true
+        final String scanned = meta(META_SCANNED + ':' + member)
+        if( scanned == null || scanned == SCANNED_EMPTY )
+            return false
+        if( anyRow('SELECT 1 FROM run WHERE member = ? LIMIT 1', [(Object) member]) )
+            return true
+        return anyRow('''SELECT 1 FROM collection c WHERE c.kind = 'selection'
+                           AND NOT EXISTS (SELECT 1 FROM log_entry e WHERE e.cid = c.collection_cid)
+                         UNION ALL
+                         SELECT 1 FROM claim c WHERE NOT EXISTS (SELECT 1 FROM log_entry e WHERE e.cid = c.claim_cid)
+                         UNION ALL
+                         SELECT 1 FROM transfer t WHERE NOT EXISTS (SELECT 1 FROM log_entry e WHERE e.cid = t.cid)
+                         UNION ALL
+                         SELECT 1 FROM project p WHERE NOT EXISTS (SELECT 1 FROM log_entry e WHERE e.cid = p.project_cid)
+                         UNION ALL
+                         SELECT 1 FROM handoff h WHERE NOT EXISTS (SELECT 1 FROM log_entry e WHERE e.cid = h.cid)
+                         LIMIT 1''', [])
+    }
+
+    private boolean anyRow(String sql, List<Object> parameters) {
+        boolean found = false
+        query(sql, parameters) { ResultSet rs -> found = true }
+        return found
     }
 
     /**
@@ -1095,6 +2003,12 @@ class Index implements Closeable {
                 fresh.ingestSelection(store, selection, member)
             for( Cid claim : found.get(Records.CLAIM) )
                 fresh.ingestClaim(store, claim, member)
+            for( Cid transfer : found.get(Records.TRANSFER) )
+                fresh.ingestTolerant(store, StoreLogKind.TRANSFER, transfer, member, store)
+            for( Cid project : found.get(Records.PROJECT) )
+                fresh.ingestTolerant(store, StoreLogKind.PROJECT, project, member, store)
+            for( Cid handoff : found.get(Records.HANDOFF) )
+                fresh.ingestTolerant(store, StoreLogKind.HANDOFF, handoff, member, store)
             fresh.setMeta(META_SCANNED + ':' + member, 'done')
             try {
                 for( StoreLogEntry entry : StoreLog.read(store) )
@@ -1179,8 +2093,14 @@ class Index implements Closeable {
         }
     }
 
-    /** What the scan and rebuild ingest, in dependency order: Claims refer to anything, so last. */
-    private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.SELECTION, Records.CLAIM]
+    /**
+     * What the scan and rebuild ingest, in dependency order: Claims refer to
+     * anything, so after runs and Selections. A Transfer, a Project and a
+     * Handoff depend on nothing indexed; a scan also finds one whose entry a
+     * stopped writer never wrote.
+     */
+    private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.SELECTION, Records.CLAIM, Records.TRANSFER,
+                                                       Records.PROJECT, Records.HANDOFF]
 
     // --------------------------------------------------------------- queries
 
@@ -1334,6 +2254,95 @@ class Index implements Closeable {
         return collections
     }
 
+    /** The size the block table records for a block, or null when it has none (P3 plan 1.3 sizes). */
+    Long blockSize(Cid cid) {
+        final List<Long> sizes = new ArrayList<Long>()
+        query(SQL_BLOCK_SIZE, [(Object) cid.toString()]) { ResultSet rs ->
+            final long size = rs.getLong(1)
+            sizes.add(rs.wasNull() ? null : size)
+        }
+        return sizes ? sizes[0] : null
+    }
+
+    /** An item's untruncated `item_attr` rows at one path, sorted by type and value. */
+    List<AttrRow> attrsOf(Cid item, String path) {
+        final List<AttrRow> rows = new ArrayList<AttrRow>()
+        query(SQL_ITEM_ATTR, [item.toString(), path] as List<Object>) { ResultSet rs ->
+            rows.add(new AttrRow(path, rs.getString(1), rs.getString(2), 0))
+        }
+        return rows
+    }
+
+    /** Every item of the run, in any of its outputs, with an untruncated row equal on path, type and value; sorted by cid. */
+    List<Cid> runItemsWith(Cid completion, String path, String type, String value) {
+        final List<Cid> items = new ArrayList<Cid>()
+        query(SQL_RUN_ITEMS_WITH_ATTR, [completion.toString(), path, type, value] as List<Object>) { ResultSet rs ->
+            items.add(Cid.parse(rs.getString(1)))
+        }
+        return items
+    }
+
+    /** The OutputCollections that list the item, each with its run's RunCompletion, sorted by collection cid. */
+    Map<Cid, Cid> outputCollectionsOf(Cid item) {
+        final Map<Cid, Cid> out = new LinkedHashMap<Cid, Cid>()
+        query(SQL_OUTPUT_COLLECTIONS_OF_ITEM, [(Object) item.toString()]) { ResultSet rs ->
+            out.put(Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2)))
+        }
+        return out
+    }
+
+    /**
+     * Every Claim a `claim` entry of {@code member}'s Store Log announced, as
+     * ClaimState rows grouped by subject (P3 plan 1.4: only the source's own
+     * Claims decide what is current for a copy from it). `supersedes` lists
+     * every link the Claim makes, whoever logged the Claim it names.
+     */
+    Map<Cid, List<ClaimState.Row>> claimsLoggedIn(String member) {
+        final Map<String, ClaimState.Row> rows = new LinkedHashMap<String, ClaimState.Row>()
+        final Map<String, Cid> subjects = new HashMap<String, Cid>()
+        query(SQL_CLAIMS_LOGGED_IN, [(Object) member]) { ResultSet rs ->
+            final String cid = rs.getString(1)
+            rows.put(cid, new ClaimState.Row(cid, rs.getString(3), rs.getString(4), rs.getString(5), new ArrayList<String>()))
+            subjects.put(cid, Cid.parse(rs.getString(2)))
+        }
+        query(SQL_CLAIM_SUPERSEDES_LOGGED_IN, [(Object) member]) { ResultSet rs ->
+            rows.get(rs.getString(1))?.supersedes?.add(rs.getString(2))
+        }
+        final Map<Cid, List<ClaimState.Row>> bySubject = new LinkedHashMap<Cid, List<ClaimState.Row>>()
+        for( ClaimState.Row row : rows.values() ) {
+            Collections.sort(row.supersedes)
+            bySubject.computeIfAbsent(subjects.get(row.cid)) { Cid s -> new ArrayList<ClaimState.Row>() }.add(row)
+        }
+        return bySubject
+    }
+
+    /**
+     * Every Handoff a `handoff` entry of {@code member}'s Store Log announced,
+     * by the Selection it cites, each list sorted by cid (a copy from that
+     * member carries the hand-offs of the Selections it carries).
+     */
+    Map<Cid, List<Cid>> handoffsLoggedIn(String member) {
+        final Map<Cid, List<Cid>> bySelection = new LinkedHashMap<Cid, List<Cid>>()
+        query(SQL_HANDOFFS_LOGGED_IN, [(Object) member]) { ResultSet rs ->
+            bySelection.computeIfAbsent(Cid.parse(rs.getString(1))) { Cid s -> new ArrayList<Cid>() }.add(Cid.parse(rs.getString(2)))
+        }
+        return bySelection
+    }
+
+    /** One Claim as the index holds it, its value as text (decision 4); null when it is not indexed. */
+    Claim claimOf(Cid claimCid) {
+        final List<Claim> found = new ArrayList<Claim>()
+        final List<Cid> supersedes = new ArrayList<Cid>()
+        query(SQL_CLAIM_SUPERSEDES, [(Object) claimCid.toString()]) { ResultSet rs ->
+            supersedes.add(Cid.parse(rs.getString(1)))
+        }
+        query(SQL_CLAIM, [(Object) claimCid.toString()]) { ResultSet rs ->
+            found.add(new Claim(rs.getString(6), Cid.parse(rs.getString(1)), rs.getString(2), rs.getString(3), rs.getString(4),
+                supersedes, rs.getString(5)))
+        }
+        return found ? found[0] : null
+    }
+
     /** Distinct pipelines any run names, sorted. */
     List<String> pipelines() {
         final List<String> out = []
@@ -1353,8 +2362,10 @@ class Index implements Closeable {
     }
 
     /**
-     * Removes every row keyed by these cids as a run, collection, item,
-     * Selection or Claim, and their claim_current, in one transaction.
+     * Removes every row keyed by these cids as a run (its inputs, consumer
+     * rows and InputSet wait record with it), collection, item, Selection,
+     * Claim, Transfer, Project or Handoff, and their claim_current, in one
+     * transaction.
      * Producer rows are kept (plan decision 7): after a sweep deletes
      * blocks, their rows go too, so a snapshot seeds nothing whose blocks
      * are gone, but `producersOf` still answers for content a forgotten run
@@ -1379,10 +2390,20 @@ class Index implements Closeable {
                         'DELETE FROM claim_current WHERE claim_cid = ?',
                         'DELETE FROM claim_current WHERE subject_cid = ?',
                         'DELETE FROM claim WHERE claim_cid = ?',
+                        'DELETE FROM transfer_root WHERE transfer_cid = ?',
+                        'DELETE FROM transfer WHERE cid = ?',
+                        'DELETE FROM consumer WHERE completion_cid = ?',
+                        'DELETE FROM run_input WHERE completion_cid = ?',
+                        'DELETE FROM project WHERE project_cid = ?',
+                        'DELETE FROM handoff WHERE cid = ?',
                         'DELETE FROM log_entry WHERE cid = ?',
                         'DELETE FROM missing WHERE have_cid = ? OR needed_cid = ?'] )
                     update(sql, sql.count('?') == 2 ? [t, t] as List<Object> : [t] as List<Object>)
+                update('DELETE FROM meta WHERE key = ?', [(Object) (INPUTSET_WAIT + t)])
             }
+            dropUnreachableContentMissing()
+            // A forgotten pin or retain Claim may leave a block releasing-only: every member looks again.
+            dropPresent()
             // A subject some of whose Claims went keeps the rest: recompute its current state.
             final Set<String> subjects = new LinkedHashSet<String>()
             query('SELECT DISTINCT subject_cid FROM claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
@@ -1391,10 +2412,149 @@ class Index implements Closeable {
         }
     }
 
+    /**
+     * A directory's `missing(owner, manifest)` row whose owner no remaining
+     * item reaches would be retried at every catch-up for nothing: drops it.
+     * The block and block_ref rows stay, as facts about immutable blocks.
+     */
+    private void dropUnreachableContentMissing() {
+        boolean any = false
+        query('SELECT 1 FROM missing WHERE have_cid IN (SELECT owner_cid FROM block_ref) LIMIT 1', []) { ResultSet rs -> any = true }
+        if( !any )
+            return
+        update('''DELETE FROM missing WHERE have_cid IN (SELECT owner_cid FROM block_ref) AND have_cid NOT IN (
+                      WITH RECURSIVE owner(cid) AS (
+                          SELECT item_cid FROM collection_item
+                          UNION
+                          SELECT cid FROM handoff
+                          UNION
+                          SELECT r.cid FROM block_ref r JOIN owner o ON r.owner_cid = o.cid
+                          JOIN block b ON b.cid = r.cid AND b.codec = 'dag-cbor')
+                      SELECT cid FROM owner)''', [])
+    }
+
     /** Marks the index as out of step with the store, so a rebuild is owed. */
     void markStale() { setMeta(META_STALE, '1') }
 
     boolean isStale() { meta(META_STALE) == '1' }
+
+    /** The cids a snapshot build of {@code member} found gone from its store (`block_absent`). */
+    Set<String> absentBlocks(String member) {
+        final Set<String> out = new HashSet<String>()
+        if( !absentMemo )
+            return out
+        query('SELECT cid FROM block_absent WHERE member = ?', [(Object) member]) { ResultSet rs -> out.add(rs.getString(1)) }
+        return out
+    }
+
+    /**
+     * Records that these cids are gone from {@code member}'s store. A build
+     * asks again only about one a held or pinned root reaches.
+     */
+    void recordAbsent(String member, Collection<String> cids) {
+        if( !cids || !absentMemo )
+            return
+        withTransaction {
+            for( String cid : cids )
+                update('INSERT OR IGNORE INTO block_absent(member, cid) VALUES (?, ?)', [(Object) member, cid])
+        }
+    }
+
+    /**
+     * Forgets these absences of {@code member}, in one statement: a block a
+     * look found back in the store, or one no root reaches any more, is
+     * looked up afresh if a released root reaches it later.
+     */
+    void clearAbsent(String member, Collection<String> cids) {
+        if( !cids || !absentMemo )
+            return
+        update('DELETE FROM block_absent WHERE member = ? AND cid IN (SELECT value FROM json_each(?))',
+            [(Object) member, groovy.json.JsonOutput.toJson(new ArrayList<String>(cids))])
+    }
+
+    /** The cids a snapshot build of {@code member} found still in its store under a held or pinned root (`block_present`). */
+    Set<String> presentBlocks(String member) {
+        final Set<String> out = new HashSet<String>()
+        if( !absentMemo )
+            return out
+        query('SELECT cid FROM block_present WHERE member = ?', [(Object) member]) { ResultSet rs -> out.add(rs.getString(1)) }
+        return out
+    }
+
+    /**
+     * As {@link #recordPresent(String, Collection)}, only while
+     * `block_present_generation` is still {@code generation}, checked in the
+     * same transaction as the insert. False when it changed (a Claim, a seed
+     * or a forget since the build read the roots): nothing is recorded, and
+     * the next build looks again.
+     */
+    boolean recordPresentIf(String member, Collection<String> cids, String generation) {
+        if( !cids || !absentMemo )
+            return false
+        boolean recorded = false
+        withTransaction {
+            if( presentGeneration() != generation )
+                return
+            for( String cid : cids )
+                update('INSERT OR IGNORE INTO block_present(member, cid) VALUES (?, ?)', [(Object) member, cid])
+            recorded = true
+        }
+        return recorded
+    }
+
+    /** Records that these cids are in {@code member}'s store, so no later build asks while a held or pinned root reaches them. */
+    void recordPresent(String member, Collection<String> cids) {
+        if( !cids || !absentMemo )
+            return
+        withTransaction {
+            for( String cid : cids )
+                update('INSERT OR IGNORE INTO block_present(member, cid) VALUES (?, ?)', [(Object) member, cid])
+        }
+    }
+
+    /** Forgets these presences of {@code member}, in one statement: a block only released or deleted roots reach, or none. */
+    void clearPresent(String member, Collection<String> cids) {
+        if( !cids || !absentMemo )
+            return
+        update('DELETE FROM block_present WHERE member = ? AND cid IN (SELECT value FROM json_each(?))',
+            [(Object) member, groovy.json.JsonOutput.toJson(new ArrayList<String>(cids))])
+    }
+
+    /**
+     * A run that names a block recorded as absent may have written it again.
+     * Every block the run's items reach is looked up in the member's `block_absent`, and
+     * one now in the store loses its row. A cache with no absent blocks, the
+     * usual case, does no more than one query.
+     */
+    private void clearAbsentNamedBy(BlockStore store, Cid completion, String member) {
+        if( !absentMemo )
+            return
+        boolean any = false
+        query('SELECT 1 FROM block_absent WHERE member = ? LIMIT 1', [(Object) member]) { ResultSet rs -> any = true }
+        if( !any )
+            return
+        final List<String> named = new ArrayList<String>()
+        query('''WITH RECURSIVE owner(cid) AS (
+                     SELECT ci.item_cid FROM collection c JOIN collection_item ci ON ci.collection_cid = c.collection_cid
+                     WHERE c.completion_cid = ?
+                     UNION
+                     SELECT r.cid FROM block_ref r JOIN owner o ON r.owner_cid = o.cid
+                     JOIN block b ON b.cid = r.cid AND b.codec = 'dag-cbor')
+                 SELECT DISTINCT r.cid FROM owner o JOIN block_ref r ON r.owner_cid = o.cid
+                 WHERE r.cid IN (SELECT cid FROM block_absent WHERE member = ?)''', [(Object) completion.toString(), member]) { ResultSet rs ->
+            named.add(rs.getString(1))
+        }
+        for( String cid : named ) {
+            try {
+                if( store.has(Cid.parse(cid)) )
+                    update('DELETE FROM block_absent WHERE member = ? AND cid = ?', [(Object) member, cid])
+            }
+            catch( Exception e ) {
+                // Failing to look keeps the row; the block stays out of the figures until a later run names it.
+                log.debug("could not tell whether ${cid} is back in the store", e)
+            }
+        }
+    }
 
     /** Rows in one of the tables of ddl(); for tests. */
     @groovy.transform.PackageScope
@@ -1564,6 +2724,10 @@ class Index implements Closeable {
         if( value instanceof String && Cid.isCid((String) value) )
             return Cid.parse((String) value)
         return null
+    }
+
+    private static Long asLong(Object value) {
+        return value instanceof Number ? ((Number) value).longValue() : null
     }
 
     private static String text(Object value) {

@@ -4,6 +4,7 @@
 // the type query 3 matches.
 import { h } from './html.js'
 import { attrRows } from './metadata.js'
+import { formatValue } from './format.js'
 
 const enc = encodeURIComponent
 const byText = (a, b) => (a < b ? -1 : a > b ? 1 : 0)
@@ -53,8 +54,16 @@ export function labelText(preview, paths) {
 
 const NUMERIC = /^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/
 
-/** A value as a pill shows it: a string that reads as a number is quoted, since the where form is typed (ticket 10 Q4). */
-export const valueText = (type, value) => (type === 'null' ? 'null' : type === 'string' && NUMERIC.test(value) ? `"${value}"` : value)
+/**
+ * A value as the page shows it: a string that reads as a number is quoted,
+ * since the where form is typed (ticket 10 Q4); numbers and booleans go
+ * through formatValue (`99566.0` shows `99,566`), with `field`'s format and
+ * labels when it is a promoted field. For display only: filter links and the
+ * where JSON keep the raw value.
+ */
+export const valueText = (type, value, field = null) => (type === 'null' ? 'null'
+  : type === 'string' ? (NUMERIC.test(value) ? `"${value}"` : value)
+    : type === 'int' || type === 'float' || type === 'bool' ? formatValue(type, value, field) : value)
 
 const valueClass = (type, value) => (type === 'int' || type === 'float' ? 'pv-num'
   : type === 'bool' ? `pv-${value}` : type === 'null' ? 'pv-null' : 'pv-str')
@@ -99,12 +108,12 @@ export function pairsNode(pairs, target, { size = 'row' } = {}) {
 
 export const PAIRS_CSS = `
   .pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-  .pill { display: inline-flex; max-width: 100%; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; font-size: 12px; }
-  .pill-key { background: var(--pill-key); color: var(--muted); padding: 0 6px; }
+  .pill { display: inline-flex; max-width: 100%; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); overflow: hidden; font-size: 12px; }
+  .pill-key { background: var(--sunken); color: var(--ink-3); padding: 0 6px; }
   .pill-val { padding: 0 6px; border-left: 1px solid var(--line); color: inherit; text-decoration: none;
     max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   a.pill-val:hover { text-decoration: underline; }
-  .pv-num { color: var(--num); font-variant-numeric: tabular-nums; } .pv-true { color: var(--true); }
-  .pv-false { color: var(--false); } .pv-null { color: var(--muted); font-style: italic; }
+  .pv-num { color: var(--ink); font-variant-numeric: tabular-nums; } .pv-true { color: var(--ok); }
+  .pv-false { color: var(--fail); } .pv-null { color: var(--ink-3); font-style: italic; }
   .pills-page .pill { font-size: 14px; } .pills-page .pill-key, .pills-page .pill-val { padding: 1px 8px; }
 `

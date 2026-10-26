@@ -40,6 +40,8 @@ class SweepReport {
     List<Cid> missingContent = []
     int dangling
     int unreadableClaims
+    /** Per member alias, the Store Log kinds this build does not know (P4 R8); an applied sweep refuses beside any. */
+    Map<String, List<String>> unknownKinds = [:]
     String ledger
     long requests
     long blocksRead
@@ -57,7 +59,8 @@ class SweepReport {
         out.age_floor_millis = ageFloorMillis
         out.roots = roots == null ? null : [runs: roots.runs, content_roots: roots.contentRoots, released: roots.released,
             hidden: roots.hidden, hidden_but_pinned: roots.hiddenButPinned, selections: roots.selections,
-            deleted_selections: roots.deletedSelections, pinned_subjects: roots.pinnedSubjects, claims: roots.claims]
+            deleted_selections: roots.deletedSelections, pinned_subjects: roots.pinnedSubjects, claims: roots.claims,
+            projects: roots.projects, deleted_projects: roots.deletedProjects, handoffs: roots.handoffs, deleted_handoffs: roots.deletedHandoffs]
         out.live = live
         out.blocks = blocks
         out.bytes = bytes
@@ -81,6 +84,7 @@ class SweepReport {
         out.missing_content = missingContent.collect { Cid c -> c.toString() }
         out.dangling = dangling
         out.unreadable_claims = unreadableClaims
+        out.unknown_kinds = unknownKinds
         out.ledger = ledger
         out.requests = requests
         out.warnings = warnings
@@ -100,7 +104,10 @@ class SweepReport {
             line(out, 'roots', "${count(roots.runs)} ${plural(roots.runs, 'run')}: ${count(roots.contentRoots)} with content, " +
                 "${count(roots.released)} released, ${count(roots.hidden)} hidden (${count(roots.hiddenButPinned)} hidden but pinned); " +
                 "${count(roots.selections)} ${plural(roots.selections, 'Selection')}; " +
-                "${count(roots.pinnedSubjects)} pinned ${plural(roots.pinnedSubjects, 'subject')}; ${count(roots.claims)} ${plural(roots.claims, 'Claim')} live")
+                "${count(roots.pinnedSubjects)} pinned ${plural(roots.pinnedSubjects, 'subject')}; ${count(roots.claims)} ${plural(roots.claims, 'Claim')} live" +
+                (roots.projects + roots.deletedProjects + roots.handoffs + roots.deletedHandoffs > 0 ?
+                    "; ${count(roots.projects)} ${plural(roots.projects, 'Project')} (${count(roots.deletedProjects)} deleted), " +
+                    "${count(roots.handoffs)} ${plural(roots.handoffs, 'hand-off')} (${count(roots.deletedHandoffs)} deleted)" : ''))
         line(out, 'blocks', "${count(blocks)} in ${alias} (${size(bytes)}); ${count(live)} live")
         final String trashVerb = acted ? 'trashed' : 'would be trashed'
         String deadLine = "${count(dead)} (${size(deadBytes)}): ${count(young)} younger than the age floor (${duration(ageFloorMillis)}), " +
@@ -119,6 +126,8 @@ class SweepReport {
             line(out, 'live', "${count(fresh.size())} ${plural(fresh.size(), 'run')} registered: " +
                 fresh.collect { LiveRegistry.Registration r -> "${r.runName ?: 'unnamed'} (session ${r.session}), heartbeat ${r.ageMillis.intdiv(1000L)} s ago" }.join('; ') +
                 (acted ? '' : ': --apply would refuse'))
+        if( unknownKinds )
+            line(out, 'unknown', unknownKindsRefusal(unknownKinds) + (acted ? '' : '; --apply would refuse'))
         if( missingMetadata || missingContent || dangling || unreadableClaims )
             line(out, 'problems', "${count(missingMetadata.size())} metadata ${plural(missingMetadata.size(), 'block')} missing, " +
                 "${count(missingContent.size())} content ${plural(missingContent.size(), 'block')} missing, " +
@@ -134,6 +143,14 @@ class SweepReport {
         if( stopped != null )
             line(out, 'stopped', stopped)
         return out.toString()
+    }
+
+    /** Why an applied sweep refuses beside Store Log kinds this build does not know (P4 R8), naming each member and its kinds. */
+    static String unknownKindsRefusal(Map<String, List<String>> unknownKinds) {
+        final List<String> clauses = unknownKinds.collect { String alias, List<String> kinds ->
+            "the Store Log of member ${alias} holds entries of kind(s) ${kinds.join(', ')}".toString() }
+        final String who = clauses.size() == 1 ? clauses[0] + ' ' : clauses.join(', and ') + ', '
+        return who + 'that this build does not know, so a sweep could delete blocks they keep; upgrade nf-blocks'
     }
 
     private static void line(StringBuilder out, String head, Object text) {

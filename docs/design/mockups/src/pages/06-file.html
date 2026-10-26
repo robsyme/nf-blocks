@@ -1,0 +1,82 @@
+<!--META
+{
+ "file":"06-file.html","title":"File","phase":"P0 · polish (preview) + P3 (presence)","route":"#/content/<raw_cid>",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":0,
+ "summary":"A single file block. Today this page is titled 'Every run that produced this file' and lists runs by CID. The redesign leads with the file itself: name, seal, size, a preview for tabular text, its address, and the runs that produced it by name.",
+ "data":"Real: salmon.merged.gene_counts.tsv from quant_merged/all_samples (first 8 data rows, 126 genes × 5 samples), its CID, size, and the three runs that produced the same bytes.",
+ "spec":{
+  "Preview":[
+   "TSV/CSV: parse the first 64 KB, show header + first 50 rows, sticky header, numeric columns right-aligned with separators. Show the true row × column count.",
+   "Text/log/yml/json: monospace, first 64 KB, line numbers.",
+   "HTML (MultiQC, FastQC): sandboxed iframe, no scripts unless the user opts in.",
+   "Binary (bam, bigWig, zip, rds): no preview; show kind and size."
+  ],
+  "Names":[
+   "A raw block has no single name: different items may give the same bytes different filenames. Title uses the most common filename; the 'Known as' row lists the others.",
+   "Runs are listed by run name, output and item ID, never by CID alone."
+  ],
+  "Acceptance":["The cas:// reference copies in full with one click.","Sample columns are highlighted when the user arrived from a Samples filter (07) with those samples selected."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="03-run-outputs.html">distraught_murdock</a>/<a href="#">quant_merged</a>/<a href="#">all_samples</a>/<b>salmon.merged.gene_counts.tsv</b></nav>
+  <div class="title">
+    <span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="36"></span>
+    <div style="display:grid;gap:2px">
+      <h1 class="mono" style="font-size:19px;font-weight:600">salmon.merged.gene_counts.tsv</h1>
+      <div class="subline"><span><b>3.74 KB</b> · TSV · 126 genes × 5 samples</span><span class="addr" data-ref="cas://bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym/salmon.merged.gene_counts.tsv">cas://bafk…gz3oym <span class="copy">copy</span></span></div>
+    </div>
+    <span class="spacer"></span>
+    <span class="state s-held">Held by 3 runs</span><span class="presence"><span class="dot a"></span></span>
+    <button class="btn" type="button">Download</button>
+  </div>
+</div>
+
+<section class="panel flush">
+  <div class="ph"><h2>Preview</h2><span class="muted">rows 1–8 of 126</span><span class="spacer"></span><span class="muted" style="font-size:12px">Highlighted: the 2 samples in your current filter</span></div>
+  <div class="pb tbox">
+    <table class="t" id="prev"><thead></thead><tbody></tbody></table>
+  </div>
+</section>
+
+<section class="panel flush">
+  <div class="ph"><h2>Produced by</h2><span class="muted">3 runs wrote these exact bytes</span></div>
+  <div class="pb tbox">
+  <table class="t">
+    <thead><tr><th>Run</th><th>Output · item</th><th>Known as</th><th>Finished</th></tr></thead>
+    <tbody>
+      <tr><td><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><a href="03-run-outputs.html">distraught_murdock</a></span></td><td>quant_merged · all_samples</td><td class="mono" style="font-size:12px">salmon.merged.gene_counts.tsv</td><td class="muted">Oct 24, 1:29 PM</td></tr>
+      <tr><td><span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg><a href="#">sad_yonath</a></span></td><td>quant_merged · all_samples</td><td class="mono" style="font-size:12px">salmon.merged.gene_counts.tsv</td><td class="muted">Oct 23, 3:01 PM</td></tr>
+      <tr><td><span class="status fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg><a href="#">sharp_magritte</a></span></td><td>quant_merged · all_samples</td><td class="mono" style="font-size:12px">salmon.merged.gene_counts.tsv</td><td class="muted">Oct 23, 2:59 PM</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const H=['gene_id','gene_name','RAP1_IAA_30M_REP1','RAP1_UNINDUCED_REP1','RAP1_UNINDUCED_REP2','WT_REP1','WT_REP2'];
+ const R=[['Gfp_transgene_gene','Gfp_transgene_gene',0,0,0,0,0],['HRA1','HRA1',0,0,0,0,0],['YAL001C','TFC3',55,71,115,60,30],['YAL002W','VPS8',36,33,82,63,25],['YAL003W','EFB1',632,809,1692,1111,704],['YAL004W','YAL004W',1,0,0,0,1],['YAL005C','SSA1',6060,6087,12797,8017,4177],['YAL007C','ERP2',46,56,132,60,44]];
+ const hi=new Set([4,5]); const nf=new Intl.NumberFormat('en-US');
+ const t=document.getElementById('prev');
+ t.tHead.innerHTML='<tr>'+H.map((h,i)=>`<th class="${i>1?'r':''}" style="${hi.has(i)?'background:var(--accent-soft);color:var(--accent-ink)':''}">${h}</th>`).join('')+'</tr>';
+ t.tBodies[0].innerHTML=R.map(r=>'<tr>'+r.map((v,i)=>`<td class="${i>1?'r num':'mono'}" style="${i<2?'font-size:12px;':''}${hi.has(i)?'background:var(--accent-soft)':''}">${i>1?nf.format(v):v}</td>`).join('')+'</tr>').join('');
+});
+</script>
+<!--RAIL-->
+<div class="sec">
+  <h3>Address</h3>
+  <p class="muted" style="font-size:12.5px">Computed from the bytes. It resolves in any store that holds this file, so the link survives copies and moves.</p>
+  <span class="addr" data-ref="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" style="white-space:normal;overflow-wrap:anywhere"><span data-seal="bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym" data-size="16"></span>bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym</span>
+</div>
+<div class="sec">
+  <h3>Where it lives</h3>
+  <div class="row"><span class="dot a"></span>roblab <span class="state s-held" style="margin-left:auto">Held by 3 runs</span></div>
+  <p class="muted" style="font-size:12px">Other stores appear here once more than one store is open.</p>
+</div>
+<div class="sec">
+  <h3>Keep it</h3>
+  <p class="muted" style="font-size:12.5px">Releasing any one run won't remove it: the other two still hold it.</p>
+  <button class="btn sm" type="button">Pin 3.74 KB…</button>
+</div>

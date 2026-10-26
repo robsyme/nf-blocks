@@ -17,6 +17,21 @@ import groovy.transform.CompileStatic
  * correctness beats speed. Level by level, and within a level in windows of
  * about `threads * WINDOW_FACTOR` blocks, so decoded metadata does not pile
  * up across a whole (possibly very wide) level (DESIGN.md §0 rule 2).
+ *
+ * Across members (P3 decision D2, plan section 1.8): a run or Selection the
+ * writable member's own Store Log lists is released or deleted only when
+ * both the whole composition's Claims and the Claims that log lists say so,
+ * so a sweep never takes what the swept member's own figures call held. One
+ * logged only in other members is judged by the composition's Claims alone,
+ * as before. A subject is pinned when either view pins it or any one
+ * member's own Claims do.
+ *
+ * Projects and Handoffs (P4 rulings R5, R6) are rooted by their `project`
+ * and `handoff` entries as Selections are by theirs, by the same rules: a
+ * clean `delete` (judged across members as above) frees one, a pin keeps
+ * it. A Project roots only itself. A Handoff roots its files as content and
+ * its Selection whole; its `project` link is not followed. A RunCompletion's
+ * InputSet is kept as itself only: a run does not own what it read (R1).
  */
 @CompileStatic
 class Mark {
@@ -40,6 +55,19 @@ class Mark {
         int deletedSelections
         int pinnedSubjects
         int claims
+        int projects
+        int deletedProjects
+        int handoffs
+        int deletedHandoffs
+    }
+
+    /** What a subject's Claims decide for the mark, from the views D2 combines. */
+    @Canonical
+    @CompileStatic
+    private static class Verdict {
+        boolean deleted
+        boolean released
+        boolean pinned
     }
 
     @Canonical
@@ -71,11 +99,21 @@ class Mark {
     private final Set<Cid> liveSet = ConcurrentHashMap.newKeySet()
     private final Set<Cid> runs = new LinkedHashSet<Cid>()
     private final Set<Cid> selections = new LinkedHashSet<Cid>()
+    private final Set<Cid> projects = new LinkedHashSet<Cid>()
+    private final Set<Cid> handoffs = new LinkedHashSet<Cid>()
+    /** The runs, Selections, Projects and Handoffs the writable member's own log lists: the subjects D2 judges by both views. */
+    private final Set<Cid> ownRoots = new HashSet<Cid>()
     private final Map<Cid, Cid> claimSubject = new HashMap<Cid, Cid>()
+    /** Per subject, its Claims from every member's log: the composition's view. */
     private final Map<Cid, List<ClaimState.Row>> claimsOf = new HashMap<Cid, List<ClaimState.Row>>()
+    /** The Claims (by cid text) the writable member's own log lists: with claimsOf, its own view (D2). */
+    private final Set<String> ownClaims = new HashSet<String>()
+    /** Per Claim (by cid text), the aliases of the members whose logs list it; a cid logged in two members counts in both (D2). */
+    private final Map<String, Set<String>> claimMembers = new HashMap<String, Set<String>>()
     private final Map<Cid, String> writableEntry = new HashMap<Cid, String>()
     private final Set<Cid> rooted = new HashSet<Cid>()
     private final Set<Cid> forgets = new LinkedHashSet<Cid>()
+    private final Set<Cid> transfers = new LinkedHashSet<Cid>()
     private final AtomicLong reads = new AtomicLong()
     /** Lazily created per `extend`, shut down when it returns (DESIGN.md §0 rule 2: no pool lives longer than it must). */
     private ExecutorService pool
@@ -136,7 +174,7 @@ class Mark {
             // into claimsOf twice would read a clean delete or release as CONFLICTED
             // (ruling 1).
             final Set<Cid> newClaims = new LinkedHashSet<Cid>()
-            final List<Visit> newForgets = new ArrayList<Visit>()
+            final List<Visit> selfRooted = new ArrayList<Visit>()
             for( MemberLog log : logs ) {
                 for( StoreLogEntry e : log.entries ) {
                     if( log.writable )
@@ -144,18 +182,37 @@ class Mark {
                     switch( e.kind ) {
                         case StoreLogKind.RUN:
                             if( runs.add(e.cid) ) touched.add(e.cid)
+                            if( log.writable && ownRoots.add(e.cid) ) touched.add(e.cid)
                             break
                         case StoreLogKind.SELECTION:
                             if( selections.add(e.cid) ) touched.add(e.cid)
+                            if( log.writable && ownRoots.add(e.cid) ) touched.add(e.cid)
+                            break
+                        case StoreLogKind.PROJECT:
+                            if( projects.add(e.cid) ) touched.add(e.cid)
+                            if( log.writable && ownRoots.add(e.cid) ) touched.add(e.cid)
+                            break
+                        case StoreLogKind.HANDOFF:
+                            if( handoffs.add(e.cid) ) touched.add(e.cid)
+                            if( log.writable && ownRoots.add(e.cid) ) touched.add(e.cid)
                             break
                         case StoreLogKind.CLAIM:
+                            // A Claim read before and now listed by another member (or by the
+                            // writable one) can change a view, so its subject is reconsidered.
+                            if( logged(e.cid, log) && claimSubject.containsKey(e.cid) )
+                                touched.add(claimSubject.get(e.cid))
                             if( !claimSubject.containsKey(e.cid) )
                                 newClaims.add(e.cid)
                             break
                         case StoreLogKind.FORGET:
                             // Rooted itself only (DESIGN.md §20 decision 8): its entry names it,
                             // and a missing block makes the entry dangling.
-                            if( forgets.add(e.cid) ) newForgets.add(new Visit(e.cid, SELF, false, null))
+                            if( forgets.add(e.cid) ) selfRooted.add(new Visit(e.cid, SELF, false, null))
+                            break
+                        case StoreLogKind.TRANSFER:
+                            // Rooted itself only, as a forget is (P3 plan 1.5). The run, selection and
+                            // claim entries the copy wrote hold what it brought; a missing block makes the entry dangling.
+                            if( transfers.add(e.cid) ) selfRooted.add(new Visit(e.cid, SELF, false, null))
                             break
                     }
                 }
@@ -193,7 +250,7 @@ class Mark {
                 touched.add(claim.subject)
             }
             root(touched)
-            walk(newForgets)
+            walk(selfRooted)
             keepClaims()
             keepClaimsHeldElsewhere()
             roots.claims = (int) claimSubject.keySet().count { Cid c -> liveSet.contains(c) }
@@ -203,16 +260,52 @@ class Mark {
         }
     }
 
-    private ClaimState stateOf(Cid subject) {
-        return ClaimState.of(claimsOf.get(subject) ?: Collections.<ClaimState.Row> emptyList())
+    /** Records that `log` lists the Claim `cid`; true when that member (or the writable one's own view) did not list it before. */
+    private boolean logged(Cid cid, MemberLog log) {
+        final String c = cid.toString()
+        boolean grew = claimMembers.computeIfAbsent(c) { new HashSet<String>() }.add(log.alias)
+        if( log.writable && ownClaims.add(c) )
+            grew = true
+        return grew
+    }
+
+    /**
+     * D2: a run, Selection, Project or Handoff the writable member's log lists is deleted or
+     * released only when both the composition's Claims and the writable
+     * member's own Claims say so; any other subject by the composition's
+     * alone. Pinned when either view pins, or when the Claims any one
+     * member's log lists pin (a `del pin` in one member does not unpin what
+     * another member's log still pins).
+     */
+    private Verdict verdictOf(Cid subject) {
+        final List<ClaimState.Row> rows = claimsOf.get(subject) ?: Collections.<ClaimState.Row> emptyList()
+        final ClaimState all = ClaimState.of(rows)
+        final ClaimState own = ClaimState.of(rows.findAll { ClaimState.Row r -> ownClaims.contains(r.cid) })
+        boolean pinned = all.pinned || own.pinned
+        if( !pinned ) {
+            final Set<String> members = new TreeSet<String>()
+            for( ClaimState.Row r : rows )
+                members.addAll(claimMembers.get(r.cid) ?: Collections.<String> emptySet())
+            for( String m : members ) {
+                if( ClaimState.of(rows.findAll { ClaimState.Row r -> claimMembers.get(r.cid)?.contains(m) }).pinned ) {
+                    pinned = true
+                    break
+                }
+            }
+        }
+        final boolean both = ownRoots.contains(subject)
+        return new Verdict(
+            all.deletion == ClaimState.DELETED && (!both || own.deletion == ClaimState.DELETED),
+            all.released && (!both || own.released),
+            pinned)
     }
 
     /** Roots the touched subjects by the rules of the table above; a subject already rooted at ALL is left alone. */
     private void root(Set<Cid> touched) {
         final List<Visit> frontier = new ArrayList<Visit>()
         for( Cid s : touched ) {
-            final ClaimState st = stateOf(s)
-            final boolean deleted = st.deletion == ClaimState.DELETED
+            final Verdict st = verdictOf(s)
+            final boolean deleted = st.deleted
             if( runs.contains(s) ) {
                 if( deleted && !st.pinned ) { count(s) { roots.hidden++ }; continue }
                 if( deleted ) { count(s) { roots.hiddenButPinned++ }; frontier.add(new Visit(s, ALL, false, null)); continue }
@@ -223,6 +316,16 @@ class Mark {
             else if( selections.contains(s) ) {
                 if( deleted && !st.pinned ) { count(s) { roots.deletedSelections++ }; continue }
                 count(s) { roots.selections++ }
+                frontier.add(new Visit(s, ALL, false, null))
+            }
+            else if( projects.contains(s) ) {
+                if( deleted && !st.pinned ) { count(s) { roots.deletedProjects++ }; continue }
+                count(s) { roots.projects++ }
+                frontier.add(new Visit(s, ALL, false, null))
+            }
+            else if( handoffs.contains(s) ) {
+                if( deleted && !st.pinned ) { count(s) { roots.deletedHandoffs++ }; continue }
+                count(s) { roots.handoffs++ }
                 frontier.add(new Visit(s, ALL, false, null))
             }
             else if( st.pinned ) {
@@ -352,7 +455,7 @@ class Mark {
         switch( Records.kindOf(block) ) {
             case Records.RUN_COMPLETION:
                 meta(block.get('run'), META, v.cid, next)
-                // The run's InputSet (null until milestone 7 writes one) is its metadata.
+                // The run's InputSet is its metadata, kept as itself: its inputs are not followed (P4 R1).
                 meta(block.get('input_set'), META, v.cid, next)
                 for( Object c : (List) (block.get('collections') ?: []) )
                     meta(c, v.want, v.cid, next)
@@ -390,8 +493,16 @@ class Mark {
                         meta(member.get('selection'), ALL, v.cid, next)
                 }
                 break
+            case Records.HANDOFF:
+                // The generated files are content; the Selection handed off is kept whole, as a
+                // nested Selection is, so the hand-off keeps what it cites. Its project is not followed (P4 R5).
+                for( Object f : (List) (block.get('files') ?: []) )
+                    if( f instanceof Map )
+                        content(((Map) f).get('address'), v.cid, next)
+                meta(block.get('selection'), ALL, v.cid, next)
+                break
             default:
-                break   // a Claim or a kind this build does not know: itself only
+                break   // a Claim, a Project, an InputSet or a kind this build does not know: itself only
         }
     }
 

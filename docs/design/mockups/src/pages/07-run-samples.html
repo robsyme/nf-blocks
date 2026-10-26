@@ -1,0 +1,126 @@
+<!--META
+{
+ "file":"07-run-samples.html","title":"Run · Samples","phase":"P1a · samples","route":"#/run/<completion_cid>?tab=samples&where=[[\"preprocessed:num_trimmed_reads\",\"int\",\"50000\",\">=\"]]",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":2,"railLabel":"Hand off",
+ "summary":"The fix for the core task. One row per sample, joined on meta.id across every output of the run. A filter on any column applies to the sample, so the same filter can feed any output. The right rail is the hand-off: tick outputs, see bytes, save a Selection, copy the snippet. This page is interactive: change the threshold or tick outputs.",
+ "data":"Real: all five samples of distraught_murdock with num_trimmed_reads (preprocessed), percent_mapped (aligned), layout, strandedness and per-output bytes (directories expanded).",
+ "spec":{
+  "Join":[
+   "Join key = <code>meta.id</code> (configurable per pipeline). Items without the key (e.g. quant_merged 'all_samples', multiqc) are 'run-level' outputs, listed separately in the hand-off rail.",
+   "Each column records its source output + path; the header shows the source in mono under the label.",
+   "If two outputs disagree on a field with the same label, show both columns, labelled by source."
+  ],
+  "Filters":[
+   "URL encoding adds an output qualifier: <code>[\"preprocessed:num_trimmed_reads\",\"int\",\"50000\",\">=\"]</code>.",
+   "Rows that fail the filter are hidden by default; 'Show 3 excluded' reveals them dimmed.",
+   "Manual tick/untick overrides the filter for that row and shows a small 'manual' mark; the Selection records the final list."
+  ],
+  "Hand-off rail":[
+   "Per-sample outputs show count and bytes for the current sample set.",
+   "Run-level outputs show a note: 'Holds all 5 samples; your 2 are columns in it' and link to the file preview with those columns highlighted (06).",
+   "'Save Selection' creates an immutable Selection of the ticked items and a name claim. The snippet switches from <code>run:</code> + <code>where:</code> to <code>selection:</code> after saving.",
+   "Snippet API shape is a proposal (ADR needed): <code>fromStore(run:…, samples:[where:…]).output('quant_salmon')</code>."
+  ],
+  "Acceptance":[
+   "Threshold 50,000 → WT_REP1 and RAP1_UNINDUCED_REP2.",
+   "Ticking quant_salmon + quant_merged yields 3 items, 143 KB.",
+   "All numbers formatted; no CIDs as labels."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="02-pipelines.html">nf-core/rnaseq</a>/<b>distraught_murdock</b></nav>
+  <div class="title">
+    <span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="30"></span>
+    <h1>distraught_murdock</h1>
+    <span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>Succeeded</span>
+    <span class="state s-held">Held by run</span><span class="presence"><span class="dot a"></span></span>
+  </div>
+  <div class="subline"><span>Latest good run of <b>nf-core/rnaseq</b></span><span>Oct 24, 1:29 PM</span><span><b>78.4 MB</b> stored</span></div>
+</div>
+<nav class="tabs"><a class="on" href="07-run-samples.html">Samples<small>5</small></a><a href="03-run-outputs.html">Outputs<small>17</small></a><a href="#">Provenance</a><a href="10-run-storage.html">Storage</a></nav>
+
+<div class="filterbar">
+  <span class="fchip"><span>Reads (trimmed)</span><span class="src">preprocessed</span><span class="op">≥</span><input id="thr" type="number" value="50000" step="1000" aria-label="Minimum trimmed reads"><button class="x" type="button" aria-label="Remove filter">×</button></span>
+  <span class="fchip"><span>% mapped</span><span class="src">aligned</span><span class="op">≥</span><input id="pm" type="number" value="" placeholder="any" step="1" aria-label="Minimum percent mapped"><button class="x" type="button" aria-label="Remove filter">×</button></span>
+  <button class="btn ghost sm" type="button">+ Add filter</button>
+  <span class="spacer"></span><span class="muted" id="matchtext" style="font-size:12.5px"></span>
+  <button class="btn sm" type="button" id="showx">Show excluded</button>
+</div>
+
+<section class="panel flush">
+  <div class="pb tbox">
+  <table class="t" id="st">
+    <thead><tr>
+      <th><input type="checkbox" checked aria-label="Select all shown"></th><th>Sample</th>
+      <th class="r">Reads (trimmed)<small>preprocessed</small></th><th class="r">% mapped<small>aligned</small></th>
+      <th>Layout<small>meta.single_end</small></th><th>Strand<small>meta.strandedness</small></th>
+      <th>Outputs</th><th class="r">Size<small>all outputs</small></th>
+    </tr></thead><tbody></tbody>
+  </table>
+  </div>
+</section>
+<p class="muted" style="font-size:12.5px">41 more fields from 8 outputs in the column picker, grouped by output and tool (bam_qc · dupRadar, Qualimap, RSeQC…).</p>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const S=[
+  {id:'RAP1_IAA_30M_REP1',reads:49791,pm:90.4,se:false,b:{preprocessed:5267364,markdup:3840427,bigwig:399662,quant_salmon:29982,bam_qc:1975803}},
+  {id:'WT_REP1',reads:99566,pm:89.0,se:false,b:{preprocessed:5290518,markdup:7235740,bigwig:447417,quant_salmon:29992,bam_qc:3462503}},
+  {id:'RAP1_UNINDUCED_REP1',reads:49969,pm:96.0,se:true,b:{preprocessed:2629030,markdup:1749143,bigwig:341126,quant_salmon:26456,bam_qc:102920}},
+  {id:'WT_REP2',reads:49760,pm:89.5,se:false,b:{preprocessed:5292939,markdup:3631381,bigwig:377447,quant_salmon:30025,bam_qc:1945143}},
+  {id:'RAP1_UNINDUCED_REP2',reads:99971,pm:95.8,se:true,b:{preprocessed:2639625,markdup:3328239,bigwig:417279,quant_salmon:26587,bam_qc:114474}}];
+ const PER=[['quant_salmon','Salmon quant dir',true],['markdup','BAM + index',false],['bigwig','bigWig',false],['preprocessed','FastQC + trim reports',false],['bam_qc','BAM QC',false]];
+ const RUNLEVEL=[['quant_merged','Merged count matrices',86305,true],['multiqc','MultiQC report',25145688,false]];
+ const nf=new Intl.NumberFormat('en-US'); let showX=false; const manual={};
+ const thr=document.getElementById('thr'),pm=document.getElementById('pm');
+ const rail=document.getElementById('handoff');
+ function keep(s){if(s.id in manual)return manual[s.id];return s.reads>=(+thr.value||0)&&(pm.value===''||s.pm>=+pm.value)}
+ function render(){
+  const sel=S.filter(keep);
+  document.getElementById('matchtext').textContent=`${sel.length} of ${S.length} samples`;
+  document.getElementById('showx').textContent=showX?'Hide excluded':`Show ${S.length-sel.length} excluded`;
+  document.querySelector('#st tbody').innerHTML=S.filter(s=>showX||keep(s)).map(s=>{const k=keep(s),tot=Object.values(s.b).reduce((a,b)=>a+b,0);
+   return `<tr class="${k?'':'dim'}"><td><input type="checkbox" data-id="${s.id}" ${k?'checked':''} aria-label="Select ${s.id}"></td>
+   <td class="nowrap"><div class="namecell"><a href="05-item.html">${s.id}</a>${s.id in manual?'<span class="kind">manual</span>':''}</div></td>
+   <td class="r num">${nf.format(s.reads)}</td><td class="r num">${s.pm.toFixed(1)}%</td><td>${s.se?'single':'paired'}</td><td>reverse</td>
+   <td><div class="kinds"><span class="kind">quant</span><span class="kind">BAM</span><span class="kind">bigWig</span><span class="kind">QC</span></div></td>
+   <td class="r num nowrap">${NFB.bytes(tot)}</td></tr>`}).join('');
+  // rail
+  const ticked=[...document.querySelectorAll('#handoff input[data-out]:checked')].map(i=>i.dataset.out);
+  let items=0,bytes=0;
+  PER.forEach(([o])=>{const b=sel.reduce((a,s)=>a+s.b[o],0);const el=document.querySelector(`[data-sz="${o}"]`);el.textContent=`${sel.length} · ${NFB.bytes(b)}`;if(ticked.includes(o)){items+=sel.length;bytes+=b}});
+  RUNLEVEL.forEach(([o,,b])=>{if(ticked.includes(o)){items+=1;bytes+=b}});
+  document.querySelectorAll('[data-nsel]').forEach(e=>e.textContent=sel.length);
+  document.getElementById('total').textContent=`${items} items · ${NFB.bytes(bytes)}`;
+  document.querySelector('.picked .count').textContent=sel.length;
+  const outs=ticked.filter(o=>PER.some(p=>p[0]===o)), rl=ticked.filter(o=>RUNLEVEL.some(p=>p[0]===o));
+  const w=[`'num_trimmed_reads >=': ${+thr.value||0}`].concat(pm.value!==''?[`'percent_mapped >=': ${pm.value}`]:[]);
+  document.getElementById('snip').textContent=
+`include { fromStore } from 'plugin/nf-blocks'
+
+samples = channel.fromStore(
+  run: 'bafyreibim…26ocxq',
+  samples: [where: [${w.join(', ')}]])
+${outs.map(o=>`\n${o.padEnd(12)} = samples.output('${o}')`).join('')}${rl.map(o=>`\n${o.padEnd(12)} = channel.fromStore(run: 'bafyreibim…26ocxq', output: '${o}')`).join('')}`;
+ }
+ rail.innerHTML=`<div class="sec"><h3>Hand off <span data-nsel></span> samples</h3>
+   <span class="eyebrow">Per sample</span>
+   ${PER.map(([o,l,on])=>`<label class="opt" title="${l}"><input type="checkbox" data-out="${o}" ${on?'checked':''}><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${o}</b> <span class="d">${l}</span></span><span class="sz" data-sz="${o}"></span></label>`).join('')}
+   <span class="eyebrow" style="margin-top:6px">Run-level</span>
+   ${RUNLEVEL.map(([o,l,b,on])=>`<label class="opt" title="${l}"><input type="checkbox" data-out="${o}" ${on?'checked':''}><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${o}</b> <span class="d">${l}</span></span><span class="sz">1 · ${NFB.bytes(b)}</span><span class="note2">Holds all 5 samples; your <span data-nsel></span> are columns in it. <a href="06-file.html">Preview</a></span></label>`).join('')}
+   <div class="row" style="justify-content:space-between;font-size:12.5px"><span class="muted">Total</span><b id="total" class="num"></b></div></div>
+  <div class="sec"><h3>Save as Selection</h3>
+   <div class="row"><input value="rap1-wt-50k" aria-label="Selection name" style="flex:1;height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:var(--r-md);background:var(--surface);color:var(--ink);font:inherit;font-family:var(--font-mono);font-size:12.5px"><button class="btn primary" type="button">Save</button></div>
+   <p class="muted" style="font-size:11.5px">A Selection is a fixed list of these exact items. You'll get an address you can cite.</p></div>
+  <div class="sec"><h3>Use in a workflow</h3><pre class="code" id="snip"></pre><div class="row"><button class="btn sm" type="button">Copy snippet</button><a class="btn sm" href="14-handoff-de.html">Hand off to differentialabundance →</a></div></div>`;
+ rail.addEventListener('change',render);
+ thr.addEventListener('input',()=>{for(const k in manual)delete manual[k];render()}); pm.addEventListener('input',render);
+ document.getElementById('showx').addEventListener('click',()=>{showX=!showX;render()});
+ document.querySelector('#st tbody').addEventListener('change',e=>{const id=e.target.dataset.id;if(!id)return;manual[id]=e.target.checked;render()});
+ render();
+});
+</script>
+<!--RAIL-->
+<div id="handoff" style="display:grid;gap:16px"></div>

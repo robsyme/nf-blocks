@@ -5,7 +5,7 @@
                                          refuses any bucket or prefix but the run id's own; a missing bucket is gone
     s3gate.py if-match <bucket>          prints {"status": ..., "body": ...} of the stale If-Match probe
     s3gate.py snapshot <bucket> <member> <file>
-                                         downloads <member>/index/v3.sqlite to <file>, prints
+                                         downloads <member>/index/v6.sqlite to <file>, prints
                                          {"meta_runs": x-amz-meta-runs, "count": count(*) of its run table}
     s3gate.py live-put <bucket> <member> <session> <run name>
     s3gate.py live-delete <bucket> <member> <session>
@@ -304,10 +304,10 @@ def snapshot_runs(path):
 def snapshot(s3, bucket, member, path):
     """What tier two records of a member's Index Snapshot: its x-amz-meta-runs and its run rows."""
     m = Member(s3, bucket, member)
-    head = m.head("index/v3.sqlite")
+    head = m.head("index/v6.sqlite")
     if head is None:
         return {"meta_runs": None, "count": None}
-    m.download("index/v3.sqlite", path)
+    m.download("index/v6.sqlite", path)
     runs = (head.get("Metadata") or {}).get("runs")
     return {"meta_runs": int(runs) if runs is not None and str(runs).isdigit() else runs,
             "count": snapshot_runs(path)}

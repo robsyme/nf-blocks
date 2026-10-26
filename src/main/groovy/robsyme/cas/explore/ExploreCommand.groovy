@@ -1,14 +1,19 @@
 package robsyme.cas.explore
 
 import java.util.concurrent.CountDownLatch
+import java.util.function.Supplier
 
 import groovy.transform.CompileStatic
+import groovy.transform.PackageScope
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
+import robsyme.cas.Principal
+import robsyme.cas.CopyTargets
 import robsyme.cas.cli.Options
 import robsyme.cas.cli.UsageException
 import robsyme.cas.core.Cid
 import robsyme.cas.core.CoordinateTree
+import robsyme.cas.core.HandoffWriter
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
@@ -33,8 +38,10 @@ class ExploreCommand {
         final CasSession cas
         final Index index
         final Put put
-        Started(ExploreServer server, CasSession cas, Index index, Put put) {
-            this.server = server; this.cas = cas; this.index = index; this.put = put
+        /** The nf-blocks-identity thread, so a test can join it before its identity seams are put back. */
+        @PackageScope final Thread identity
+        Started(ExploreServer server, CasSession cas, Index index, Put put, Thread identity) {
+            this.server = server; this.cas = cas; this.index = index; this.put = put; this.identity = identity
         }
     }
 
@@ -64,7 +71,8 @@ class ExploreCommand {
         if( options.positionals )
             throw new UsageException("explore takes no arguments, got ${options.positionals}")
         final CasConfig cas = CasConfig.fromSession(config)
-        final CasSession session = new CasSession(cas)
+        // A command session: stdout is the URL line alone, and every notice goes to stderr.
+        final CasSession session = CasSession.forCommand(cas, err)
         // Ticket 03 decision 2; a ClockSkewException reaches CasCommands.run, which prints it and exits 1.
         session.checkClock()
         warnShadowed(session, err)
@@ -84,11 +92,24 @@ class ExploreCommand {
             }
         } as ExploreServer.Exporter
         final LinkedHashMap<String, MemberFiles> members = membersOf(cas, { String bucket -> CasSession.s3OpsFactory.call(config, bucket) } as Closure<S3Ops>)
-        final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter)
+        // members.json and a write wait on the session's one resolution; nothing else does.
+        final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter,
+            { -> session.principal } as Supplier<Principal>)
+            .memberInfo(memberInfoOf(cas))
+            // POST /api/copy: each copy builds its own composition from the loaded config (CopyService).
+            .copies(config, err)
+            // POST /api/handoff: the same writable member, index and signer as Put, under Put's monitor.
+            .handoffs(new HandoffWriter(session.store, session.members()[0], index, { -> session.assertedBy } as Supplier<String>,
+                { -> System.currentTimeMillis() }, { -> session.catchUpIndex(index) }, put))
             .start(options.intFlag('port', 0))
         out.println("nf-blocks explorer: ${server.launchUrl}")
         out.flush()
-        return new Started(server, session, index, put)
+        // Listening and the URL out first, then resolve off the main thread, so the signing line or the
+        // warning reaches stderr after the URL. Platform (5 s) and git (2 s) bound the wait.
+        final Thread resolving = new Thread({ -> session.principal } as Runnable, 'nf-blocks-identity')
+        resolving.daemon = true
+        resolving.start()
+        return new Started(server, session, index, put, resolving)
     }
 
     /** Catches the index up and rewrites the writable member's snapshot at any size. Derived: a failure warns. */
@@ -100,7 +121,7 @@ class ExploreCommand {
                 final Set<String> failed = cas.catchUpIndex(index)
                 final IndexSnapshot.Result r = cas.snapshotWritable(index, 0L, base, failed)
                 if( r.skipped )
-                    err.println("nf-blocks:explore: the Index Snapshot was not rewritten (${r.skipped})")
+                    err.println("nf-blocks:explore: the Index Snapshot was not rewritten (${r.skipped})${IndexSnapshot.skipAdvice(r)}")
             }
             finally {
                 index.close()
@@ -131,6 +152,18 @@ class ExploreCommand {
         }
         if( shadowed )
             err.println("nf-blocks:explore: ${shadowed.size() > 20 ? 'more than 20' : shadowed.size()} coordinate(s) in '${alias}' are shadowed by a pointer above them, and read as absent: ${shadowed.take(20).join(', ')}")
+    }
+
+    /** What members.json says per member: its kind, an S3 member's location, and whether a copy may write it. */
+    static LinkedHashMap<String, ExploreServer.MemberInfo> memberInfoOf(CasConfig config) {
+        final LinkedHashMap<String, ExploreServer.MemberInfo> info = new LinkedHashMap<>()
+        for( String alias : config.configuredAliases ) {
+            final CopyTargets.Judgement judgement = CopyTargets.judge(config, alias)
+            final boolean remote = config.isRemote(alias)
+            info.put(alias, new ExploreServer.MemberInfo(remote ? 's3' : 'local', remote ? config.locationText(alias) : null,
+                judgement.target, judgement.reason))
+        }
+        return info
     }
 
     /**

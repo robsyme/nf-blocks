@@ -16,6 +16,7 @@ import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.Put
 import robsyme.cas.core.Samplesheet
 import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogKind
 import robsyme.cas.s3.MemoryS3Ops
 import robsyme.cas.s3.S3Ops
 import spock.lang.Specification
@@ -60,7 +61,7 @@ class ExploreWriteTest extends Specification {
         final Cid manifest = store.putDagCbor(Fixtures.runManifest())
         item = store.putDagCbor(Fixtures.outputItem([[sample: 'A']]))
         collection = store.putDagCbor(Fixtures.outputCollection(manifest, 'aligned', [[item, ['aligned/A']]]))
-        final Put put = new Put(store, store, index, 'ada', { -> System.currentTimeMillis() }, { -> index.catchUp(store, StoreLog.of(store), 'lab') })
+        final Put put = new Put(store, store, index, { -> 'ada' }, { -> System.currentTimeMillis() }, { -> index.catchUp(store, StoreLog.of(store), 'lab') })
         final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
         members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
         server = new ExploreServer(members, 'lab', '<!doctype html>'.bytes, put, token).start(0)
@@ -150,6 +151,50 @@ class ExploreWriteTest extends Specification {
         }
     }
 
+    /** `now().toISOString()`: UTC, always three digits of milliseconds. */
+    private static String isoNow() {
+        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(java.time.ZoneOffset.UTC)
+            .format(java.time.Instant.now())
+    }
+
+    /**
+     * The bytes web/src/write.js sends for `claim(subject, verb, attribute, value, supersedes)`:
+     * `dagJson.encode` of `{ kind, subject, verb, attribute, value, supersedes, timestamp }`, cids
+     * as links, keys in DAG-JSON's sorted order.
+     */
+    private static byte[] pageClaim(Cid subject, String verb, String attribute, String note, List<Cid> supersedes) {
+        return ('{"attribute":"' + attribute + '","kind":"Claim","subject":{"/":"' + subject + '"},' +
+            '"supersedes":[' + supersedes.collect { '{"/":"' + it + '"}' }.join(',') + '],' +
+            '"timestamp":"' + isoNow() + '","value":' + (note == null ? 'null' : '"' + note + '"') + ',"verb":"' + verb + '"}').getBytes('UTF-8')
+    }
+
+    def 'the Selection page\'s Pin... and its Unpin go through: write.js pin and unpin on a Selection (F5)'() {
+        given: 'a Selection the page wrote'
+        final Cid selection = (Cid) ((Map) DagJson.decode(post('/api/put', good()).body)).address
+
+        when: 'pin(subject, note)'
+        final def pinned = post('/api/put', good(), pageClaim(selection, 'add', 'pin', 'figure 3', []))
+        final Map pin = (Map) DagJson.decode(pinned.body)
+
+        then:
+        pinned.status == 200
+        pin.written == true
+        store.has((Cid) pin.address)
+        StoreLog.read(store).any { it.kind == StoreLogKind.CLAIM && it.cid == pin.address }
+        index.claimState(selection).pinNotes == ['figure 3']
+
+        when: 'unpin(subject, pinClaim)'
+        final def unpinned = post('/api/put', good(), pageClaim(selection, 'del', 'pin', null, [(Cid) pin.address]))
+        final Map unpin = (Map) DagJson.decode(unpinned.body)
+
+        then:
+        unpinned.status == 200
+        unpin.written == true
+        store.has((Cid) unpin.address)
+        StoreLog.read(store).any { it.kind == StoreLogKind.CLAIM && it.cid == unpin.address }
+        !index.claimState(selection).pinned
+    }
+
     def 'a builder refusal keeps its status and body'() {
         when:
         final def r = post('/api/put', good(), '{"kind":"Selection","members":[],"derived_from":[]}'.getBytes('UTF-8'))
@@ -168,7 +213,7 @@ class ExploreWriteTest extends Specification {
     def 'members.json says whether this server writes; the launch URL carries the token'() {
         expect:
         new JsonSlurper().parse(RawHttp.send(server.port, 'GET', '/members.json').body) ==
-            [members: [[alias: 'lab', writable: true, base: 'm/lab/']], write: true]
+            [members: [[alias: 'lab', writable: true, base: 'm/lab/', kind: 'local', location: null, copy_target: true, copy_reason: null]], write: true, copy: false]
         server.launchUrl == "http://127.0.0.1:${server.port}/?token=${token}"
         token ==~ /[a-z2-7]{26}/
     }
@@ -178,7 +223,7 @@ class ExploreWriteTest extends Specification {
         final CountDownLatch started = new CountDownLatch(1)
         final CountDownLatch proceed = new CountDownLatch(1)
         final BlockStore slowWritable = new SlowWritable(tempDir.resolve('lab'), 'lab', started, proceed)
-        final Put slowPut = new Put(store, slowWritable, index, 'ada', { -> System.currentTimeMillis() },
+        final Put slowPut = new Put(store, slowWritable, index, { -> 'ada' }, { -> System.currentTimeMillis() },
             { -> index.catchUp(store, StoreLog.of(store), 'lab') })
         final LinkedHashMap<String, MemberFiles> slowMembers = new LinkedHashMap<>()
         slowMembers.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))

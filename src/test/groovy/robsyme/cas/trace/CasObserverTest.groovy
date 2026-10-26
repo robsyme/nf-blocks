@@ -2,10 +2,14 @@ package robsyme.cas.trace
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.Appender
+import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.read.ListAppender
 import groovy.json.JsonSlurper
 import nextflow.Global
@@ -13,7 +17,13 @@ import nextflow.Session
 import nextflow.dataflow.ChannelNamespace
 import nextflow.exception.AbortRunException
 import nextflow.exception.MissingProcessException
+import nextflow.file.FileHolder
+import nextflow.processor.TaskHandler
 import nextflow.processor.TaskProcessor
+import nextflow.processor.TaskRun
+import nextflow.script.ProcessConfigV1
+import nextflow.script.params.FileInParam
+import nextflow.script.params.ValueInParam
 import nextflow.script.ProcessConfig
 import nextflow.script.ScriptMeta
 import nextflow.script.WorkflowMetadata
@@ -24,8 +34,13 @@ import org.slf4j.LoggerFactory
 import robsyme.cas.CasSession
 import robsyme.cas.core.Cid
 import robsyme.cas.core.DagCbor
+import robsyme.cas.core.Hashing
 import robsyme.cas.core.Index
+import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.InputSet
+import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.LocalRetentionStorage
+import robsyme.cas.core.SnapshotBase
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.core.StoreRef
@@ -97,10 +112,15 @@ class CasObserverTest extends Specification {
         storeRoot = tempDir.resolve('store')
     }
 
-    private final List<ListAppender<ILoggingEvent>> appenders = []
+    private final List<Appender<ILoggingEvent>> appenders = []
+
+    /** System.err as it was, when a feature replaces it. */
+    private PrintStream savedErr
 
     def cleanup() {
-        appenders.each { ListAppender<ILoggingEvent> a -> ((Logger) LoggerFactory.getLogger(a.name)).detachAppender(a) }
+        if( savedErr != null )
+            System.setErr(savedErr)
+        appenders.each { Appender<ILoggingEvent> a -> ((Logger) LoggerFactory.getLogger(a.name)).detachAppender(a) }
         if( session != null )
             CasSession.unbind(session)
         Global.session = null
@@ -119,6 +139,40 @@ class CasObserverTest extends Specification {
         logger.addAppender(appender)
         appenders << appender
         return appender
+    }
+
+    /**
+     * Makes one logger throw an OutOfMemoryError for any message containing {@code containing},
+     * as logging can when the heap is spent. Logback's AppenderBase catches an Exception from an
+     * appender but not an Error, so the Error reaches the caller of the log call.
+     * Attach it after any {@link #capture} of the same logger, so the capture still sees the event.
+     */
+    private void throwOn(String name, String containing) {
+        final Logger logger = (Logger) LoggerFactory.getLogger(name)
+        final AppenderBase<ILoggingEvent> appender = new AppenderBase<ILoggingEvent>() {
+            @Override
+            protected void append(ILoggingEvent event) {
+                if( event.formattedMessage.contains(containing) )
+                    throw new OutOfMemoryError('Java heap space')
+            }
+        }
+        appender.name = name
+        appender.start()
+        logger.addAppender(appender)
+        appenders << appender
+    }
+
+    /** The cid of the one RunCompletion block in the store. */
+    private Cid completionCid() {
+        final stream = cas.store.listBlocks()
+        try {
+            final List<Cid> found = stream.toList().findAll { Object c -> ((Cid) c).isDagCbor() && readBlock((Cid) c).get('kind') == 'RunCompletion' } as List<Cid>
+            assert found.size() == 1
+            return found[0]
+        }
+        finally {
+            stream.close()
+        }
     }
 
     private static int warnings(ListAppender<ILoggingEvent> appender, String containing) {
@@ -229,6 +283,37 @@ class CasObserverTest extends Specification {
         manifests[0].get('nf_run_hash') == 'nfhash123'
         manifests[0].get('asserted_by') == 'test'
         cas.getRunManifest() != null
+    }
+
+    def 'a run resolves its identity at onFlowBegin, before any task, even when the run key is not yet known (#git)'() {
+        given: 'no asserted_by, so the identity comes from git or is anonymous'
+        final Map cfg = config()
+        ((Map) cfg.cas).remove('asserted_by')
+        bind(cfg)
+        robsyme.cas.CasSession.gitEmail = { -> git } as robsyme.cas.GitEmail
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        Logger consoleLogger = (Logger) LoggerFactory.getLogger('nextflow.cas')
+        Level savedLevel = consoleLogger.level
+        consoleLogger.level = Level.INFO
+
+        when:
+        observer.onFlowCreate(session)
+        final List<String> afterCreate = console.list*.formattedMessage.findAll { it.contains('signing as') || it.contains('identity') }
+        observer.onFlowBegin()
+        final List<String> afterBegin = console.list*.formattedMessage.findAll { it.contains('signing as') || it.contains('identity') }
+
+        then: 'nothing at create; the line at begin, though the manifest is deferred to the join'
+        afterCreate.isEmpty()
+        cas.getRunManifest() == null
+        afterBegin == [line]
+
+        cleanup:
+        consoleLogger.level = savedLevel
+
+        where:
+        git                   | line
+        'ada@example.org'     | 'nf-blocks: signing as ada@example.org (from git config user.email)'
+        ''                    | "nf-blocks: no identity is configured, so this run's blocks and claims will say 'anonymous'. Set NXF_BLOCKS_USER or git config user.email (see docs/identity.md)"
     }
 
     def 'with no resolvedConfig, the fallback config text is scrubbed of secrets, host paths and the user name'() {
@@ -497,7 +582,7 @@ class CasObserverTest extends Specification {
         then:
         final index = Index.open(indexFile)
         try {
-            index.runByNextflowHash('nfhash123').isPresent()
+            assert index.runByNextflowHash('nfhash123').isPresent()
         }
         finally {
             index.close()
@@ -640,7 +725,7 @@ class CasObserverTest extends Specification {
         observer.onFlowCreate(session)
         observer.onFlowBegin()
         observer.onFlowComplete()
-        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
 
         then:
         Files.isRegularFile(snapshot)
@@ -654,7 +739,7 @@ class CasObserverTest extends Specification {
         bind(cfg)
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
 
@@ -667,13 +752,451 @@ class CasObserverTest extends Specification {
         new String(Files.readAllBytes(snapshot)) == 'old'
     }
 
+    def 'a lean snapshot that ran out of memory advises more heap only when the heap ran out (fix round 3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final IndexSnapshot.Result lean = new IndexSnapshot.Result(true, null, 1L, 1, null, null, IndexSnapshot.OUT_OF_MEMORY, false, heap)
+        observer = new CasObserver() {
+            @Override
+            protected IndexSnapshot.Result writeIndexSnapshot(Index index, SnapshotBase base, Set<String> failed) { lean }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        logged.list.count { ILoggingEvent e -> e.formattedMessage.contains('was written without storage figures') } == 1
+        logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('NXF_OPTS=-Xmx4g') } == heap
+        logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('the next build tries them again') } == !heap
+
+        where:
+        heap << [true, false]
+    }
+
+    def 'running out of memory in the snapshot write leaves the run recorded, and the warning says so (fix round 2, B2)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        observer = new CasObserver() {
+            @Override
+            protected IndexSnapshot.Result writeIndexSnapshot(Index index, SnapshotBase base, Set<String> failed) {
+                throw new OutOfMemoryError('Java heap space')
+            }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then: 'no error escapes, and the run is in the store, its log and the index'
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).count { it.kind == StoreLogKind.RUN } == 1
+        final Index index = cas.openIndex()
+        try {
+            assert index.runByNextflowHash('nfhash123').isPresent()
+        }
+        finally {
+            index.close()
+        }
+
+        and: 'the warning says what is true, and nothing says the run was not recorded'
+        warnings(logged, "the run was recorded; its Index Snapshot was not rewritten: Java heap space") == 1
+        warnings(logged, "Java heap space (give the JVM more heap, for example NXF_OPTS=-Xmx4g)") == 1
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+    }
+
+    def 'a lean snapshot still over cas.snapshot.maxBytes is not written, with a warning (fix round 2, B2)'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).snapshot = [maxBytes: 1]
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        !Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        warnings(logged, 'is over cas.snapshot.maxBytes (1 bytes) even without its storage figures') == 1
+    }
+
+    def 'a lean snapshot from a lean-seeded cache names reindex --seed false (fix round 2)'() {
+        given: 'a cache that was seeded from a snapshot without storage figures'
+        final Map cfg = config()
+        Index.open(indexFile).close()
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${indexFile}").withCloseable { c ->
+            c.createStatement().executeUpdate("INSERT INTO meta(key, value) VALUES ('snapshot_seeded_lean:lab', 'out_of_memory')")
+        }
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        logged.list.count { ILoggingEvent e ->
+            e.level == Level.INFO && e.formattedMessage.contains('without storage figures (seeded_lean)') &&
+                e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
+        } == 1
+        !logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('nf-blocks:snapshot') }
+    }
+
+    def 'a lean-seeded cache whose stored snapshot is already over cas.snapshot.maxBytes names reindex --seed false (fix round 2)'() {
+        given: 'a stored snapshot over the cap, so the write stops before it builds'
+        final Map cfg = config()
+        ((Map) cfg.cas).snapshot = [maxBytes: 1]
+        Index.open(indexFile).close()
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${indexFile}").withCloseable { c ->
+            c.createStatement().executeUpdate("INSERT INTO meta(key, value) VALUES ('snapshot_seeded_lean:lab', 'over_cap')")
+        }
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        Files.createDirectories(snapshot.parent)
+        Files.write(snapshot, 'old'.bytes)
+        final ListAppender<ILoggingEvent> logged = capture()
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        new String(Files.readAllBytes(snapshot)) == 'old'
+        logged.list.count { ILoggingEvent e ->
+            e.level == Level.WARN && e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
+        } == 1
+        !logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('nf-blocks:snapshot') || e.formattedMessage.contains('rewrites it at any size') }
+    }
+
+    def 'a lean-seeded cache over cas.snapshot.maxBytes names reindex --seed false, never snapshot or a bigger cap (fix round 2)'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).snapshot = [maxBytes: 1]
+        Index.open(indexFile).close()
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${indexFile}").withCloseable { c ->
+            c.createStatement().executeUpdate("INSERT INTO meta(key, value) VALUES ('snapshot_seeded_lean:lab', 'over_cap')")
+        }
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        !Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        logged.list.count { ILoggingEvent e ->
+            e.level == Level.WARN && e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
+        } == 1
+        !logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('nf-blocks:snapshot') || e.formattedMessage.contains('rewrites it at any size') }
+    }
+
+    def 'a lean-seeded cache keeps a snapshot with storage figures, records the run, and names reindex --seed false (fix round 3)'() {
+        given: 'a snapshot with figures there, and a cache seeded lean'
+        final Map cfg = config()
+        Index.open(indexFile).withCloseable { Index ix ->
+            assert IndexSnapshot.write(ix, 'lab', new LocalSnapshotStorage(tempDir.resolve('store')), 0L, null, tempDir.resolve('t')).written
+        }
+        java.sql.DriverManager.getConnection("jdbc:sqlite:${indexFile}").withCloseable { c ->
+            c.createStatement().executeUpdate("INSERT INTO meta(key, value) VALUES ('snapshot_seeded_lean:lab', 'out_of_memory')")
+        }
+        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final byte[] before = Files.readAllBytes(snapshot)
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then: 'the run is recorded, and the snapshot with figures stands'
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).count { it.kind == StoreLogKind.RUN } == 1
+        Files.readAllBytes(snapshot) == before
+
+        and: 'one warning says why and what to run'
+        logged.list.count { ILoggingEvent e ->
+            e.level == Level.WARN && e.formattedMessage.contains('the run was recorded; ') && e.formattedMessage.contains('(seeded_lean_base_full)') &&
+                e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
+        } == 1
+        !logged.list.any { ILoggingEvent e -> e.formattedMessage.contains('nf-blocks:snapshot') || e.formattedMessage.contains('was not recorded') }
+    }
+
+    def 'running out of memory writing the Store Log entry leaves the RunCompletion recorded, and the warning says so (fix round 2)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        // nowMillis is read only for the Store Log entry, so this fails that write alone.
+        observer = new CasObserver() {
+            @Override
+            protected long nowMillis() { throw new OutOfMemoryError('Java heap space') }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).count { it.kind == StoreLogKind.RUN } == 0
+        warnings(logged, 'the run was recorded; its Store Log entry could not be written: Java heap space') == 1
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+    }
+
+    // ------------------------------------------- after the RunCompletion is put (fix round 3, G3)
+
+    /** An observer whose index ingests nothing: ingestRun and markStale throw what they are given. */
+    private CasObserver indexThrowing(Throwable onIngest, Throwable onMarkStale) {
+        final Index real = cas.openIndex()
+        final Index spied = Spy(real) {
+            ingestRun(_, _, _) >> { throw onIngest }
+            markStale() >> { throw onMarkStale }
+        }
+        return new CasObserver() {
+            @Override
+            protected Index openIndex() { spied }
+        }
+    }
+
+    /** The one console warning that the run was recorded and a later step failed. */
+    private static List<ILoggingEvent> recordedWarnings(ListAppender<ILoggingEvent> console) {
+        return console.list.findAll { ILoggingEvent e -> e.level == Level.WARN && e.formattedMessage.contains('the run was recorded as ') }
+    }
+
+    def 'an OutOfMemoryError that persists into the indexRun catch (markStale) leaves the recorded run recorded, and says so (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        observer = indexThrowing(new OutOfMemoryError('Java heap space'), new OutOfMemoryError('Java heap space'))
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then: 'nothing escapes, and the run is in the store and its log'
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).count { it.kind == StoreLogKind.RUN } == 1
+        cas.awaitCompletionWritten(0)
+
+        and: 'the console says the run was recorded, and nothing says it was not'
+        final Cid cid = completionCid()
+        recordedWarnings(console)*.formattedMessage == ["nf-blocks: the run was recorded as ${cid}; a later step failed: Java heap space (${IndexSnapshot.MORE_HEAP})".toString()]
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+    }
+
+    def 'markStale catches only an Exception: an Error from it after an index failure leaves the run recorded (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        observer = indexThrowing(new IllegalStateException('boom'), new StackOverflowError())
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        warnings(logged, 'the run was recorded; the index could not be updated') == 1
+        recordedWarnings(console)*.formattedMessage == ["nf-blocks: the run was recorded as ${completionCid()}; a later step failed: java.lang.StackOverflowError".toString()]
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+    }
+
+    def 'the addresser summary line failing to log leaves the run recorded, and still deregisters the run (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        throwOn(CasObserver.name, 'nf-blocks: the head node read')
+        final Path live = storeRoot.resolve('live')
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        StoreLog.read(cas.store).count { it.kind == StoreLogKind.RUN } == 1
+        recordedWarnings(console)*.formattedMessage == ["nf-blocks: the run was recorded as ${completionCid()}; a later step failed: Java heap space (${IndexSnapshot.MORE_HEAP})".toString()]
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+        cas.awaitCompletionWritten(0)
+        live.toFile().list().length == 0
+
+        and: 'the stack trace reaches .nextflow.log at WARN'
+        logged.list.count { ILoggingEvent e ->
+            e.level == Level.WARN && e.formattedMessage.startsWith("the run was recorded as ${completionCid()}; a later step failed") &&
+                e.throwableProxy?.className == 'java.lang.OutOfMemoryError'
+        } == 1
+    }
+
+    def 'the #step warning failing to log (and, for the snapshot, the index warning after it) leaves the run recorded (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        throwOn(CasObserver.name, warning)
+        // indexRun's catch(Throwable) takes a failed snapshot warning, so that one escapes only when indexRun's own warning fails too.
+        if( step == 'snapshot' )
+            throwOn(CasObserver.name, 'the run was recorded; the index could not be updated')
+        observer = step == 'index' ? new CasObserver() {
+            @Override
+            protected Index openIndex() { throw new IllegalStateException('boom') }
+        } : step == 'snapshot' ? new CasObserver() {
+            @Override
+            protected IndexSnapshot.Result writeIndexSnapshot(Index index, SnapshotBase base, Set<String> failed) { throw new IllegalStateException('boom') }
+        } : new CasObserver() {
+            @Override
+            protected long nowMillis() { throw new IllegalStateException('boom') }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        warnings(logged, warning) == 1
+        recordedWarnings(console)*.formattedMessage == ["nf-blocks: the run was recorded as ${completionCid()}; a later step failed: Java heap space (${IndexSnapshot.MORE_HEAP})".toString()]
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+
+        where:
+        step       | warning
+        'index'    | 'the run was recorded; the index could not be updated'
+        'snapshot' | 'the run was recorded; its Index Snapshot was not rewritten'
+        'log'      | 'the run was recorded; its Store Log entry could not be written'
+    }
+
+    def 'when the recorded-run warning itself cannot be logged, it goes to System.err, and nothing escapes (System.err throws too: #errThrows) (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        throwOn('nextflow.cas', 'the run was recorded as ')
+        observer = indexThrowing(new OutOfMemoryError('Java heap space'), new OutOfMemoryError('Java heap space'))
+        savedErr = System.err
+        final ByteArrayOutputStream err = new ByteArrayOutputStream()
+        final boolean[] fellBack = [false] as boolean[]
+        System.setErr(errThrows ? new PrintStream(err, true) {
+            @Override
+            void println(String x) {
+                if( x?.contains('the run was recorded as ') ) fellBack[0] = true
+                throw new OutOfMemoryError('Java heap space')
+            }
+            @Override
+            void println(Object x) { println(String.valueOf(x)) }
+        } : new PrintStream(err, true))
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        cas.awaitCompletionWritten(0)
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+        errThrows ? fellBack[0]
+            : err.toString().contains("nf-blocks: the run was recorded as ${completionCid()}; a later step failed: java.lang.OutOfMemoryError: Java heap space")
+
+        where:
+        errThrows << [false, true]
+    }
+
+    def 'a registration that cannot be removed, when saying so fails, leaves the recorded run recorded (fix round 3, G3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final ListAppender<ILoggingEvent> logged = capture()
+        final ListAppender<ILoggingEvent> console = capture('nextflow.cas')
+        throwOn('nextflow.cas', "could not remove this run's registration")
+        final Path live = storeRoot.resolve('live')
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        live.toFile().setWritable(false, false)
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        blocksOfKind('RunCompletion').size() == 1
+        cas.awaitCompletionWritten(0)
+        recordedWarnings(console)*.formattedMessage == ["nf-blocks: the run was recorded as ${completionCid()}; a later step failed: Java heap space (${IndexSnapshot.MORE_HEAP})".toString()]
+        errors(console).isEmpty()
+        !(logged.list + console.list).any { ILoggingEvent e -> e.formattedMessage.contains('was not recorded') }
+
+        cleanup:
+        live.toFile().setWritable(true, false)
+    }
+
     def 'a snapshot failure does not fail the run'() {
         given:
         bind(config())
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
         // A directory where the snapshot file must go makes the atomic move fail.
-        Files.createDirectories(tempDir.resolve('store/index/v3.sqlite/blocker'))
+        Files.createDirectories(tempDir.resolve('store/index/v6.sqlite/blocker'))
 
         when:
         observer.onFlowCreate(session)
@@ -712,7 +1235,7 @@ class CasObserverTest extends Specification {
         bind(config())
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v3.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
         final ListAppender<ILoggingEvent> logged = capture()
@@ -1223,4 +1746,363 @@ class CasObserverTest extends Specification {
         then:
         CasObserver.PENDING.isEmpty()
     }
+
+    // ------------------------------------------------- InputSet (explorer v0.3 P4 plan 1.3)
+
+    /** A classic-process task: `tuple val(meta), path(reads)` plus a separate `path(extra)`. */
+    private TaskEvent taskEvent(String id, List<Path> reads, List<Path> extra = []) {
+        final Binding binding = new Binding()
+        final List declared = ['the tuple']
+        final List inner = []
+        final ValueInParam metaIn = new ValueInParam(binding, inner, (short) 0).bind('meta') as ValueInParam
+        final FileInParam readsIn = new FileInParam(binding, inner, (short) 0).bind('reads') as FileInParam
+        final FileInParam extraIn = new FileInParam(binding, declared).bind('extra') as FileInParam
+        final List<FileHolder> readHolders = reads.collect { new FileHolder(it) }
+        final List<FileHolder> extraHolders = extra.collect { new FileHolder(it) }
+        final TaskRun task = new TaskRun()
+        task.processor = Stub(TaskProcessor) { getConfig() >> Stub(ProcessConfigV1) }
+        task.inputs[metaIn] = [id: id]
+        task.inputs[readsIn] = readHolders
+        task.inputs[extraIn] = extraHolders
+        task.inputFiles.addAll(readHolders + extraHolders)
+        final TaskHandler handler = Stub(TaskHandler) { getTask() >> task }
+        return new TaskEvent(handler, null)
+    }
+
+    private Path inputFile(String rel, String text) {
+        final Path p = tempDir.resolve(rel)
+        Files.createDirectories(p.parent)
+        Files.writeString(p, text)
+        return p
+    }
+
+    private Map inputSetOf(Map completion) {
+        final Object link = completion.get('input_set')
+        assert link instanceof Cid
+        final Map block = readBlock((Cid) link)
+        assert block.get('kind') == 'InputSet'
+        return block
+    }
+
+    def 'the RunCompletion links an InputSet of the files its tasks read; params.input stays redacted in the RunManifest'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        final Path work = Files.createDirectories(tempDir.resolve('work'))
+        final Path sheet = inputFile('data/samplesheet.csv', 'sample,fastq_1\nS1,S1_1.fq\n')
+        final Path r1 = inputFile('data/S1_1.fq', '@r\nACGT\n+\nIIII\n')
+        final Path fasta = inputFile('refs/genome.fa', '>chr1\nACGT\n')
+        final Path made = inputFile('work/ab/1234/S1.bam', 'bam')
+        session.isSuccess() >> true
+        session.getWorkDir() >> work
+        session.getParams() >> [input: sheet.toString(), fasta: fasta.toString()]
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onTaskComplete(taskEvent('S1', [r1], [fasta]))
+        observer.onTaskCached(taskEvent('S1', [made], [fasta]))
+        observer.onFlowComplete()
+        final Map completion = blocksOfKind('RunCompletion')[0]
+        final List<Map> inputs = inputSetOf(completion).get('inputs') as List<Map>
+
+        then: 'the samplesheet, the reads with their sample, the fasta by its param; not the file the run made'
+        inputs.collect { [it.role, it.name, it.sample] } as Set == [
+            ['samplesheet', 'samplesheet.csv', null],
+            ['task', 'S1_1.fq', 'S1'],
+            ['param:fasta', 'genome.fa', null],
+        ] as Set
+        inputs.find { it.name == 'samplesheet.csv' }.address == Hashing.hashRaw(sheet)
+        inputs.find { it.name == 'S1_1.fq' }.address == Hashing.hashRaw(r1)
+        inputs.find { it.name == 'S1_1.fq' }.size == Files.size(r1)
+        inputs.every { it.reason == null }
+
+        and: 'the manifest keeps params.input redacted'
+        blocksOfKind('RunManifest')[0].get('params').get('input') == '[redacted-location]'
+        !blocksOfKind('RunManifest')[0].get('params').toString().contains(sheet.toString())
+    }
+
+    def 'with cas.inputs.hash = false the InputSet lists the inputs without addresses'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).put('inputs', [hash: false])
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        final Path r1 = inputFile('data/S1_1.fq', 'ACGT')
+        session.isSuccess() >> true
+        session.getWorkDir() >> tempDir.resolve('work')
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onTaskComplete(taskEvent('S1', [r1]))
+        observer.onFlowComplete()
+        final List<Map> inputs = inputSetOf(blocksOfKind('RunCompletion')[0]).get('inputs') as List<Map>
+
+        then:
+        inputs.size() == 1
+        inputs[0].address == null
+        inputs[0].reason == 'unaddressed'
+        inputs[0].size == 4L
+        inputs[0].sample == 'S1'
+    }
+
+    def 'a run that read nothing still links an empty InputSet'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowComplete()
+
+        then:
+        inputSetOf(blocksOfKind('RunCompletion')[0]).get('inputs') == []
+    }
+
+    /** An observer whose InputRecorder is the one {@code make} returns. */
+    private CasObserver observerWith(Closure<InputRecorder> make) {
+        return new CasObserver() {
+            @Override
+            protected InputRecorder newInputRecorder(Path workDir, Path projectDir, Map params, boolean hash) {
+                return make.call(workDir, projectDir, params, hash)
+            }
+        }
+    }
+
+    def 'a hash still running after cas.inputs.waitSeconds is listed unfinished, the run completes as it would have, and the console says how many (success: #success)'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).put('inputs', [waitSeconds: 1])
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        final Path r1 = inputFile('data/S1_1.fq', 'ACGT')
+        CountDownLatch release = new CountDownLatch(1)
+        session.isSuccess() >> success
+        session.getWorkDir() >> tempDir.resolve('work')
+        observer = observerWith { Path w, Path p, Map params, boolean hash ->
+            new InputRecorder(w, p, params, hash) {
+                @Override
+                protected Cid hashFile(Path path) {
+                    // Deaf to interrupts, as a read on a hung mount is.
+                    while( release.count > 0 ) {
+                        try { release.await() } catch( InterruptedException ignored ) { }
+                    }
+                    return super.hashFile(path)
+                }
+            }
+        }
+        final ListAppender<ILoggingEvent> console = capture(ConsoleLog.NAME)
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onTaskComplete(taskEvent('S1', [r1]))
+        final long before = System.nanoTime()
+        observer.onFlowComplete()
+        final long tookMillis = (System.nanoTime() - before).intdiv(1_000_000L)
+        final List<Map> completions = blocksOfKind('RunCompletion')
+        final List<Map> inputs = inputSetOf(completions[0]).get('inputs') as List<Map>
+
+        then: 'the completion waited about the bound, not for the hash (an exception would have failed the when block)'
+        tookMillis >= 900
+        tookMillis < 5_000
+
+        and: 'the run is recorded with its own status, the blocked input unfinished with the size its stat gave'
+        completions.size() == 1
+        completions[0].get('status') == (success ? 'succeeded' : 'failed')
+        latestCompletion() != null
+        inputs.size() == 1
+        inputs[0].address == null
+        inputs[0].reason == 'unfinished'
+        inputs[0].size == 4L
+
+        and: 'one console line, naming the count and the option'
+        console.list.count { ILoggingEvent e -> e.level == Level.WARN && e.formattedMessage.contains('cas.inputs.waitSeconds') } == 1
+        console.list.find { it.formattedMessage.contains('cas.inputs.waitSeconds') }.formattedMessage.contains('1 input')
+
+        cleanup:
+        release.countDown()
+
+        where:
+        success << [true, false]
+    }
+
+    def 'a remote input whose stat hangs holds neither the task thread nor the completion past cas.inputs.waitSeconds'() {
+        given:
+        final Map cfg = config()
+        ((Map) cfg.cas).put('inputs', [waitSeconds: 1])
+        bind(cfg)
+        cas.setNextflowRunKey('nfhash123')
+        RemoteFiles remote = new RemoteFiles()
+        remote.statGate = new CountDownLatch(1)
+        Path far = remote.path('s3://bucket/reads/S1_1.fq.gz', 4L)
+        session.isSuccess() >> true
+        session.getWorkDir() >> tempDir.resolve('work')
+
+        when: 'the task completes'
+        Thread taskThread = new Thread({ observer.onTaskComplete(taskEvent('S1', [far])) } as Runnable)
+        observer.onFlowCreate(session)
+        taskThread.start()
+        taskThread.join(2_000)
+
+        then: 'the task thread is not held by the stat'
+        !taskThread.alive
+
+        when: 'the run completes with the stat still hung'
+        final boolean statStarted = remote.statWaiting.await(5, TimeUnit.SECONDS)
+        final long before = System.nanoTime()
+        observer.onFlowComplete()
+        final long tookMillis = (System.nanoTime() - before).intdiv(1_000_000L)
+        final Map completion = blocksOfKind('RunCompletion')[0]
+        final List<Map> inputs = inputSetOf(completion).get('inputs') as List<Map>
+
+        then:
+        statStarted
+        tookMillis < 5_000
+        completion.get('status') == 'succeeded'
+        inputs.size() == 1
+        inputs[0].name == 'S1_1.fq.gz'
+        inputs[0].reason == 'unfinished'
+        inputs[0].size == null
+        inputs[0].address == null
+        remote.reads.get() == 0
+
+        cleanup:
+        remote.statGate.countDown()
+    }
+
+    def 'a remote params.input named by a presigned URL is never read, and no credential reaches the InputSet block'() {
+        given:
+        final String url = 'https://bucket.s3.amazonaws.com/sheets/samplesheet.csv?X-Amz-Algorithm=AWS4-HMAC-SHA256' +
+            '&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261025%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=0123abcd'
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        RemoteFiles remote = new RemoteFiles()
+        session.isSuccess() >> true
+        session.getWorkDir() >> tempDir.resolve('work')
+        session.getParams() >> [input: url]
+        observer = observerWith { Path w, Path p, Map params, boolean hash ->
+            new InputRecorder(w, p, params, hash) {
+                @Override
+                protected Path resolveLocation(String text) { remote.path(text, 30L) }
+            }
+        }
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onFlowComplete()
+        final Cid link = blocksOfKind('RunCompletion')[0].get('input_set') as Cid
+        final String bytes = new String(cas.store.open(link).withCloseable { InputStream i -> i.readAllBytes() }, 'ISO-8859-1')
+        final List<Map> inputs = readBlock(link).get('inputs') as List<Map>
+
+        then:
+        remote.reads.get() == 0
+        inputs == [[role: 'samplesheet', name: 'samplesheet.csv', address: null, size: 30L, sample: null, reason: 'remote']]
+        ['X-Amz', 'AKIA', 'Signature', 'Credential', 'amazonaws'].every { !bytes.contains(it) }
+    }
+
+    def 'a run whose hashes finish in time says nothing about cas.inputs.waitSeconds'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        final Path r1 = inputFile('data/S1_1.fq', 'ACGT')
+        session.isSuccess() >> true
+        session.getWorkDir() >> tempDir.resolve('work')
+        final ListAppender<ILoggingEvent> console = capture(ConsoleLog.NAME)
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onTaskComplete(taskEvent('S1', [r1]))
+        observer.onFlowComplete()
+
+        then:
+        (inputSetOf(blocksOfKind('RunCompletion')[0]).get('inputs') as List<Map>)[0].address == Hashing.hashRaw(r1)
+        !console.list.any { it.formattedMessage.contains('waitSeconds') }
+    }
+
+    def 'an InputSet that cannot be made leaves the run recorded with input_set null and one console warning (#how)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        session.getWorkDir() >> tempDir.resolve('work')
+        observer = observerWith(make)
+        final ListAppender<ILoggingEvent> console = capture(ConsoleLog.NAME)
+
+        when:
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        observer.onTaskComplete(taskEvent('S1', [inputFile('data/S1_1.fq', 'ACGT')]))
+        observer.onFlowComplete()
+
+        then:
+        noExceptionThrown()
+        final List<Map> completions = blocksOfKind('RunCompletion')
+        completions.size() == 1
+        completions[0].containsKey('input_set')
+        completions[0].get('input_set') == null
+        completions[0].get('status') == 'succeeded'
+        blocksOfKind('InputSet').isEmpty()
+        latestCompletion() != null
+        console.list.count { ILoggingEvent e -> e.level == Level.WARN && e.formattedMessage.contains('InputSet') } == 1
+
+        where:
+        how                       | make
+        'collect throws'          | { Path w, Path p, Map params, boolean hash ->
+                                        new InputRecorder(w, p, params, hash) {
+                                            @Override
+                                            List<InputSet.Input> collect(long waitMillis) { throw new IllegalStateException('boom') }
+                                        } }
+        'the recorder cannot be made' | { Path w, Path p, Map params, boolean hash -> throw new IllegalStateException('no recorder') }
+    }
+
+    def 'an InputSet block that cannot be written still aborts the run (rule 3)'() {
+        given:
+        bind(config())
+        cas.setNextflowRunKey('nfhash123')
+        session.isSuccess() >> true
+        final List<Path> locked = []
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        makeBlocksUnwritable(locked)
+
+        when:
+        observer.onFlowComplete()
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('InputSet')
+
+        cleanup:
+        locked.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+
+    def 'workflow outputs Nextflow reports from several threads at once are all kept, with their index files'() {
+        given: 'Nextflow calls onWorkflowOutput from its dataflow actor threads, milliseconds apart'
+        final CasObserver fresh = new CasObserver()
+        final int threads = 16
+        final int each = 400
+        final CountDownLatch start = new CountDownLatch(1)
+        final List<Thread> workers = (0..<threads).collect { int t ->
+            Thread.start {
+                start.await()
+                for( int i = 0; i < each; i++ )
+                    fresh.onWorkflowOutput(new WorkflowOutputEvent("out-${t}-${i}".toString(), [i], i % 2 ? tempDir.resolve("idx-${t}-${i}.json") : null))
+            }
+        }
+
+        when:
+        start.countDown()
+        workers*.join(30_000)
+        final Map<String, Object> outputs = fresh.capturedOutputs()
+        final Map<String, Path> indexes = fresh.capturedIndexes()
+
+        then: 'no output and no index file is lost'
+        outputs.size() == threads * each
+        indexes.size() == threads * each / 2
+        outputs['out-3-7'] == [7]
+        indexes['out-3-7'] == tempDir.resolve('idx-3-7.json')
+    }
+
 }

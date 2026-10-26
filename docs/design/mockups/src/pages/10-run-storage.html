@@ -1,0 +1,63 @@
+<!--META
+{
+ "file":"10-run-storage.html","title":"Run · Storage · Release","phase":"P2 · storage accounting","route":"#/run/<completion_cid>?tab=storage&release=1",
+ "nav":"pipelines","navContext":"pipelines","navRun":"sharp_magritte","store":"roblab","stores":["a"],"picked":0,
+ "summary":"The run's Storage tab with the Release confirmation open. Bytes show before you commit. This example is real and shows why the number matters: releasing the failed run sharp_magritte frees nothing, because every file it wrote is also held by the two later runs.",
+ "data":"Real: sharp_magritte holds 53.4 MB in 528 file blocks; 0 B are held by it alone. For comparison distraught_murdock would free 63.7 MB and sad_yonath 15.6 MB.",
+ "spec":{
+  "Release confirmation":[
+   "Inline panel, not a modal: it sits under the header so the numbers stay next to the run.",
+   "Lead with the outcome in this store: 'Frees 0 B in roblab'. Then explain why (shared with named runs, pinned by named people).",
+   "State what's kept: run records (completion, manifest, config) and lineage always stay; only file blocks are reclaimed.",
+   "Grace period and sweep date are explicit. Undo is available until the sweep.",
+   "Primary button repeats the outcome: 'Release (frees 0 B)'."
+  ],
+  "Behaviour":["Writes a release claim (asserted_by = you). The durability badge becomes 'Releasing · Oct 31'.","Other stores are unaffected; if this run is also in other stores, list them with their own Release buttons."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="02-pipelines.html">nf-core/rnaseq</a>/<b>sharp_magritte</b></nav>
+  <div class="title">
+    <span data-seal="bafyreiaedzibppjsllztdb2wqg322harsiohnkmccapz2uemjervj5kcgu" data-size="30"></span>
+    <h1>sharp_magritte</h1>
+    <span class="status fail"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/></svg>Failed</span>
+    <span class="state s-held">Held by run</span><span class="presence"><span class="dot a"></span></span>
+  </div>
+  <div class="subline"><span>nf-core/rnaseq</span><span>Oct 23, 2:59 PM</span><span><b>53.4 MB</b> reachable · 528 file blocks</span></div>
+</div>
+<nav class="tabs"><a href="07-run-samples.html">Samples<small>5</small></a><a href="03-run-outputs.html">Outputs</a><a href="#">Provenance</a><a class="on" href="10-run-storage.html">Storage</a></nav>
+
+<section class="inline-confirm">
+  <div class="pb" style="padding:18px;display:grid;gap:14px">
+    <div class="row"><h2 style="font-size:17px">Release sharp_magritte in roblab?</h2><span class="spacer"></span><span class="dot a"></span><span class="muted">roblab</span></div>
+    <div class="grid-3">
+      <div><div class="eyebrow">Frees in roblab</div><div class="bignum">0 B</div><div class="muted" style="font-size:12px">after 7-day grace · sweep Oct 31</div></div>
+      <div><div class="eyebrow">Stays (shared)</div><div class="bignum">53.4 MB</div><div class="muted" style="font-size:12px">every file is also held by another run</div></div>
+      <div><div class="eyebrow">Always kept</div><div style="font-size:13.5px;font-weight:600;margin-top:6px">Run records &amp; lineage</div><div class="muted" style="font-size:12px">completion, manifest, config</div></div>
+    </div>
+    <div class="note"><span>Each of the 528 files is also held by <a href="#">sad_yonath</a>, <a href="03-run-outputs.html">distraught_murdock</a>, or both, because they produced identical bytes. Releasing this run tidies the run list but won't free disk space until those runs are released too.</span></div>
+    <div class="row"><button class="btn" type="button">Cancel</button><span class="spacer"></span><button class="btn danger" type="button">Release (frees 0 B)</button></div>
+  </div>
+</section>
+
+<div class="grid-2">
+  <section class="panel">
+    <div class="ph"><h2>This run in roblab</h2></div>
+    <div class="pb">
+      <div data-bar='{"total":53400488,"pinned":0,"held":53400488,"releasing":0,"yours":53400488}'></div>
+      <dl class="kv"><dt>Reachable</dt><dd>53.4 MB · 528 file blocks</dd><dt>Only this run</dt><dd>0 B</dd><dt>Shared</dt><dd>53.4 MB with sad_yonath, distraught_murdock</dd><dt>Pinned here</dt><dd>nothing</dd></dl>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="ph"><h2>Compare</h2><span class="muted">what each release would free in roblab</span></div>
+    <div class="pb tbox">
+      <table class="t"><thead><tr><th>Run</th><th class="r">Reachable</th><th class="r">Frees</th></tr></thead><tbody>
+        <tr><td>distraught_murdock</td><td class="r num">78.4 MB</td><td class="r num">63.7 MB</td></tr>
+        <tr><td>sad_yonath</td><td class="r num">78.4 MB</td><td class="r num">15.6 MB</td></tr>
+        <tr class="sel"><td><b>sharp_magritte</b></td><td class="r num">53.4 MB</td><td class="r num"><b>0 B</b></td></tr>
+      </tbody></table>
+    </div>
+  </section>
+</div>

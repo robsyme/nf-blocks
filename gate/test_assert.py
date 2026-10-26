@@ -483,8 +483,8 @@ class TestRunExitAssertion(TempTree):
         self.assertEqual(status, gate_assert.FAIL)
         self.assertIn("fail", message)
 
-    def test_resumed_failing_on_nextflows_own_publish_copy_is_not_our_failure(self):
-        """The lock for assertion 4c is caught by PublishDir first (issue 17)."""
+    def test_resumed_failing_on_nextflows_own_publish_copy_is_a_failure(self):
+        """gate/resume.config turns the issue 17 re-copy off, so it is no excuse."""
         for name in ("cold", "again", "elsewhere", "outputs", "outputs-badindex",
                      "consumer"):
             self._exit(name, 0)
@@ -494,8 +494,22 @@ class TestRunExitAssertion(TempTree):
             fh.write("DEBUG nextflow.processor.PublishDir - Failed to publish "
                      "file: /w/A.bam; to: cas://lab/aligned/A/A.bam [copy]\n")
         status, message = gate_assert.assert_runs_exited(gate_assert.Gate(self.tmp))
-        self.assertEqual(status, gate_assert.PASS, message)
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("resumed", message)
         self.assertIn("PublishDir", message)
+
+    def test_resumed_failing_in_the_plugins_upload_names_the_plugin(self):
+        for name in ("cold", "again", "elsewhere", "outputs", "outputs-badindex",
+                     "consumer"):
+            self._exit(name, 0)
+        self._exit("fail", 1)
+        self._exit("resumed", 1)
+        with open(self.path("logs", "resumed", "nextflow.log"), "w") as fh:
+            fh.write(TestNoRehashOnResume.TRACE % (TestNoRehashOnResume.PLUGIN_FRAMES, 418))
+        status, message = gate_assert.assert_runs_exited(gate_assert.Gate(self.tmp))
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("upload()", message)
+        self.assertNotIn("resume.config", message)
 
     def test_resumed_failing_for_any_other_reason_is_a_failure(self):
         for name in ("cold", "again", "elsewhere", "consumer"):
@@ -511,6 +525,466 @@ class TestRunExitAssertion(TempTree):
         status, message = gate_assert.assert_runs_exited(gate_assert.Gate(self.tmp))
         self.assertEqual(status, gate_assert.FAIL)
         self.assertIn("again", message)
+
+
+class TestNoRehashOnResume(TempTree):
+    """Assertion 4c: resumed takes cold's session whole, exits 0 under the lock, addresses nothing,
+    and accounts for every one of cold's Leaves as never_published."""
+
+    TASKS = ["ALIGN (1)", "ALIGN (2)", "CHUNKS (1)", "QC_DIR (1)"]
+    SUMMARY = ("INFO  robsyme.cas.trace.CasObserver - nf-blocks: the head node read %d bytes "
+               "to address %d file(s); head-node %d, fusion-node 0, s3-copy 0\n")
+    # (output, file names of one item): 5 Leaves in all, chunks' item carrying two.
+    ITEMS = [("aligned", ["A.bam"]), ("aligned", ["B.bam"]), ("chunks", ["chunk_1.txt", "chunk_2.txt"]),
+             ("qc", ["A_qc"])]
+
+    def setUp(self):
+        super(TestNoRehashOnResume, self).setUp()
+        self.log("cold", ["DEBUG nextflow.Session - Session UUID: u-cold\n"]
+                 + ["INFO  nextflow.Session - [aa/000000] Submitted process > %s\n" % t
+                    for t in self.TASKS])
+        self.write("logs/resumed/sources-locked",
+                   "".join("/w/%02d/out.bam\n" % i for i in range(20)).encode())
+        self.write("logs/resumed/exit", b"0\n")
+        self.built = False
+
+    def runs(self, cold_items=None, resumed_items=None, never_published=None, providers=None,
+             resumed_addressed=()):
+        """cold and resumed in store/: cold's Leaves addressed, resumed's never_published.
+        never_published defaults to resumed's own Leaf count; resumed_addressed names
+        resumed Leaves that carry an address after all."""
+        b = StoreBuilder(self.path("store"))
+        cold_items = self.ITEMS if cold_items is None else cold_items
+        resumed_items = cold_items if resumed_items is None else resumed_items
+
+        def run(name, items, addressed, anomalies_np, run_providers):
+            manifest = b.block({
+                "kind": "RunManifest", "schema": 1, "asserted_by": "gate",
+                "pipeline": gate_assert.PIPELINE_IDENTITY, "run_name": name,
+                "nf_run_hash": name * 4, "session_id": "u-cold", "resumed": name == "resumed",
+                "nextflow_version": "26.04.6", "repository": None, "revision": None,
+                "commit_id": None, "params": {}, "config": "", "script": None,
+                "started_at": "2026-01-01T00:00:00.000Z"})
+            by_output = {}
+            for output, names in items:
+                leaves = []
+                for leaf_name in names:
+                    if addressed(leaf_name):
+                        data = ("bytes of %s\n" % leaf_name).encode()
+                        leaves.append({"kind": "Leaf", "name": leaf_name, "size": len(data),
+                                       "reason": None, "address": cas.Cid(b.raw(data))})
+                    else:
+                        leaves.append({"kind": "Leaf", "name": leaf_name, "size": None,
+                                       "reason": "never_published", "address": None})
+                item = b.block({"kind": "OutputItem", "schema": 2,
+                                "value": [{"sample": names[0]}] + leaves})
+                by_output.setdefault(output, []).append(cas.Cid(item))
+            collections = [cas.Cid(b.block({"kind": "OutputCollection", "schema": 1, "name": output,
+                                             "items": links}))
+                           for output, links in sorted(by_output.items())]
+            b.block({
+                "kind": "RunCompletion", "schema": 2, "asserted_by": "gate",
+                "run": cas.Cid(manifest), "collections": collections, "input_set": None,
+                "status": "succeeded", "exit_status": 0, "possibly_incomplete": False,
+                "started_at": "2026-01-01T00:00:00.000Z",
+                "finished_at": "2026-01-01T00:00:01.000Z",
+                "anomalies": {"unresolvable": 0, "unaddressed": 0, "declined": 0,
+                              "never_published": anomalies_np, "unjoined": 0},
+                "error": None, "providers": run_providers})
+
+        cold_leaves = [n for _o, names in cold_items for n in names]
+        resumed_leaves = [n for _o, names in resumed_items for n in names]
+        cold_providers = {"head-node": [cas.Cid(cas.cid_raw(("bytes of %s\n" % n).encode()))
+                                        for n in sorted(cold_leaves)]}
+        run("cold", cold_items, lambda _n: True, 0, cold_providers)
+        np = (len([n for n in resumed_leaves if n not in resumed_addressed])
+              if never_published is None else never_published)
+        run("resumed", resumed_items, lambda n: n in resumed_addressed, np,
+            {} if providers is None else providers)
+        self.built = True
+
+    def log(self, name, lines):
+        self.write("logs/%s/nextflow.log" % name, "".join(lines).encode())
+
+    def resumed(self, session="u-cold", cached=None, submitted=(), extra=(), summary=(0, 0)):
+        lines = ["DEBUG nextflow.Session - Session UUID: %s\n" % session]
+        lines += ["INFO  nextflow.processor.TaskProcessor - [aa/000000] Cached process > %s\n" % t
+                  for t in (self.TASKS if cached is None else cached)]
+        lines += ["INFO  nextflow.Session - [bb/111111] Submitted process > %s\n" % t for t in submitted]
+        lines += list(extra)
+        if summary is not None:
+            lines.append(self.SUMMARY % (summary[0], summary[1], summary[1]))
+        self.log("resumed", lines)
+
+    def check(self):
+        if not self.built:
+            self.runs()
+        return gate_assert.assert_four_no_rehash(gate_assert.Gate(self.tmp))
+
+    def test_every_task_cached_exit_zero_and_nothing_addressed_passes(self):
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.PASS, message)
+        self.assertIn("4 task(s)", message)
+        self.assertIn("20 published source", message)
+        self.assertIn("5 Leaves", message)
+
+    def test_resuming_another_session_fails(self):
+        """`-resume cold` resumes the last session (fail's): issue 17's race."""
+        self.resumed(session="u-fail")
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("u-fail", message)
+        self.assertIn("u-cold", message)
+
+    def test_a_task_run_again_rather_than_cached_fails(self):
+        self.resumed(cached=self.TASKS[1:], submitted=self.TASKS[:1])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("ALIGN (1)", message)
+
+    def test_a_publishdir_copy_failure_fails(self):
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(extra=["DEBUG nextflow.processor.PublishDir - Failed to publish file: "
+                            "/w/A.bam; to: cas://lab/aligned/A/A.bam [copy] -- attempt: 1\n"])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("PublishDir", message)
+        self.assertIn("resume.config", message)
+
+    def test_any_other_nonzero_exit_fails(self):
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("exited 1", message)
+
+    def test_a_file_addressed_on_resume_fails(self):
+        self.resumed(summary=(22, 1))
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("1 file(s)", message)
+
+    def test_no_addresser_summary_fails(self):
+        self.resumed(summary=None)
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("head node read", message)
+
+    def test_no_lock_list_fails(self):
+        os.remove(self.path("logs", "resumed", "sources-locked"))
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("sources-locked", message)
+
+    # S1 (review 2): 4c must not pass vacuously.
+
+    def test_a_resumed_run_that_recorded_no_leaves_fails(self):
+        """Nothing published at all: 0/0, exit 0 and every task cached hold anyway."""
+        self.runs(resumed_items=[], never_published=0)
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("never_published", message)
+        self.assertIn("5", message)
+
+    def test_never_published_short_of_colds_leaf_count_fails(self):
+        self.runs(never_published=4)
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("never_published is 4", message)
+
+    def test_a_resumed_run_with_providers_fails(self):
+        a = cas.Cid(cas.cid_raw(b"bytes of A.bam\n"))
+        self.runs(providers={"head-node": [a]})
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("providers", message)
+
+    def test_a_resumed_leaf_with_an_address_fails(self):
+        self.runs(resumed_addressed=("A.bam",), never_published=5)
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("A.bam", message)
+
+    def test_cold_with_no_leaves_fails(self):
+        self.runs(cold_items=[], resumed_items=[], never_published=0)
+        self.resumed()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("cold", message)
+
+    def test_an_access_denied_warning_with_exit_zero_fails(self):
+        """A plugin read of a locked file on a warn-only path leaves exit 0 (review 2, S1 b)."""
+        self.resumed(extra=["WARN  robsyme.cas.trace.CasObserver - nf-blocks could not record the inputs "
+                            "of task ALIGN (1): /w/00/out.bam: java.nio.file.AccessDeniedException\n"])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("AccessDeniedException", message)
+
+    def test_a_permission_denied_line_fails(self):
+        self.resumed(extra=["WARN  robsyme.cas.Something - /x/y (Permission denied)\n"])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("Permission denied", message)
+
+    def test_a_line_naming_a_locked_path_fails(self):
+        self.resumed(extra=["DEBUG robsyme.cas.nio.PublishAddresser - hashing /w/07/out.bam\n"])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("/w/07/out.bam", message)
+
+    def test_an_early_crash_reports_the_exit_code_first(self):
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(cached=[], summary=None)
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertTrue(message.startswith("the resumed run exited 1"), message)
+
+    TRACE = ("Oct-25 16:52:04.155 [PublishDir-2] ERROR nextflow.processor.PublishDir - Failed to publish "
+             "file: /w/00/out.bam; to: cas://lab/aligned/A/A.bam [copy] -- See log file for details\n"
+             "dev.failsafe.FailsafeException: java.nio.file.AccessDeniedException: /w/00/out.bam\n"
+             "\tat nextflow.processor.PublishDir.retryableProcessFile(PublishDir.groovy:408)\n"
+             "Caused by: java.nio.file.AccessDeniedException: /w/00/out.bam\n"
+             "\tat java.base/java.nio.file.Files.newInputStream(Files.java:160)\n"
+             "%s"
+             "\tat nextflow.file.FileHelper.copyPath(FileHelper.groovy:1012)\n"
+             "\tat nextflow.processor.PublishDir.processFileImpl(PublishDir.groovy:519)\n"
+             "\tat nextflow.processor.PublishDir.processFile(PublishDir.groovy:%s)\n"
+             "Oct-25 16:52:04.166 [PublishDir-2] DEBUG nextflow.Session - Session aborted\n")
+    PLUGIN_FRAMES = ("\tat robsyme.cas.nio.PublishAddresser.headNodeRead(PublishAddresser.groovy:101)\n"
+                     "\tat robsyme.cas.nio.CasFileSystemProvider.upload(CasFileSystemProvider.groovy:422)\n")
+    ATTEMPT = ("Oct-25 16:51:59.053 [PublishDir-2] DEBUG nextflow.processor.PublishDir - Failed to publish "
+               "file: /w/00/out.bam; to: cas://lab/aligned/A/A.bam [copy] -- attempt: 1; reason: "
+               "/w/00/out.bam because " + "x" * 200 + " END-OF-REASON\n")
+
+    def test_a_publish_failure_in_the_plugins_upload_blames_the_plugin(self):
+        """The first copy (processFile:418) reaching a read in upload() is the plugin's doing."""
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(extra=[self.ATTEMPT, self.TRACE % (self.PLUGIN_FRAMES, 418)])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("plugin's upload() read a locked source on PublishDir's first copy", message)
+        self.assertIn("robsyme.cas.nio.CasFileSystemProvider.upload", message)
+        self.assertNotIn("resume.config", message)
+
+    def test_a_publishdir_recopy_through_the_plugin_blames_publishdir(self):
+        """processFile:432 is the re-copy shouldOverwrite asked for: the overlay did not hold."""
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(extra=[self.ATTEMPT, self.TRACE % (self.PLUGIN_FRAMES, 432)])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("Nextflow's own PublishDir re-copied", message)
+        self.assertIn("resume.config", message)
+
+    def test_a_publish_failure_with_no_plugin_frame_blames_publishdir(self):
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(extra=[self.ATTEMPT, self.TRACE % ("", 418)])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("Nextflow's own PublishDir", message)
+        self.assertIn("resume.config", message)
+
+    def test_a_publish_failure_keeps_its_whole_reason(self):
+        self.write("logs/resumed/exit", b"1\n")
+        self.resumed(extra=[self.ATTEMPT])
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        self.assertIn("END-OF-REASON", message)
+
+
+class RecoveryResumeTest(TempTree):
+    """Assertion 19: recover-resumed resumes recover-fail's session, re-runs MAYBE_FAIL (its
+    script reads params.fail) in fresh work directories, addresses and publishes what those
+    tasks wrote, and keeps every cached task's outputs at the addresses recover-fail gave them."""
+
+    FAIL_TASKS = ["ALIGN (1)", "ALIGN (2)", "MAYBE_FAIL (1)", "MAYBE_FAIL (2)"]
+    RERUN = {"MAYBE_FAIL (1)": ("cc/00000a", "A"), "MAYBE_FAIL (2)": ("cc/00000b", "B")}
+    SUMMARY = ("INFO  robsyme.cas.trace.CasObserver - nf-blocks: the head node read %d bytes "
+               "to address %d file(s); head-node %d, fusion-node 0, s3-copy 0\n")
+
+    def setUp(self):
+        super(RecoveryResumeTest, self).setUp()
+        self.b = StoreBuilder(self.path("store-recovery"))
+        for task, (prefix, sample) in self.RERUN.items():
+            shard, rest = prefix.split("/")
+            self.write("pipeline-r/work/%s/%s%s/%s.report" % (shard, rest, "0" * 24, sample),
+                       self.report(sample))
+
+    @staticmethod
+    def report(sample):
+        return ("report for %s\n" % sample).encode()
+
+    def leaf(self, name, data):
+        return {"kind": "Leaf", "name": name, "size": len(data), "reason": None,
+                "address": cas.Cid(self.b.raw(data))}
+
+    def run_blocks(self, name, leaves_by_output, never_published=0, status="succeeded"):
+        manifest = self.b.block({
+            "kind": "RunManifest", "schema": 1, "asserted_by": "gate",
+            "pipeline": gate_assert.PIPELINE_IDENTITY, "run_name": name,
+            "nf_run_hash": "c" * 32, "session_id": "u-fail", "resumed": name == "recover-resumed",
+            "nextflow_version": "26.04.6", "repository": None, "revision": None,
+            "commit_id": None, "params": {}, "config": "", "script": None,
+            "started_at": "2026-01-01T00:00:00.000Z"})
+        collections = []
+        for output, leaves in sorted(leaves_by_output.items()):
+            # A leaf's sample is its "_sample" when given, else its name's first letter.
+            items = [cas.Cid(self.b.block({"kind": "OutputItem", "schema": 2,
+                                           "value": [{"sample": leaf.get("_sample", leaf["name"][0])},
+                                                     {k: v for k, v in leaf.items() if k != "_sample"}]}))
+                     for leaf in leaves]
+            collections.append(cas.Cid(self.b.block({"kind": "OutputCollection", "schema": 1,
+                                                     "name": output, "items": items})))
+        self.b.block({
+            "kind": "RunCompletion", "schema": 2, "asserted_by": "gate",
+            "run": cas.Cid(manifest), "collections": collections, "input_set": None,
+            "status": status, "exit_status": 0 if status == "succeeded" else 1,
+            "possibly_incomplete": status != "succeeded",
+            "started_at": "2026-01-01T00:00:00.000Z", "finished_at": "2026-01-01T00:00:01.000Z",
+            "anomalies": {"unresolvable": 0, "unaddressed": 0, "declined": 0,
+                          "never_published": never_published, "unjoined": 0},
+            "error": None, "providers": {}})
+
+    def build(self, resumed_reports=None, resumed_aligned=None, coords=True, never_published=0,
+              fail_exit=1, resumed_exit=0, session="u-fail", cached=None, submitted=None,
+              fail_tasks=None, summary=(300, 6), fail_aligned=None):
+        aligned = fail_aligned or [self.leaf("A.bam", b"BAM A\n"), self.leaf("B.bam", b"BAM B\n")]
+        self.run_blocks("recover-fail", {"aligned": aligned,
+                                  "reports": [self.leaf("A.report", self.report("A"))]},
+                 status="failed")
+        reports = resumed_reports or [self.leaf("%s.report" % s, self.report(s)) for s in "AB"]
+        self.run_blocks("recover-resumed", {"aligned": resumed_aligned or aligned, "reports": reports},
+                 never_published=never_published)
+        if coords:
+            for leaf in reports:
+                sample = leaf["name"].split(".")[0]
+                self.b.coord("reports/%s/%s" % (sample, leaf["name"]), leaf["address"].text)
+        fail_tasks = self.FAIL_TASKS if fail_tasks is None else fail_tasks
+        self.write("logs/recover-fail/exit", b"%d\n" % fail_exit)
+        self.write("logs/recover-fail/nextflow.log", "".join(
+            ["DEBUG nextflow.Session - Session UUID: u-fail\n"]
+            + ["INFO  nextflow.Session - [aa/%06d] Submitted process > %s\n" % (i, t)
+               for i, t in enumerate(fail_tasks)]).encode())
+        rerun = [t for t in fail_tasks if t.startswith("MAYBE_FAIL")]
+        cached = [t for t in fail_tasks if t not in rerun] if cached is None else cached
+        submitted = rerun if submitted is None else submitted
+        lines = ["DEBUG nextflow.Session - Session UUID: %s\n" % session]
+        lines += ["INFO  nextflow.processor.TaskProcessor - [aa/000000] Cached process > %s\n" % t
+                  for t in cached]
+        lines += ["INFO  nextflow.Session - [%s] Submitted process > %s\n"
+                  % (self.RERUN.get(t, ("dd/000000", None))[0], t) for t in submitted]
+        if summary is not None:
+            lines.append(self.SUMMARY % (summary[0], summary[1], summary[1]))
+        self.write("logs/recover-resumed/exit", b"%d\n" % resumed_exit)
+        self.write("logs/recover-resumed/nextflow.log", "".join(lines).encode())
+
+    def check(self):
+        return gate_assert.assert_nineteen(gate_assert.Gate(self.tmp))
+
+    def assertFails(self, *needles):
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.FAIL, message)
+        for needle in needles:
+            self.assertIn(needle, message)
+
+    def test_a_resume_after_failure_passes(self):
+        self.build()
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.PASS, message)
+        self.assertIn("2 task(s) cached", message)
+        self.assertIn("MAYBE_FAIL (1), MAYBE_FAIL (2) run again", message)
+        self.assertIn("addressed 6 file(s)", message)
+        self.assertIn("4 of them", message)
+
+    def test_the_failed_run_exiting_zero_fails(self):
+        self.build(fail_exit=0)
+        self.assertFails("recover-fail", "exited 0")
+
+    def test_the_resumed_run_exiting_non_zero_fails(self):
+        self.build(resumed_exit=1)
+        self.assertFails("recover-resumed", "exited 1")
+
+    def test_resuming_another_session_fails(self):
+        self.build(session="u-other")
+        self.assertFails("u-other", "u-fail")
+
+    def test_a_cached_task_run_again_fails(self):
+        self.build(cached=["ALIGN (2)"], submitted=["ALIGN (1)", "MAYBE_FAIL (1)", "MAYBE_FAIL (2)"])
+        self.assertFails("ALIGN (1)")
+
+    def test_a_maybe_fail_task_cached_fails(self):
+        self.build(cached=["ALIGN (1)", "ALIGN (2)", "MAYBE_FAIL (1)"], submitted=["MAYBE_FAIL (2)"])
+        self.assertFails("MAYBE_FAIL (1)")
+
+    def test_no_cached_task_is_no_mix_and_fails(self):
+        self.build(fail_tasks=["MAYBE_FAIL (1)", "MAYBE_FAIL (2)"])
+        self.assertFails("cached")
+
+    def test_a_rerun_output_at_another_address_fails(self):
+        wrong = self.leaf("B.report", b"not what the task wrote\n")
+        self.build(resumed_reports=[self.leaf("A.report", self.report("A")), wrong])
+        self.assertFails("B.report")
+
+    def test_a_rerun_output_with_no_coordinate_fails(self):
+        self.build(coords=False)
+        self.assertFails("coords/reports/A/A.report")
+
+    def test_a_rerun_output_block_missing_from_the_store_fails(self):
+        self.build()
+        cid = cas.cid_raw(self.report("B"))
+        os.remove(os.path.join(self.b.root, "blocks", cid[-2:], cid))
+        self.assertFails(cid)
+
+    def test_a_cached_output_at_a_new_address_fails(self):
+        self.build(resumed_aligned=[self.leaf("A.bam", b"BAM A\n"), self.leaf("B.bam", b"other\n")])
+        self.assertFails("aligned", "B.bam")
+
+    def test_one_leaf_name_in_two_samples_is_compared_per_sample(self):
+        """chunk_1.txt is in every sample's item: A's changing is a change though B's did not."""
+        a, b = self.leaf("chunk_1.txt", b"chunk of A\n"), self.leaf("chunk_1.txt", b"chunk of B\n")
+        other = self.leaf("chunk_1.txt", b"other bytes\n")
+        self.build(fail_aligned=[dict(a, _sample="A"), dict(b, _sample="B")],
+                   resumed_aligned=[dict(other, _sample="A"), dict(b, _sample="B")])
+        self.assertFails("aligned", "chunk_1.txt")
+
+    def test_a_cached_task_the_failed_run_finished_after_cancel_publishes_on_resume_and_passes(self):
+        """Under errorStrategy 'finish' a task can complete after the session cancels; its output
+        then never reaches recover-fail's workflow outputs (Gate run 2026-10-25 19:03: QC_DIR (3)
+        finished 71 ms after "Execution cancelled"). On resume that cached task publishes, so
+        recover-resumed has an addressed Leaf recover-fail lacks: correct, not a moved Leaf."""
+        aligned = [self.leaf("A.bam", b"BAM A\n"), self.leaf("B.bam", b"BAM B\n")]
+        self.build(fail_aligned=aligned[:1], resumed_aligned=aligned)
+        status, message = self.check()
+        self.assertEqual(status, gate_assert.PASS, message)
+        self.assertIn("1 Leaf recover-fail never published", message)
+
+    def test_a_leaf_only_the_resumed_run_has_but_unaddressed_fails(self):
+        aligned = [self.leaf("A.bam", b"BAM A\n"),
+                   {"kind": "Leaf", "name": "B.bam", "size": None, "reason": "never_published", "address": None}]
+        self.build(fail_aligned=aligned[:1], resumed_aligned=aligned)
+        self.assertFails("aligned", "B.bam")
+
+    def test_a_leaf_the_failed_run_had_and_the_resumed_run_lacks_fails(self):
+        aligned = [self.leaf("A.bam", b"BAM A\n"), self.leaf("B.bam", b"BAM B\n")]
+        self.build(fail_aligned=aligned, resumed_aligned=aligned[:1])
+        self.assertFails("aligned", "B.bam")
+
+    def test_a_never_published_leaf_fails(self):
+        self.build(never_published=1)
+        self.assertFails("never_published")
+
+    def test_an_addresser_count_below_the_rerun_outputs_fails(self):
+        self.build(summary=(10, 1))
+        self.assertFails("1 file(s)")
+
+    def test_no_addresser_summary_fails(self):
+        self.build(summary=None)
+        self.assertFails("head node read")
 
 
 class TestFailedRunPartiality(unittest.TestCase):

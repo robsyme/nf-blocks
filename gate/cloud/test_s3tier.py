@@ -270,9 +270,9 @@ class CacheControlForTest(unittest.TestCase):
         self.s3tier = _fresh_import()
 
     def test_a_snapshot_key_is_no_cache(self):
-        self.assertEqual(self.s3tier.cache_control_for("m/index/v3.sqlite"), "no-cache")
-        self.assertEqual(self.s3tier.cache_control_for("index/v3.sqlite"), "no-cache")
-        self.assertEqual(self.s3tier.cache_control_for("year/index/v3.sqlite"), "no-cache")
+        self.assertEqual(self.s3tier.cache_control_for("m/index/v6.sqlite"), "no-cache")
+        self.assertEqual(self.s3tier.cache_control_for("index/v6.sqlite"), "no-cache")
+        self.assertEqual(self.s3tier.cache_control_for("year/index/v6.sqlite"), "no-cache")
 
     def test_anything_else_is_public_immutable_for_a_year(self):
         self.assertEqual(self.s3tier.cache_control_for("m/blocks/ab/bafyabc"), "public, max-age=31536000, immutable")
@@ -280,7 +280,7 @@ class CacheControlForTest(unittest.TestCase):
                           "public, max-age=31536000, immutable")
         self.assertEqual(self.s3tier.cache_control_for("m/index.html"), "public, max-age=31536000, immutable")
         # A file merely named like the snapshot, but not at that path, is not one.
-        self.assertEqual(self.s3tier.cache_control_for("m/blocks/ab/index/v3.sqlite.bak"),
+        self.assertEqual(self.s3tier.cache_control_for("m/blocks/ab/index/v6.sqlite.bak"),
                           "public, max-age=31536000, immutable")
 
 
@@ -291,7 +291,7 @@ class UploadPassesCacheControlPerFileTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         os.makedirs(os.path.join(self.root, "m", "index"))
         os.makedirs(os.path.join(self.root, "m", "blocks", "ab"))
-        with open(os.path.join(self.root, "m", "index", "v3.sqlite"), "w") as fh:
+        with open(os.path.join(self.root, "m", "index", "v6.sqlite"), "w") as fh:
             fh.write("snapshot bytes")
         with open(os.path.join(self.root, "m", "blocks", "ab", "bafyreiabcxyz"), "w") as fh:
             fh.write("block bytes")
@@ -301,7 +301,7 @@ class UploadPassesCacheControlPerFileTest(unittest.TestCase):
         with unittest.mock.patch.dict(sys.modules, _fake_boto3_s3_transfer()):
             self.s3tier.upload(client, "bucket", self.root)
         by_key = dict(client.calls)
-        self.assertEqual(by_key["m/index/v3.sqlite"], {"CacheControl": "no-cache"})
+        self.assertEqual(by_key["m/index/v6.sqlite"], {"CacheControl": "no-cache"})
         self.assertEqual(by_key["m/blocks/ab/bafyreiabcxyz"],
                           {"CacheControl": "public, max-age=31536000, immutable"})
 
@@ -310,7 +310,7 @@ class UploadPassesCacheControlPerFileTest(unittest.TestCase):
         with unittest.mock.patch.dict(sys.modules, _fake_boto3_s3_transfer()):
             self.s3tier.upload(client, "bucket", self.root, prefix="year/")
         by_key = dict(client.calls)
-        self.assertEqual(by_key["year/m/index/v3.sqlite"], {"CacheControl": "no-cache"})
+        self.assertEqual(by_key["year/m/index/v6.sqlite"], {"CacheControl": "no-cache"})
         self.assertEqual(by_key["year/m/blocks/ab/bafyreiabcxyz"],
                           {"CacheControl": "public, max-age=31536000, immutable"})
 

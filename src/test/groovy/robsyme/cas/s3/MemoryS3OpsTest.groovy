@@ -136,4 +136,40 @@ class MemoryS3OpsTest extends Specification {
         ops.listUploads('p/')[0].key == 'p/tmp/x'
         ops.listUploads('q/') == []
     }
+
+    def 'parts, part copies, aborts and listings are safe from many threads at once, as a copy\'s 16 workers use them'() {
+        given:
+        final MemoryS3Ops work = new MemoryS3Ops('work-bucket')
+        s3.peers['work-bucket'] = work
+        work.putText('src', 'x' * 64)
+        final String id = s3.createMultipart('big', S3PutOptions.create())
+        final List<String> doomed = (1..64).collect { s3.createMultipart("doomed-${it}".toString(), S3PutOptions.create()) }
+        final List<Throwable> errors = Collections.synchronizedList([])
+
+        when:
+        final List<Thread> threads = (0..<16).collect { int t ->
+            Thread.start {
+                try {
+                    for( int i = 0; i < 64; i++ ) {
+                        final int n = t * 64 + i + 1
+                        if( n % 2 ) s3.uploadPart('big', id, n, S3Body.ofBytes([(byte) 'p'] as byte[]))
+                        else s3.uploadPartCopy('big', id, n, 'work-bucket', 'src', 0L, 0L)
+                        s3.put("k-${t}-${i}".toString(), S3Body.ofBytes('v'.bytes), S3PutOptions.create())
+                        s3.list('k-', 0)
+                        if( t == 0 ) s3.abortMultipart("doomed-${i + 1}".toString(), doomed[i])
+                    }
+                }
+                catch( Throwable e ) {
+                    errors << e
+                }
+            }
+        }
+        threads*.join()
+
+        then:
+        errors == []
+        s3.uploads[id].size() == 16 * 64
+        s3.list('k-', 0).size() == 16 * 64
+        s3.listUploads('doomed-') == []
+    }
 }

@@ -1,0 +1,150 @@
+[
+ {"name": "the same name across runs of one pipeline is one sample",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"},
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r1"}],
+  "inputs": [], "claims": [],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A", "r2/A"]},
+   {"label": "B", "basis": "sample ID", "occurrences": ["r1/B"]}]},
+
+ {"name": "the same name in two pipelines is two samples",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/sarek", "id": "A", "run": "r2"}],
+  "inputs": [], "claims": [],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A"]},
+   {"label": "A", "basis": "sample ID", "occurrences": ["r2/A"]}]},
+
+ {"name": "a shared input address joins different meta.ids, across pipelines",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "WT_1", "run": "r1"},
+   {"pipeline": "nf-core/sarek", "id": "wt-rep1", "run": "r2"}],
+  "inputs": [
+   {"completion_cid": "r1", "role": "task", "name": "WT_1_R1.fastq.gz", "address": "x1", "size": 10, "sample": "WT_1"},
+   {"completion_cid": "r2", "role": "task", "name": "WT_1_R1.fastq.gz", "address": "x1", "size": 10, "sample": "wt-rep1"}],
+  "claims": [],
+  "expect": [
+   {"label": "WT_1", "basis": "input reads", "occurrences": ["r1/WT_1", "r2/wt-rep1"]}]},
+
+ {"name": "the same name with disjoint inputs stays apart",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"}],
+  "inputs": [
+   {"completion_cid": "r1", "role": "task", "name": "A_R1.fastq.gz", "address": "x1", "size": 10, "sample": "A"},
+   {"completion_cid": "r2", "role": "task", "name": "A_R1.fastq.gz", "address": "y1", "size": 10, "sample": "A"}],
+  "claims": [],
+  "expect": [
+   {"label": "A", "basis": "input reads", "occurrences": ["r1/A"]},
+   {"label": "A", "basis": "input reads", "occurrences": ["r2/A"]}]},
+
+ {"name": "the same name joins when only one side has input rows; the basis is the sample ID",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"}],
+  "inputs": [
+   {"completion_cid": "r1", "role": "task", "name": "A_R1.fastq.gz", "address": "x1", "size": 10, "sample": "A"}],
+  "claims": [],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A", "r2/A"]}]},
+
+ {"name": "only task rows whose sample is the occurrence's meta.id count",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r2"},
+   {"pipeline": "nf-core/rnaseq", "id": "C", "run": "r3"}],
+  "inputs": [
+   {"completion_cid": "r1", "role": "samplesheet", "name": "samplesheet.csv", "address": "s1", "size": 10, "sample": "A"},
+   {"completion_cid": "r2", "role": "samplesheet", "name": "samplesheet.csv", "address": "s1", "size": 10, "sample": "B"},
+   {"completion_cid": "r1", "role": "param:fasta", "name": "genome.fa", "address": "g1", "size": 10, "sample": "A"},
+   {"completion_cid": "r2", "role": "param:fasta", "name": "genome.fa", "address": "g1", "size": 10, "sample": "B"},
+   {"completion_cid": "r2", "role": "task", "name": "B_R1.fastq.gz", "address": "x1", "size": 10, "sample": "Z"},
+   {"completion_cid": "r3", "role": "task", "name": "C_R1.fastq.gz", "address": "x1", "size": 10, "sample": "C"}],
+  "claims": [],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A"]},
+   {"label": "B", "basis": "sample ID", "occurrences": ["r2/B"]},
+   {"label": "C", "basis": "input reads", "occurrences": ["r3/C"]}]},
+
+ {"name": "an address with two samples in one run is a shared reference and joins nothing",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "C", "run": "r2"}],
+  "inputs": [
+   {"completion_cid": "r1", "role": "task", "name": "salmon_index", "address": "idx", "size": 10, "sample": "A"},
+   {"completion_cid": "r1", "role": "task", "name": "salmon_index", "address": "idx", "size": 10, "sample": "B"},
+   {"completion_cid": "r2", "role": "task", "name": "salmon_index", "address": "idx", "size": 10, "sample": "C"}],
+  "claims": [],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A"]},
+   {"label": "B", "basis": "sample ID", "occurrences": ["r1/B"]},
+   {"label": "C", "basis": "sample ID", "occurrences": ["r2/C"]}]},
+
+ {"name": "a split takes b out of a's automatic group",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r3"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r3"}, "same": false}],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A", "r2/A"]},
+   {"label": "A", "basis": "sample ID", "occurrences": ["r3/A"]}]},
+
+ {"name": "a split between occurrences in different groups changes nothing",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r2"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r2"}, "same": false}],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A"]},
+   {"label": "B", "basis": "sample ID", "occurrences": ["r2/B"]}]},
+
+ {"name": "a merge joins two samples; the label tie goes to the alphabetical first",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "tumour_2", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "T2", "run": "r2"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "tumour_2", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "T2", "run": "r2"}, "same": true}],
+  "expect": [
+   {"label": "T2", "basis": "sample ID", "occurrences": ["r1/tumour_2", "r2/T2"]}]},
+
+ {"name": "a sample's label is its most common meta.id",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r2"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r3"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "B", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r3"}, "same": true}],
+  "expect": [
+   {"label": "B", "basis": "sample ID", "occurrences": ["r1/B", "r2/B", "r3/A"]}]},
+
+ {"name": "a merge after a split of the same pair puts b back",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"},
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"}, "same": false},
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r2"}, "b": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}, "same": true}],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A", "r2/A"]}]},
+
+ {"name": "a claim naming an occurrence the page does not have is ignored",
+  "occurrences": [
+   {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}],
+  "inputs": [],
+  "claims": [
+   {"a": {"pipeline": "nf-core/rnaseq", "id": "A", "run": "r1"}, "b": {"pipeline": "nf-core/rnaseq", "id": "Q", "run": "r9"}, "same": true}],
+  "expect": [
+   {"label": "A", "basis": "sample ID", "occurrences": ["r1/A"]}]}
+]

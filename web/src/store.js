@@ -10,24 +10,31 @@ function refuseFile(base) {
   return base
 }
 
+/** A members.json entry with the fields an older server leaves out read as null/false. */
+const normalizeMember = (m) => ({ ...m, kind: m.kind ?? null, location: m.location ?? null,
+  copy_target: m.copy_target === true, copy_reason: m.copy_reason ?? null })
+
 export async function resolveStore(href, { fetchFn = (...a) => fetch(...a) } = {}) {
   const url = new URL(href)
   const store = url.searchParams.get('store')
-  if (store) return { base: refuseFile(withSlash(new URL(store, url).href)), members: null, member: null, write: false }
+  if (store) return { base: refuseFile(withSlash(new URL(store, url).href)), members: null, member: null, all: false, copy: false, write: false, identity: null }
   if (url.protocol === 'file:') refuseFile(url.href)
   try {
     const res = await fetchFn(new URL('members.json', url).href, { cache: 'no-store' })
     if (res.ok && (res.headers.get('Content-Type') ?? '').includes('application/json')) {
       const body = await res.json()
-      const { members } = body
+      const members = body.members.map(normalizeMember)
       const wanted = url.searchParams.get('member')
-      const member = members.find(m => m.alias === wanted) ?? members[0]
-      return { base: new URL(member.base, url).href, members, member: member.alias, write: body.write === true }
+      // ?member=* shows every member; the primary (the writable one, else the first) is still the one the views read.
+      const all = wanted === '*'
+      const member = all ? (members.find(m => m.writable) ?? members[0]) : (members.find(m => m.alias === wanted) ?? members[0])
+      return { base: new URL(member.base, url).href, members, member: member.alias, all, copy: body.copy === true,
+        write: body.write === true, identity: body.identity ?? null }
     }
   } catch {
     // Not served by explore.
   }
-  return { base: new URL('.', url).href, members: null, member: null, write: false }
+  return { base: new URL('.', url).href, members: null, member: null, all: false, copy: false, write: false, identity: null }
 }
 
 /**

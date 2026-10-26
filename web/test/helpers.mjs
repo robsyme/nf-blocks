@@ -5,6 +5,14 @@ import { MemorySource } from '../src/vfs/sources.js'
 
 let loaded
 /** sqlite-wasm in Node, given its wasm bytes the way the page gives them. */
+/**
+ * What every page asks a fake Explorer about the snapshot's storage figures
+ * (model.js): nothing changed since the snapshot, no sweep grace, and the
+ * Explorer's clock. Spread it into a fake, with overrides after it.
+ */
+export const FAKE_STORAGE = { storageChanges: () => ({ claims: false, logged: false }), sweepGraceMs: async () => null, now: () => Date.now(),
+  tailClaimStates: async () => new Map() }
+
 export async function loadSqlite() {
   loaded ??= sqlite3InitModule({
     wasmBinary: readFileSync(new URL('../node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm', import.meta.url)),

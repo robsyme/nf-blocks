@@ -12,9 +12,12 @@ import nextflow.lineage.DefaultLinStore
 import nextflow.lineage.config.LineageConfig
 import nextflow.lineage.model.v1beta1.Checksum
 import nextflow.lineage.model.v1beta1.FileOutput
+import nextflow.lineage.model.v1beta1.Parameter
 import nextflow.lineage.model.v1beta1.TaskRun
+import nextflow.lineage.model.v1beta1.Workflow
 import nextflow.lineage.model.v1beta1.WorkflowRun
 import nextflow.lineage.serde.LinSerializable
+import nextflow.script.WorkflowMetadata
 import robsyme.cas.CasConfig
 import robsyme.cas.CasPlugin
 import robsyme.cas.CasSession
@@ -168,6 +171,168 @@ class CasLinStoreTest extends Specification {
         then: 'the store uri and its checksum are left as they were, not recomputed'
         loaded.path == uri
         loaded.checksum == preset
+    }
+
+    def 'nextflow records lose their host locations before the delegate writes them, and keep what lid:// reads need'() {
+        given:
+        final String launch = tempDir.resolve('launch').toString()
+        final String workFile = tempDir.resolve('launch/work/ab/cdef/A.bam').toString()
+        final run = new WorkflowRun(workflow: new Workflow([], null, null), name: 'nice_curie',
+            metadata: [homeDir: '/home/someone', launchDir: launch, workDir: "${launch}/work".toString(), userName: 'someone'],
+            config: [cas: [stores: [lab: [location: tempDir.toString()]]]])
+        final task = new TaskRun(name: 'ALIGN', workflowRun: 'lid://run-7f3a',
+            input: [new Parameter('path', 'reads', ['lid://abc/A.fq']), new Parameter('val', 'ref', "${launch}/g.fa".toString())])
+        final work = new FileOutput(path: workFile, size: 1L, source: 'lid://abc', taskRun: 'lid://abc', workflowRun: 'lid://run-7f3a')
+
+        when:
+        store.save('run-7f3a', run)
+        store.save('abc', task)
+        store.save('abc/A.bam', work)
+        final String runText = store.recordsLocation.resolve('run-7f3a/.data.json').text
+        final String taskText = store.recordsLocation.resolve('abc/.data.json').text
+
+        then: 'the run and task records on disk name no host location and no user'
+        !runText.contains(tempDir.toString())
+        !runText.contains('/home/someone')
+        !runText.contains('someone')
+        runText.contains('[redacted-location]')
+        runText.contains('[redacted-user]')
+        !taskText.contains(tempDir.toString())
+        and: 'the run key is still recorded, and references survive'
+        casSession.nextflowRunKey == 'run-7f3a'
+        (store.load('abc') as TaskRun).input[0].value == ['lid://abc/A.fq']
+        (store.load('abc') as TaskRun).workflowRun == 'lid://run-7f3a'
+        and: 'a work-dir file output keeps its path, which lid:// reads open'
+        (store.load('abc/A.bam') as FileOutput).path == workFile
+    }
+
+    /** A scrub that fails every record with the given error, installed as the fixture session's cached scrub. */
+    private void scrubThrowing(Throwable failure) {
+        store.@scrub = new NfRecordScrub(null, []) {
+            @Override
+            LinSerializable scrub(LinSerializable value) { throw failure }
+        }
+        store.@scrubSession = session
+    }
+
+    def 'a record whose scrub fails is saved unscrubbed, and a workflow run still records its key'() {
+        given: 'a scrub that fails the way a newer Nextflow model could make it fail'
+        scrubThrowing(new NoSuchMethodError('nextflow.lineage.model.v1beta1.TaskRun.setScript'))
+        final run = new WorkflowRun(name: 'nice_curie', metadata: [launchDir: '/home/someone/launch'])
+        final task = new TaskRun(name: 'ALIGN', script: 'cat /home/someone/x')
+
+        when:
+        store.save('run-7f3a', run)
+        store.save('abc', task)
+
+        then: 'both records are on disk as Nextflow handed them over'
+        (store.load('run-7f3a') as WorkflowRun).metadata == [launchDir: '/home/someone/launch']
+        (store.load('abc') as TaskRun).script == 'cat /home/someone/x'
+        and:
+        casSession.nextflowRunKey == 'run-7f3a'
+        noExceptionThrown()
+    }
+
+    def 'a runtime failure in the scrub also saves the record unscrubbed'() {
+        given:
+        scrubThrowing(new IllegalStateException('boom'))
+
+        when:
+        store.save('abc', new TaskRun(name: 'ALIGN', script: 'cat /home/someone/x'))
+
+        then:
+        (store.load('abc') as TaskRun).script == 'cat /home/someone/x'
+    }
+
+    def 'a scrub that fails part way leaves no field of the record changed'() {
+        given: 'task variables that fail the first time anything walks them, after the inputs are scrubbed'
+        final Map<String, Object> vars = new LinkedHashMap<String, Object>(['task.ext.args': '--tmp /home/someone/tmp']) {
+            int walks = 0
+            @Override
+            Set<Map.Entry<String, Object>> entrySet() {
+                if( walks++ == 0 )
+                    throw new IllegalStateException('first walk fails')
+                return super.entrySet()
+            }
+        }
+        final task = new TaskRun(name: 'ALIGN', script: 'cat /home/someone/x',
+            input: [new Parameter('val', 'ref', '/home/someone/ref.fa')], globalVars: vars)
+
+        when:
+        store.save('abc', task)
+        final saved = store.load('abc') as TaskRun
+
+        then:
+        saved.input[0].value == '/home/someone/ref.fa'
+        saved.script == 'cat /home/someone/x'
+    }
+
+    def 'a virtual machine error in the scrub is not swallowed'() {
+        given:
+        scrubThrowing(new OutOfMemoryError('test'))
+
+        when:
+        store.save('abc', new TaskRun(name: 'ALIGN'))
+
+        then:
+        thrown(OutOfMemoryError)
+    }
+
+    def 'a stack overflow in the scrub, the one error a regex can raise, saves the record unscrubbed'() {
+        given:
+        scrubThrowing(new StackOverflowError('deep regex'))
+
+        when:
+        store.save('abc', new TaskRun(name: 'ALIGN', script: 'cat /home/someone/x'))
+
+        then:
+        (store.load('abc') as TaskRun).script == 'cat /home/someone/x'
+        noExceptionThrown()
+    }
+
+    def 'any other virtual machine error in the scrub is not swallowed either'() {
+        given:
+        scrubThrowing(new InternalError('test'))
+
+        when:
+        store.save('abc', new TaskRun(name: 'ALIGN'))
+
+        then:
+        thrown(InternalError)
+    }
+
+    private Session sessionWithRun(String launch) {
+        final meta = Mock(WorkflowMetadata) {
+            getLaunchDir() >> Path.of(launch)
+            getWorkDir() >> Path.of(launch, 'work')
+        }
+        return Mock(Session) {
+            getWorkflowMetadata() >> meta
+            getConfig() >> [:]
+        }
+    }
+
+    def 'the scrub is kept for its session and rebuilt when the session changes'() {
+        given:
+        final Session first = sessionWithRun('/runs/one')
+        final Session second = sessionWithRun('/runs/two')
+
+        when:
+        Global.session = first
+        final a = store.scrubber()
+        final b = store.scrubber()
+        Global.session = second
+        final c = store.scrubber()
+
+        then: 'one scrub per session'
+        a.is(b)
+        !c.is(a)
+        and: 'each built from its own session'
+        a.code('ls /runs/one/x /runs/two/x') == 'ls [redacted-location]/x /runs/two/x'
+        c.code('ls /runs/one/x /runs/two/x') == 'ls /runs/one/x [redacted-location]/x'
+
+        cleanup:
+        Global.session = session
     }
 
     def 'search by type and getSubKeys reach the delegate'() {

@@ -1,6 +1,8 @@
 // web/src/words.js
 // The page's plain words for store terms (explorer layout B spec §8). DESIGN.md
 // §6 defines each anomaly and Leaf reason: change a meaning there first.
+import { bytes } from './format.js'
+import { SCHEMA_VERSION } from './config.js'
 
 const counted = (n, one, many) => `${n} ${n === 1 ? one : many}`
 
@@ -29,6 +31,42 @@ export function healthText(anomalies) {
   return concerns.length ? concerns.map(l => l.text).join('; ') : 'nothing to check'
 }
 
+const count = (anomalies, key) => Number(anomalies?.[key] ?? 0)
+
+/**
+ * One line of run health: a fact, then what to do about it. `act` is true when
+ * the reader can fix something. Null when there is nothing to say. Declined
+ * optional slots are routine and stay out of it.
+ */
+export function healthLine(anomalies) {
+  const unjoined = count(anomalies, 'unjoined')
+  const unresolvable = count(anomalies, 'unresolvable')
+  const unaddressed = count(anomalies, 'unaddressed')
+  const never = count(anomalies, 'never_published')
+  const parts = []
+  if (unjoined > 0) {
+    parts.push(`${counted(unjoined, 'published file is', 'published files are')} outside any workflow output. Declare ${unjoined === 1 ? 'it' : 'them'} in the output { } block to keep ${unjoined === 1 ? 'its' : 'their'} lineage.`)
+  }
+  if (unresolvable > 0) parts.push(`${counted(unresolvable, 'link points', 'links point')} at content that could not be found.`)
+  if (unaddressed > 0) parts.push(`${counted(unaddressed, 'file has', 'files have')} no stored content.`)
+  const act = parts.length > 0
+  if (never > 0) {
+    parts.push(act ? `${counted(never, 'input is', 'inputs are')} referenced, not stored.`
+      : 'Inputs are referenced, not stored. Expected for local inputs.')
+  }
+  return parts.length ? { text: parts.join(' '), act } : null
+}
+
+/** The health line every run shares, or null when the runs differ or none has anything to say. `completions` are RunCompletion values (or their anomalies). */
+export function sharedHealth(completions) {
+  if (!completions?.length) return null
+  // Runs share a line when they would say the same thing: an optional-slot count that differs (declined) is not part of it.
+  const signature = (c) => healthLine(c?.anomalies ?? c)?.text ?? ''
+  const first = signature(completions[0])
+  if (!completions.every(c => signature(c) === first)) return null
+  return healthLine(completions[0]?.anomalies ?? completions[0])
+}
+
 const capital = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '')
 
 export function statusText({ status, possibly_incomplete }) {
@@ -41,15 +79,10 @@ export const statusTone = ({ status, possibly_incomplete }) => (status === 'succ
 /** A run icon's tone: statusTone when the run's status is known, else null (the icon stays grey). */
 export const runTone = (run) => (run?.status ? statusTone(run) : null)
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-
-/** Decimal units, as file browsers show them. */
+/** Decimal units, as file browsers show them (format.js `bytes`); nothing for an unknown size. */
 export function humanBytes(n) {
   if (n === null || n === undefined || n === '') return ''
-  let v = Number(n)
-  let i = 0
-  while (v >= 1000 && i < UNITS.length - 1) { v /= 1000; i++ }
-  return i === 0 ? `${v} B` : `${v < 10 ? v.toFixed(1) : Math.round(v)} ${UNITS[i]}`
+  return bytes(Number(n))
 }
 
 export function whenText(iso) {
@@ -66,3 +99,38 @@ const REASONS = {
 }
 
 export const leafReasonText = (reason) => REASONS[reason] ?? String(reason ?? '')
+
+/** How long ago `iso` was, for the left column's footer: `just now`, `2 min ago`, `3 h ago`, `2 days ago`, then the date. */
+export function agoText(iso, now = Date.now()) {
+  const t = Date.parse(iso ?? '')
+  if (!Number.isFinite(t)) return ''
+  const min = Math.floor((now - t) / 60_000)
+  if (min < 1) return 'just now'
+  if (min < 60) return `${min} min ago`
+  if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`
+  const days = Math.floor(min / (24 * 60))
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`
+  return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+/** The footer's count of runs newer than the snapshot; an unreadable Store Log means the count is unknown, not 0. */
+export function staleText({ staleCount, logReadable }) {
+  const count = `${staleCount} newer run${staleCount === 1 ? '' : 's'}`
+  return logReadable ? count : `newer runs unknown: the Store Log is not readable here${staleCount ? ` (${staleCount} found)` : ''}`
+}
+
+/** The footer's second line: the index version the page reads and how it reads it. */
+export const snapshotModeText = (mode) => `Index v${SCHEMA_VERSION} · ${mode === 'whole' ? 'downloaded whole (this server ignores Range)' : 'read by range'}`
+
+/**
+ * A day as the storage figures write it: `Oct 31`, with the year when it is
+ * not the year of `now`. `at` is an ISO string or ms; an unreadable one gives
+ * ''. `now` is the caller's clock (ms or a Date), the Explorer's (`ex.now()`)
+ * on every page, so a page and its tests agree on what "this year" is.
+ */
+export function dayText(at, now) {
+  const d = new Date(at ?? '')
+  if (Number.isNaN(d.getTime())) return ''
+  const opts = d.getFullYear() === new Date(now).getFullYear() ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' }
+  return d.toLocaleDateString('en-US', opts)
+}

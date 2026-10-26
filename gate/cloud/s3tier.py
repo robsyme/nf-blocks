@@ -18,7 +18,7 @@ import time
 import uuid
 
 TAGS = [{"Key": "purpose", "Value": "nf-blocks Gate cloud browser tier - throwaway"},
-        {"Key": "owner", "Value": os.environ.get("GATE_OWNER", "rob.syme")}]
+        {"Key": "owner", "Value": os.environ.get("GATE_OWNER", "nf-blocks-gate")}]
 CORS = {"CORSRules": [{"AllowedOrigins": ["*"], "AllowedMethods": ["GET", "HEAD"], "AllowedHeaders": ["range"],
                        "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges", "ETag"],
                        "MaxAgeSeconds": 3000}]}

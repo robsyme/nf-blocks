@@ -22,9 +22,10 @@ class MemoryS3Ops implements S3Ops {
     }
 
     final String bucket
-    final Map<String, Obj> objects = new TreeMap<>()
+    // Synchronized, with a per-thread digest and store(), so a copy's 16 parallel puts can share one bucket.
+    final Map<String, Obj> objects = Collections.synchronizedSortedMap(new TreeMap<String, Obj>())
     final Map<String, Map<Integer, byte[]>> uploads = [:]
-    final List<String> calls = []
+    final List<String> calls = Collections.synchronizedList(new ArrayList<String>())
     final Map<String, Integer> conflicts = [:]
     final Map<String, MemoryS3Ops> peers = [:]
     long pulledBytes = 0
@@ -55,14 +56,17 @@ class MemoryS3Ops implements S3Ops {
         final byte[] buf = new byte[65536]
         body.open().withCloseable { InputStream in ->
             int n
-            while( (n = in.read(buf)) > 0 ) { pulledBytes += n; md.update(buf, 0, n); out?.write(buf, 0, n) }
+            while( (n = in.read(buf)) > 0 ) { pulled(n); md.update(buf, 0, n); out?.write(buf, 0, n) }
         }
-        lastDigest = md.digest()
+        lastDigest.set(md.digest())
         return out == null ? new byte[0] : out.toByteArray()
     }
-    private byte[] lastDigest
+    private final ThreadLocal<byte[]> lastDigest = new ThreadLocal<byte[]>()
 
-    private Obj store(String key, byte[] bytes, S3PutOptions o, byte[] digest = null) {
+    // Not private: a closure in an anonymous subclass cannot reach a private method.
+    protected synchronized void pulled(int n) { pulledBytes += n }
+
+    private synchronized Obj store(String key, byte[] bytes, S3PutOptions o, byte[] digest = null) {
         final byte[] d = digest ?: MessageDigest.getInstance('SHA-256').digest(bytes)
         final Obj obj = new Obj(bytes: bytes, etag: '"' + (++nextId) + '-' + key.hashCode() + '"',
             sha256: o.sha256 ? Base64.encoder.encodeToString(d) : null,
@@ -98,14 +102,18 @@ class MemoryS3Ops implements S3Ops {
     @Override S3Written put(String key, S3Body body, S3PutOptions o) {
         calls << "PUT ${key}".toString()
         final byte[] bytes = drain(body)
-        if( conflict('PUT') ) return new S3Written(S3Written.Status.CONFLICT, null, null)
-        final S3Written no = refused(key, o)
-        if( no != null ) return no
-        final Obj obj = store(key, bytes, o, lastDigest)
-        return new S3Written(S3Written.Status.WRITTEN, obj.etag, obj.sha256)
+        final byte[] digest = lastDigest.get()
+        // The body is read outside the lock; the condition and the store are one step, as on S3.
+        synchronized( this ) {
+            if( conflict('PUT') ) return new S3Written(S3Written.Status.CONFLICT, null, null)
+            final S3Written no = refused(key, o)
+            if( no != null ) return no
+            final Obj obj = store(key, bytes, o, digest)
+            return new S3Written(S3Written.Status.WRITTEN, obj.etag, obj.sha256)
+        }
     }
 
-    @Override String createMultipart(String key, S3PutOptions o) {
+    @Override synchronized String createMultipart(String key, S3PutOptions o) {
         calls << "MPU ${key}".toString()
         final String id = "upload-${++nextId}".toString()
         uploads[id] = new TreeMap<Integer, byte[]>()
@@ -117,19 +125,22 @@ class MemoryS3Ops implements S3Ops {
 
     @Override S3Part uploadPart(String key, String uploadId, int n, S3Body body) {
         calls << "PART ${key} ${n}".toString()
+        // The body is read outside the lock, as put's is.
         final byte[] bytes = drain(body)
-        uploads[uploadId][n] = bytes
-        return new S3Part(n, '"p' + n + '"', Base64.encoder.encodeToString(lastDigest))
+        synchronized( this ) {
+            uploads[uploadId][n] = bytes
+        }
+        return new S3Part(n, '"p' + n + '"', Base64.encoder.encodeToString(lastDigest.get()))
     }
 
-    @Override S3Part uploadPartCopy(String key, String uploadId, int n, String srcBucket, String srcKey, long first, long last) {
+    @Override synchronized S3Part uploadPartCopy(String key, String uploadId, int n, String srcBucket, String srcKey, long first, long last) {
         calls << "PARTCOPY ${key} ${n}".toString()
         final Obj src = bucketNamed(srcBucket).objects[srcKey]
         uploads[uploadId][n] = Arrays.copyOfRange(src.bytes, (int) first, (int) last + 1)
         return new S3Part(n, '"c' + n + '"', null)
     }
 
-    @Override S3Written completeMultipart(String key, String uploadId, List<S3Part> parts, boolean ifNoneMatch) {
+    @Override synchronized S3Written completeMultipart(String key, String uploadId, List<S3Part> parts, boolean ifNoneMatch) {
         calls << "COMPLETE ${key}".toString()
         if( conflict('COMPLETE') ) return new S3Written(S3Written.Status.CONFLICT, null, null)
         final S3PutOptions o = mpuOptions[uploadId]
@@ -150,13 +161,13 @@ class MemoryS3Ops implements S3Ops {
         return new S3Written(S3Written.Status.WRITTEN, obj.etag, composite)
     }
 
-    @Override void abortMultipart(String key, String uploadId) {
+    @Override synchronized void abortMultipart(String key, String uploadId) {
         calls << "ABORT ${key}".toString()
         uploads.remove(uploadId)
         openUploads.remove(uploadId)
     }
 
-    @Override S3Written copy(String srcBucket, String srcKey, String key, S3PutOptions o) {
+    @Override synchronized S3Written copy(String srcBucket, String srcKey, String key, S3PutOptions o) {
         calls << "COPY ${srcBucket}/${srcKey} ${key}".toString()
         if( conflict('COPY') ) return new S3Written(S3Written.Status.CONFLICT, null, null)
         final Obj src = bucketNamed(srcBucket)?.objects?.get(srcKey)
@@ -179,12 +190,16 @@ class MemoryS3Ops implements S3Ops {
 
     @Override List<S3Listed> list(String prefix, int maxKeys) {
         calls << "LIST ${prefix}".toString()
-        final List<S3Listed> out = objects.findAll { k, v -> k.startsWith(prefix) }
-            .collect { k, v -> new S3Listed(k, (long) v.bytes.length, v.lastModified) }
+        final List<S3Listed> out
+        // Every change to objects holds this lock, so the iteration sees none half-made.
+        synchronized( this ) {
+            out = objects.findAll { k, v -> k.startsWith(prefix) }
+                .collect { k, v -> new S3Listed(k, (long) v.bytes.length, v.lastModified) }
+        }
         return maxKeys > 0 ? out.take(maxKeys) : out
     }
 
-    @Override void delete(String key) {
+    @Override synchronized void delete(String key) {
         calls << "DELETE ${key}".toString()
         objects.remove(key)
     }
@@ -193,14 +208,14 @@ class MemoryS3Ops implements S3Ops {
 
     @Override Long lastServerDateMillis() { serverDateMillis ?: clock }
 
-    @Override List<String> deleteMany(List<String> keys) {
+    @Override synchronized List<String> deleteMany(List<String> keys) {
         if( keys.size() > 1000 ) throw new IllegalArgumentException("DeleteObjects takes at most 1,000 keys, got ${keys.size()}")
         calls << "DELETEMANY ${keys.size()}".toString()
         keys.each { objects.remove(it) }
         return []
     }
 
-    @Override List<S3Upload> listUploads(String prefix) {
+    @Override synchronized List<S3Upload> listUploads(String prefix) {
         calls << "LISTUPLOADS ${prefix}".toString()
         return openUploads.values().findAll { it.key.startsWith(prefix) }.toList()
     }

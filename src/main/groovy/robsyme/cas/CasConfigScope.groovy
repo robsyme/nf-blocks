@@ -43,7 +43,7 @@ class CasConfigScope implements ConfigScope {
     List resolve
 
     @ConfigOption
-    @Description('Opaque label recorded in every asserted block. Defaults to "anonymous".')
+    @Description('Name recorded in every asserted block. When unset it comes from Seqera Platform, NXF_BLOCKS_USER, git user.email, then "anonymous" (see docs/identity.md).')
     String asserted_by
 
     @ConfigOption
@@ -66,6 +66,23 @@ class CasConfigScope implements ConfigScope {
 
     @Description('What nf-blocks:sweep protects (DESIGN.md §19).')
     CasSweepScope sweep
+
+    @Description('The files a run read from outside its work directory, recorded in its InputSet.')
+    CasInputsScope inputs
+
+    /** {@code cas.inputs}: how a run records the files it read (explorer v0.3 P4 plan 1.3). */
+    @CompileStatic
+    static class CasInputsScope implements ConfigScope {
+        CasInputsScope() {}
+
+        @ConfigOption
+        @Description('Hash each local input file (once per run, off the task threads) so runs that read the same bytes share its address; a remote input is never read. When false, inputs are listed by name, size, role and sample without an address. Defaults to true.')
+        Boolean hash
+
+        @ConfigOption
+        @Description('How long, in seconds, a completing run waits for the stat and hash of its inputs; a failed run waits at most 30 s of it. Inputs still being read then are listed without an address, with reason unfinished. A whole number, 0 or more. Defaults to 600.')
+        Integer waitSeconds
+    }
 
     /** {@code cas.sweep}: the age floor and the Trash grace period (ticket 20; plan decision 8). */
     @CompileStatic
@@ -99,6 +116,10 @@ class CasConfigScope implements ConfigScope {
         @ConfigOption
         @Description('Where this member lives: a local directory or s3://<bucket>[/<prefix>].')
         String location
+
+        @ConfigOption
+        @Description('When true, nf-blocks:copy and the explorer never write to this member. Defaults to false; refused on the writable member.')
+        Boolean readOnly
     }
 
     /** {@code cas.index}: where the derived SQLite index lives. */

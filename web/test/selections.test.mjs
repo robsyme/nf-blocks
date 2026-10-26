@@ -126,7 +126,7 @@ async function openLatest({ pipeline = 'q2', runs = [], preClaims = [], preSuper
   try {
     db.exec('PRAGMA page_size=4096')
     db.exec(readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8'))
-    db.exec({ sql: 'INSERT INTO schema_version VALUES (3)' })
+    db.exec({ sql: 'INSERT INTO schema_version VALUES (5)' })
     for (const r of runs)
       db.exec({ sql: "INSERT INTO run(completion_cid, pipeline, status, possibly_incomplete, finished_at) VALUES (?, ?, 'succeeded', 0, ?)",
         bind: [r.cid, pipeline, r.finishedAt] })

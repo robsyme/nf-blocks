@@ -264,7 +264,7 @@ test('runIdentity names a run from its blocks alone, once per run, and asks agai
   const id = await ex.runIdentity(ids.completion)
   assert.deepEqual({ ...id, config: undefined, manifest: undefined }, {
     completion: ids.completion, manifest: undefined, pipeline: 'demo', run_name: 'R4', nf_run_hash: 'hash-R4', lid: 'lid://hash-R4',
-    revision: null, config: undefined, status: 'succeeded', possibly_incomplete: false })
+    revision: null, config: undefined, status: 'succeeded', possibly_incomplete: false, finished_at: '2026-09-04T10:00:00.000Z' })
   assert.match(id.manifest, /^bafy/)
   assert.deepEqual(queries, [], 'no snapshot query')
   assert.equal(await ex.runIdentity(ids.completion), id)
@@ -380,4 +380,39 @@ test('a range over a snapshot run is the SQL, over a stale run the matcher; int 
   assert.deepEqual(await items(member.runs.R2.completion, [['depth', 'float', '3.0', '>']]), [member.item.C])
   assert.deepEqual(await items(member.runs.R2.completion, [['lane', 'int', '2', '<='], ['depth', 'float', '2.0', '>']]), [member.item.B])
   await assert.rejects(items(member.runs.R1.completion, [['lane', 'int', 'two', '>=']]), (e) => e.constructor.name === 'PredicateError')
+})
+
+test('snapshotWrittenAt is meta.snapshot_written_at, and null when the snapshot has no such key', async () => {
+  const { explorer } = await open()
+  assert.equal(explorer.snapshotWrittenAt, '2026-09-01T10:00:01.000Z')
+  const sqlite3 = await loadSqlite()
+  const bare = makeDb(sqlite3, [readFileSync(new URL('./fixtures/schema.sql', import.meta.url), 'utf8')])
+  const without = await Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(bare), blocks: null,
+    listFn: async () => ({ names: [], readable: true }), now: () => Date.now() })
+  assert.equal(without.snapshotWrittenAt, null)
+})
+
+test('recentActivity merges a stale snapshot\'s rows with the tail\'s, newest first, ties by cid and each entry once', async () => {
+  const now = Date.now()
+  const iso = (millis) => new Date(millis).toISOString()
+  const member = await buildMember({ now, extra: ({ runs, at }) => ({ log: [], rows: (db) => {
+    db.exec({ sql: "INSERT INTO log_entry VALUES (?, 'run', NULL, ?)", bind: [runs.R1.completion, iso(at.R1)] })
+    // R2 is logged in the snapshot too, though its run rows are not: it is a tail run, listed once.
+    db.exec({ sql: "INSERT INTO log_entry VALUES (?, 'run', NULL, ?)", bind: [runs.R2.completion, iso(at.R1 + 1)] })
+    // A claim written in the same millisecond as R3's log entry.
+    db.exec({ sql: "INSERT INTO log_entry VALUES ('k-tie', 'claim', NULL, ?)", bind: [iso(at.R3)] })
+  } }) })
+  const explorer = await Explorer.open({
+    base: 'http://h/m/lab/', openDb: async () => snapshotDb(member.snapshot),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(member.blocks) }),
+    listFn: async () => ({ names: member.log, readable: true }), now: () => now,
+  })
+  const rows = await explorer.recentActivity(8)
+  const r = member.runs
+  assert.deepEqual(rows.map(e => [e.kind, e.cid]), [
+    ['selection', r.R3.completion], ['run', r.R3.completion], ['claim', 'k-tie'], ['run', r.R2.completion], ['run', r.R1.completion]])
+  assert.equal(rows[1].written_at, rows[2].written_at, 'a tie')
+  assert.equal(rows.filter(e => e.cid === r.R2.completion).length, 1)
+  assert.equal(rows[3].name, 'R2', 'the tail\'s row, which knows the run')
+  assert.deepEqual((await explorer.recentActivity(8)).map(e => e.cid), rows.map(e => e.cid), 'the same order every time')
 })

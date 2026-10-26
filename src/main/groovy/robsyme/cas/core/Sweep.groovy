@@ -5,6 +5,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.function.Supplier
 
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
@@ -17,6 +18,12 @@ import groovy.util.logging.Slf4j
  * ledgers, then trashes what is newly dead into one new ledger. Deletion is
  * irreversible, so every doubt resolves to keeping: a failed re-check stops
  * the sweep before its next step.
+ *
+ * A Store Log entry of a kind this build does not know roots blocks this
+ * build cannot see (P4 ruling R8). A dry run lists those kinds per member;
+ * an applied sweep refuses before it marks, and a re-check that finds one
+ * logged since stops it before its next step. Every member's log counts,
+ * read-only ones too: their roots protect the swept member's blocks.
  */
 @Slf4j
 @CompileStatic
@@ -29,18 +36,24 @@ class Sweep {
     private final BlockStore writable
     private final RetentionStorage storage
     private final SweepPolicy policy
-    /** Who the Forget blocks this sweep writes say asserted them (DESIGN.md §20 decision 7). */
-    private final String assertedBy
+    /**
+     * Who the Forget blocks this sweep writes say asserted them (DESIGN.md §20
+     * decision 7). Asked once. An applied sweep asks before it takes the lock
+     * when a ledger past its deadline holds metadata, so a dry run, or an apply
+     * with no metadata due, resolves no identity.
+     */
+    private final Supplier<String> assertedBy
+    private String signer
     /** Blocks per delete batch: {@link #BATCH}, smaller only in a test. */
     @groovy.transform.PackageScope int batchSize = BATCH
     /** The lock of the applied pass in progress, for {@link #abandon}; null otherwise. */
     private volatile SweepLock active
 
     Sweep(BlockStore store, SweepPolicy policy) {
-        this(store, policy, 'nf-blocks')
+        this(store, policy, (Supplier<String>) null)
     }
 
-    Sweep(BlockStore store, SweepPolicy policy, String assertedBy) {
+    Sweep(BlockStore store, SweepPolicy policy, Supplier<String> assertedBy) {
         policy.validate()
         this.store = store
         this.writable = store instanceof CompositeStore ? ((CompositeStore) store).members[0] : store
@@ -48,7 +61,18 @@ class Sweep {
             throw new IllegalArgumentException("store member '${writable.alias()}' is not a writable member this build can sweep")
         this.storage = ((RetainedStore) writable).retentionStorage()
         this.policy = policy
-        this.assertedBy = assertedBy ?: 'nf-blocks'
+        this.assertedBy = assertedBy
+    }
+
+    /** The name a Forget is signed with: the supplier's answer, or 'nf-blocks' for a null or blank one. */
+    // The first call can wait up to the resolver's bound (Platform 5 s, git 2 s) inside this monitor, so nothing else synchronizes on a Sweep.
+    // apply() makes that first call before it takes sweep.lock; a later one here is only the fallback for metadata that came due since.
+    private synchronized String signer() {
+        if( signer == null ) {
+            final String who = assertedBy?.get()
+            signer = who?.trim() ? who : 'nf-blocks'
+        }
+        return signer
     }
 
     private List<BlockStore> members() {
@@ -56,7 +80,18 @@ class Sweep {
     }
 
     private List<MemberLog> logs() {
-        return members().collect { BlockStore m -> new MemberLog(m.alias(), m.is(writable), StoreLog.of(m).read()) }
+        return members().collect { BlockStore m -> MemberLog.of(m, m.is(writable)) }
+    }
+
+    /** Per member alias, in member order, the kinds its log holds that this build does not know; empty when there are none. */
+    static Map<String, List<String>> unknownKinds(List<MemberLog> logs) {
+        final Map<String, List<String>> out = new LinkedHashMap<String, List<String>>()
+        for( MemberLog l : logs ) {
+            final List<String> kinds = l.unknownKinds()
+            if( kinds )
+                out.put(l.alias, kinds)
+        }
+        return out
     }
 
     private SweepReport newReport() {
@@ -72,7 +107,9 @@ class Sweep {
         final SweepReport r = newReport()
         final LiveRegistry registry = new LiveRegistry(storage)
         r.fresh = registry.fresh()
-        final Mark mark = Mark.of(store, logs(), THREADS)
+        final List<MemberLog> logs = logs()
+        r.unknownKinds = unknownKinds(logs)
+        final Mark mark = Mark.of(store, logs, THREADS)
         final List<BlockStat> stats = storage.listBlockStats()
         final List<TrashLedger> ledgers = ledgers(r)
         final SweepPlan plan = SweepPlan.of(mark, stats, ledgers, storage.nowMillis(), policy, 0L)
@@ -85,6 +122,18 @@ class Sweep {
     }
 
     SweepReport apply(boolean wait, long budgetBytes, Closure<Boolean> stopRequested, Closure<Void> say, Closure<Void> sleeper) {
+        // Resolve who signs now, holding nothing, when this pass may write a Forget. Left to the first
+        // Forget, the first resolution (up to 7 to 9 s) would run under sweep.lock, after the first
+        // delete batch, and its notice would land in the middle of the sweep's output. A failure here
+        // only defers: the lazy call in announce() asks again and turns a real failure into a warning.
+        if( metadataDue() ) {
+            try {
+                signer()
+            }
+            catch( Exception e ) {
+                log.debug("nf-blocks sweep: could not resolve who signs before taking the lock; asking again at the first Forget: ${e.message}")
+            }
+        }
         final String id = SweepLock.newSweepId(System.currentTimeMillis())
         final SweepReport r = newReport()
         r.sweepId = id
@@ -147,6 +196,45 @@ class Sweep {
             }
             releaseQuietly(lock)
         }
+    }
+
+    /**
+     * Whether a ledger past its deadline holds a metadata (dag-cbor) block,
+     * so this pass may delete one and write a Forget. Reads only ledgers past
+     * their deadline, by name. A ledger that cannot be read or parsed, or a
+     * listing that fails, counts as no: the applied pass meets it again, and
+     * {@link #signer} still answers if a Forget is written after all.
+     */
+    private boolean metadataDue() {
+        try {
+            final List<String> names = storage.listLedgers()
+            final long now = storage.nowMillis()
+            for( String name : names ) {
+                final long deadline
+                try {
+                    deadline = Long.parseLong(name.substring(0, 13))
+                }
+                catch( RuntimeException e ) {
+                    continue
+                }
+                if( deadline > now )
+                    continue
+                final byte[] body = storage.readLedger(name)
+                if( body == null )
+                    continue
+                try {
+                    if( TrashLedger.parse(name, body).blocks.keySet().any { Cid c -> c.isDagCbor() } )
+                        return true
+                }
+                catch( IllegalArgumentException e ) {
+                    // the applied pass warns about it
+                }
+            }
+        }
+        catch( Exception e ) {
+            log.debug("nf-blocks sweep: could not tell whether metadata is due before taking the lock: ${e.message}")
+        }
+        return false
     }
 
     /**
@@ -213,6 +301,11 @@ class Sweep {
     private SweepReport applyLocked(Pass p, long budgetBytes) {
         final SweepReport r = p.r
         p.seen = logs()
+        r.unknownKinds = unknownKinds(p.seen)
+        if( r.unknownKinds ) {
+            r.stopped = SweepReport.unknownKindsRefusal(r.unknownKinds)
+            return r
+        }
         for( MemberLog l : p.seen )
             p.seenNames.add(new HashSet<String>(l.entries*.name))
         final Mark mark
@@ -347,7 +440,7 @@ class Sweep {
         if( metadata.isEmpty() )
             return
         try {
-            final Cid block = writable.putDagCbor(new Forget(assertedBy, metadata).toCbor())
+            final Cid block = writable.putDagCbor(new Forget(signer(), metadata).toCbor())
             StoreLog.append(writable, StoreLogKind.FORGET, block, System.currentTimeMillis())
             r.forgets.add(block)
         }
@@ -420,8 +513,14 @@ class Sweep {
                 p.r.fresh = fresh
                 return "a pipeline started: ${describe(fresh)} is live".toString()
             }
+            final List<MemberLog> added = newEntries(p)
+            final Map<String, List<String>> unknown = unknownKinds(added)
+            if( unknown ) {
+                p.r.unknownKinds = unknown
+                return SweepReport.unknownKindsRefusal(unknown)
+            }
             try {
-                p.mark.extend(newEntries(p))
+                p.mark.extend(added)
             }
             catch( Mark.Stopped e ) {
                 return 'interrupted'
@@ -435,7 +534,12 @@ class Sweep {
         }
     }
 
-    /** Per member, the Store Log entries not seen before; they are added to what is seen, so the next re-check reads only newer ones. */
+    /**
+     * Per member, the Store Log entries not seen before; they are added to what
+     * is seen, so the next re-check reads only newer ones. Each carries every
+     * entry of an unknown kind the member's log holds now: the pass began
+     * with none, so any there was logged since.
+     */
     private List<MemberLog> newEntries(Pass p) {
         final List<MemberLog> fresh = logs()
         final List<MemberLog> out = new ArrayList<MemberLog>()
@@ -446,7 +550,7 @@ class Sweep {
             for( StoreLogEntry e : now.entries )
                 if( names.add(e.name) )
                     added.add(e)
-            out.add(new MemberLog(now.alias, now.writable, added))
+            out.add(new MemberLog(now.alias, now.writable, added, now.unknown))
         }
         return out
     }

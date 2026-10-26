@@ -35,7 +35,7 @@ import gen_year  # noqa: E402
 import year_params  # noqa: E402
 
 PASS, FAIL = "PASS", "FAIL"
-SNAPSHOT = "index/v3.sqlite"
+SNAPSHOT = "index/v6.sqlite"
 POINT_LIMIT = (8, 65536)          # requests, bytes: spec section 1.3 assertion 2
 QUERY3_LIMIT = (50, 524288)
 YEAR_RUNS = 5 * 365
@@ -149,8 +149,17 @@ def producers(gate, content):
 # A1's floor under the Gate's own producer set (ticket 08). `fail` aborts on
 # MAYBE_FAIL's exit before some output channels close, so whether its
 # RunCompletion holds `aligned` is timing, and it may or may not be a producer.
-# `resumed` never is: its A.bam leaf is never-published because the locked
-# source blocks PublishDir's copy.
+# `resumed` never is: it resumes cold's session with every task cached and
+# gate/resume.config's overwrite = false, so PublishDir uploads nothing and,
+# since the plugin addresses a Leaf only from a publish made in the same run,
+# its A.bam leaf is never_published. Assertion 4c checks the session, that
+# every task was cached, that nothing read a locked source, and that resumed's
+# RunCompletion counts every one of cold's Leaves as never_published with no
+# providers while none of its own Leaves, A.bam's among them, has an address
+# (so a plugin that took an address from a coords pointer on resume would fail
+# 4c too). Before that, `-resume cold` resumed fail's session and re-ran
+# whichever tasks fail had not finished, in fresh, unlocked work directories;
+# resumed published A.bam whenever ALIGN (1) was one of them (issue 17).
 STEADY_PRODUCERS = ("cold", "again", "elsewhere")
 NEVER_PRODUCERS = ("resumed",)
 

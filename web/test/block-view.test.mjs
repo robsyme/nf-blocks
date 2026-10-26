@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { installDom } from './dom.mjs'
 import { block as blockView } from '../src/views/block.js'
 import { block as blockOf, rawCid } from './fixture.mjs'
+import { createPresence } from '../src/presence.js'
 
 const leaf = rawCid('Tarik Benali from Casablanca, Africa\n')
 const item = blockOf({ kind: 'OutputItem', schema: 2, value: { datafile: { kind: 'Leaf', name: 'Tarik_Benali.dat', address: leaf, size: 37, reason: null } } })
@@ -108,4 +109,19 @@ test('a kind that is not a string falls back to the codec', async () => {
   installDom()
   const page = await blockView(exWith(structured({ value: { kind: { a: 1 } } })), item.cid.toString(), ctx())
   assert.equal(page.querySelector('[data-block-kind]').dataset.blockKind, 'dag-cbor')
+})
+
+test('presence beside the address: held here when read, a ring when missing, and the other stores asked', async () => {
+  installDom()
+  const asked = []
+  const presence = createPresence({ primary: 'roblab', list: [{ alias: 'roblab', key: 'a', base: 'm/roblab/' }, { alias: 'shared', key: 'b', base: 'm/shared/' }] },
+    { fetchFn: async (url) => { asked.push(String(url)); return new Response(null, { status: 200 }) }, pageUrl: 'http://h/' })
+  const read = await blockView(exWith(structured()), item.cid.toString(), ctx({ presence }))
+  const missing = await blockView(exWith(structured({ check: 'missing', value: null, bytes: null, friendly: null })), item.cid.toString(), ctx({ presence }))
+  await new Promise(r => setTimeout(r, 20))
+  const dots = (page) => page.querySelector('h1').querySelector('.presence').querySelectorAll('.dot').map(d => d.getAttribute('class'))
+  assert.deepEqual(dots(read), ['dot a', 'dot b'])
+  assert.deepEqual(dots(missing), ['dot ring a', 'dot b'])
+  assert.equal(missing.querySelector('h1').querySelector('.presence').getAttribute('title'), 'Held in shared; not in roblab')
+  assert.deepEqual(asked, [`http://h/m/shared/blocks/${item.cid.toString().slice(-2)}/${item.cid}`], 'one HEAD, shared by both pages')
 })

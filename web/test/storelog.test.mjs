@@ -1,7 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { entriesSince, listLog, parseEntry } from '../src/storelog.js'
-import { entryName } from './fixture.mjs'
+import { entryName, buildMember, blockFetch } from './fixture.mjs'
+import { Explorer } from '../src/model.js'
+import { BlockFetcher } from '../src/blocks.js'
+import { snapshotDb } from './helpers.mjs'
 
 const CID = 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua'
 const T = 1_758_000_000_000
@@ -12,6 +15,29 @@ test('entry names parse as StoreLog.parse does', () => {
   assert.deepEqual([e.kind, e.cid, e.writtenAtMillis], ['run', CID, T])
   for (const bad of ['.DS_Store', `123-run-${CID}`, `${'1'.repeat(13)}-pin-${CID}`, `${'1'.repeat(13)}-run-nope`])
     assert.equal(parseEntry(bad), null, bad)
+})
+
+test('transfer entries parse', () => {
+  const e = parseEntry(entryName(T, 'transfer', CID))
+  assert.deepEqual([e.kind, e.cid, e.writtenAtMillis], ['transfer', CID, T])
+})
+
+test('project and handoff entries parse (P4 plan 1.1 and 1.5)', () => {
+  for (const kind of ['project', 'handoff']) {
+    const e = parseEntry(entryName(T, kind, CID))
+    assert.deepEqual([e.kind, e.cid, e.writtenAtMillis], [kind, CID, T])
+  }
+})
+
+test('a transfer entry in the tail adds no stale run, selection or claim to the Explorer', async () => {
+  const member = await buildMember({ now: T })
+  const open = (log) => Explorer.open({ base: 'http://h/m/lab/', openDb: async () => snapshotDb(member.snapshot),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(member.blocks) }), now: () => T,
+    listFn: async () => ({ names: log, readable: true }) })
+  const without = await open(member.log)
+  const withTransfer = await open([...member.log, entryName(T + MIN, 'transfer', CID)])
+  assert.deepEqual([withTransfer.stale.length, withTransfer.tailSelections.length, withTransfer.tailClaims.length],
+    [without.stale.length, without.tailSelections.length, without.tailClaims.length])
 })
 
 test('since the watermark: newer, the watermark, and 10 minutes behind it; newest first', () => {

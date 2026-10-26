@@ -1,0 +1,73 @@
+<!--META
+{
+ "file":"13-project.html","title":"Project","phase":"P4 · projects","route":"#/project/<project_cid>?tab=samples",
+ "nav":"projects","navContext":"projects","navProject":"RAP1 depletion","store":"all","stores":["a","b"],"picked":0,
+ "summary":"A project is a living folder made of claims: membership, people, policies and sample annotations are all claims, so they can change with full history. It lists addresses, so it spans stores. Storage is shown per store, never summed. Samples are grouped across runs by meta.id until the plugin records input CIDs.",
+ "data":"Real: the five samples and three nf-core/rnaseq runs, roblab bytes. Example: the project itself, people (AK), the org-s3 copy of wigshop, condition annotations.",
+ "spec":{
+  "Model":[
+   "Project root block {name, description, created_by, created_at}; membership claim {subject, attribute: 'project', value: project_cid}; removal supersedes.",
+   "Annotations are project-scoped claims {subject: sample key, attribute: 'condition', value, project}.",
+   "Policies are claims on the project: default store, retention ('pin every Selection'), people."
+  ],
+  "Samples tab":[
+   "Group key today: pipeline + meta.id. 'Merge' / 'Split' write 'same sample as' claims.",
+   "When <code>RunCompletion.input_set</code> is populated, switch the key to input CIDs and show the 'Input reads' column with seals.",
+   "Annotation cells are editable inline; editing writes a claim and shows your avatar on the cell."
+  ],
+  "Storage":["One bar per store the project touches, side by side, with the caption shown. Never a combined total."]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs"><a href="#">Projects</a>/<b>RAP1 depletion</b></nav>
+  <div class="title">
+    <h1>RAP1 depletion</h1>
+    <span class="claim"><span class="av sm rs">RS</span><span class="verb">created</span><span class="age">Oct 23</span></span>
+    <span class="row" style="gap:4px"><span class="av rs">RS</span><span class="av ak">AK</span></span>
+    <span class="spacer"></span><button class="btn" type="button">Add to project…</button>
+  </div>
+  <div class="subline"><span>Yeast RAP1 auxin-depletion time course</span><span>default store <span class="dot b"></span> <b>org-s3</b></span><span>pins every Selection</span></div>
+</div>
+<nav class="tabs"><a href="#">Overview</a><a class="on" href="#">Samples<small>5</small></a><a href="#">Runs<small>3</small></a><a href="#">Selections<small>2</small></a><a href="#">Activity</a></nav>
+
+<div class="grid-2">
+  <section class="panel flush">
+    <div class="ph"><h2>Samples</h2><span class="muted">grouped by sample ID</span><span class="spacer"></span><button class="btn sm" type="button">Merge…</button><button class="btn sm" type="button">Split…</button></div>
+    <div class="pb tbox">
+    <table class="t">
+      <thead><tr><th>Sample</th><th class="r">Runs</th><th class="r">Reads (trimmed)<small>latest run</small></th><th>condition<small>project claim</small></th><th>Where</th></tr></thead>
+      <tbody id="ps"></tbody>
+    </table>
+    </div>
+    <div class="pb" style="padding:12px 16px;border-top:1px solid var(--line)"><p class="note" style="font-size:12px"><span>Grouped by <span class="mono">meta.id</span>. Grouping by input reads needs the plugin to record input addresses (<span class="mono">input_set</span> is empty in these runs).</span></p></div>
+  </section>
+  <div class="stack">
+    <section class="panel">
+      <div class="ph"><h2>Storage</h2><span class="muted">per store</span></div>
+      <div class="pb" style="gap:16px">
+        <div data-bar='{"total":142134100,"pinned":0,"held":142134100,"releasing":0,"store":"a","storeName":"roblab"}'></div>
+        <div data-bar='{"total":1135852,"pinned":1135852,"held":0,"releasing":0,"store":"b","storeName":"org-s3"}'></div>
+        <p class="muted" style="font-size:12px">Each store keeps its own pins and runs its own cleanup, so they're shown side by side and never added up.</p>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>Activity</h2></div>
+      <div class="pb" style="gap:8px">
+        <div class="row"><span class="mono muted" style="width:40px">2h</span><span class="claim"><span class="av sm ak">AK</span><span class="verb">condition</span>RAP1_IAA_30M_REP1 = auxin_30m</span></div>
+        <div class="row"><span class="mono muted" style="width:40px">3h</span><span class="claim"><span class="av sm rs">RS</span><span class="verb">copied</span>wigshop → org-s3</span></div>
+        <div class="row"><span class="mono muted" style="width:40px">3h</span><span class="claim"><span class="av sm rs">RS</span><span class="verb">pinned</span>wigshop in org-s3 · policy</span></div>
+        <div class="row"><span class="mono muted" style="width:40px">1d</span><span class="claim"><span class="av sm rs">RS</span><span class="verb">added</span>3 runs</span></div>
+      </div>
+    </section>
+  </div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+ const S=[['RAP1_IAA_30M_REP1',49791,'auxin_30m','ak',false],['RAP1_UNINDUCED_REP1',49969,'uninduced','rs',true],['RAP1_UNINDUCED_REP2',99971,'uninduced','rs',true],['WT_REP1',99566,'wild_type','rs',false],['WT_REP2',49760,'wild_type','rs',true]];
+ document.getElementById('ps').innerHTML=S.map(([id,r,c,who,inB])=>`<tr><td class="nowrap"><a href="07-run-samples.html" style="font-weight:600">${id}</a></td><td class="r num">3</td><td class="r num">${r.toLocaleString('en-US')}</td>
+  <td><span class="claim" style="padding-right:4px"><span class="av sm ${who}">${who.toUpperCase()}</span><input value="${c}" aria-label="condition for ${id}" style="border:0;background:transparent;font:inherit;color:var(--ink);width:96px"></span></td>
+  <td><span class="presence" title="${inB?'roblab, org-s3':'roblab only'}"><span class="dot a"></span><span class="dot ${inB?'':'ring '}b"></span></span></td></tr>`).join('');
+});
+</script>

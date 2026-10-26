@@ -23,6 +23,14 @@ class Claim {
     static final String NAME = 'name'
     static final String RETAIN = 'retain'
     static final String PIN = 'pin'
+    static final String PROJECT = 'project'
+    /** Claims on a Project (explorer v0.3 P4 plan 1.2). */
+    static final String SAMPLE = 'sample'
+    static final String ANNOTATION = 'annotation'
+    static final String SAME_SAMPLE = 'same_sample'
+    static final String POLICY_DEFAULT_STORE = 'policy.default_store'
+    static final String POLICY_RETENTION = 'policy.retention'
+    static final String POLICY_PEOPLE = 'policy.people'
     /** The one `set retain` value that releases a run's content (ticket 21 answer 1). */
     static final String LINEAGE = 'lineage'
 

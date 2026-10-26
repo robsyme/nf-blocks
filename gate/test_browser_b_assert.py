@@ -942,5 +942,17 @@ class PostsTest(unittest.TestCase):
         self.assertEqual([p["body"] for p in B._posts(step)], ["{\"a\":1}"])
 
 
+class RetainActionsTest(unittest.TestCase):
+    """B.retain's clicks (explorer v0.3 P2 Task 7): Release opens an inline confirmation, and #release-confirm writes."""
+
+    def test_release_is_confirmed_before_it_writes(self):
+        clicks = [a["click"] for a in B.RETAIN_ACTIONS if "click" in a]
+        self.assertEqual(clicks, ["#pin", "#release", "#release-confirm", "#restore"])
+        i = B.RETAIN_ACTIONS.index({"click": "#release-confirm"})
+        self.assertEqual(B.RETAIN_ACTIONS[i - 1], {"click": "#release"}, "no wait between opening and confirming")
+        self.assertEqual(B.RETAIN_ACTIONS[i + 1], {"waitWrite": True})
+        self.assertEqual(sum(1 for a in B.RETAIN_ACTIONS if a.get("waitWrite")), 3, "three Claim writes")
+
+
 if __name__ == "__main__":
     unittest.main()

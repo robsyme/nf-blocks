@@ -105,30 +105,85 @@ export function snippetLines(spec, mode) {
   return { include: INCLUDE_LINE, call: mode === 'typed' ? `nextflow.Channel.fromStore(${full}, records: true)` : `channel.fromStore(${full})` }
 }
 
-/** A snippet with a Copy button; its call line is `<code data-snippet="untyped"|"typed">`. */
+/** An output name as a Groovy variable: other characters become `_`, a leading digit or a reserved word gets one too. */
+const variableOf = (name) => {
+  const v = String(name).replace(/[^A-Za-z0-9_]/g, '_')
+  return /^[0-9]/.test(v) ? `_${v}` : KEYWORDS.has(v) ? `${v}_` : v || '_'
+}
+
+/**
+ * The Samples tab's hand-off as a script (P1a): the samples by `where`, or by
+ * `ids` when given (ticks by hand, or a filter a Groovy map cannot hold),
+ * each per-sample output in `outputs` from that handle, each run-level one
+ * in `runLevel` as today's run and output call. `samples:` is a proposal
+ * (docs/design/adr/0001-fromstore-samples.md), so the script says so and
+ * the page never puts it where the Gate runs snippets.
+ */
+export function samplesSnippet({ completion, where = [], ids = null, outputs = [], runLevel = [] }) {
+  const run = quote(`cas://${completion}`)
+  const samples = ids ? `[ids: [${ids.map(quote).join(', ')}]]` : `[where: ${whereLiteral(where) ?? '[:]'}]`
+  const lines = [INCLUDE_LINE, '',
+    '// Proposed API, not in the plugin yet: docs/design/adr/0001-fromstore-samples.md',
+    'samples = channel.fromStore(', `  run: ${run},`, `  samples: ${samples})`]
+  // One variable per output: `samples` is the handle, `channel` reads the run-level outputs, and names that clean up alike get _2, _3, ...
+  const taken = new Set(['samples', 'channel'])
+  const variable = (o) => {
+    const base = variableOf(o)
+    let v = base
+    for (let n = 2; taken.has(v); n++) v = `${base}_${n}`
+    taken.add(v)
+    return v
+  }
+  const calls = [...outputs.map(o => `${variable(o)} = samples.output(${quote(o)})`),
+    ...runLevel.map(o => `${variable(o)} = channel.fromStore(run: ${run}, output: ${quote(o)})`)]
+  return (calls.length ? [...lines, '', ...calls] : lines).join('\n')
+}
+
+// INCLUDE_LINE with the kit's keyword and string colours; its text is the line itself.
+const includeNode = () => h('code', {}, h('span', { class: 'k' }, 'include'), ' { fromStore } ', h('span', { class: 'k' }, 'from'), ' ',
+  h('span', { class: 's' }, "'plugin/nf-blocks'"))
+
+/**
+ * A snippet as the kit draws it (mockups 03/04/08): a `pre.code` block, the
+ * include line and the call a blank line apart, then a full-width "Copy
+ * snippet". The call line alone is `<code data-snippet="untyped"|"typed">`,
+ * which the Gate runs verbatim.
+ */
 export function snippetBlock(spec) {
   const call = h('code', spec.where?.length ? { 'data-where': JSON.stringify(spec.where) } : {})
-  const copy = h('button', { type: 'button', onclick: async (event) => {
+  const copy = h('button', { type: 'button', class: 'btn sm snippet-copy', onclick: async (event) => {
     const button = event.currentTarget
-    button.textContent = await copyOutcome(navigator.clipboard, `${INCLUDE_LINE}\n${call.textContent}`)
-  } }, 'Copy')
-  const node = h('div', { class: 'snippet' }, h('pre', {}, h('code', {}, INCLUDE_LINE), '\n', call), copy)
+    button.textContent = await copyOutcome(navigator.clipboard, `${INCLUDE_LINE}\n\n${call.textContent}`)
+  } }, 'Copy snippet')
+  const node = h('div', { class: 'snippet' }, h('pre', { class: 'code' }, includeNode(), '\n\n', call), copy)
   const draw = (mode) => {
     call.dataset.snippet = mode
     call.textContent = snippetLines(spec, mode).call
-    copy.textContent = 'Copy'
+    copy.textContent = 'Copy snippet'
   }
   draw(current())
   track({ node, draw })
   return node
 }
 
-/** The one "untyped | typed" choice for every snippet on the page. */
+/** Marks the pressed button of a seg-toggle: `on` for the kit's look, aria-pressed for the reader. */
+export function pressSeg(buttons, isOn) {
+  for (const b of buttons) {
+    const on = isOn(b)
+    b.setAttribute('aria-pressed', String(on))
+    if (on) b.classList.add('on')
+    else b.classList.remove('on')
+  }
+}
+
+/** The one Untyped | Typed choice for every snippet on the page, as the kit's seg-toggle. */
 export function snippetToggle() {
-  const buttons = MODES.map(mode => h('button', { type: 'button', 'data-snippet-mode': mode, 'aria-pressed': String(current() === mode),
+  const buttons = MODES.map(mode => h('button', { type: 'button', class: 'seg', 'data-snippet-mode': mode,
     title: mode === 'typed' ? 'For scripts with nextflow.enable.types: processes get records.' : 'For scripts without nextflow.enable.types.',
-    onclick: () => setSnippetMode(mode) }, mode))
-  const node = h('span', { class: 'snippet-toggle', role: 'group', 'aria-label': 'script kind' }, buttons[0], ' | ', buttons[1])
-  track({ node, draw: (mode) => buttons.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.snippetMode === mode))) })
+    onclick: () => { setSnippetMode(mode); draw(mode) } }, mode === 'typed' ? 'Typed' : 'Untyped'))
+  function draw(mode) { pressSeg(buttons, b => b.dataset.snippetMode === mode) }
+  draw(current())
+  const node = h('div', { class: 'seg-toggle snippet-toggle', role: 'group', 'aria-label': 'script kind' }, buttons)
+  track({ node, draw })
   return node
 }

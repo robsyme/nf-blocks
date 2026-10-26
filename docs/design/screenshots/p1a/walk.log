@@ -1,0 +1,13 @@
+default tab samples rows ["RAP1_IAA_30M_REP1","RAP1_UNINDUCED_REP1","RAP1_UNINDUCED_REP2","WT_REP1","WT_REP2"]
+1-samples {"route":"run","cidOnly":[],"floats":[],"blank":0}
+filtered rows ["RAP1_UNINDUCED_REP2","WT_REP1"] match 2 of 5 samples hash #/run/bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq?tab=samples&where=[["preprocessed:num_trimmed_reads","int","50000",">="]]
+2-filtered {"route":"run","cidOnly":[],"floats":[],"blank":0}
+quant_salmon only 2 items · 56.5 KB
+quant_salmon + quant_merged 3 items · 140 KB | note: Holds 5 samples as columns; your 2 are among them. Preview
+3-handoff {"route":"run","cidOnly":[],"floats":[],"blank":0}
+compose "Picked2 items · 56.5 KBdistraught_murdock / quant_salmon2 itemsRemove theseWT_REP1bafy…o74sruRemoveRAP1_UNINDUCED_REP2bafy…hjy6zyRemoveSave as SelectionA filter cannot describe these, so save them as a Selection: a fixed list of these exact items.Read only here: writing needs this page opened through `nextflow plugin nf-blocks:explore`.Save as SelectionClear"
+4-compose {"route":"compose","cidOnly":[],"floats":[],"blank":0}
+5-search {"route":"search","cidOnly":[],"floats":[],"blank":0}
+search -> samples rows ["WT_REP1"]
+6-search-to-samples {"route":"run","cidOnly":[],"floats":[],"blank":0}
+page errors []

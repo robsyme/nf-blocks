@@ -1,16 +1,20 @@
 // Item previews for the page's item rows (DESIGN.md §16 milestone 3 decision 10, ticket
-// 03 Q3): OutputItem blocks fetched lazily through Explorer.item, which reads
-// them through BlockFetcher (hash-checked, cached), a few at a time. No
-// snapshot query: a preview never costs a range read of the index.
+// 03 Q3): OutputItem blocks fetched lazily through Explorer.itemBlock, which
+// reads them through BlockFetcher (hash-checked, cached), a few at a time. No
+// snapshot query: itemBlock leaves out the claim state (Explorer.item reads
+// it), so a preview never costs a range read of the index.
 import { PREVIEW_CAP, PREVIEW_CONCURRENCY } from './config.js'
 import { DAG_CBOR } from './cid.js'
 import { pairsOf } from './pairs.js'
+import { attrRows } from './metadata.js'
 import { codeOf, fileSlots } from './slots.js'
 
 export class Previews {
-  constructor(ex, { cap = PREVIEW_CAP, concurrency = PREVIEW_CONCURRENCY } = {}) {
+  /** `rows`: also keep each item's item_attr rows (metadata.js attrRows), for filters that match as the index does. */
+  constructor(ex, { cap = PREVIEW_CAP, concurrency = PREVIEW_CONCURRENCY, rows = false } = {}) {
     this.ex = ex
     this.cap = cap
+    this.rows = rows
     this.concurrency = concurrency
     this.done = new Map()
     this.waiting = new Set()
@@ -57,13 +61,14 @@ export class Previews {
       this.inFlight++
       let answer
       try {
-        answer = Promise.resolve(this.ex.item(collectionCid, itemCid))
+        answer = Promise.resolve(this.ex.itemBlock(collectionCid, itemCid))
       } catch (e) {
         answer = Promise.reject(e)
       }
       answer.then(
         (it) => { this.done.set(itemCid, { pairs: pairsOf(it.view), files: it.leaves.map(l => l.name).filter(Boolean),
-          dirs: it.leaves.filter(l => l.name && l.address && codeOf(l.address) === DAG_CBOR).map(l => l.name), slots: fileSlots(it.value) }); this.fetched++ },
+          dirs: it.leaves.filter(l => l.name && l.address && codeOf(l.address) === DAG_CBOR).map(l => l.name), slots: fileSlots(it.value),
+          ...(this.rows ? { rows: attrRows(it.view) } : {}) }); this.fetched++ },
         (e) => { this.done.set(itemCid, { error: e?.code ?? 'query_failed', message: e?.message ?? String(e) }); this.failed++ })
         .finally(() => {
           this.inFlight--

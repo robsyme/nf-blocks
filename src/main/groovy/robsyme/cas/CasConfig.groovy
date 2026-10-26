@@ -18,7 +18,7 @@ import robsyme.cas.core.IndexSnapshot
  *         lab { location = '/data/cas' }
  *     }
  *     resolve = ['lab']
- *     asserted_by = 'anonymous'
+ *     asserted_by = 'gate'    // optional; see docs/identity.md
  * }
  * </pre>
  *
@@ -66,7 +66,9 @@ class CasConfig {
 
     private final Map<String, S3Location> remotes
 
-    /** Opaque label recorded in every asserted block. */
+    private final Set<String> readOnlyAliases
+
+    /** The explicit `cas.asserted_by`, or null when the session resolves a principal (docs/identity.md). */
     final String assertedBy
 
     /** `cas.index.path`, or null for the per-user cache path (DESIGN.md §12). */
@@ -87,15 +89,33 @@ class CasConfig {
     /** A warning about `aws.client.storageClass` on the writable member, or null (see {@link #judgeStorageClass}). */
     final String storageClassWarning
 
+    /**
+     * `cas.inputs.hash` (default true): the observer hashes the files a run
+     * read for its InputSet. When false they are listed unaddressed, with no
+     * read of their content (explorer v0.3 P4 plan 1.3).
+     */
+    final boolean inputsHash
+
+    /**
+     * `cas.inputs.waitSeconds` (default {@link #DEFAULT_INPUTS_WAIT_SECONDS}):
+     * how long a completing run waits for the stats and hashes of its inputs.
+     * A failed run waits at most 30 s of it. An input still being read then
+     * is listed with reason "unfinished".
+     */
+    final int inputsWaitSeconds
+
+    static final int DEFAULT_INPUTS_WAIT_SECONDS = 600
+
     private CasConfig(String writableAlias, List<String> members, List<String> configuredAliases,
-                       Map<String,Path> locations, Map<String,S3Location> remotes, String assertedBy,
+                       Map<String,Path> locations, Map<String,S3Location> remotes, Set<String> readOnlyAliases, String assertedBy,
                        String indexOverride, long snapshotMaxBytes, Map rawConfig, Path tmpDir,
-                       Boolean nodeHashSetting, String storageClassWarning) {
+                       Boolean nodeHashSetting, String storageClassWarning, boolean inputsHash, int inputsWaitSeconds) {
         this.writableAlias = writableAlias
         this.members = Collections.unmodifiableList(members)
         this.configuredAliases = Collections.unmodifiableList(configuredAliases)
         this.locations = Collections.unmodifiableMap(locations)
         this.remotes = Collections.unmodifiableMap(remotes)
+        this.readOnlyAliases = Collections.unmodifiableSet(readOnlyAliases)
         this.assertedBy = assertedBy
         this.indexOverride = indexOverride
         this.snapshotMaxBytes = snapshotMaxBytes
@@ -103,6 +123,8 @@ class CasConfig {
         this.tmpDir = tmpDir
         this.nodeHashSetting = nodeHashSetting
         this.storageClassWarning = storageClassWarning
+        this.inputsHash = inputsHash
+        this.inputsWaitSeconds = inputsWaitSeconds
     }
 
     /** The writable member's local path, or null when the writable member is remote. */
@@ -117,6 +139,9 @@ class CasConfig {
     boolean isMember(String alias) {
         return locations.containsKey(alias)
     }
+
+    /** `cas.stores.<alias>.readOnly`: true when the config marks this member as never to be written, even by a copy. */
+    boolean readOnly(String alias) { readOnlyAliases.contains(alias) }
 
     boolean isRemote(String alias) { remotes.containsKey(alias) }
 
@@ -173,10 +198,16 @@ class CasConfig {
 
         final Map<String, Path> locations = new LinkedHashMap<String, Path>()
         final Map<String, S3Location> remotes = new LinkedHashMap<String, S3Location>()
+        final Set<String> readOnlyAliases = new LinkedHashSet<String>()
         for( Map.Entry entry : stores.entrySet() ) {
             final String name = entry.key as String
             checkAlias(name)
             final String location = requiredLocationText(name, entry.value)
+            final Object readOnlyValue = entry.value instanceof Map ? ((Map) entry.value).get('readOnly') : null
+            if( readOnlyValue != null && !(readOnlyValue instanceof Boolean) )
+                throw new IllegalArgumentException("cas.stores.${name}.readOnly must be true or false -- offending value: ${readOnlyValue}")
+            if( readOnlyValue == Boolean.TRUE )
+                readOnlyAliases.add(name)
             if( location.startsWith('s3://') ) {
                 if( !S3_LOCATION.matcher(location).matches() )
                     throw new IllegalArgumentException("cas.stores.${name}.location is not an S3 URI of the form s3://<bucket>[/<prefix>] -- offending value: ${location}")
@@ -191,9 +222,12 @@ class CasConfig {
         if( !locations.containsKey(alias) && !remotes.containsKey(alias) )
             throw new IllegalArgumentException("Missing store configuration 'cas.stores.${alias}' for the writable member '${alias}' named by lineage.store.location")
 
+        if( readOnlyAliases.contains(alias) )
+            throw new IllegalArgumentException("cas.stores.${alias}.readOnly = true, but '${alias}' is the writable member named by lineage.store.location")
+
         final List<String> members = memberList(alias, scope.get('resolve'), locations.keySet() + remotes.keySet())
         final List<String> configured = [alias] + ((locations.keySet() + remotes.keySet()) - alias).toList()
-        final assertedBy = (scope.get('asserted_by') ?: DEFAULT_ASSERTED_BY) as String
+        final String assertedBy = scope.get('asserted_by')?.toString()?.trim() ?: null
         final Object indexScope = scope.get('index')
         final String indexOverride = indexScope instanceof Map ? ((Map) indexScope).get('path') as String : null
         final Object snapshotScope = scope.get('snapshot')
@@ -209,8 +243,20 @@ class CasConfig {
 
         final String storageClassWarning = judgeStorageClass(sessionConfig, remotes.containsKey(alias))
 
-        return new CasConfig(alias, members, configured, locations, remotes, assertedBy, indexOverride,
-            snapshotMaxBytes, sessionConfig, tmpDir, nodeHashSetting, storageClassWarning)
+        final Object inputsScope = scope.get('inputs')
+        if( inputsScope != null && !(inputsScope instanceof Map) )
+            throw new IllegalArgumentException("cas.inputs must be a scope, e.g. cas { inputs { hash = false } } -- offending value: ${inputsScope}")
+        final Object inputsHashValue = inputsScope instanceof Map ? ((Map) inputsScope).get('hash') : null
+        if( inputsHashValue != null && !(inputsHashValue instanceof Boolean) )
+            throw new IllegalArgumentException("cas.inputs.hash must be true or false -- offending value: ${inputsHashValue}")
+        final boolean inputsHash = inputsHashValue == null || (Boolean) inputsHashValue
+        final Object inputsWaitValue = inputsScope instanceof Map ? ((Map) inputsScope).get('waitSeconds') : null
+        if( inputsWaitValue != null && !(inputsWaitValue instanceof Integer && (Integer) inputsWaitValue >= 0) )
+            throw new IllegalArgumentException("cas.inputs.waitSeconds must be a whole number of seconds, 0 or more -- offending value: ${inputsWaitValue}")
+        final int inputsWaitSeconds = inputsWaitValue == null ? DEFAULT_INPUTS_WAIT_SECONDS : (Integer) inputsWaitValue
+
+        return new CasConfig(alias, members, configured, locations, remotes, readOnlyAliases, assertedBy, indexOverride,
+            snapshotMaxBytes, sessionConfig, tmpDir, nodeHashSetting, storageClassWarning, inputsHash, inputsWaitSeconds)
     }
 
     /** Node-side hashing (DESIGN.md §11): cas.nodeHash when set, else fusion.enabled. */

@@ -300,6 +300,36 @@ class SweepTest extends Specification {
         r.rescued == 1
     }
 
+    def 'a pinned and deleted Selection keeps its file through a sweep; after del pin the next sweep trashes it'() {
+        given:
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim(r.completion, 'set', 'retain', 'lineage')
+        final Cid sel = f.selection((Cid) r.items[0], (Cid) r.collection)
+        final Cid pin = f.claim(sel, 'add', 'pin', 'figure 3')
+        f.claim(sel, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        final SweepReport kept = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        kept.applied
+        kept.trashed == 0
+        f.store.retentionStorage().listLedgers() == []
+
+        when:
+        f.claim(sel, 'del', 'pin', null, [pin])
+        ageAll(15 * SweepPolicy.DAY)
+        final SweepReport freed = sweep().apply(false, 0L, { -> false }, say, sleeper)
+        final List<String> ledgers = f.store.retentionStorage().listLedgers()
+
+        then:
+        freed.applied
+        ledgers.size() == 1
+        TrashLedger.parse(ledgers[0], f.store.retentionStorage().readLedger(ledgers[0])).blocks.keySet().containsAll([picked, sel])
+    }
+
     def 'a missing metadata block refuses --apply and a dry run reports it'() {
         given:
         final Map r = f.run('a', [[x: f.raw('x')]])
@@ -695,6 +725,57 @@ class SweepTest extends Specification {
         r.unannounced == []
     }
 
+    def 'a dry run never asks who signs; an applied sweep that writes Forget blocks asks once'() {
+        given:
+        final Map gone = f.run('gone', [[g: f.raw('g')]])
+        f.claim(gone.completion, 'delete', null, null)
+        final Map also = f.run('also', [[h: f.raw('h')]])
+        f.claim(also.completion, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+        int asked = 0
+        final java.util.function.Supplier<String> who = { -> asked++; 'ana@example.org' } as java.util.function.Supplier<String>
+        new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+        asked = 0
+
+        when:
+        final SweepReport dry = new Sweep(f.store, SweepPolicy.defaults(), who).dryRun()
+
+        then:
+        dry.deleted == []
+        asked == 0
+
+        when: 'one block per batch, so several Forget blocks'
+        final Sweep applied = new Sweep(f.store, SweepPolicy.defaults(), who)
+        applied.batchSize = 1
+        final SweepReport r = applied.apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.forgets.size() > 1
+        asked == 1
+        r.forgets.every { Cid c -> Forget.fromCbor((Map) DagCbor.decode(f.store.open(c).withCloseable { it.readAllBytes() })).assertedBy == 'ana@example.org' }
+    }
+
+    def 'a blank or null answer signs the Forget as nf-blocks'() {
+        given:
+        final Map gone = f.run('gone', [[g: f.raw('g')]])
+        f.claim(gone.completion, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+        final java.util.function.Supplier<String> who = { -> answer } as java.util.function.Supplier<String>
+        new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+        expireLedgers()
+
+        when:
+        final SweepReport r = new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.forgets.size() >= 1
+        r.forgets.every { Cid c -> Forget.fromCbor((Map) DagCbor.decode(f.store.open(c).withCloseable { it.readAllBytes() })).assertedBy == 'nf-blocks' }
+
+        where:
+        answer << [null, '', '  ']
+    }
+
     def 'a sweep that deletes only raw content writes no forget entry'() {
         given:
         final Map b = f.run('b', [[u: f.raw('only')]])
@@ -808,5 +889,270 @@ class SweepTest extends Specification {
 
         cleanup:
         index?.close()
+    }
+
+    // ------------------------------------------------ P4: unknown kinds (R8), Project, Handoff, InputSet (R1)
+
+    /** Writes a well-formed Store Log entry of a kind this build does not know into the member at `dir`. */
+    private static String unknownEntry(Path dir, String kind, long millis = 1_790_000_000_000L) {
+        final String name = "${StoreLog.reverseTimestamp(millis)}-${kind}-${Fixtures.cidOf([kind: kind, at: millis])}".toString()
+        Files.createDirectories(dir.resolve('log'))
+        Files.createFile(dir.resolve('log').resolve(name))
+        return name
+    }
+
+    private static final String REFUSAL = 'that this build does not know, so a sweep could delete blocks they keep; upgrade nf-blocks'
+
+    def 'a dry run works beside unknown kinds and lists them, per member'() {
+        given:
+        f.run('a', [[x: f.raw('x')]])
+        unknownEntry(root, 'zap')
+        unknownEntry(root, 'frob')
+        unknownEntry(root, 'frob', 1_790_000_000_001L)
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        final SweepReport r = sweep().dryRun()
+
+        then:
+        r.unknownKinds == [lab: ['frob', 'zap']]
+        r.roots.contentRoots == 1
+        r.toJson().unknown_kinds == [lab: ['frob', 'zap']]
+        r.toText().readLines().contains(
+            'unknown    the Store Log of member lab holds entries of kind(s) frob, zap ' + REFUSAL + '; --apply would refuse')
+        r.stopped == null
+    }
+
+    def 'with only known kinds the report lists none'() {
+        given:
+        f.run('a', [[x: f.raw('x')]])
+
+        when:
+        final SweepReport r = sweep().dryRun()
+
+        then:
+        r.unknownKinds == [:]
+        r.toJson().unknown_kinds == [:]
+        !r.toText().contains('unknown')
+    }
+
+    def 'an applied sweep refuses before deleting or trashing anything when the swept member logs an unknown kind'() {
+        given: 'a hidden run due for deletion, released content to trash, and an entry of an unknown kind'
+        final Map gone = hiddenRunDue()
+        final Cid only = f.raw('only')
+        final Map b = f.run('b', [[u: only]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+        unknownEntry(root, 'frob')
+        final List<String> ledgersBefore = f.store.retentionStorage().listLedgers()
+        final Set<String> before = listing(root.resolve('blocks'))
+
+        when:
+        final SweepReport r = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        !r.applied
+        r.stopped == 'the Store Log of member lab holds entries of kind(s) frob ' + REFUSAL
+        r.deleted == []
+        r.ledger == null
+        f.store.has((Cid) gone.completion) && f.store.has(only)
+        listing(root.resolve('blocks')) == before
+        f.store.retentionStorage().listLedgers() == ledgersBefore
+        SweepLock.holder(f.store.retentionStorage()) == null
+        r.unknownKinds == [lab: ['frob']]
+    }
+
+    def 'a hyphenated future kind, or a known kind whose cid this build cannot parse, refuses an applied sweep'() {
+        given:
+        final Map gone = hiddenRunDue()
+        ageAll(15 * SweepPolicy.DAY)
+        unknownEntry(root, 'input-set')
+        Files.createFile(root.resolve('log').resolve("${StoreLog.reverseTimestamp(1_790_000_000_002L)}-run-zb2rhfuturecidform".toString()))
+
+        when:
+        final SweepReport dry = sweep().dryRun()
+        final SweepReport r = sweep().apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        dry.unknownKinds == [lab: ['input-set', 'run']]
+        !r.applied
+        r.stopped == 'the Store Log of member lab holds entries of kind(s) input-set, run ' + REFUSAL
+        r.deleted == []
+        f.store.has((Cid) gone.completion)
+    }
+
+    def 'an unknown kind in a read-only member refuses the sweep too'() {
+        given:
+        final Map b = f.run('b', [[u: f.raw('only')]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+        final LocalBlockStore ro = new LocalBlockStore(root.resolve('ro'), 'ro', false)
+        unknownEntry(root.resolve('ro'), 'zap')
+        final CompositeStore both = new CompositeStore([f.store, ro])
+
+        when:
+        final SweepReport dry = new Sweep(both, SweepPolicy.defaults()).dryRun()
+        final SweepReport r = new Sweep(both, SweepPolicy.defaults()).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        dry.unknownKinds == [ro: ['zap']]
+        dry.trashed == 1
+        !r.applied
+        r.stopped == 'the Store Log of member ro holds entries of kind(s) zap ' + REFUSAL
+        f.store.retentionStorage().listLedgers() == []
+    }
+
+    def 'an entry of an unknown kind logged during the sweep stops it before the delete batch'() {
+        given:
+        final Map gone = hiddenRunDue()
+        boolean wrote = false
+        final Closure<Boolean> newerBuildWrites = { -> if( !wrote ) { unknownEntry(root, 'frob'); wrote = true }; false } as Closure<Boolean>
+
+        when:
+        final SweepReport r = sweep().apply(false, 0L, newerBuildWrites, say, sleeper)
+
+        then:
+        wrote
+        !r.applied
+        r.stopped == 'the Store Log of member lab holds entries of kind(s) frob ' + REFUSAL
+        r.deleted == []
+        f.store.has((Cid) gone.completion)
+        SweepLock.holder(f.store.retentionStorage()) == null
+    }
+
+    def 'a deleted Project and a deleted Handoff are trashed; a live Handoff keeps its files and Selection'() {
+        given:
+        final Map r = f.run('a', [[p: f.raw('picked')]])
+        f.claim((Cid) r.completion, 'delete', null, null)
+        final Cid sel = f.selectionBlock((Cid) r.items[0], (Cid) r.collection)
+        final Cid project = f.project('study')
+        final Cid sheet = f.raw('kept sheet')
+        final Cid kept = f.handoff(sel, project, ['samplesheet.csv': sheet])
+        final Cid goneSheet = f.raw('gone sheet')
+        final Cid gone = f.handoff(sel, project, ['samplesheet.csv': goneSheet])
+        f.claim(gone, 'delete', null, null)
+        f.claim(project, 'delete', null, null)
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        final SweepReport s = sweep().apply(false, 0L, { -> false }, say, sleeper)
+        final Set<Cid> trashed = TrashLedger.parse(s.ledger, f.store.retentionStorage().readLedger(s.ledger)).blocks.keySet()
+
+        then:
+        s.applied
+        trashed.containsAll([project, gone, goneSheet])
+        !trashed.any { it in [kept, sheet, sel, (Cid) r.items[0]] }
+        !trashed.contains((Cid) r.collection)
+        trashed.contains((Cid) r.completion)
+    }
+
+    def "a run's InputSet keeps itself, never the inputs it names; a sweep trashes an input nothing else reaches"() {
+        given:
+        final Cid input = f.raw('reads.fastq.gz')
+        final Cid shared = f.raw('reference.fa')
+        f.run('b', [[ref: shared]])
+        final Cid inputs = f.inputSet([input, shared])
+        final Map r = f.run('a', [[x: f.raw('x')]], [inputSet: inputs])
+        if( verb )
+            f.claim((Cid) r.completion, verb, attribute, value)
+        ageAll(15 * SweepPolicy.DAY)
+
+        when:
+        final SweepReport s = sweep().apply(false, 0L, { -> false }, say, sleeper)
+        final Set<Cid> trashed = TrashLedger.parse(s.ledger, f.store.retentionStorage().readLedger(s.ledger)).blocks.keySet()
+
+        then:
+        s.applied
+        trashed.contains(input)
+        !trashed.contains(shared)
+        trashed.contains(inputs) == !inputSetKept
+
+        where:
+        verb     | attribute | value     || inputSetKept
+        null     | null      | null      || true
+        'set'    | 'retain'  | 'lineage' || true
+        'delete' | null      | null      || false
+    }
+
+    /** Local retention storage that records, in order, when the lock is taken and each delete batch. */
+    static class RecordingStorage implements RetentionStorage {
+        @groovy.lang.Delegate(excludes = ['createLock', 'deleteBlocks']) final RetentionStorage inner
+        final List<String> events
+        RecordingStorage(RetentionStorage inner, List<String> events) { this.inner = inner; this.events = events }
+        String createLock(byte[] body) { events << 'lock'; inner.createLock(body) }
+        List<Cid> deleteBlocks(Collection<Cid> cids) { events << 'delete'; inner.deleteBlocks(cids) }
+    }
+
+    def 'an applied sweep with metadata past its deadline asks who signs before it takes the lock and before the first delete'() {
+        given: 'a hidden run trashed by an earlier sweep, its ledger now past its deadline'
+        hiddenRunDue()
+        final List<String> events = []
+        boolean lockHeldWhenAsked = true
+        final java.util.function.Supplier<String> who = { ->
+            events << 'signer'
+            lockHeldWhenAsked = SweepLock.holder(f.store.retentionStorage()) != null
+            'ana@example.org'
+        } as java.util.function.Supplier<String>
+
+        when:
+        final SweepReport r = new Sweep(storeWith(new RecordingStorage(f.store.retentionStorage(), events)), SweepPolicy.defaults(), who)
+            .apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        r.applied
+        r.forgets.size() >= 1
+        events.count('signer') == 1
+        events.first() == 'signer'
+        events.contains('lock') && events.contains('delete')
+        !lockHeldWhenAsked
+    }
+
+    def 'a signer that throws does not stop the sweep: what it deleted stays unannounced, with a warning'() {
+        given: 'a hidden run past its deadline, and a supplier that always throws'
+        final Map gone = hiddenRunDue()
+        int asked = 0
+        final java.util.function.Supplier<String> who = { -> asked++; throw new IllegalStateException('identity broke') } as java.util.function.Supplier<String>
+
+        when:
+        final SweepReport r = new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+
+        then: 'the sweep ran to the end and released the lock, as it did when only the first Forget asked'
+        r.applied
+        r.stopped == null
+        r.deleted.contains(gone.completion)
+        !f.store.has((Cid) gone.completion)
+        r.forgets == []
+        r.unannounced.contains(gone.completion)
+        r.warnings.any { it.contains('identity broke') && it.contains('reindex') }
+        SweepLock.holder(f.store.retentionStorage()) == null
+        asked >= 2      // once before the lock, again at the first Forget
+    }
+
+    def 'an applied sweep with nothing past its deadline, or only raw content due, never asks who signs'() {
+        given:
+        final Map b = f.run('b', [[u: f.raw('only')]])
+        f.claim(b.completion, 'set', 'retain', 'lineage')
+        ageAll(15 * SweepPolicy.DAY)
+        int asked = 0
+        final java.util.function.Supplier<String> who = { -> asked++; 'ana@example.org' } as java.util.function.Supplier<String>
+
+        when: 'the first sweep only trashes, and the second finds its ledger still waiting'
+        final SweepReport trashing = new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+        final SweepReport waiting = new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        trashing.applied && trashing.trashed == 1
+        waiting.applied && waiting.waiting == 1 && waiting.deleted == []
+        asked == 0
+
+        when: 'the ledger, which holds only raw content, passes its deadline'
+        expireLedgers()
+        final SweepReport raw = new Sweep(f.store, SweepPolicy.defaults(), who).apply(false, 0L, { -> false }, say, sleeper)
+
+        then:
+        raw.applied
+        raw.deleted.size() == 1
+        raw.forgets == []
+        asked == 0
     }
 }

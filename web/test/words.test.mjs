@@ -39,12 +39,13 @@ test('status in words, and its tone', () => {
   assert.equal(statusTone({ status: 'failed', possibly_incomplete: true }), 'bad')
 })
 
-test('sizes in decimal units; a BigInt, null and empty are handled', () => {
+test('sizes in the kit decimal units; a BigInt, null and empty are handled', () => {
   assert.equal(humanBytes(0), '0 B')
   assert.equal(humanBytes(999), '999 B')
   assert.equal(humanBytes(1200), '1.2 KB')
+  assert.equal(humanBytes(5_290_000), '5.29 MB')
   assert.equal(humanBytes(412_000_000), '412 MB')
-  assert.equal(humanBytes(3n * 1000n ** 3n), '3.0 GB')
+  assert.equal(humanBytes(3n * 1000n ** 3n), '3 GB')
   assert.equal(humanBytes(null), '')
   assert.equal(humanBytes(''), '')
 })

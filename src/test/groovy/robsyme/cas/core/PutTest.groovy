@@ -2,7 +2,15 @@ package robsyme.cas.core
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.Callable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.function.Supplier
 
+import robsyme.cas.GitEmail
+import robsyme.cas.Identity
+import robsyme.cas.PlatformIdentity
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -60,19 +68,19 @@ class PutTest extends Specification {
     LocalBlockStore shared
 
     private Put newPut(BlockStore s) {
-        return new Put(s, s, index, 'ada', { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
+        return new Put(s, s, index, { -> 'ada' }, { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
     }
 
     /** lab writable, shared read-only: the composition the page sees with a Bundle mounted. */
     private Put twoMembers() {
         shared = new LocalBlockStore(tempDir.resolve('shared'), 'shared', false)
-        return new Put(new CompositeStore([store, shared]), store, index, 'ada', { now }, catchUpBoth())
+        return new Put(new CompositeStore([store, shared]), store, index, { -> 'ada' }, { now }, catchUpBoth())
     }
 
     /** Writes into shared's directory, as the host where it was writable once did. */
     private Put seedShared() {
         final LocalBlockStore seed = new LocalBlockStore(tempDir.resolve('shared'), 'shared', true)
-        return new Put(new CompositeStore([seed, store]), seed, index, 'ada', { now }, catchUpBoth())
+        return new Put(new CompositeStore([seed, store]), seed, index, { -> 'ada' }, { now }, catchUpBoth())
     }
 
     private Closure catchUpBoth() {
@@ -128,6 +136,73 @@ class PutTest extends Specification {
         throw new AssertionError('expected a PutError')
     }
 
+    def 'Put asks who signs only when it builds a Selection or a Claim'() {
+        given:
+        int asked = 0
+        final Put counted = new Put(store, store, index, { -> asked++; 'ada' }, { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
+
+        when: 'a request refused before any block is built'
+        try { sendTo(counted, '{"kind":"RunManifest"}') } catch( PutError ignored ) { }
+        try { sendTo(counted, 'not json') } catch( PutError ignored ) { }
+
+        then:
+        asked == 0
+
+        when:
+        final PutResult r = sendTo(counted, selection(item(itemA, [collA])))
+
+        then:
+        asked == 1
+        r.block.asserted_by == 'ada'
+    }
+
+    def 'a request the store refuses (#why) never asks who signs'() {
+        given:
+        int asked = 0
+        final Put counted = new Put(store, store, index, { -> asked++; 'ada' }, { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
+        final Cid absentItem = Fixtures.cidOf(Fixtures.outputItem([[sample: 'Z']]))
+        final Cid absentRaw = Fixtures.contentCid('never written')
+        final Cid project = store.putDagCbor(new Project('ada', 'Study', '', TS).toCbor())
+        final String sampleRef = '{"pipeline":"p","id":"A"}'
+        final String json = [
+            'a member of the wrong kind'      : selection(item(manifest, [])),
+            'a missing member'                : selection(item(absentItem, [])),
+            'a via that is not a collection'  : selection(item(itemA, [itemB])),
+            'an item its via does not list'   : selection(item(itemB, [collB])),
+            'retain on a non-run'             : claim(itemA, 'set', 'retain', '"lineage"', []),
+            'a pin on missing content'        : claim(absentRaw, 'add', 'pin', '"keep"', []),
+            'superseding a non-Claim'         : claim(itemA, 'del', null, 'null', [itemB]),
+            'a sample on a non-Project'       : claim(itemA, 'add', 'sample', sampleRef, []),
+            'membership of a non-Project'     : claim(itemA, 'add', 'project', link(itemB), []),
+            'a pin on a Project'              : claim(project, 'add', 'pin', '"keep"', []),
+            'same_sample on a non-Project'    : claim(itemA, 'add', 'same_sample',
+                '{"a":{"pipeline":"p","id":"A","run":' + link(manifest) + '},"b":{"pipeline":"p","id":"B","run":' + link(manifest) + '},"same":true}', []),
+            'retain on a Project'             : claim(project, 'set', 'retain', '"lineage"', []),
+        ][why]
+
+        when:
+        final PutError e = refusedBy(counted, json)
+
+        then:
+        e.code == code
+        asked == 0
+
+        where:
+        why                               | code
+        'a member of the wrong kind'      | 'wrong_kind'
+        'a missing member'                | 'not_found'
+        'a via that is not a collection'  | 'wrong_kind'
+        'an item its via does not list'   | 'not_in_via'
+        'retain on a non-run'             | 'wrong_kind'
+        'a pin on missing content'        | 'not_found'
+        'superseding a non-Claim'         | 'wrong_kind'
+        'a sample on a non-Project'       | 'wrong_kind'
+        'membership of a non-Project'     | 'wrong_kind'
+        'a pin on a Project'              | 'invalid'
+        'same_sample on a non-Project'    | 'wrong_kind'
+        'retain on a Project'             | 'invalid'
+    }
+
     def 'a Selection is normalised, written, logged and indexed; its address is its canonical block address'() {
         when:
         final PutResult r = send(selection(item(itemB, [collA]) + ',' + item(itemA, [collB, collA])))
@@ -178,7 +253,7 @@ class PutTest extends Specification {
         Files.list(tempDir.resolve('store/log')).withCloseable { it.toList() }.each { Files.delete(it) }
         index.close()
         index = Index.open(tempDir.resolve('cache/fresh.sqlite'))
-        put = new Put(store, store, index, 'ada', { now }, { })   // no catch-up: only Put's own ingest can index the entry
+        put = new Put(store, store, index, { -> 'ada' }, { now }, { })   // no catch-up: only Put's own ingest can index the entry
 
         when:
         final PutResult again = send(json)
@@ -201,7 +276,7 @@ class PutTest extends Specification {
         Files.delete(store.blockPath(run))
         final Cid forget = store.putDagCbor(new Forget('test', [run]).toCbor())
         StoreLog.append(store, StoreLogKind.FORGET, forget, now - 1_000)
-        put = new Put(new CompositeStore([store, shared]), store, index, 'ada', { now }, { })   // only Put's own ingest catches up
+        put = new Put(new CompositeStore([store, shared]), store, index, { -> 'ada' }, { now }, { })   // only Put's own ingest catches up
 
         when:
         send(selection(item(itemA, [collA])))
@@ -488,6 +563,45 @@ class PutTest extends Specification {
         e.status == 409
     }
 
+    def 'a #what written to a member that is not writable is refused before identity, Platform or git is asked'() {
+        given: 'a signer that resolves the way a session does, with a Platform token set, counting each source'
+        int resolutions = 0
+        int platformCalls = 0
+        int gitCalls = 0
+        final PlatformIdentity platform = { String e, String t -> platformCalls++; 'platform@example.org' } as PlatformIdentity
+        final GitEmail git = { -> gitCalls++; 'git@example.org' } as GitEmail
+        final Supplier<String> signer = { ->
+            resolutions++
+            Identity.resolve(null, [tower: [accessToken: 'tok']], [:], git, platform, { String m -> null } as Closure<Void>).name
+        } as Supplier<String>
+        final LocalBlockStore readOnly = new LocalBlockStore(tempDir.resolve('store'), 'lab', false)
+        final Put p = new Put(readOnly, readOnly, index, signer, { now }, { })
+
+        when:
+        p.put(request.call(this).getBytes('UTF-8'), false)
+
+        then:
+        final PutError e = thrown()
+        e.code == 'not_writable'
+        resolutions == 0
+        platformCalls == 0
+        gitCalls == 0
+
+        when: 'the same request as a dry run, which writes nothing, still asks who signs (the seams are live)'
+        p.put(request.call(this).getBytes('UTF-8'), true)
+
+        then:
+        resolutions == 1
+        platformCalls == 1
+        gitCalls == 0
+
+        where:
+        what        | request
+        'Selection' | { PutTest t -> selection(item(t.itemA, [t.collA])) }
+        'Claim'     | { PutTest t -> claim(t.itemA, 'set', 'name', '"reads"', []) }
+        'Project'   | { PutTest t -> '{"kind":"Project","name":"Study","description":"","created_at":"' + TS + '"}' }
+    }
+
     def 'derived_from takes links or bytes and stores bytes'() {
         given:
         final Cid prior = send(selection(item(itemB, [collA]))).address
@@ -547,10 +661,51 @@ class PutTest extends Specification {
         index.claimState(subject).pinNotes == ['figure 3']
 
         where:
-        what         | subject
-        'a run'      | run
-        'an item'    | item
-        'a raw leaf' | leaf
+        what          | subject
+        'a run'       | run
+        'an item'     | item
+        'a raw leaf'  | leaf
+        'a Selection' | selection
+    }
+
+    def 'add pin and del pin on a Selection, as the page writes them (ticket 21 answer 6: pins on any subject)'() {
+        given:
+        final Cid pin = put.put(claimRequest(selection, 'add', 'pin', 'figure 3', []), false).address
+
+        expect:
+        index.claimState(selection).pinned
+
+        when:
+        put.put(claimRequest(selection, 'del', 'pin', null, [pin]), false)
+
+        then:
+        !index.claimState(selection).pinned
+        index.claimState(selection).pinNotes == []
+    }
+
+    def 'a pin on #what is refused as wrong_kind at /subject'() {
+        given:
+        final Cid subject = blockOfKind(what)
+
+        when:
+        put.put(claimRequest(subject, 'add', 'pin', 'x', []), false)
+
+        then:
+        final PutError e = thrown()
+        e.code == PutError.WRONG_KIND
+        e.at == '/subject'
+
+        where:
+        what << ['a Claim', 'a Handoff', 'a RunManifest']
+    }
+
+    private Cid blockOfKind(String what) {
+        switch( what ) {
+            case 'a Claim': return put.put(claimRequest(item, 'set', 'name', 'n', []), false).address
+            case 'a Handoff': return store.putDagCbor(new Handoff('ada', 'rnaseq', selection, null, [], [:], TS).toCbor())
+            case 'a RunManifest': return manifest
+        }
+        throw new IllegalArgumentException(what)
     }
 
     def 'two pins on one subject are a set'() {
@@ -592,7 +747,7 @@ class PutTest extends Specification {
         'a note that is not a string' | claimRequest(item, 'add', 'pin', 3L, [])                 | PutError.INVALID   | '/value'
         'a 257-character note'        | claimRequest(item, 'add', 'pin', 'x' * 257, [])          | PutError.INVALID   | '/value'
         'add pin with supersedes'     | claimRequest(item, 'add', 'pin', 'x', [run])             | PutError.INVALID   | '/supersedes'
-        'a pin on a Selection'        | claimRequest(selection, 'add', 'pin', 'x', [])           | PutError.WRONG_KIND | '/subject'
+        'a pin on an absent raw block' | claimRequest(Fixtures.contentCid('absent'), 'add', 'pin', 'x', []) | PutError.NOT_FOUND | '/subject'
     }
 
     def 'del pin superseding a name Claim is refused'() {
@@ -628,5 +783,33 @@ class PutTest extends Specification {
         b.retain_claims == [release]
         b.pin_claims == [pin]
         b.pins == ['paper']
+    }
+
+    def 'a write waiting on its signer does not hold the builder\'s lock, so an export goes ahead'() {
+        given: 'a signer that answers only when released'
+        CountDownLatch asked = new CountDownLatch(1)
+        CountDownLatch release = new CountDownLatch(1)
+        Put slow = new Put(store, store, index, { -> asked.countDown(); release.await(10, TimeUnit.SECONDS); 'ada' },
+            { now }, { index.catchUp(store, StoreLog.of(store), 'lab') })
+        def pool = Executors.newFixedThreadPool(2)
+
+        when: 'a write waits on the signer, and an export takes the lock the way explore\'s exporter does'
+        def write = pool.submit({ -> slow.put(claimRequest(itemA, 'set', 'name', 'x', []), false) } as Callable)
+        asked.await(5, TimeUnit.SECONDS)
+        def export = pool.submit({ -> synchronized( slow ) { 'exported' } } as Callable)
+
+        then: 'the export finishes while the write still waits'
+        export.get(2, TimeUnit.SECONDS) == 'exported'
+        !write.isDone()
+
+        when:
+        release.countDown()
+
+        then:
+        ((PutResult) write.get(5, TimeUnit.SECONDS)).address != null
+
+        cleanup:
+        release.countDown()
+        pool.shutdownNow()
     }
 }

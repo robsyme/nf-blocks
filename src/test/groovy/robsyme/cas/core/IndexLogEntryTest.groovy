@@ -48,9 +48,9 @@ class IndexLogEntryTest extends Specification {
         }
     }
 
-    def 'the schema is version 3 with the tables of spec section 11'() {
+    def 'the schema is version 6 with the tables of spec section 11'() {
         expect:
-        Index.SCHEMA_VERSION == 3
+        Index.SCHEMA_VERSION == 6
         rows("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")*.get(0).containsAll(
             ['collection', 'collection_item', 'selection_child', 'selection_derived', 'log_entry', 'claim', 'claim_supersedes', 'claim_current'])
         rows("SELECT name FROM pragma_table_info('collection')")*.get(0) == ['collection_cid', 'kind', 'completion_cid', 'output_name', 'asserted_by']

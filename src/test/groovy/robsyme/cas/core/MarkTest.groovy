@@ -375,6 +375,34 @@ class MarkTest extends Specification {
         m2.isLive(picked)
     }
 
+    def 'a pinned Selection with a clean delete keeps its whole closure; a del pin superseding the pin frees it'() {
+        given: 'the run that wrote the picked file is released, so only the Selection can keep it'
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim(r.completion, 'set', 'retain', 'lineage')
+        final Cid item = r.items.find { Cid i -> leavesOf(i).contains(picked) }
+        final Cid sel = f.selection(item, (Cid) r.collection)
+        final Cid pin = f.claim(sel, 'add', 'pin', 'figure 3')
+        f.claim(sel, 'delete', null, null)
+
+        when:
+        final Mark m1 = mark()
+
+        then:
+        m1.isLive(sel) && m1.isLive(item) && m1.isLive(picked)
+        m1.roots.deletedSelections == 0
+        m1.roots.selections == 1
+
+        when:
+        f.claim(sel, 'del', 'pin', null, [pin])
+        final Mark m2 = mark()
+
+        then:
+        !m2.isLive(sel) && !m2.isLive(picked)
+        m2.isLive(item)
+        m2.roots.deletedSelections == 1
+    }
+
     def 'extend with a later del retain superseding the release makes the run content live again'() {
         given:
         final Cid x = f.raw('x')
@@ -459,6 +487,231 @@ class MarkTest extends Specification {
         !m.isLive(lost)
         m.danglingEntries.any { it.contains(lost.toString()) }
     }
+
+    def 'a transfer entry roots its own block and not what it names; one whose block is gone is dangling'() {
+        given: 'a run held only by a Transfer that names it as root and run (its own run entry is not in the log)'
+        final Cid x = f.raw('x')
+        final Map r = f.run('a', [[x: x]])
+        final LocalBlockStore store = (LocalBlockStore) f.store
+        Files.list(root.resolve('log')).withCloseable { it.toList() }.each { Files.delete(it) }
+        final Transfer t = new Transfer('rob@lab', [(Cid) r.completion], 'roblab', 'lab', 'all', [], [(Cid) r.completion],
+            5L, 5L, 100L, '2026-10-24T10:00:00.000Z')
+        final Cid kept = store.putDagCbor(t.toCbor())
+        StoreLog.append(store, StoreLogKind.TRANSFER, kept, ++f.clock)
+        final Cid lost = Fixtures.cidOf(new Transfer('rob@lab', [(Cid) r.collection], 'roblab', 'lab', 'all', [], [],
+            1L, 1L, 1L, '2026-10-24T11:00:00.000Z').toCbor())
+        StoreLog.append(store, StoreLogKind.TRANSFER, lost, ++f.clock)
+
+        when:
+        final Mark m = Mark.of(f.store, f.logs(), 4)
+
+        then:
+        m.isLive(kept)
+        m.live == [kept] as Set
+        m.roots.runs == 0
+        m.missingMetadata == []
+        m.danglingEntries.size() == 1
+        m.danglingEntries[0].contains(lost.toString())
+        m.danglingEntries[0].contains('-transfer-')
+    }
+
+    // ---- P4: Project and Handoff roots (R5, R6), InputSet (R1) ----
+
+    def 'a project entry roots its Project block alone; a clean delete frees it and a del superseding it restores it'() {
+        given:
+        final Map r = f.run('a', [[x: f.raw('x')]])
+        f.claim((Cid) r.completion, 'delete', null, null)
+        final Cid p = f.project('rnaseq study')
+
+        when:
+        final Mark m1 = mark()
+
+        then:
+        m1.live == [p] as Set
+        m1.roots.projects == 1
+        m1.roots.deletedProjects == 0
+
+        when:
+        final Cid del = f.claim(p, 'delete', null, null)
+        final Mark m2 = mark()
+
+        then:
+        !m2.isLive(p)
+        !m2.isLive(del)
+        m2.roots.projects == 0
+        m2.roots.deletedProjects == 1
+
+        when:
+        final Cid undo = f.claim(p, 'del', null, null, [del])
+        final Mark m3 = mark()
+
+        then:
+        m3.isLive(p)
+        m3.isLive(del) && m3.isLive(undo)
+        m3.roots.projects == 1
+    }
+
+    def 'a conflicted deletion keeps a Project, and a pin beats its delete'() {
+        given:
+        final Cid p = f.project('study')
+        f.claim(p, 'delete', null, null)
+        f.claim(p, second, null, null)
+
+        expect:
+        mark().isLive(p)
+
+        where:
+        second << ['delete', 'del']
+    }
+
+    def 'a pinned Project with a clean delete is kept'() {
+        given:
+        final Cid p = f.project('study')
+        f.claim(p, 'delete', null, null)
+        f.claim(p, 'add', 'pin', 'keep')
+
+        expect:
+        mark().isLive(p)
+    }
+
+    def 'a handoff entry roots its files as content and its Selection whole, never its Project'() {
+        given: 'a deleted run whose one picked item a Selection holds; the Project is deleted'
+        final Cid picked = f.raw('picked'); final Cid other = f.raw('other')
+        final Map r = f.run('a', [[p: picked], [o: other]])
+        f.claim((Cid) r.completion, 'delete', null, null)
+        final Cid item = r.items.find { Cid i -> leavesOf(i).contains(picked) }
+        final Cid sel = f.selectionBlock(item, (Cid) r.collection)
+        final Cid project = f.project('study')
+        f.claim(project, 'delete', null, null)
+        final Cid sheet = f.raw('sample,fastq_1\nA,cas://x/a.fq.gz\n')
+        final Cid contrasts = f.dir([one: f.raw('contrast one')])
+        final Cid h = f.handoff(sel, project, ['samplesheet.csv': sheet, contrasts: contrasts])
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(h)
+        m.isLive(sheet) && m.isLive(contrasts)
+        m.isLive(sel) && m.isLive(item) && m.isLive(picked)
+        m.isLive((Cid) r.collection) && m.isLive((Cid) r.manifest)
+        !m.isLive(other)
+        !m.isLive(project)
+        !m.isLive((Cid) r.completion)
+        m.roots.handoffs == 1
+        m.missingMetadata == [] && m.missingContent == []
+    }
+
+    def 'a Handoff with a clean delete is not a root; a del superseding it or a pin keeps it'() {
+        given:
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim((Cid) r.completion, 'delete', null, null)
+        final Cid sel = f.selectionBlock((Cid) r.items[0], (Cid) r.collection)
+        final Cid sheet = f.raw('sheet')
+        final Cid h = f.handoff(sel, f.project('study'), ['samplesheet.csv': sheet])
+        final Cid del = f.claim(h, 'delete', null, null)
+
+        when:
+        final Mark m1 = mark()
+
+        then:
+        !m1.isLive(h) && !m1.isLive(sheet) && !m1.isLive(sel) && !m1.isLive(picked)
+        m1.roots.deletedHandoffs == 1
+        m1.roots.handoffs == 0
+
+        when:
+        f.claim(h, 'del', null, null, [del])
+        final Mark m2 = mark()
+
+        then:
+        m2.isLive(h) && m2.isLive(sheet) && m2.isLive(picked)
+        m2.roots.handoffs == 1
+    }
+
+    def 'a pinned Handoff with a clean delete keeps its files and its Selection'() {
+        given:
+        final Cid picked = f.raw('picked')
+        final Map r = f.run('a', [[p: picked]])
+        f.claim((Cid) r.completion, 'delete', null, null)
+        final Cid sel = f.selectionBlock((Cid) r.items[0], (Cid) r.collection)
+        final Cid sheet = f.raw('sheet')
+        final Cid h = f.handoff(sel, null, ['samplesheet.csv': sheet])
+        f.claim(h, 'delete', null, null)
+        f.claim(h, 'add', 'pin', 'cited in the paper')
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(h) && m.isLive(sheet) && m.isLive(sel) && m.isLive(picked)
+    }
+
+    def 'a missing hand-off file is missing content, as an item leaf is; a missing handed-off Selection is missing metadata'() {
+        given: 'a raw file is live without a read, as an item leaf is; a Directory Manifest file is read'
+        final Map r = f.run('a', [[p: f.raw('picked')]])
+        final Cid sel = f.selectionBlock((Cid) r.items[0], (Cid) r.collection)
+        final Cid sheet = f.raw('sheet')
+        final Cid contrasts = f.dir([one: f.raw('contrast one')])
+        final Cid h = f.handoff(sel, null, ['samplesheet.csv': sheet, contrasts: contrasts])
+        f.store.blockPath(contrasts).toFile().delete()
+
+        when:
+        Mark m = mark()
+
+        then:
+        m.missingContent == [contrasts]
+        m.missingMetadata == []
+
+        when:
+        f.store.blockPath(sel).toFile().delete()
+        m = mark()
+
+        then:
+        m.missingMetadata.size() == 1
+        m.missingMetadata[0] == "${sel} (needed by ${h})".toString()
+    }
+
+    def "a run's InputSet is kept as itself only: the inputs it names are not kept by it"() {
+        given: 'a raw block the store holds, read by run a, and another read by a and written by b'
+        final Cid input = f.raw('reads.fastq.gz')
+        final Cid shared = f.raw('reference.fa')
+        f.run('b', [[ref: shared]])
+        final Cid inputs = f.inputSet([input, shared])
+        final Map r = f.run('a', [[x: f.raw('x')]], [inputSet: inputs])
+        if( verb )
+            f.claim((Cid) r.completion, verb, attribute, value)
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(inputs) == inputSetLive
+        !m.isLive(input)
+        m.isLive(shared)
+        m.missingContent == [] && m.missingMetadata == []
+
+        where:
+        verb     | attribute | value     || inputSetLive
+        null     | null      | null      || true
+        'set'    | 'retain'  | 'lineage' || true
+        'delete' | null      | null      || false
+    }
+
+    def "an InputSet's absent input is not missing content: its addresses are never followed"() {
+        given:
+        final Cid absent = Fixtures.cidOf([kind: 'never stored'])
+        final Cid raw = Cid.of(Cid.RAW, Hashing.sha256('never stored either'.getBytes('UTF-8')))
+        final Map r = f.run('a', [[x: f.raw('x')]], [inputSet: f.inputSet([absent, raw])])
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.missingContent == []
+        m.missingMetadata == []
+    }
+
     private Set<Cid> leavesOf(Cid item) {
         return OutputItem.fromCbor((Map) DagCbor.decode(f.store.open(item).readAllBytes())).leaves()*.address as Set
     }

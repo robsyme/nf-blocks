@@ -7,9 +7,11 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.Claim
 import robsyme.cas.core.DagJson
 import robsyme.cas.core.Fixtures
+import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.PutError
 import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogKind
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -22,6 +24,7 @@ class CasCommandsPutTest extends Specification {
     ByteArrayOutputStream out = new ByteArrayOutputStream()
     ByteArrayOutputStream err = new ByteArrayOutputStream()
     Cid item, collection
+    String signer = 'ada'
 
     def setup() {
         final LocalBlockStore store = new LocalBlockStore(tempDir.resolve('store'), 'lab', true)
@@ -36,7 +39,7 @@ class CasCommandsPutTest extends Specification {
             cas: [
                 stores: [lab: [location: tempDir.resolve('store').toString()]],
                 index: [path: tempDir.resolve('cache/index.sqlite').toString()],
-                asserted_by: 'ada',
+                asserted_by: signer,
             ],
         ]
     }
@@ -225,11 +228,66 @@ class CasCommandsPutTest extends Specification {
         final List<Map> printed = bodies()
 
         then:
-        err.toString() == ''
+        err.toString().readLines() == ['nf-blocks: signing as ada (from cas.asserted_by)']   // the one notice: put signs
         status == 0
         printed.size() == 2
         printed[0].written == true
         printed[1].block.value == 'piped'
         logSize() == 2
+    }
+
+    private static String projectRequest(String name = 'tumour atlas') {
+        return '{"kind":"Project","name":"' + name + '","description":"","created_at":"' + Index.isoMillis(System.currentTimeMillis()) + '"}'
+    }
+
+    def 'put builds a Project from kind Project, as it builds the other two, and logs it as a project'() {
+        given:
+        signer = 'p4-test@example.org'
+        final Path file = tempDir.resolve('project.json')
+        file.text = projectRequest()
+
+        when:
+        final int status = run([file.toString()])
+        final Map body = (Map) DagJson.decode(out.toString().trim())
+
+        then:
+        status == 0
+        body.written == true
+        body.block.kind == 'Project'
+        body.block.name == 'tumour atlas'
+        body.block.asserted_by == 'p4-test@example.org'
+        StoreLog.read(new LocalBlockStore(tempDir.resolve('store'), 'lab', false))*.kind == [StoreLogKind.PROJECT]
+    }
+
+    def 'a Project dry run writes nothing; a bad Project prints the error body and exits 1'() {
+        given:
+        signer = 'p4-test@example.org'
+
+        when:
+        final int dry = run(['-', '--dry-run', 'true'], projectRequest())
+
+        then:
+        dry == 0
+        ((Map) DagJson.decode(out.toString().trim())).exists == false
+        logSize() == 0
+
+        when:
+        out.reset()
+        final int status = run(['-'], projectRequest(' '))
+
+        then:
+        status == 1
+        ((Map) DagJson.decode(out.toString().trim())).subMap(['error', 'at']) == [error: 'invalid', at: '/name']
+        logSize() == 0
+    }
+
+    def '--name stays for a Selection: a Project is named by its own name'() {
+        given:
+        signer = 'p4-test@example.org'
+
+        expect:
+        run(['-', '--name', 'x'], projectRequest()) == 2
+        err.toString().contains('--name names a Selection; this request is a Project')
+        logSize() == 0
     }
 }

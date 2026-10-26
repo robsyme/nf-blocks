@@ -1,0 +1,111 @@
+<!--META
+{
+ "file":"03-run-outputs.html","title":"Run · Outputs","phase":"P0 · polish","route":"#/run/<completion_cid>?tab=outputs",
+ "nav":"pipelines","navContext":"pipelines","navRun":"distraught_murdock","store":"roblab","stores":["a"],"picked":0,
+ "summary":"The run page with the Outputs tab open. The Samples tab (07) becomes the default once P1a ships; until then this is the default. The header carries the run's seal, status, durability, presence and stored size. The outputs table replaces the deep meta paths with promoted fields and replaces icon grids with labelled file-kind chips. Empty outputs collapse into one row.",
+ "data":"Real: all 24 outputs of distraught_murdock, item counts, file counts, file kinds, byte totals (directories expanded), run times, Nextflow version, lid reference, completion and manifest CIDs.",
+ "spec":{
+  "Behaviour":[
+   "Tabs: Samples · Outputs · Provenance · Storage. The tab is in the URL (<code>?tab=</code>).",
+   "Key fields: up to 3 promoted fields per output (pipeline-specific config, falling back to fields that vary across items, never <code>meta.has_*</code> booleans that are constant). Show '+N fields' as muted text.",
+   "File kinds: one chip per extension with a count, ordered by bytes desc, max 4 then '+N'.",
+   "Size column is right-aligned, with a mini bar scaled to the largest output.",
+   "'7 empty outputs' is a single collapsed row; expanding it lists the names inline.",
+   "Header 'Release…' opens the inline confirmation shown in 10-run-storage.html.",
+   "Provenance tab = 'Run details' today, restyled (params diff vs pipeline defaults, config collapsed). It must not render as blank table rows (bug in current build)."
+  ],
+  "Acceptance":[
+   "Sorting by Size works and is the default secondary sort after Items.",
+   "Clicking an output row opens 04-output-items.html for it.",
+   "The right rail snippet updates with 'this run' / 'latest good run' and untyped/typed, as today."
+  ]
+ }
+}
+-->
+<!--MAIN-->
+<div class="page-head">
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="02-pipelines.html">Pipelines</a>/<a href="02-pipelines.html">nf-core/rnaseq</a>/<b>distraught_murdock</b></nav>
+  <div class="title">
+    <span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="30"></span>
+    <h1>distraught_murdock</h1>
+    <span class="status ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>Succeeded</span>
+    <span class="state s-held">Held by run</span>
+    <span class="presence" title="Held in roblab"><span class="dot a"></span></span>
+    <span class="spacer"></span>
+    <button class="btn" type="button">Pin…</button>
+    <button class="btn" type="button">Release…</button>
+  </div>
+  <div class="subline">
+    <span>Latest good run of <b>nf-core/rnaseq</b></span>
+    <span>Finished <b>Oct 24, 1:29 PM</b> · 5 min 15 s</span>
+    <span>Nextflow <b>26.09.2-edge</b></span>
+    <span><b>78.4 MB</b> stored · 894 file blocks</span>
+    <span class="addr" data-ref="lid://e25b50f2755ea17dffe98a907420b06f" title="Copy run reference">lid://e25b…b06f <span class="copy">copy</span></span>
+  </div>
+</div>
+
+<nav class="tabs" aria-label="Run views"><a href="07-run-samples.html">Samples<small>5</small></a><a class="on" href="03-run-outputs.html">Outputs<small>17</small></a><a href="#">Provenance</a><a href="10-run-storage.html">Storage</a></nav>
+
+<section class="panel flush">
+  <div class="pb tbox">
+  <table class="t">
+    <thead><tr><th>Output</th><th class="r">Items</th><th>Key fields</th><th>Files</th><th class="r">Size</th></tr></thead>
+    <tbody id="outs"></tbody>
+  </table>
+  </div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded',()=>{
+  // Real values from distraught_murdock (bytes include files inside published directories).
+  const O=[
+   ['multiqc',1,'—',[['html',1],['dir',2]],371,25145688],
+   ['preprocessed',5,'reads (trimmed) · layout · strand',[['zip',24],['html',24],['txt',13]],61,21119476],
+   ['markdup',5,'layout · strand',[['bam',5],['bai',5],['stats',5],['flagstat',5],['idxstats',5],['txt',5]],30,19784930],
+   ['bam_qc',5,'strand · dupRadar · Qualimap',[['txt',54],['pdf',38],['r',23],['tsv',20],['xls',20],['bed',10]],520,12345291],
+   ['bigwig',5,'layout · strand',[['bigWig',15]],15,1982931],
+   ['aligned',5,'% mapped · aligner',[['out',15],['tab',10],['stats',5],['flagstat',5]],40,394197],
+   ['stringtie',5,'layout',[['ctab',25],['gtf',10],['txt',5]],40,386353],
+   ['quant_salmon',5,'strand · layout',[['dir',5]],60,143042],
+   ['quant_pseudo',5,'strand · layout',[['dir',5]],65,142128],
+   ['quant_merged_pseudo',1,'all samples',[['tsv',10],['rds',2]],12,86615],
+   ['quant_merged',1,'all samples',[['tsv',10],['rds',2]],12,86305],
+   ['deseq2_pseudo',1,'all samples',[['RData',1],['pdf',1],['txt',2],['log',1]],11,17993],
+   ['deseq2',1,'all samples',[['RData',1],['pdf',1],['txt',2],['log',1]],11,17935],
+   ['lint_raw',5,'—',[['txt',5]],5,6418],
+   ['lint_bbsplit',5,'—',[['txt',5]],5,6415],
+   ['lint_trimmed',5,'—',[['txt',5]],5,6415],
+   ['pipeline_info',1,'—',[['yml',1]],1,1986]];
+  const max=Math.max(...O.map(o=>o[5]));
+  const tb=document.getElementById('outs');
+  tb.innerHTML=O.map(([n,i,f,k,files,b])=>{
+    const chips=k.slice(0,4).map(([e,c])=>`<span class="kind">${e}<b>×${c}</b></span>`).join('')+(k.length>4?`<span class="more">+${k.length-4}</span>`:'');
+    return `<tr><td class="nowrap"><div class="namecell"><a href="04-output-items.html">${n}</a></div></td><td class="r num">${i}</td><td><span class="sub">${f}</span></td><td><div class="kinds">${chips}<span class="more">${files} files</span></div></td><td class="r nowrap"><div class="bar-cell"><span class="num">${NFB.bytes(b)}</span><span class="minibar"><span style="width:${(b/max*100).toFixed(1)}%"></span></span></div></td></tr>`}).join('')+
+   `<tr class="group"><td colspan="5">▸ 7 empty outputs <span class="muted">· bam_qc_rustqc, lint_ribo, quant, quant_pseudo_kallisto, quant_rsem_merge, rrna_seqkit, umi_dedup</span></td></tr>`;
+});
+</script>
+<!--RAIL-->
+<div class="sec">
+  <h3>Use in a workflow</h3>
+  <p class="muted" style="font-size:12.5px">Pick an output to get its channel. Showing <b>preprocessed</b>.</p>
+  <div class="row"><div class="seg-toggle"><button class="on" type="button">This run</button><button type="button">Latest good run</button></div><div class="seg-toggle"><button class="on" type="button">Untyped</button><button type="button">Typed</button></div></div>
+<pre class="code"><span class="k">include</span> { fromStore } <span class="k">from</span> <span class="s">'plugin/nf-blocks'</span>
+
+channel.fromStore(
+  run: <span class="s">'bafyreibim…26ocxq'</span>,
+  output: <span class="s">'preprocessed'</span>)</pre>
+  <button class="btn sm" type="button">Copy snippet</button>
+</div>
+<div class="sec">
+  <h3>Provenance</h3>
+  <dl class="kv">
+    <dt>Completion</dt><dd><span class="addr" data-ref="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq"><span data-seal="bafyreibimvfollxtcc5szqp5qfmwqi6vreknpathclrcliwnvzir26ocxq" data-size="14"></span>bafy…26ocxq</span></dd>
+    <dt>Manifest</dt><dd><span class="addr" data-ref="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq"><span data-seal="bafyreifsax6ih4vi5vcnbvti24wtjwneszrifujtyugwmikgl7n4sz6jnq" data-size="14"></span>bafy…sz6jnq</span></dd>
+    <dt>Session</dt><dd class="mono">3940d103…2477e10f4efd</dd>
+    <dt>Params</dt><dd>aligner <b>star_salmon</b> · pseudo <b>salmon</b> · +4 changed from defaults</dd>
+  </dl>
+</div>
+<div class="sec">
+  <h3>Lineage check</h3>
+  <p class="note"><span>5 input files are referenced by path and aren't stored. That's expected when FASTQs are read from local disk.</span></p>
+</div>
