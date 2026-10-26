@@ -5,6 +5,7 @@
 // nav; it reads nothing from the store.
 import { h } from '../html.js'
 import { seal } from '../seal.js'
+import { icon, sealed } from '../icons.js'
 import { identityChip } from './identity.js'
 import { formatValue } from '../format.js'
 import {
@@ -39,9 +40,13 @@ export function kit() {
       h('p', { class: 'muted' }, 'Each component as components.js builds it, with the demo values of the mockup sheet (mockups/01-components.html).')),
     row('Seal', 'seal(cid, { size })', 'Deterministic glyph from the CID. Squares are raw file blocks (bafk…); circles are records (bafy…). Sizes: 14, 16, 18, 20, 30, 36.',
       [RAW, RAW_2, RUN, SELECTION].map(c => seal(c, { size: 36 })), seal(SELECTION, { size: 20 }), seal(SELECTION, { size: 14 })),
+    row('Sealed block', 'sealed(kind, cid, { size, tone })', 'A block by its Seal, its kind on a badge at the lower right; the badge takes the status tone. No CID (a pipeline, a store): the plain icon. Sizes: 16 inline, 18 chips, 20 rows, 30 headings.',
+      sealed('run', RUN, { size: 30, tone: 'good' }), sealed('run', RUN, { size: 20, tone: 'bad' }), sealed('output', SELECTION, { size: 20 }),
+      sealed('item', MANIFEST, { size: 20 }), sealed('file', RAW, { size: 20 }), sealed('selection', SELECTION, { size: 20 }),
+      sealed('run', RUN, { size: 16, tone: 'good' }), icon('pipeline'), icon('store')),
     row('Address chip', 'addrChip(text, { ref, seal })', 'Click copies the full reference in data-ref (cas://… or lid://…). Never shows a filesystem path.',
       addrChip(RAW, { ref: `cas://${RAW}/salmon.merged.gene_counts.tsv` }), addrChip('lid://e25b50f2755ea17dffe98a907420b06f', { seal: false })),
-    row('Fact tag', 'factTag(kind, label, cid, href)', 'An immutable record: kind label and name, with its Seal.',
+    row('Fact tag', 'factTag(kind, label, cid, href)', 'An immutable record: its Seal with the kind on a badge, and its name. A kind with no icon keeps its word.',
       factTag('run', 'distraught_murdock', RUN), factTag('selection', '3 items', SELECTION), factTag('manifest', 'nf-core/rnaseq', MANIFEST)),
     row('Claim tag', 'claimTag({ assertedBy, verb, value, at, conflict })', 'A signed statement: avatar, verb, value, age. .conflict when current claims disagree.',
       claimTag({ assertedBy: 'ada.lovelace@example.org', verb: 'named', value: 'wigshop', at: now - 3 * HOUR, tone: 'rs', now }),

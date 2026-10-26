@@ -58,3 +58,18 @@ test('address: the address icon and the short CID, a quiet link to its block pag
   assert.equal(a.textContent, 'bafy…ac6uye', 'the kit short form, as addrChip shows it')
   assert.equal(shortCid('short'), 'short')
 })
+
+test('sealed: the Seal with the kind on a badge, the plain icon without a CID', async () => {
+  installDom()
+  const { sealSvg } = await import('../src/seal.js')
+  const cid = 'bafyreian3sfv6mv6jh2en6g3ryqo2p2lde4nh3zxaysbhs5g574uac6uye'
+  const { sealed } = await import('../src/icons.js')
+  const s = sealed('run', cid, { size: 20, tone: 'bad' })
+  assert.equal(s.dataset.sealed, 'run')
+  assert.equal(s.querySelector('[data-seal]').innerHTML, sealSvg(cid, 20))
+  assert.equal(s.querySelector('.badge').querySelector('[data-icon]').dataset.icon, 'run')
+  assert.ok(s.querySelector('[data-icon]').classList.contains('tone-bad'))
+  assert.equal(sealed('pipeline', null).dataset.icon, 'pipeline', 'no CID, no Seal')
+  assert.equal(ref('output', 'people', '#/x', { cid }).querySelector('[data-sealed]').dataset.sealed, 'output')
+  assert.match(ICON_CSS, /\.sealed \.badge\s*\{/)
+})

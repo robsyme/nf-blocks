@@ -10,6 +10,7 @@ import { pipeline } from '../src/views/pipeline.js'
 import { home } from '../src/views/home.js'
 import { FAKE_STORAGE } from './helpers.mjs'
 import { createPresence } from '../src/presence.js'
+import { fullWhenText } from '../src/words.js'
 
 const ctx = () => {
   const c = { tray: new Tray(null), used: [], marked: [], rerender: () => {}, trayChanged: () => {},
@@ -47,8 +48,9 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
   assert.equal(page.querySelector('[data-pick]').getAttribute('aria-label'), 'Pick this item')
   assert.deepEqual(c.used.at(-1), { completion: 'bafyrun', output: 'markdup', where: [], count: null })
   assert.ok(page.querySelector('[data-retention]'))
-  assert.deepEqual(page.querySelectorAll('.status').map(i => ['ok', 'fail'].find(t => i.classList.contains(t))), ['ok'], 'the run it came from, with its status')
-  assert.match(page.querySelector('.fact').textContent, /happy_rubens failed/, 'the other run, by name')
+  const facts = page.querySelectorAll('.fact').map(f => f.textContent)
+  assert.match(facts[0], /high_jang$/, 'the run it came from, a chip like the others, no status word as it succeeded')
+  assert.match(facts[1], /happy_rubens failed/, 'the other run, by name')
 })
 
 test('the item page folds its metadata only when the fold would hide five pills or more', async () => {
@@ -158,7 +160,11 @@ test('a Selection row says which run and output it is from, and where it is held
   assert.equal(here.querySelector('[data-held-for]').textContent, '')
   assert.equal(away.querySelector('[data-held-for]').textContent, 'not in this store')
   assert.match(here.textContent, /boring_yalow · people/)
-  assert.equal(here.querySelector('a[href="#/run/bafyrun"]').textContent, 'boring_yalow')
+  const chip = here.querySelector('a[href="#/run/bafyrun"]')
+  assert.ok(chip.classList.contains('fact'), 'the run as a chip, as Produced by shows it')
+  assert.equal(chip.querySelector('[data-sealed]').dataset.sealed, 'run', 'the kind rides on the Seal\'s badge')
+  assert.equal(chip.querySelector('.k'), null)
+  assert.match(chip.textContent, /boring_yalow$/)
   assert.deepEqual(page.querySelectorAll('th').map(t => t.textContent).slice(0, 1), ['Sample'])
 })
 
@@ -183,7 +189,7 @@ test('the Selection page: seal and name, the name as a claim tag with its author
   assert.ok(name.classList.contains('claim'))
   assert.ok(name.querySelector('.av').classList.contains('anon'), 'anonymous renders the kit anonymous avatar')
   assert.match(name.textContent, /named/)
-  assert.equal(name.querySelector('.age').getAttribute('title'), '2026-10-14T20:07:44.417Z')
+  assert.equal(name.querySelector('.age').getAttribute('title'), fullWhenText('2026-10-14T20:07:44.417Z'))
   assert.ok(page.querySelector('.state.s-held'))
   assert.equal(page.querySelectorAll('.presence').length, 1)
   assert.equal(page.querySelector('.subline').querySelector('.addr').dataset.address, 'bafysel')
@@ -241,13 +247,14 @@ test('home, pipeline and item pages name their kinds with icons', async () => {
     latestSuccessfulRun: async () => 'bafyrun', runRow: async () => ({ run_name: 'high_jang' }) }
   const homePage = await home(homeEx, ctx())
   await frame()
-  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline'])
-  assert.ok(homePage.querySelector('.status.ok'), 'the latest good run shows the ok status icon')
+  assert.deepEqual(homePage.querySelectorAll('[data-icon]').map(i => i.dataset.icon), ['pipeline', 'run'])
+  assert.ok(homePage.querySelector('[data-sealed]').querySelector('.tone-good'), 'the latest good run: its Seal, the badge green')
   const pipeEx = { runPage: async () => ({ rows: [{ completion_cid: 'bafyrun', pipeline: 'p', run_name: 'high_jang', status: 'succeeded', possibly_incomplete: 0,
     finished_at: '2026-09-30T21:10:38.345Z', source: 'snapshot' }], hidden: 0, first: 1, last: 1, total: 1, prev: null, next: null }),
     completionOf: async () => ({ anomalies: {} }), stale: [] }
   const pipePage = await pipeline(pipeEx, 'p', 0, ctx())
   assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-icon]').dataset.icon, 'run')
+  assert.equal(pipePage.querySelector('[data-run]').querySelector('[data-seal]').dataset.seal, 'bafyrun', 'a run row leads with its Seal')
   assert.ok(pipePage.querySelector('[data-run]').querySelector('[data-icon]').classList.contains('tone-good'))
 })
 

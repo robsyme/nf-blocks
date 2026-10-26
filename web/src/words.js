@@ -85,11 +85,28 @@ export function humanBytes(n) {
   return bytes(Number(n))
 }
 
-export function whenText(iso) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+/**
+ * The page's one date-and-time: `Oct 24, 1:29 PM` in the reader's zone, with
+ * the year as dayText adds it. Day and time are formatted apart because some
+ * browsers write the one-call form as `Oct 24 at 1:29 PM`. `now` is the
+ * caller's clock, as dayText's; views without an Explorer at hand leave it out.
+ */
+export function whenText(at, now = Date.now()) {
+  if (at === null || at === undefined || at === '') return ''
+  const day = dayText(at, now)
+  return day ? `${day}, ${timeText(at)}` : String(at)
 }
+
+/** whenText with the year always: `Oct 24, 2026, 1:29 PM`, the title of every relative time (`11m`, `2 days ago`). */
+export function fullWhenText(at) {
+  if (at === null || at === undefined || at === '') return ''
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return String(at)
+  return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}, ${timeText(d)}`
+}
+
+/** `1:29 PM` in the reader's zone, with a plain space before AM/PM. */
+export const timeText = (at) => new Date(at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, ' ')
 
 const REASONS = {
   declined: 'no file (an optional output was empty)',
@@ -110,7 +127,7 @@ export function agoText(iso, now = Date.now()) {
   if (min < 24 * 60) return `${Math.floor(min / 60)} h ago`
   const days = Math.floor(min / (24 * 60))
   if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`
-  return new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  return dayText(t, now)
 }
 
 /** The footer's count of runs newer than the snapshot; an unreadable Store Log means the count is unknown, not 0. */

@@ -11,9 +11,9 @@
 // Browse; the open store's entry in Stores shows what the store holds
 // (Explorer.storeStats, read once at load) when the snapshot has figures.
 import { h } from './html.js'
-import { icon } from './icons.js'
+import { icon, sealed } from './icons.js'
 import { bytes } from './format.js'
-import { runTone, statusText, whenText } from './words.js'
+import { dayText, runTone, statusText, whenText } from './words.js'
 
 const NAV_RUNS = 10
 const NAV_SELECTIONS = 5
@@ -107,9 +107,9 @@ export function createNav(ex, { el, countEl = null, projectCountEl = null, store
         const tone = runTone(r)
         return h('li', { 'data-nav-run': r.completion_cid, 'aria-current': current ? 'page' : null },
           h('a', { class: `sub nav-run${current ? ' on' : ''}`, href: `#/run/${r.completion_cid}`, title: [r.run_name ?? 'unnamed run', statusText(r), whenText(r.finished_at)].join(' · ') },
-            h('span', { class: `dot run-dot${tone ? ` ${DOT[tone]}` : ''}`, 'aria-hidden': 'true' }),
+            sealed('run', r.completion_cid, { size: 16, tone }),
             h('span', { class: 'lbl nav-run-name' }, r.run_name ?? 'unnamed run'),
-            h('small', { class: 'nav-run-when' }, whenText(r.finished_at).split(',')[0])))
+            h('small', { class: 'nav-run-when' }, dayText(r.finished_at, Date.now()))))
       }),
       page.total > page.rows.length ? h('li', {}, h('a', { class: 'sub more-link', href: `#/pipeline/${enc(name)}` }, 'all runs…')) : null)
   }
@@ -155,7 +155,7 @@ export function createNav(ex, { el, countEl = null, projectCountEl = null, store
       selectionsError ? warn('Could not list Selections', selectionsError)
         : selections.length === 0 ? h('p', { class: 'muted' }, 'None yet.')
           : h('ul', { class: 'nav-selections' },
-            selections.map(s => h('li', {}, h('a', { class: 'sub', href: `#/selection/${s.cid}`, 'data-nav-selection': s.cid }, icon('selection'),
+            selections.map(s => h('li', {}, h('a', { class: 'sub', href: `#/selection/${s.cid}`, 'data-nav-selection': s.cid }, sealed('selection', s.cid, { size: 16 }),
               h('span', { class: 'lbl' }, s.state?.names?.length ? s.state.names.join(' / ') : 'unnamed'))))))
   }
 

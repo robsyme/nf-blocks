@@ -6,6 +6,7 @@
 // elements; ICON_CSS holds the shapes.
 import { h, link } from './html.js'
 import { shortCid } from './components.js'
+import { seal } from './seal.js'
 
 const SHAPES = {
   pipeline: '<path d="M2 4h4v8H2zM10 4h4v8h-4zM6 8h4" fill="none" stroke="#000" stroke-width="1.5"/>',
@@ -33,6 +34,15 @@ export const ICON_CSS = [
   '.ref { white-space: nowrap; }',
   '.icon.tone-good { background-color: var(--ok); } .icon.tone-bad { background-color: var(--fail); }',
   ...KINDS.map(k => `.icon-${k} { --icon: ${dataUri(SHAPES[k])}; }`),
+  // A sealed block: the Seal is the face, the kind icon rides on a badge at its lower right.
+  '.sealed { position: relative; display: inline-block; flex: none; line-height: 0; vertical-align: middle; margin-right: var(--ov); }',
+  '.sealed .seal svg { display: block; }',
+  '.sealed .badge { position: absolute; right: calc(var(--ov) * -1); bottom: calc(var(--ov) * -1); width: var(--b); height: var(--b);',
+  '  border-radius: 50%; background: var(--surface); box-shadow: 0 0 0 1px var(--line-2); display: flex; align-items: center; justify-content: center; }',
+  '.sealed .badge .icon { width: calc(var(--b) - 3px); height: calc(var(--b) - 3px); margin: 0; vertical-align: 0; background-color: var(--ink-2); }',
+  '.sealed .badge .icon.tone-good { background-color: var(--ok); } .sealed .badge .icon.tone-bad { background-color: var(--fail); }',
+  '.ref .sealed { margin-right: calc(var(--ov) + 5px); }',
+  'h1 > .sealed { margin-right: calc(var(--ov) + 10px); }',
 ].join('\n')
 
 /** `tone` ('good' or 'bad', from runTone) paints the icon in that status colour; without it the icon is grey. */
@@ -41,8 +51,24 @@ export function icon(kind, { tone = null } = {}) {
   return h('span', { class: `icon icon-${kind}${tone ? ` tone-${tone}` : ''}`, 'data-icon': kind, title: NAMES[kind], 'aria-hidden': 'true' })
 }
 
-export function ref(kind, label, href = null, { tone = null } = {}) {
-  return h('span', { class: 'ref' }, icon(kind, { tone }), href ? link(href, label) : label)
+/**
+ * A block named by its kind and address: its Seal, with the kind's icon on a
+ * badge at the lower right (the avatar-with-app-badge pattern). The Seal says
+ * "this exact block"; the badge says what kind of block it is, and takes the
+ * status tone where one is known. Without a CID (a pipeline, a store, a name
+ * not yet resolved) it is the plain icon.
+ */
+export function sealed(kind, cid, { size = 16, tone = null } = {}) {
+  if (!cid) return icon(kind, { tone })
+  const b = Math.max(11, Math.round(size * 0.6))
+  const ov = Math.round(b * 0.3)
+  return h('span', { class: 'sealed', 'data-sealed': kind, style: `--b:${b}px;--ov:${ov}px`, title: `${NAMES[kind] ?? kind} ${shortCid(cid)}` },
+    seal(cid, { size }), h('span', { class: 'badge' }, icon(kind, { tone })))
+}
+
+/** The icon (sealed when given `cid`), then the label, a link when given `href`. */
+export function ref(kind, label, href = null, { tone = null, cid = null, size = 16 } = {}) {
+  return h('span', { class: 'ref' }, sealed(kind, cid, { size, tone }), href ? link(href, label) : label)
 }
 
 // One short form everywhere: the kit's (`bafy…26ocxq`), as addrChip shows it.

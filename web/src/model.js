@@ -1298,7 +1298,7 @@ export class Explorer {
     }
     if (!completion) return null
     const run = await this.runRow(completion)
-    return { run_name: run?.run_name ?? null, output, completion, status: run?.status ?? null, possibly_incomplete: run ? !!run.possibly_incomplete : null }
+    return { run_name: run?.run_name ?? null, output, completion, status: run?.status ?? null, possibly_incomplete: run ? !!run.possibly_incomplete : null, finished_at: run?.finished_at ?? null }
   }
 
   /**

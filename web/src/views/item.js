@@ -7,8 +7,9 @@
 // 5.27 MB", the files being those stored here (a directory counts its files)
 // and the Leaves' sum what the record names.
 import { h, link } from '../html.js'
-import { shortCid } from '../icons.js'
-import { addrChip, age, button, claimTag, durability, factTag, fieldChip, kv, pageHead, panel, status, thread } from '../components.js'
+import { ref, sealed, shortCid } from '../icons.js'
+import { runTone, statusText } from '../words.js'
+import { addrChip, ago, button, claimTag, durability, fieldChip, kv, pageHead, panel, runFact, status, thread } from '../components.js'
 import { downloadElsewhere, presenceOf } from '../presence.js'
 import { bytes, formatNumber, formatValue, sizeText } from '../format.js'
 import { fold } from '../folds.js'
@@ -37,10 +38,17 @@ const storeOf = (ctx) => ctx.store ?? { name: 'this store', key: 'a' }
 /** A run's name as a link, with its status icon and word; the run is a label from Explorer.runLabel. */
 export function runStatus(label, completion = label?.completion) {
   const name = label?.run_name ?? 'unnamed run'
-  const node = status(label ?? {})
-  node.replaceChildren(node.children[0], completion ? link(`#/run/${completion}`, name) : name)
-  node.setAttribute('title', `${name}: ${status(label ?? {}).textContent}`)
+  const tone = runTone(label)
+  const word = tone === 'bad' ? h('span', { class: 'muted' }, ` ${statusText(label).toLowerCase()}`) : null
+  const node = h('span', { class: 'ref', 'data-run-status': label?.status ?? '' },
+    sealed('run', completion, { tone }), completion ? link(`#/run/${completion}`, name) : name, word)
+  node.setAttribute('title', `${name}: ${statusText(label ?? {})}`)
   return node
+}
+
+/** A run as a chip (runFact) and how long ago it finished, the full time on hover. */
+function runChip(label, completion, { extra = null, now = Date.now() } = {}) {
+  return h('span', { class: 'row', style: 'gap:8px' }, runFact(label, completion, extra), ago(label?.finished_at, now, { class: 'muted small' }))
 }
 
 /**
@@ -48,7 +56,7 @@ export function runStatus(label, completion = label?.completion) {
  * then the name with its status. `build(label)` makes the node for a label.
  */
 export function runName(ex, collectionCid, completion, build) {
-  const node = h('span', { class: 'runname', title: completion }, link(`#/run/${completion}`, h('code', { class: 'cid' }, shortCid(completion))))
+  const node = h('span', { class: 'runname', title: completion }, ref('run', h('code', { class: 'cid' }, shortCid(completion)), `#/run/${completion}`, { cid: completion }))
   ex.runLabel(collectionCid).then((label) => { if (label) node.replaceChildren(build(label)) }, () => {})
   return node
 }
@@ -224,7 +232,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const releasedRun = runState?.released
   // Add to project (P4): its memberships from the item's own Claims (it.state), so the subline's tags cost no query.
   const projects = projectControl(ex, ctx, { subject: itemCid, kind: 'item', claims: it.state?.claims ?? null, href: `#/item/${collectionCid}/${itemCid}` })
-  const head = pageHead({ crumbs, seal: itemCid, title,
+  const head = pageHead({ crumbs, seal: itemCid, kind: 'item', title,
     after: [from?.output ? h('span', { class: 'muted', style: 'font-size:15px' }, `${from.output} item`) : null,
       it.state.pinned ? durability('pinned', 'Pinned') : from ? (releasedRun ? [durability('releasing', 'Run released'), claimTag({ assertedBy: runState.releaseClaim?.asserted_by, verb: 'released', at: runState.releaseClaim?.timestamp })] : durability('held', 'Held by run')) : null, here],
     actions: [projects.button, pickButton(ctx, { address: itemCid, via: collectionCid === '-' ? [] : [collectionCid] })].filter(Boolean),
@@ -247,7 +255,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
         r.dir ? link(`#/block/${r.address}`, 'Directory') : h('a', { class: 'btn sm ghost', href: ex.blocks.urlFor(r.address), download: r.name ?? '' }, 'Download')]
       : h('span', { class: 'muted' }, leafReasonText(r.reason)))
     const row = h('tr', { 'data-file': r.address ?? '' },
-      h('td', {}, h('div', { class: 'namecell' }, stored ? seal(r.address, { size: 18 }) : null,
+      h('td', {}, h('div', { class: 'namecell' }, stored ? sealed(r.dir ? 'directory' : 'file', r.address, { size: 18 }) : null,
         stored ? h('a', { href: `#/content/${r.address}`, class: 'mono', style: 'font-weight:500;font-size:12px', title: 'Which runs produced this file' }, r.name ?? r.address)
           : h('span', { class: 'mono', style: 'font-size:12px' }, r.name ?? ''))),
       h('td', { class: 'mono muted', style: 'font-size:11.5px' }, r.sub),
@@ -289,16 +297,16 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const storedFiles = new Set(producers.map(([leaf]) => String(leaf.address))).size
   const elsewhere = [...runs].filter(([completion]) => completion !== from?.completion)
   const allOf = elsewhere.every(([completion]) => made.get(completion).size === storedFiles)
+  const now = ex.now?.() ?? Date.now()
   const producedBy = panel({ title: 'Produced by' },
-    from ? h('div', { class: 'row' }, runStatus(from), runRow?.finished_at ? h('span', { class: 'muted' }, age(runRow.finished_at)) : null)
-      : runs.size ? h('div', { class: 'row' }, [...runs].map(([completion, coll]) => runName(ex, coll, completion, (l) => runStatus(l, completion))))
+    from ? h('div', { class: 'row' }, runChip({ ...from, finished_at: runRow?.finished_at ?? from.finished_at }, from.completion, { now }))
+      : runs.size ? h('div', { class: 'row' }, [...runs].map(([completion, coll]) => runName(ex, coll, completion, (l) => runChip(l, completion, { now }))))
         : h('p', { class: 'muted' }, 'No run in this member produced it.'),
     collectionCid === '-' ? h('p', { class: 'muted small' }, 'Picked by a query across runs.') : null,
     elsewhere.length ? [h('p', { class: 'muted small' }, allOf ? `The same ${storedFiles} ${storedFiles === 1 ? 'file was' : 'files were'} also produced by`
       : 'Some of these files were also produced by'),
       h('div', { class: 'row' }, elsewhere.map(([completion, coll]) => runName(ex, coll, completion,
-        (l) => factTag('run', [l.run_name ?? 'unnamed run', l.status && l.status !== 'succeeded' ? h('span', { class: 'muted' }, ` ${l.status}`) : null,
-          allOf ? null : h('span', { class: 'muted' }, ` · ${made.get(completion).size} of ${storedFiles}`)], completion, `#/run/${completion}`)))),
+        (l) => runChip(l, completion, { now, extra: allOf ? null : h('span', { class: 'muted' }, ` · ${made.get(completion).size} of ${storedFiles}`) })))),
       h('p', { class: 'muted small' }, 'Stored once. Content addressing keeps one copy for every run.')] : null)
 
   // Each Selection by its name (a Claim: this main pane may read them), its short CID beside it.
@@ -317,7 +325,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
         : ['Pinning keeps it in ', h('b', {}, store.name), ' even if the run that wrote it is released.'] }),
     fold(`details:${itemCid}`, 'Address',
       kv([['Item', addrChip(itemCid)],
-        ...(collectionCid !== '-' ? [['In output', addrChip(collectionCid, { ref: `cas://${collectionCid}/${itemCid}`, seal: false })]] : []),
+        ...(collectionCid !== '-' ? [['In output', addrChip(collectionCid, { ref: `cas://${collectionCid}/${itemCid}` })]] : []),
         ...it.leaves.filter(l => l.address).map(l => [l.name ?? 'file', addrChip(String(l.address))])]),
       all.length ? pairsNode(all, target, { size: 'row' }) : null))
 }

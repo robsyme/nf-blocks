@@ -258,7 +258,7 @@ function samplesPanel(ex, p, ctx, d, { can, write }) {
       h('span', { class: 'spacer' }), handoffLink(p, d), merge?.open, split?.open),
     merge?.form, split?.form,
     d.groups.length ? h('div', { class: 'pb tbox' }, h('table', { class: 't', 'data-project-samples': '' }, h('thead', {}, head), h('tbody', {}, rows)))
-      : h('div', { class: 'pb' }, h('p', { class: 'muted', 'data-samples-empty': '' }, 'No samples yet. Add a run, a Selection or an item to the project.')),
+      : h('div', { class: 'pb project-empty' }, h('p', { class: 'muted', 'data-samples-empty': '' }, 'No samples yet. Add a run, a Selection or an item to the project.')),
     h('div', { class: 'pb project-basis' }, h('p', { class: 'note', 'data-basis-note': '' }, h('span', {}, basisNote(d))),
       d.unmatched.length ? h('p', { class: 'muted', 'data-unmatched': '' },
         `${plural(d.unmatched.length, 'sample')} added by name ${d.unmatched.length === 1 ? 'is' : 'are'} in none of these runs: ${namesText(d.unmatched.map(r => r.id))}.`) : null,

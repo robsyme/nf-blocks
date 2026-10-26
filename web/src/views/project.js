@@ -9,8 +9,8 @@
 // first). Every storage figure is one store's, never added up; every pin
 // it writes names its bytes first.
 import { h, link } from '../html.js'
-import { age, avatar, button, claimTag, pageHead, panel, shortCid, storageBar, tabs } from '../components.js'
-import { icon } from '../icons.js'
+import { ago, avatar, button, claimTag, pageHead, panel, shortCid, storageBar, tabs } from '../components.js'
+import { icon, sealed } from '../icons.js'
 import { formatNumber, plural, sizeText } from '../format.js'
 import { samePrincipal } from '../identity.js'
 import { fromEach, hrefIn, unreadableText } from '../members.js'
@@ -372,7 +372,7 @@ function runsTab(ex, p, ctx, { runs, items, names, can, write, scope }) {
     const cells = { pipeline: h('td', {}), finished: h('td', {}), name: h('span', {}, link(`#/run/${m.subject}`, names.get(m.subject))) }
     ex.runRow(m.subject).then((r) => {
       if (!r) return
-      cells.name.replaceChildren(h('span', { class: 'namecell' }, icon('run', { tone: runTone(r) }), link(`#/run/${m.subject}`, r.run_name ?? 'unnamed run')))
+      cells.name.replaceChildren(h('span', { class: 'namecell' }, sealed('run', m.subject, { size: 20, tone: runTone(r) }), link(`#/run/${m.subject}`, r.run_name ?? 'unnamed run')))
       cells.pipeline.replaceChildren(r.pipeline ?? '')
       cells.finished.replaceChildren(whenText(r.finished_at))
     }, () => {})
@@ -424,7 +424,7 @@ function selectionsTab(ex, p, ctx, { sels, can, retention, pins, unpinned, scope
     h('span', {}, `${plural(unpinned.length, 'Selection')} not pinned by policy`, can ? [' · ', button('Pin', { size: 'sm', kind: 'ghost', 'data-pin-unpinned': '',
       onclick: () => { confirm.replaceChildren(retentionConfirm(unpinned, pins)); show(confirm, true) } })] : null)) : null
   const row = (s) => h('tr', { 'data-member': s.subject, 'data-kind': 'selection' },
-    h('td', {}, h('span', { class: 'namecell' }, icon('selection'), link(`#/selection/${s.subject}`, s.name))),
+    h('td', {}, h('span', { class: 'namecell' }, sealed('selection', s.subject, { size: 20 }), link(`#/selection/${s.subject}`, s.name))),
     h('td', {}, policyPins(s, pins, can) ?? h('span', { class: 'muted' }, s.state?.pinned ? 'pinned' : '—')),
     h('td', {}, addedTags(s)), h('td', { class: 'r' }, can ? removeButton(p, s, pins.write) : null))
   return h('div', { class: 'stack' }, d5, confirm,
@@ -483,7 +483,7 @@ function activityPanel(events, ex, { limit = Infinity, more = null, all = false,
   const now = ex.now?.() ?? Date.now()
   const shown = events.slice(0, limit)
   const rows = shown.map(e => h('div', { class: 'row activity-row', 'data-activity': e.key, 'data-at': e.at ?? '' },
-    h('span', { class: 'mono muted activity-age', title: e.at ?? '' }, age(e.at, now)),
+    ago(e.at, now, { class: 'mono muted activity-age' }) ?? h('span', { class: 'mono muted activity-age' }),
     claimTag({ assertedBy: e.who, verb: e.verb, value: e.value ?? (e.text ? h('span', {}, e.text) : null) })))
   return panel({ title: 'Activity', meta: scope.meta(all ? 'newest first' : null) },
     rows.length ? rows : h('p', { class: 'muted' }, 'Nothing yet.'),

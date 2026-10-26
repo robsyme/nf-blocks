@@ -1,7 +1,7 @@
 // web/src/views/pipeline.js
 // #/pipeline/<name> and the latest-run redirect (DESIGN.md §15).
 import { h, link } from '../html.js'
-import { icon, ref, shortCid } from '../icons.js'
+import { icon, ref, sealed, shortCid } from '../icons.js'
 import { avatar, empty, note, pageHead, status } from '../components.js'
 import { sizeText } from '../format.js'
 import { healthLine, runTone, sharedHealth, whenText } from '../words.js'
@@ -46,7 +46,7 @@ export async function pipeline(ex, name, offset = 0, ctx, { mine = false } = {})
         h('th', { class: 'r' }, 'Stored'), h('th', {}, 'Health'), h('th', {}, 'From'))),
       h('tbody', {}, rows.map(({ r, stored, anomalies }) => h('tr', {
         'data-run': r.completion_cid, 'data-pipeline': r.pipeline, 'data-status': r.status, 'data-source': r.source },
-      h('td', {}, h('div', { class: 'namecell' }, icon('run', { tone: runTone(r) }), link(`#/run/${r.completion_cid}`, r.run_name ?? shortCid(r.completion_cid)))),
+      h('td', {}, h('div', { class: 'namecell' }, sealed('run', r.completion_cid, { size: 20, tone: runTone(r) }), link(`#/run/${r.completion_cid}`, r.run_name ?? shortCid(r.completion_cid)))),
       h('td', {}, status(r)),
       h('td', { class: 'nowrap' }, sub(whenText(r.finished_at))),
       h('td', { 'data-by': r.asserted_by ?? '' }, avatar(r.asserted_by)),
@@ -82,7 +82,7 @@ export async function latest(ex, pipelineName) {
     crumbs({ text: pipelineName, href: `#/pipeline/${enc(pipelineName)}` }, { text: 'latest good run' }),
     h('h1', {}, `Latest successful run of ${pipelineName}`),
     h('p', { 'data-latest': best ?? '' }, best
-      ? [ref('run', id?.run_name ?? shortCid(best), `#/run/${best}`, { tone: 'good' }),
+      ? [ref('run', id?.run_name ?? shortCid(best), `#/run/${best}`, { tone: 'good', cid: best }),
         id?.run_name ? [' ', h('code', { class: 'cid', title: best }, shortCid(best))] : null]
       : 'None: no run of this pipeline succeeded without being possibly incomplete.'))
 }

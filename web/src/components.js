@@ -6,8 +6,9 @@
 import { copyOutcome, h } from './html.js'
 import { bytes } from './format.js'
 import { seal } from './seal.js'
-import { statusText, statusTone } from './words.js'
+import { dayText, fullWhenText, runTone, statusText, statusTone, whenText } from './words.js'
 import { isAnon, principalKey } from './identity.js'
+import { KINDS, sealed } from './icons.js'
 
 /** The kit's short form: `bafy…26ocxq` for a CID, `lid://e25b…b06f` for a lineage id. */
 export function shortCid(text) {
@@ -23,22 +24,40 @@ export function shortCid(text) {
  */
 export function addrChip(text, { ref = text, seal: withSeal = true } = {}) {
   const cid = text.startsWith('lid://') ? null : text
+  const label = h('span', { class: 'copy', 'aria-live': 'polite' }, 'copy')
   const chip = h('span', { class: 'addr', 'data-ref': ref, 'data-address': cid, role: 'button', tabindex: '0', title: ref },
-    withSeal ? seal(text, { size: 14 }) : null, shortCid(text), ' ', h('span', { class: 'copy' }, 'copy'))
+    withSeal ? seal(text, { size: 14 }) : null, shortCid(text), ' ', label)
+  // The label says what happened, not only the title: a click gives no hover tooltip to read.
   const copy = async () => {
     const said = await copyOutcome(globalThis.navigator?.clipboard, ref)
     chip.setAttribute('title', said)
+    label.textContent = said.toLowerCase()
     chip.classList.add('flash')
-    setTimeout(() => { chip.setAttribute('title', ref); chip.classList.remove('flash') }, 900)
+    setTimeout(() => { chip.setAttribute('title', ref); label.textContent = 'copy'; chip.classList.remove('flash') }, 1200)
   }
   chip.addEventListener('click', copy)
   chip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copy() } })
   return chip
 }
 
-/** An immutable record: its Seal, a kind label and a name; a link when given `href`. */
-export function factTag(kind, label, cid, href = null) {
-  return h(href ? 'a' : 'span', { class: 'fact', href }, seal(cid, { size: 16 }), h('span', { class: 'k' }, kind), label)
+/**
+ * An immutable record: its Seal and a name; a link when given `href`. A kind
+ * with an icon rides on the Seal's badge; any other kind (a manifest, a copy)
+ * keeps its word label.
+ */
+export function factTag(kind, label, cid, href = null, { tone = null } = {}) {
+  const known = KINDS.includes(kind)
+  return h(href ? 'a' : 'span', { class: `fact${known ? ' sealed-fact' : ''}`, href },
+    known ? sealed(kind, cid, { size: 18, tone }) : seal(cid, { size: 16 }), known ? null : h('span', { class: 'k' }, kind), label)
+}
+
+/**
+ * A run as a fact: its seal, RUN, its name (a run label: run_name, status,
+ * possibly_incomplete), the status in words unless it succeeded whole, then `extra`.
+ */
+export function runFact(label, completion, extra = null) {
+  const word = label?.status && statusTone(label) !== 'good' ? h('span', { class: 'muted' }, ` ${statusText(label).toLowerCase()}`) : null
+  return factTag('run', [label?.run_name ?? 'unnamed run', word, extra], completion, completion ? `#/run/${completion}` : null, { tone: runTone(label) })
 }
 
 const isAnonymous = (who) => isAnon({ principal: who })
@@ -73,7 +92,6 @@ export function avatar(assertedBy, { size = 'sm', tone = null, link = true } = {
 }
 
 const DAY = 86_400_000
-const SHORT = { month: 'short', day: 'numeric' }
 
 /** How long ago `at` was, briefly: `now`, `40m`, `3h`, `2d`, else a short date (`Sep 1`, with the year when it differs). */
 export function age(at, now = Date.now()) {
@@ -84,16 +102,13 @@ export function age(at, now = Date.now()) {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`
   if (ms < DAY) return `${Math.floor(ms / 3_600_000)}h`
   if (ms < 7 * DAY) return `${Math.floor(ms / DAY)}d`
-  const d = new Date(t)
-  const sameYear = d.getFullYear() === new Date(now).getFullYear()
-  return d.toLocaleDateString('en-US', sameYear ? SHORT : { ...SHORT, year: 'numeric' })
+  return dayText(t, now)
 }
 
-/** `Oct 24, 3:40 PM` in the viewer's local zone (a plain space before AM/PM). */
-function absoluteTime(at) {
-  const t = typeof at === 'number' ? at : Date.parse(at)
-  if (!Number.isFinite(t)) return ''
-  return new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).replace(/\s/g, ' ')
+/** `at` as age writes it, the whole date and time on hover; null when `at` is unreadable. */
+export function ago(at, now = Date.now(), attrs = {}) {
+  const text = at === null || at === undefined ? '' : age(at, now)
+  return text ? h('span', { ...attrs, title: fullWhenText(at) }, text) : null
 }
 
 /** At most this many characters of a claim value that is not a string (its JSON text). */
@@ -115,12 +130,13 @@ function claimValue(value) {
  */
 export function claimTag({ assertedBy, verb, value = null, at = null, conflict = false, tone = null, now = Date.now(), absolute = false, superseded = false }) {
   const shown = claimValue(value)
-  const when = at === null || at === undefined ? '' : absolute ? absoluteTime(at) : age(at, now)
+  const when = at === null || at === undefined ? '' : absolute ? whenText(at, now) : age(at, now)
+  const title = typeof at === 'number' || typeof at === 'string' ? fullWhenText(at) : null
   const full = shown === null ? null : typeof shown === 'string' ? shown : shown.textContent
   return h('span', { class: `claim${conflict ? ' conflict' : ''}${superseded ? ' old' : ''}`, title: superseded ? 'Superseded' : null },
     avatar(assertedBy, { size: 'sm', tone }), h('span', { class: 'verb' }, verb), shown === null ? null : h('span', { class: 'val', title: full }, shown),
     conflict ? ' · conflicts' : null,
-    when ? h('span', { class: 'age', title: typeof at === 'number' ? new Date(at).toISOString() : String(at) }, when) : null)
+    when ? h('span', { class: 'age', title }, when) : null)
 }
 
 /**
@@ -150,13 +166,14 @@ const STATUS_ICONS = {
  * A run's status: icon and word, never colour alone. Succeeded and failed
  * take statusTone's ok or fail (a possibly incomplete success is fail, with
  * its own icon); any other status (running, unknown, none) is neutral.
+ * `label` replaces the word where the column header already says it.
  */
-export function status(run) {
+export function status(run, label = statusText(run ?? {})) {
   const settled = run?.status === 'succeeded' || run?.status === 'failed'
   const tone = !settled ? 'neutral' : statusTone(run) === 'good' ? 'ok' : 'fail'
   const ico = h('span', { class: 'ico' })
   ico.innerHTML = STATUS_ICONS[tone === 'fail' && run.status === 'succeeded' ? 'partial' : tone]
-  return h('span', { class: `status ${tone}` }, ico, statusText(run ?? {}))
+  return h('span', { class: `status ${tone}` }, ico, label)
 }
 
 /** A kind of output file and how many: `bam×5`. */
@@ -185,11 +202,11 @@ export const note = (text, tone = 'info') => h('div', { class: tone === 'info' ?
 export const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text)
 
 /** Crumbs, the title row (Seal, h1, extras, actions on the right) and the subline. */
-export function pageHead({ crumbs = [], seal: cid = null, title, after = [], actions = [], subline = [] }) {
+export function pageHead({ crumbs = [], seal: cid = null, kind = null, tone = null, title, after = [], actions = [], subline = [] }) {
   const trail = crumbs.flatMap((c, i) => [i ? '/' : null, c.href ? h('a', { href: c.href }, c.text) : h('b', {}, c.text)])
   return h('div', { class: 'page-head' },
     crumbs.length ? h('nav', { class: 'crumbs', 'aria-label': 'Breadcrumb' }, trail) : null,
-    h('div', { class: 'title' }, cid ? seal(cid, { size: 30 }) : null, h('h1', {}, title), after,
+    h('div', { class: 'title' }, cid ? (kind ? sealed(kind, cid, { size: 30, tone }) : seal(cid, { size: 30 })) : null, h('h1', {}, title), after,
       actions.length ? [h('span', { class: 'spacer' }), actions] : null),
     subline.length ? h('div', { class: 'subline' }, subline.map(s => h('span', {}, s))) : null)
 }

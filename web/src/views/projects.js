@@ -9,7 +9,7 @@
 // which groups them (sampleid.js).
 import { h, link } from '../html.js'
 import { avatar, button, claimTag, empty, note, pageHead, panel } from '../components.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { bytes, plural } from '../format.js'
 import { SELECTIONS_PAGE } from '../config.js'
 import { RUNS_PAGE } from '../model.js'
@@ -292,7 +292,7 @@ async function notInAProject(ex, ctx) {
   const where = listsAll(ctx) ? `in ${storeName}` : null
   const meta = (cutText) => [where, cutText].filter(Boolean).join(', ') || null
   const runRow = (r) => h('tr', { 'data-unassigned-run': r.completion_cid },
-    h('td', {}, h('div', { class: 'namecell' }, icon('run', { tone: runTone(r) }), link(`#/run/${r.completion_cid}`, r.run_name ?? 'unnamed run'))),
+    h('td', {}, h('div', { class: 'namecell' }, sealed('run', r.completion_cid, { size: 20, tone: runTone(r) }), link(`#/run/${r.completion_cid}`, r.run_name ?? 'unnamed run'))),
     h('td', {}, link(`#/pipeline/${enc(r.pipeline)}`, r.pipeline)),
     h('td', {}, whenText(r.finished_at)))
   const selectionRow = (s) => h('tr', { 'data-unassigned-selection': s.cid },

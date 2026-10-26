@@ -4,11 +4,11 @@
 // across the members, with dots for the stores that hold its runs; the row's
 // figures are those of the first member that has it, where its link opens.
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
-import { age, avatar, claimTag, factTag, pageHead, panel, status } from '../components.js'
+import { icon, sealed } from '../icons.js'
+import { ago, avatar, claimTag, factTag, pageHead, panel, status } from '../components.js'
 import { seal } from '../seal.js'
 import { bytes, ratioText, sizeText } from '../format.js'
-import { healthLine } from '../words.js'
+import { dayText, fullWhenText, healthLine, timeText, whenText } from '../words.js'
 import { claimValueOf, claimVerb, enc, nameProjectLinks, unreadableRuns } from './common.js'
 import { projectNames, projectsCache } from './addproject.js'
 import { fromEach, hrefIn, listedStates, listsAll, mergeRows, unreadableText } from '../members.js'
@@ -19,14 +19,9 @@ export function idle() {
 }
 
 export const ask = (fn) => Promise.resolve().then(fn)
-/** `Oct 24, 1:29 PM`: the table has no room for a year. */
-const shortWhen = (iso) => {
-  const d = new Date(iso)
-  return !iso || Number.isNaN(d.getTime()) ? '' : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
 const sub = (text) => h('span', { class: 'sub' }, text)
 /** A date that wraps as one piece. */
-const when = (iso) => h('span', { class: 'sub', style: 'white-space:nowrap' }, shortWhen(iso))
+const when = (iso) => h('span', { class: 'sub', style: 'white-space:nowrap' }, whenText(iso))
 
 /** `[count, ['2 ok', '1 failed']]` from a runCounts entry: the run count, then each outcome that occurs. */
 export function runsSummary({ runs, ok, failed }) {
@@ -69,10 +64,10 @@ function countedText(size) {
  */
 function pipelineRow(ex, p, counts, { href = (hash) => hash, dots = null, opensIn = null } = {}) {
   const runs = h('td', { class: 'num nowrap' }, sub('…'))
-  // Only the counts keep to one line: the other cells wrap, so the Health column fits inside the table at 1440 (lead's visual finding 9).
-  const good = h('td', {}, sub('…'))
+  // The counts, the latest good run and the size keep to one line; the other cells wrap, so the Health column fits inside the table at 1440 (lead's visual finding 9).
+  const good = h('td', { class: 'nowrap' }, sub('…'))
   const last = h('td', {}, when(p.latest))
-  const stored = h('td', { class: 'r num', 'data-stored': '' }, sub('…'))
+  const stored = h('td', { class: 'r num nowrap', 'data-stored': '' }, sub('…'))
   const health = h('td', { 'data-health': '', class: 'health-cell' })
   const row = h('tr', { 'data-pipeline': p.pipeline },
     h('td', {}, h('div', { class: 'namecell' }, icon('pipeline'), opensInLink(href(`#/pipeline/${enc(p.pipeline)}`), p.pipeline, opensIn), dots)),
@@ -92,8 +87,9 @@ function pipelineRow(ex, p, counts, { href = (hash) => hash, dots = null, opensI
   ask(() => ex.latestSuccessfulRun(p.pipeline)).then(async (best) => {
     if (!best) { good.replaceChildren(sub('None')); return }
     const r = await ex.runRow(best)
-    good.replaceChildren(opensInLink(href(`#/run/${best}`), r?.run_name ?? 'unnamed run', opensIn),
-      h('div', {}, status({ status: 'succeeded' }), ' ', when(r?.finished_at)))
+    // One line (mockup 02): the header says the run succeeded, so the run's name takes the status word's place.
+    good.replaceChildren(h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' },
+      h('span', { class: 'ref' }, sealed('run', best, { tone: 'good' }), opensInLink(href(`#/run/${best}`), r?.run_name ?? 'unnamed run', opensIn)), when(r?.finished_at)))
   }).catch(() => { good.textContent = '?' })
   ask(() => ex.pipelineSize(p.pipeline)).then((size) => {
     stored.replaceChildren(storedCell(size))
@@ -121,15 +117,13 @@ function transferTag(e) {
   const fact = factTag('Copied from', [t.from ?? 'another store', t.depth ? ` · ${t.depth}` : null].filter(Boolean).join(''), e.cid, `#/block/${e.cid}`)
   fact.setAttribute('data-transfer-block', e.cid)
   return h('span', { class: 'row', style: 'gap:6px', 'data-activity-transfer': e.cid }, fact, avatar(t.assertedBy ?? null),
-    t.at ? h('span', { class: 'muted small', title: t.at }, age(t.at)) : null)
+    ago(t.at, Date.now(), { class: 'muted small' }))
 }
 
 function activityWhen(iso, now = new Date()) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
-  return d.toDateString() === now.toDateString()
-    ? d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-    : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  return d.toDateString() === now.toDateString() ? timeText(d) : dayText(d, now)
 }
 
 /**
@@ -157,7 +151,7 @@ function selectionsPanel(rows, ctx, all) {
           presenceOf(ctx).dots(r.cid, { hereHeld: null, held: heldIn }))
         : link(`#/selection/${r.cid}`, name || 'Unnamed Selection')
       return h('div', { class: 'row', 'data-home-selection': r.cid, style: 'justify-content:space-between' },
-        h('div', { class: 'row' }, seal(r.cid, { size: 28 }), h('div', { style: 'display:grid' }, title, meta)),
+        h('div', { class: 'row' }, sealed('selection', r.cid, { size: 28 }), h('div', { style: 'display:grid' }, title, meta)),
         named ? claimTag({ assertedBy: named.asserted_by, verb: 'named', at: named.timestamp }) : null)
     }), ...notes)
   }).catch(() => { body.replaceChildren(h('span', { class: 'muted' }, 'Selections could not be read.')) })
@@ -184,7 +178,7 @@ function activityPanel(ex, storeName) {
   ask(() => ex.recentActivity(8)).then((entries) => {
     body.replaceChildren(...(entries.length === 0 ? [h('span', { class: 'muted' }, 'Nothing in the log yet.')]
       : entries.map(e => h('div', { class: 'row', 'data-activity': e.kind },
-        h('span', { class: 'mono muted', style: 'width:52px', title: e.written_at }, activityWhen(e.written_at)), activityTag(e)))))
+        h('span', { class: 'mono muted', style: 'width:52px', title: fullWhenText(e.written_at) }, activityWhen(e.written_at)), activityTag(e)))))
     // A membership's project reads as its short cid until the projects read names it.
     nameProjectLinks(body.querySelectorAll('[data-project-name]'), (cids) => projectNames(ex, projectsCache(ex), cids))
   }).catch(() => { body.replaceChildren(h('span', { class: 'muted' }, 'The store log could not be read.')) })

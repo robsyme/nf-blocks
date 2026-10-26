@@ -70,7 +70,8 @@ test('item page: the id with its Seal, promoted chips, the files by record key, 
   const page = await item(itemEx(), COLL, ITEM, ctxFor())
   await frame()
   assert.equal(page.querySelector('h1').textContent, 'WT_REP1')
-  assert.ok(page.querySelector('.title').children[0].innerHTML.includes('<svg'), 'a Seal beside the title')
+  assert.ok(page.querySelector('.title').children[0].querySelector('[data-seal]').innerHTML.includes('<svg'), 'a Seal beside the title')
+  assert.equal(page.querySelector('.title').children[0].dataset.sealed, 'item', 'its badge says item')
   const chips = page.querySelectorAll('.field')
   const chip = (label) => chips.find(c => c.querySelector('.k').textContent === label)?.querySelector('.v').textContent
   assert.equal(chip('Reads (trimmed)'), '99,566')
@@ -91,10 +92,9 @@ test('item page: Produced by names the runs; the pin says its bytes and waits fo
   const calls = []
   const page = await item(itemEx(), COLL, ITEM, ctxFor({ calls }))
   await frame()
-  assert.ok(page.querySelector('.status.ok'))
-  assert.equal(page.querySelector('.status.ok').textContent.includes('distraught_murdock'), true)
   const facts = page.querySelectorAll('.fact').map(f => f.textContent)
-  assert.equal(facts.length, 2)
+  assert.equal(facts.length, 3, 'the run it came from is a chip like the other two')
+  assert.ok(facts[0].includes('distraught_murdock'))
   assert.ok(facts.some(f => f.includes('sad_yonath')))
   assert.ok(facts.some(f => /sharp_magritte.*failed/.test(f)))
   const pin = page.querySelector('#pin')

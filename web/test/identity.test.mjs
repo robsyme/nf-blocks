@@ -98,13 +98,13 @@ test('age formats short dates in the viewer\'s local zone', () => {
   assert.equal(age('2026-01-03T03:30:00Z', now), 'Jan 2')
 })
 
-test('claimTag absolute reads local "Oct 24, 3:40 PM" and keeps the ISO title', () => {
+test('claimTag absolute reads local "Oct 24, 3:40 PM", the year on hover', () => {
   installDom()
   const local = new Date(2026, 9, 24, 15, 40)
-  const tag = claimTag({ assertedBy: 'ada.lovelace@example.org', verb: 'named', at: local.toISOString(), absolute: true })
+  const tag = claimTag({ assertedBy: 'ada.lovelace@example.org', verb: 'named', at: local.toISOString(), absolute: true, now: local.getTime() })
   const el = tag.querySelector('.age')
   assert.equal(el.textContent, 'Oct 24, 3:40 PM')
-  assert.equal(el.attributes.get('title'), local.toISOString())
+  assert.equal(el.attributes.get('title'), 'Oct 24, 2026, 3:40 PM')
 })
 
 test('the identity view shows the principal, the source and the five steps', () => {

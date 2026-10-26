@@ -9,7 +9,7 @@ import { labelPaths, labelText } from '../pairs.js'
 import { trayNote } from '../tray.js'
 import { SAMPLE_PATHS, itemTable, withoutDuplicates } from '../table.js'
 import { runTone } from '../words.js'
-import { age, avatar, claimTag, durability, note, panel } from '../components.js'
+import { ago, avatar, claimTag, durability, note, panel } from '../components.js'
 import { seal } from '../seal.js'
 import { mineState, samePrincipal, whoText } from '../identity.js'
 import { bytes, sizeText } from '../format.js'
@@ -508,14 +508,14 @@ export const runLabelText = (label, collectionCid) => (label ? `${label.run_name
  */
 export function runLabelNode(ex, collectionCid, completionCid = null) {
   const node = h('span', { title: collectionCid }, completionCid
-    ? link(`#/run/${completionCid}`, h('code', { class: 'cid' }, shortCid(completionCid)))
+    ? ref('run', h('code', { class: 'cid' }, shortCid(completionCid)), `#/run/${completionCid}`, { cid: completionCid })
     : address(collectionCid))
   ex.runLabel(collectionCid).then((label) => {
     if (!label) return
     const c = label.completion
     node.replaceChildren(
-      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null, { tone: runTone(label) }), ' / ',
-      ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null))
+      ref('run', label.run_name ?? 'unnamed run', c ? `#/run/${c}` : null, { tone: runTone(label), cid: c }), ' / ',
+      ref('output', label.output, c ? `#/items/${c}/${encodeURIComponent(label.output)}?where=%5B%5D` : null, { cid: collectionCid }))
   }, () => {})
   return node
 }
@@ -746,7 +746,7 @@ export async function transfersNode(ex, cid, ctx) {
   const now = ex.now()
   return h('div', { 'data-transfers': cid }, transfers.map(t => h('p', { 'data-transfer': t.cid },
     'Copied here from ', h('b', {}, t.from ?? 'another store'), ' by ', avatar(t.assertedBy), ' ', whoText(t.assertedBy, ctx?.viewer),
-    t.at ? [' · ', h('span', { title: t.at }, age(t.at, now))] : null,
+    t.at ? [' · ', ago(t.at, now)] : null,
     t.depth ? ` · depth ${t.depth}` : null, ' · ',
     link(`#/block/${t.cid}`, seal(t.cid, { size: 14 }), ' ', shortCid(t.cid)))))
 }

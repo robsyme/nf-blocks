@@ -14,6 +14,7 @@ import { leafReasonText } from '../words.js'
 import { bytes, sizeText } from '../format.js'
 import { fieldChip, fileChip, pageHead, shortCid } from '../components.js'
 import { seal } from '../seal.js'
+import { sealed } from '../icons.js'
 import { matchPromoted, promotedFor, shortLabel } from '../promoted.js'
 import { sumUnique } from '../sizes.js'
 import { enc, markPicked, nextFrame, pickAll, pickButton } from './common.js'
@@ -464,7 +465,7 @@ function itemsGrid(ex, ctx, { results, via, target, checked, onCheck, previews, 
     const single = entry && entry.values.length === 1
     const text = entry ? entry.values.map((v, i) => valueText(entry.types[i], v)).join(', ') : shortCid(r.address)
     return h('td', { class: 'nowrap', 'data-column': shape.sample },
-      h('div', { class: 'namecell' }, seal(r.address, { size: 18 }), h('a', { href: itemHref(r.address), class: entry ? null : 'mono' }, text),
+      h('div', { class: 'namecell' }, sealed('item', r.address, { size: 18 }), h('a', { href: itemHref(r.address), class: entry ? null : 'mono' }, text),
         single ? filterLink(target, entry.path, entry.types[0], entry.values[0], text) : null, note))
   }
   const valueCell = (p, { path, field }) => {

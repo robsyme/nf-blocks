@@ -1,12 +1,12 @@
 // web/src/views/selection.js
 // #/selections and #/selection/<cid> (DESIGN.md §15; the tray composer is #/compose, compose.js).
 import { h, link, copyOutcome } from '../html.js'
-import { address, ref } from '../icons.js'
+import { address, ref, sealed } from '../icons.js'
 import { Previews } from '../previews.js'
 import { retryRestore } from '../save-flow.js'
 import { fold } from '../folds.js'
 import { whenText } from '../words.js'
-import { addrChip, avatar, button, claimTag, durability, empty, pageHead, panel, shortCid } from '../components.js'
+import { addrChip, avatar, button, claimTag, durability, empty, pageHead, panel, runFact, shortCid } from '../components.js'
 import { presenceOf } from '../presence.js'
 import { formatValue, sizeText } from '../format.js'
 import { seal } from '../seal.js'
@@ -67,8 +67,8 @@ function selectionRow(r, ctx, deleted, { href = `#/selection/${r.cid}`, opensIn 
     'data-selection': r.cid, 'data-deletion': r.state.deletion, 'data-source': r.source, 'data-names': JSON.stringify(r.state.names) },
   h('td', {}, name, dots ? [' ', dots] : null,
     r.state.nameConflicted ? flag('names in conflict') : null, r.error ? errorNode(r.error) : null),
-  h('td', {}, r.firstSeen ?? ''),
-  h('td', {}, h('span', { class: 'namecell' }, avatar(r.assertedBy), r.assertedBy ? h('span', { class: 'muted' }, r.assertedBy) : null)),
+  h('td', { style: 'white-space:nowrap' }, r.firstSeen ? when(r.firstSeen) : ''),
+  h('td', {}, h('span', { class: 'namecell' }, avatar(r.assertedBy), r.assertedBy ? [' ', h('span', { class: 'muted' }, r.assertedBy)] : null)),
   h('td', {}, r.state.deletion === 'conflicted' ? flag('deletion in conflict') : r.state.deletion === 'deleted' ? 'deleted' : ''),
   h('td', {}, deleted && undo ? undoButton(r.cid, undo.state, ctx) : null))
 }
@@ -183,7 +183,7 @@ export async function selection(ex, selectionCid, ctx) {
   return h('section', { 'data-selection-view': selectionCid, 'data-deletion': st.deletion },
     pageHead({
       crumbs: [{ text: 'Selections', href: '#/selections' }, { text: title }],
-      seal: selectionCid, title,
+      seal: selectionCid, kind: 'selection', title,
       after: [
         nameClaims.map(c => nameClaim(c, st.names.length > 1)),
         deletion, presenceOf(ctx).dots(selectionCid),
@@ -264,7 +264,7 @@ function memberRow(ex, ctx, m, index, previews, copy) {
     const size = h('td', { class: 'r num muted nowrap' })
     ex.selectionSize(m.address).then((z) => size.replaceChildren(sizeText(z)), () => {})
     return { m, tr, held, nested: true, size,
-      sample: h('td', {}, h('div', { class: 'namecell' }, ref('selection', name, `#/selection/${m.address}`)), held, h('div', { class: 'sub' }, address(m.address))), address: addrChip(m.address) }
+      sample: h('td', {}, h('div', { class: 'namecell' }, ref('selection', name, `#/selection/${m.address}`, { cid: m.address, size: 18 })), held, h('div', { class: 'sub' }, address(m.address))), address: addrChip(m.address) }
   }
   const collection = m.via[0] ?? null
   const href = `#/item/${collection ?? '-'}/${m.address}`
@@ -276,18 +276,18 @@ function memberRow(ex, ctx, m, index, previews, copy) {
   } }, 'show details')
   const size = h('td', { class: 'r num nowrap' })
   return { m, tr, held, label, size, href, collection, drawn: undefined,
-    sample: h('td', {}, h('div', { class: 'namecell' }, seal(m.address, { size: 18 }), label, more), held, h('div', { class: 'sub' }, address(m.address))),
+    sample: h('td', {}, h('div', { class: 'namecell' }, sealed('item', m.address, { size: 18 }), label, more), held, h('div', { class: 'sub' }, address(m.address))),
     from: h('td', { class: 'muted from-cell' }, fromNode(ex, m.address, m.via, copy)) }
 }
 
-/** Each via as `run · output` (linking to the run) once the run is known, the short collection CID before; a member with no via says so. */
+/** Each via as a run chip and its output once the run is known, the short collection CID before; a member with no via says so. */
 function fromNode(ex, item, via, copy) {
   if (via.length === 0) return h('div', { class: 'from' }, 'a query across runs ', copy(copyText(item, '-')))
   // `run · output` may wrap after the dot, so the table keeps its Size column in view at 1440 (lead's visual finding 10).
   return via.map((v) => {
     const node = h('span', { title: v }, address(v))
     ex.runLabel(v).then((label) => {
-      if (label) node.replaceChildren(label.completion ? link(`#/run/${label.completion}`, label.run_name ?? 'unnamed run') : (label.run_name ?? 'unnamed run'), ` · ${label.output}`)
+      if (label) node.replaceChildren(runFact(label, label.completion), ` · ${label.output}`)
     }, () => {})
     return h('div', { class: 'from' }, node, ' ', copy(copyText(item, v)))
   })

@@ -8,14 +8,14 @@
 // searched; a result found in several is one row, opening in the first, with
 // dots for the stores whose indexes list it.
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { claimTag, pageHead, panel, shortCid, tabs } from '../components.js'
 import { formatValue, sizeText } from '../format.js'
 import { ADDRESS_HEAD, ADDRESS_MIN, isAddressQuery, namedBy } from '../model.js'
 import { SAMPLE_PATHS } from '../table.js'
 import { pairsOf } from '../pairs.js'
 import { matchPromoted, pipelineConfig, promotedFor } from '../promoted.js'
-import { runTone, statusText, statusTone } from '../words.js'
+import { dayText, runTone, statusText, statusTone } from '../words.js'
 import { enc } from './common.js'
 import { fromEach, hrefIn, listsAll, mergeRows, unreadableText } from '../members.js'
 import { presenceOf } from '../presence.js'
@@ -43,13 +43,6 @@ const rank = (path) => SAMPLE_PATHS.indexOf(path)
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 const sub = (text) => h('span', { class: 'sub' }, text)
 
-/** `Oct 24`, with the year when it is not this year's. */
-function dayText(iso, now = Date.now()) {
-  const d = new Date(iso)
-  if (!iso || Number.isNaN(d.getTime())) return ''
-  const year = d.getUTCFullYear() === new Date(now).getUTCFullYear() ? {} : { year: 'numeric' }
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC', ...year })
-}
 
 /**
  * searchSamples rows as one entry per run and sample, latest run first:
@@ -111,7 +104,7 @@ const KIND_WORDS = { run: 'run', output: 'output', selection: 'Selection', item:
 function runCell(run, at) {
   const good = run.status && statusTone(run) === 'good'
   return h('td', {}, h('span', { class: 'runname', title: statusText(run) },
-    icon('run', { tone: runTone(run) }), at.link(run, `#/run/${run.completion_cid}`, run.run_name ?? shortCid(run.completion_cid)),
+    sealed('run', run.completion_cid, { size: 20, tone: runTone(run) }), at.link(run, `#/run/${run.completion_cid}`, run.run_name ?? shortCid(run.completion_cid)),
     at.dots(run, run.completion_cid)),
   good ? null : sub(` · ${statusText(run)}`))
 }
@@ -138,7 +131,7 @@ function samplesPanel(at, groups, query, { cap = null, href }) {
         runCell(g.run, at),
         promotedCell(at, g, i < PROMOTED_ROWS),
         h('td', { class: 'muted' }, plural(g.outputs, 'output')),
-        h('td', { class: 'muted r nowrap' }, dayText(g.run.finished_at)))),
+        h('td', { class: 'muted r nowrap' }, dayText(g.run.finished_at, Date.now())))),
       groups.length > shown.length
         ? h('tr', { class: 'group' }, h('td', { colspan: '5' }, link(href, `${groups.length - shown.length} more`)))
         : null)))
@@ -196,7 +189,7 @@ function selectionsPanel(at, lookup, query, counted) {
     }
     body.replaceChildren(...gone, h('div', { class: 'tbox' }, h('table', { class: 't' }, h('tbody', {}, shown.map(s =>
         h('tr', { 'data-selection': s.cid },
-          h('td', {}, h('div', { class: 'namecell' }, icon('selection'), at.link(s, `#/selection/${s.cid}`, s.state?.names.join(' / ') || 'unnamed Selection'),
+          h('td', {}, h('div', { class: 'namecell' }, sealed('selection', s.cid, { size: 20 }), at.link(s, `#/selection/${s.cid}`, s.state?.names.join(' / ') || 'unnamed Selection'),
             at.dots(s, s.cid))),
           h('td', {}, nameTags(namedBy(s.state?.current ?? []))),
           h('td', { class: 'r' }, h('code', { class: 'cid', title: s.cid }, shortCid(s.cid)))))))))

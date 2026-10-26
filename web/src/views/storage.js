@@ -19,10 +19,10 @@
 // (Explorer.storageOmitted) has no figures and says why. Its attributes are
 // data-storage-*, never the Gate's data-run or data-address.
 import { h, link } from '../html.js'
-import { icon } from '../icons.js'
+import { icon, sealed } from '../icons.js'
 import { avatar, durability, empty, minibar, note, pageHead, panel, status, storageBar } from '../components.js'
 import { bytes, formatNumber, ratioText, sizeText } from '../format.js'
-import { agoText, dayText, statusText } from '../words.js'
+import { agoText, dayText, fullWhenText, runTone, statusText } from '../words.js'
 import { asserterKey, isAnon, samePrincipal, whoText } from '../identity.js'
 import { extLabel } from '../sizes.js'
 import { ask, storedTitle } from './home.js'
@@ -120,14 +120,11 @@ function freedCell(run, stale) {
 
 function runRow(run, { pinned, graceMs, writable, stale, now }) {
   const settled = run.status === 'succeeded' || run.status === 'failed'
-  const mark = status({ status: run.status })
-  mark.replaceChildren(mark.children[0])
-  mark.setAttribute('title', statusText({ status: run.status }))
   const line = [run.pipeline, run.status === 'failed' ? 'failed' : settled ? null : statusText({ status: run.status }).toLowerCase(), dayText(run.finishedAt, now)]
   const release = writable && !stale && run.state === 'held' && run.reachable > 0
     ? h('a', { class: 'btn sm', href: `#/run/${run.cid}?tab=storage&release=1`, 'data-release': run.cid }, 'Release…') : null
   return h('tr', { 'data-storage-run': run.cid },
-    h('td', {}, h('div', { class: 'namecell' }, mark, link(`#/run/${run.cid}`, run.name ?? 'unnamed run')),
+    h('td', {}, h('div', { class: 'namecell' }, sealed('run', run.cid, { size: 20, tone: runTone({ status: run.status }) }), link(`#/run/${run.cid}`, run.name ?? 'unnamed run')),
       sub(line.filter(Boolean).join(' · '))),
     h('td', {}, runState(run, pinned, graceMs, now)),
     h('td', { class: 'r num nowrap' }, sizeText({ bytes: run.reachable, partial: run.partial })),
@@ -282,7 +279,7 @@ export async function storage(ex, ctx) {
   const now = ex.now()
   // More than one member, in either mode: the card row replaces R9's single summary, and its caption the lead.
   const several = (ctx?.members?.list?.length ?? 0) > 1
-  const head = pageHead({ title: 'Storage', after: [h('span', { class: 'muted storage-asof', title: written ?? null }, `as of snapshot${written ? ` · ${agoText(written, now)}` : ''}`)] })
+  const head = pageHead({ title: 'Storage', after: [h('span', { class: 'muted storage-asof', title: written ? fullWhenText(written) : null }, `as of snapshot${written ? ` · ${agoText(written, now)}` : ''}`)] })
   if (!several) head.append(h('p', { class: 'muted storage-lead' }, 'Each store keeps its own pins and runs its own cleanup, so every number here belongs to one store.'))
   // A read-only store shows a lock and no Release: Release writes a Claim beside the run, in this member.
   const writable = !!ctx?.write?.available && ctx.write.here !== false
