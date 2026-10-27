@@ -1189,28 +1189,92 @@ class Index implements Closeable {
      * (DESIGN.md §20 decision 8).
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir, Set<String> quietFor, BlockStore holders) {
-        // Ticket 04 decision 6: an absent watermark alone triggers seeding.
-        if( snapshots != null && meta(watermarkKey(member)) == null ) {
-            Path file = null
-            try {
-                file = snapshots.fetch(tempDir)
-                if( file == null ) throw new SnapshotUnusable('absent')
-                seedFrom(file, member, storeLog)
-            }
-            catch( SnapshotUnusable e ) {
-                warnUnusable(storeLog, member, e.reason, quietFor)
-            }
-            catch( Exception e ) {
-                // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
-                // leaves the snapshot unreadable, and the full scan below still runs (ticket 04 decision 2).
-                warnUnusable(storeLog, member, 'unreadable', quietFor)
-                log.debug("fetching the Index Snapshot of '${member}' failed", e)
-            }
-            finally {
-                if( file != null ) Files.deleteIfExists(file)
-            }
+        if( snapshots != null ) {
+            // Without a usable snapshot the full scan below still runs (ticket 04 decision 2).
+            final String reason = trySeed(store, storeLog, member, snapshots, tempDir)
+            if( reason != null )
+                warnUnusable(storeLog, member, reason, quietFor)
         }
         catchUp(store, storeLog, member, holders)
+    }
+
+    /**
+     * Seeds {@code member} from its snapshot when this cache has no watermark
+     * for it (ticket 04 decision 6: an absent watermark alone triggers
+     * seeding). Null once seeded, or when the member already has a watermark;
+     * else why the snapshot could not be used: `absent`, `unreadable`,
+     * `schema_version <n>`, or that it is from another incarnation of the
+     * member. Never scans and never warns: the caller decides what an
+     * unusable snapshot means.
+     */
+    String trySeed(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
+        if( meta(watermarkKey(member)) != null )
+            return null
+        Path file = null
+        try {
+            file = snapshots.fetch(tempDir)
+            if( file == null )
+                return 'absent'
+            seedFrom(file, member, storeLog)
+            return null
+        }
+        catch( SnapshotUnusable e ) {
+            return e.reason
+        }
+        catch( Exception e ) {
+            // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
+            // leaves the snapshot unreadable.
+            log.debug("fetching the Index Snapshot of '${member}' failed", e)
+            return 'unreadable'
+        }
+        finally {
+            if( file != null ) Files.deleteIfExists(file)
+        }
+    }
+
+    /** Whether this cache holds {@code member}: a watermark for it, or a block scan of it, however it got there. */
+    boolean isIndexed(String member) {
+        return meta(watermarkKey(member)) != null || meta(META_SCANNED + ':' + member) != null
+    }
+
+    /**
+     * Indexes {@code member} from every block, telling {@code progress} how
+     * far it has got (background store indexing, spec §6.3): the listing,
+     * each metadata block read, each record ingested, then the Store Log.
+     * Unlike catch-up's scan, a block that cannot be read stops it, so a
+     * member whose reads start failing part way (expired credentials) is
+     * never left marked as indexed in part; one that reads but does not
+     * decode is skipped. Whatever {@code progress} throws stops it too. Only
+     * at the end does one transaction set the watermark and `block_scan`.
+     */
+    void indexMember(BlockStore store, StoreLog storeLog, String member, BlockStore holders, IndexProgress progress) throws IOException {
+        final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS, progress)
+        long total = 0L
+        for( List<Cid> cids : found.values() )
+            total += cids.size()
+        long done = 0L
+        progress.report(IndexProgress.INGESTING, done, total)
+        for( String kind : SCANNED_KINDS ) {
+            for( Cid cid : found.get(kind) ) {
+                ingestLogged(store, SCANNED_LOG_KINDS.get(kind), cid, member, holders)
+                progress.report(IndexProgress.INGESTING, ++done, total)
+            }
+        }
+        progress.report(IndexProgress.LOG, -1L, -1L)
+        retryMissingLogged(store, member, holders)
+        retryMissingContent(store)
+        retryMissingInputSets(store, member)
+        retryMissingItemLineages(store, member)
+        final List<StoreLogEntry> entries = storeLog.entriesSince(null)
+        // entriesSince is newest first; ingest in the order they were written.
+        for( int i = entries.size() - 1; i >= 0; i-- )
+            ingestEntry(store, entries[i], member, holders)
+        final String scanned = total == 0L ? SCANNED_EMPTY : 'done'
+        withTransaction {
+            if( entries )
+                setMeta(watermarkKey(member), entries[0].name)
+            setMeta(META_SCANNED + ':' + member, scanned)
+        }
     }
 
     /**
@@ -1444,25 +1508,17 @@ class Index implements Closeable {
             return
         final Map<String, List<Cid>> found
         try {
-            found = blocksOfKinds(store, SCANNED_KINDS)
+            found = blocksOfKinds(store, SCANNED_KINDS, null)
         }
         catch( IOException | UncheckedIOException e ) {
             // Not marked done, so the next catch-up scans again.
             log.warn("could not scan the blocks of store member '$member' (${e.message}); will retry")
             return
         }
-        for( Cid completion : found.get(Records.RUN_COMPLETION) )
-            ingestLogged(store, StoreLogKind.RUN, completion, member, store)
-        for( Cid selection : found.get(Records.SELECTION) )
-            ingestLogged(store, StoreLogKind.SELECTION, selection, member, store)
-        for( Cid claim : found.get(Records.CLAIM) )
-            ingestLogged(store, StoreLogKind.CLAIM, claim, member, store)
-        for( Cid transfer : found.get(Records.TRANSFER) )
-            ingestLogged(store, StoreLogKind.TRANSFER, transfer, member, store)
-        for( Cid project : found.get(Records.PROJECT) )
-            ingestLogged(store, StoreLogKind.PROJECT, project, member, store)
-        for( Cid handoff : found.get(Records.HANDOFF) )
-            ingestLogged(store, StoreLogKind.HANDOFF, handoff, member, store)
+        for( String kind : SCANNED_KINDS ) {
+            for( Cid cid : found.get(kind) )
+                ingestLogged(store, SCANNED_LOG_KINDS.get(kind), cid, member, store)
+        }
         setMeta(key, found.values().every { List<Cid> cids -> cids.isEmpty() } ? SCANNED_EMPTY : 'done')
     }
 
@@ -2054,6 +2110,28 @@ class Index implements Closeable {
             update('INSERT INTO meta(key, value) VALUES (?, ?)',
                 [(Object) PRESENT_GENERATION_KEY, String.valueOf(generation + 1)])
         }
+        deleteLocalSnapshots()
+    }
+
+    /** The local Index Snapshots beside this cache describe what it held, so they go with a reset (spec §6.4). */
+    private void deleteLocalSnapshots() {
+        final Path dir = IndexPaths.localSnapshotsDir(file)
+        if( !Files.exists(dir) )
+            return
+        try {
+            final Stream<Path> paths = Files.walk(dir)
+            try {
+                for( Path each : paths.sorted(Comparator.reverseOrder()).toList() )
+                    Files.delete(each)
+            }
+            finally {
+                paths.close()
+            }
+        }
+        catch( IOException | UncheckedIOException e ) {
+            // Never served once the cache no longer holds the member, so a leftover file does no harm.
+            log.debug("could not delete the local Index Snapshots in ${dir}: ${e.message}")
+        }
     }
 
     /**
@@ -2154,7 +2232,7 @@ class Index implements Closeable {
         deleteDatabase(temp)
         final Index fresh = Index.open(temp)
         try {
-            final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS)
+            final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS, null)
             for( Cid completion : found.get(Records.RUN_COMPLETION) )
                 fresh.ingestRun(store, completion, member)
             for( Cid selection : found.get(Records.SELECTION) )
@@ -2208,24 +2286,40 @@ class Index implements Closeable {
         }
     }
 
-    /** The blocks of the kinds a store announces, found by decoding every `bafy…` block once. */
-    private static Map<String, List<Cid>> blocksOfKinds(BlockStore store, Collection<String> kinds) {
+    /**
+     * The blocks of the kinds a store announces, found by decoding every
+     * `bafy…` block once. Without {@code progress}, a block that cannot be read
+     * is passed over (catch-up's scan and rebuild); with it, the read failure
+     * propagates and each step is reported.
+     */
+    private static Map<String, List<Cid>> blocksOfKinds(BlockStore store, Collection<String> kinds, IndexProgress progress) {
         final Map<String, List<Cid>> found = new LinkedHashMap<String, List<Cid>>()
         for( String kind : kinds )
             found.put(kind, new ArrayList<Cid>())
+        if( progress != null )
+            progress.report(IndexProgress.LISTING, -1L, -1L)
+        final List<Cid> metadata = new ArrayList<Cid>()
         final Stream<Cid> blocks = store.listBlocks()
         try {
             for( Object element : blocks.toList() ) {
                 final Cid cid = (Cid) element
-                if( !cid.isDagCbor() )
-                    continue
-                final String kind = kindAt(store, cid)
-                if( kind != null && found.containsKey(kind) )
-                    found.get(kind).add(cid)
+                if( cid.isDagCbor() )
+                    metadata.add(cid)
             }
         }
         finally {
             blocks.close()
+        }
+        final long total = metadata.size()
+        long done = 0L
+        if( progress != null )
+            progress.report(IndexProgress.READING, done, total)
+        for( Cid cid : metadata ) {
+            final String kind = progress == null ? kindAt(store, cid) : readKind(store, cid)
+            if( kind != null && found.containsKey(kind) )
+                found.get(kind).add(cid)
+            if( progress != null )
+                progress.report(IndexProgress.READING, ++done, total)
         }
         for( List<Cid> list : found.values() )
             Collections.sort(list)
@@ -2235,16 +2329,25 @@ class Index implements Closeable {
     /** The kind of a metadata block, or null when it cannot be read or has none. */
     private static String kindAt(BlockStore store, Cid cid) {
         try {
-            if( store.size(cid) > MAX_BLOCK_BYTES )
-                return null
-            final InputStream input = store.open(cid)
-            try {
-                final Object value = DagCbor.decode(input.readAllBytes())
-                return value instanceof Map ? Records.kindOf((Map) value) : null
-            }
-            finally {
-                input.close()
-            }
+            return readKind(store, cid)
+        }
+        catch( Exception e ) {
+            return null
+        }
+    }
+
+    /**
+     * The kind of a metadata block, or null when it is too large to be a
+     * record, does not decode, or has none. A block that cannot be read
+     * throws.
+     */
+    private static String readKind(BlockStore store, Cid cid) throws IOException {
+        if( store.size(cid) > MAX_BLOCK_BYTES )
+            return null
+        final byte[] bytes = store.open(cid).withCloseable { InputStream input -> input.readAllBytes() }
+        try {
+            final Object value = DagCbor.decode(bytes)
+            return value instanceof Map ? Records.kindOf((Map) value) : null
         }
         catch( Exception e ) {
             return null
@@ -2259,6 +2362,11 @@ class Index implements Closeable {
      */
     private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.SELECTION, Records.CLAIM, Records.TRANSFER,
                                                        Records.PROJECT, Records.HANDOFF]
+
+    /** The Store Log kind each scanned record is ingested as. */
+    private static final Map<String, StoreLogKind> SCANNED_LOG_KINDS = [
+        (Records.RUN_COMPLETION): StoreLogKind.RUN, (Records.SELECTION): StoreLogKind.SELECTION, (Records.CLAIM): StoreLogKind.CLAIM,
+        (Records.TRANSFER): StoreLogKind.TRANSFER, (Records.PROJECT): StoreLogKind.PROJECT, (Records.HANDOFF): StoreLogKind.HANDOFF]
 
     // --------------------------------------------------------------- queries
 
