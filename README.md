@@ -44,6 +44,8 @@ examples below do. What it supports today:
   plugin channel factories as `channel.fromStore` until
   [nextflow-io/nextflow#7694](https://github.com/nextflow-io/nextflow/issues/7694)
   is fixed. Call `nextflow.Channel.fromStore(..., records: true)` instead.
+  This still holds on Nextflow 26.10.4 (checked 2026-10-26):
+  `channel.fromStore` fails there with a MissingProcessException.
 - The on-disk format (block kinds, the index, the Store Log) may still change
   before 1.0. A change to the blocks will come with a migration, since a
   block's address is its content and existing stores keep their blocks.
@@ -351,7 +353,9 @@ number is an error. A key ending in `!=` keeps every item that holds no equal
 value, including items without that path: `where: ['meta.strandedness !=': 'reverse']`.
 
 In a typed script (`nextflow.enable.types = true`), Nextflow 26.04.6 cannot
-reach a plugin factory through `channel.` (nextflow-io/nextflow#7694). Keep
+reach a plugin factory through `channel.` (nextflow-io/nextflow#7694), and
+`channel.fromStore` still fails with a MissingProcessException on 26.10.4
+(checked 2026-10-26). Keep
 the include and call it through `nextflow.Channel`, with `records: true` so a
 record-typed input receives records rather than plain maps:
 
@@ -388,7 +392,14 @@ workflow {
 A restored record is immutable: `meta + [x: 1]` returns a new map, and
 `meta.put('x', 1)` throws `UnsupportedOperationException`. Without
 `records: true` every map arrives as an ordinary mutable map, typed script
-or not.
+or not. A process input declared as a record collection (`Bag<Record>`)
+stages its files from Nextflow 26.10.4.
+
+The consuming run records where each file came from: its InputSet names the
+upstream item, the run's output it was reached through and the Selection, and
+an ItemLineage records which inputs made which published item. The item page
+in the explorer shows them as the upstream step of Lineage, and the upstream
+item's page lists the consumer under "Used by".
 
 The explorer's Selection and run pages show these call lines for what you
 are looking at, with a toggle between the untyped and typed forms. A run that

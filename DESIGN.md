@@ -1263,7 +1263,7 @@ an `x=-D` line about 4.5 s per pass, and an `a-a-a...` line 12 to 26 s.
 
 ### RunCompletion
 ```
-{ kind: "RunCompletion", schema: 2, asserted_by: string,
+{ kind: "RunCompletion", schema: 3, asserted_by: string,
   run: Cid,                             // RunManifest
   collections: [Cid, ...],              // OutputCollection links, sorted by output name
   input_set: Cid|null,                  // null in the skeleton
@@ -1273,8 +1273,19 @@ an `x=-D` line about 4.5 s per pass, and an `a-a-a...` line 12 to 26 s.
   started_at: string, finished_at: string,
   anomalies: { unresolvable: int, unaddressed: int, declined: int, never_published: int, unjoined: int },  // unjoined added 2026-09-29 (ticket 19); absent on an older block reads as 0
   error: string|null,
-  providers: { <provider>: [Cid, ...] } }   // schema 2: every Leaf address the run published (each file leaf and each directory leaf's manifest) under the provider that supplied it; not the files inside a directory (final review I5)
+  providers: { <provider>: [Cid, ...] },    // schema 2: every Leaf address the run published (each file leaf and each directory leaf's manifest) under the provider that supplied it; not the files inside a directory (final review I5)
+  item_lineage: Cid|null }                  // schema 3: ItemLineage link; null when it could not be made; absent at schema 1 and 2
 ```
+
+*Amended 2026-10-26 (cross-run item lineage, spec
+`docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`):*
+RunCompletion is written at schema 3 and `RunCompletion.READABLE` is
+`[1, 2, 3]`. `item_lineage` links the run's ItemLineage (below), written
+just after the InputSet. It is null when the ItemLineage could not be made,
+and there is never one without an InputSet: `input_set: null` implies
+`item_lineage: null`. A run where no item qualifies still links an
+ItemLineage, with empty `items`, so null keeps meaning "could not be made".
+Schema 1 and 2 blocks have no `item_lineage` field and read as before.
 
 ### Claim, InputSet, Attestation
 Specified in the spec; not built in the skeleton. Reserve the kind names.
@@ -1293,6 +1304,39 @@ without a name or address, or named twice. InputSet sorts its inputs by
 (role, name, address, sample, reason, size), nulls first, and drops
 repeats; Handoff sorts its files by name and its params by key. The same
 content built in any order is one block.
+
+### InputSet schema 2, Origin, ItemLineage
+*Amended 2026-10-26 (cross-run item lineage, spec
+`docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
+sections 5.1 and 5.2; the shapes are in the schema above):*
+
+- InputSet is written at schema 2 and readers accept 1 and 2. `Input.from`
+  lists the Origins of a file a task received through `fromStore`: the
+  upstream OutputItem, the OutputCollection it was reached through (null
+  when a Selection picked it by query) and the Selection the call named
+  (null for `run:` and `output:`). It is absent at schema 1 and, at schema
+  2, when the list would be empty. Origins are sorted by (item, collection,
+  selection) as CID bytes, nulls first, with no two equal. The `Input` sort
+  key gains `from` last, and "no two equal" covers it, so two directory
+  inputs from two items holding identical directories stay two inputs that
+  differ only in `from`. Two Origins on one input happen only when two
+  emitted items held the same bytes.
+- ItemLineage is a new kind, linked from `RunCompletion.item_lineage`.
+  `items` is sorted by item CID bytes and holds one Derived per OutputItem
+  of the run with at least one input or one publishing task; an item of
+  values only is left out. `Derived.inputs` are positions in
+  `input_set.inputs`, ascending, no duplicates, so an input with no address
+  can still be named; the InputSet is sorted and content-addressed, so a
+  position is stable for one InputSet CID. `Derived.tasks` are the tasks
+  that published the item's files, sorted by hash, possibly empty.
+  `TaskRef.hash` is the Nextflow task hash as 32 lowercase hex,
+  `TaskRef.process` the fully qualified process name
+  (`task.processor.name`), and `TaskRef.tag` goes through
+  `Records.scrubText`. A cached task's reference is the original
+  execution's hash, so the ItemLineage CID is the same on `-resume`.
+- `inputs` is the closure at the run boundary: the walk passes through the
+  run's intermediate tasks and records only run inputs. Same-run lineage
+  stays with `TaskLineage` (§21).
 
 ### Transfer
 *Added 2026-10-25 (explorer v0.3 P3, plan section 1.5 and decision D8;
@@ -1776,6 +1820,41 @@ empty and holds no `.nf-scrub-root` marker.
   (`CasSession.publishFor`), never an existing Pointer File (§6).
 - `onTaskCached(event)`: record the task hash so the task layer is not empty
   (skeleton: log only; address reuse by task hash is a later task).
+  *Amended 2026-10-26 (cross-run item lineage, spec
+  `docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
+  section 5.2):* the observer keeps what the ItemLineage walk needs, in
+  memory, with no file system access on the task thread.
+  - `onFilePublish` keeps, per publish join key, `event.source` (the
+    work-dir file). Nextflow passes it on the already-exists path too, so a
+    resumed publish still reports it. The Output Index File event has no
+    source and is skipped.
+  - `onTaskComplete` and `onTaskCached` keep, keyed by task hash, a note
+    of the task's work directory, process name, tag and staged inputs
+    (`InputRecorder.Staged`, which gains `stageName`, the name the file is
+    staged under). Paths and strings only; holding the TaskRun would pin
+    its values. A cached task's note is the original execution's.
+  - At completion, for each joined OutputItem, each leaf's source maps to
+    the task whose work directory holds it, and then to that task's inputs.
+    An input the InputRecorder kept as a run input is a hit. An input under
+    another task's work directory is followed the same way, each task once
+    per item, so a cycle ends. The tasks whose work directories held the
+    sources are the item's `tasks`, not the intermediate ones the walk
+    passed through.
+  - Passthrough rule: a published file that is itself one of the task's
+    staged inputs (`<workDir>/<stageName>` is the staged link) maps to that
+    one input, not to every input the task staged.
+  - An item whose source maps to no task (published from outside a task)
+    gets no entry. A failed run writes what it resolved. A cached task, or
+    a publish that finds its target already there, still feeds the walk, so
+    the InputSet and ItemLineage CIDs of a fully cached `-resume` equal the
+    first run's.
+  - The ItemLineage is written between the InputSet and the RunCompletion.
+    When the InputSet is null so is `item_lineage`; `item_lineage` is also
+    null when the ItemLineage could not be made.
+  - `InputRecorder` reads `params.input` only when
+    `params.containsKey('input')`. `params.get('input')` warns `Access to
+    undefined parameter 'input'` in a typed script whose `params {}` block
+    has none, and throws under `nextflow.enable.strict`.
 - `onFlowComplete()`: one-shot. Build every `OutputItem` from the captured
   events (replace each `Path` leaf by a Leaf using `publishes`), each
   `OutputCollection` (items sorted by cid string, `paths` aligned), then the
@@ -2134,6 +2213,12 @@ the explorer's `log_entry` table. Selection tables: explorer spec section 11.
   is not seeded from; a run found only by the block scan gets its
   `run_input` rows) and `TransferAfterV4Test` (P3's REV6 case through a
   recreated cache: org counts 11 B in 2 blocks).
+
+  *Amended 2026-10-26 (cross-run item lineage, schema 7):* the index schema
+  is version 7 and the snapshot is `index/v7.sqlite`. As at 6, a cache of
+  another version is recreated and a snapshot of another version is not
+  seeded from; there is no migration. The tables and their ingest are in
+  §22 "Index (§12)".
 - *Amended 2026-10-25 (explorer v0.3 P3):* lookups for the copy closure
   (§21), each over a public SQL constant (no schema change; tested by
   `IndexCopyQueriesTest`):
@@ -2215,6 +2300,26 @@ the composition lacks fails the call, naming it. `run`, `output`, `where` and
   nextflow-io/nextflow#7694 is fixed. Add the include and call
   `nextflow.Channel.fromStore(...)`, with `records: true` for record-typed
   inputs."
+
+*Amended 2026-10-26 (cross-run item lineage, spec
+`docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
+section 5.1):*
+
+- While `fromStore` resolves its items (all of them, before any task runs)
+  it fills a per-run map on `CasSession`: each emitted Path to the set of
+  Origins that gave it (InputSet, §22). Nothing goes into the path, so task
+  hashes do not change. `Index.selectionItems` and `Index.items` return the
+  `via` and collection columns they used to drop.
+- A Selection item reached through several OutputCollections
+  (`collection_item.via_cid`) gives one Origin per collection. The Selection
+  recorded is the one the call named: for nested Selections the outer one,
+  not the inner Selection that held the item. A Selection item with no
+  `via` gives `collection` null. `run:` and `output:` record the run's
+  OutputCollection and a null Selection.
+- On Nextflow 26.10.4 `channel.fromStore` in a typed script still fails
+  with MissingProcessException (checked 2026-10-26), so the
+  `nextflow.Channel.fromStore` spelling above holds. Record-collection
+  inputs (`Bag<Record>`) stage their files from 26.10.4.
 
 ## 14. The Gate (`gate/`)
 
@@ -2313,9 +2418,9 @@ paths and seams its pieces share. Plan: `docs/plans/2026-09-25-explorer-mileston
 
 ### Index Snapshot
 
-- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v6.sqlite`
+- Path `<member>/index/v<Index.SCHEMA_VERSION>.sqlite`, today `index/v7.sqlite`
   (`index/v3.sqlite` before explorer v0.3 P2, v4 before P4, v5 before its
-  second follow-up; the page reads only the current one and says an older
+  second follow-up, v6 before cross-run item lineage; the page reads only the current one and says an older
   snapshot is too old). Class `robsyme.cas.core.IndexSnapshot`.
 - Rows: every `run` the member's Store Log announced (`log_entry.member`) or
   its blocks held at the first scan (`run.member`), and the rows reached from
@@ -2682,7 +2787,7 @@ pinned in the `plugins {}` block directly, never through
 Relative to a member's base URL:
 
 ```
-index/v6.sqlite            the Index Snapshot, read with single-range GETs (v3 before explorer v0.3, v4/v5 before P4's follow-ups)
+index/v7.sqlite            the Index Snapshot, read with single-range GETs (v3 before explorer v0.3, v4/v5 before P4's follow-ups, v6 before cross-run item lineage)
 index.html                 the page
 blocks/<xx>/<cid>          a block, xx = the cid's last two characters
 log/                       the Store Log listing (one of the three forms below)
@@ -4012,6 +4117,15 @@ a reviewer could reject any of them.
    *Amended 2026-10-25 (P4 R1):* the InputSet is kept as itself only. Its
    input addresses are not followed: a run does not own what it read, so
    an input nothing else reaches is trashed even while the run is held.
+   *Amended 2026-10-26 (cross-run item lineage):* a non-null
+   `RunCompletion.item_lineage` is kept as itself the same way, as run
+   metadata, and nothing under it is followed. Its links name this run's
+   items and InputSet, which the run keeps anyway. `Input.from` is not
+   followed either: an Origin names another run's records, possibly in
+   another member, and a consumer run does not keep upstream content alive.
+   A build that predates this change and sweeps a member holding schema 3
+   RunCompletions trashes ItemLineage blocks; there is no shim, since one
+   build is in use.
 5. Only `set retain "lineage"` releases. A `set retain` with any other value
    keeps content, so a later value cannot be misread as consent by this
    build.
@@ -4416,7 +4530,10 @@ scope: nothing finds them without listing every block, so the answer is the
    a snapshot whose `schema_version` is 6, at `index/v6.sqlite`; any other
    is unusable and the member is caught up in full (§12). A snapshot always
    carries the member's transfer, project, handoff and run_input rows, and a
-   seed always copies them.
+   seed always copies them. *Amended 2026-10-26 (cross-run item lineage,
+   now 7):* the snapshot is `index/v7.sqlite` and a seed accepts only a
+   snapshot whose `schema_version` is 7; it also carries and seeds the
+   `input_origin`, `item_input` and `item_task` rows of its runs.
 10. *Amended by decisions 10, 12, 19 to 21 below: no `forgotten` table, the
     guards run in a fixed order, a base from another incarnation is not
     compared, and `reindex` and a sweep with unannounced deletes waive
@@ -4838,8 +4955,11 @@ member keeps Nextflow's records under `nf/` (1,734 FileOutput, 235 TaskRun,
 235 TaskOutput, 4 WorkflowRun). A published FileOutput
 (`nf/<nf_run_hash>/<publish path>`, path `cas://<cid>/<name>`) names its
 `source`, `lid://<task>/<file>`, and that task's TaskRun `input` names the
-files it read in the same form. Those are work-dir files, never `cas://`
-ones (1,905 of 1,905 resolved inputs), but many have a published
+files it read in the same form. Those are work-dir files (1,905 of 1,905 resolved inputs
+on that store, which predates cross-run item lineage; *amended 2026-10-26:*
+a task fed by `fromStore` has `cas://` paths in its TaskRun inputs, and
+`TaskLineage` stops at them by design: they name another run's content, and
+`lineage` depth stays within a run), but many have a published
 counterpart: a FileOutput of the same run whose `source` is that lid. 366
 published sources have a published upstream (the plan counts 784 published
 sources; the reader's recount found 1,173 (run, source lid) pairs over the
@@ -4927,6 +5047,13 @@ like a record, with nothing under it followed, since InputSet is a reserved
 kind. The `inputs` group is for input content once milestone 7 records it.
 `input_set` is null in every RunCompletion written today, so no copy
 carries one yet.
+
+*Amended 2026-10-26 (cross-run item lineage):* a non-null
+`RunCompletion.item_lineage` travels in `run_records` at every depth the
+same way, read like a record, with nothing under it followed (its links
+name this run's items and InputSet, and `Input.from` names other runs'
+records). A copied consumer run therefore shows the same lineage.
+`lineage` depth still stays within a run.
 
 Known gaps, as built: `blockSize` is one query per block; on S3 a block the
 walk never read costs a `HEAD` for `has` and, when nothing else sized it,
@@ -5479,9 +5606,62 @@ index claim_current_attribute_value ON claim_current(attribute, value)
 - Lookups: `isProjectIndexed`, `isHandoffIndexed`, `runInputs(completion)`.
   The page's P4 queries are in `ExplorerQueriesTest`'s no-scan check.
 
+*Amended 2026-10-26 (cross-run item lineage, spec
+`docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
+section 5.4; schema 7, snapshot `index/v7.sqlite`, rebuilt from the Store
+Log with no migration):*
+
+```
+run_input(completion_cid, role, name, address, size, sample, position)
+  -- position is the last column: the input's index in the InputSet's sorted list
+input_origin(completion_cid, position, item_cid, collection_cid, selection_cid)
+  index input_origin_item (item_cid)
+  index input_origin_completion (completion_cid, position)
+item_input(completion_cid, item_cid, positions)
+  index item_input_item (item_cid)
+  index item_input_completion (completion_cid)
+item_task(completion_cid, item_cid, task_hash, process, tag)
+  index item_task_item (item_cid)
+  index item_task_completion (completion_cid)
+```
+
+- `input_origin` has one row per (input, Origin), keyed by the input's
+  position in the run's InputSet. A join on address and name would attach
+  the wrong Origins to a directory input (two items' identical directories
+  differ only in `from`) and could not join an input with no address. The
+  input's name, role and address come from `run_input`.
+- `item_input` has one row per Derived item, `positions` a packed JSON
+  array. One row per item, not per (item, input), because shared references
+  (a genome, an index) fan out to every item: an estimated 6,000 to 10,000
+  rows for a 100-sample rnaseq run as separate rows, about 1,000 packed.
+- `item_task` has one row per (Derived item, TaskRef). No page reads it in
+  this work; it exists so a later "made by" line is a UI change only.
+- `item_input_completion` and `item_task_completion` exist for
+  `usedByOf` and `clearRun`, which look rows up by run rather than by item;
+  `input_origin_completion` also carries `position` for the join to
+  `run_input`.
+- `ingestRun` reads the ItemLineage the RunCompletion links, with the same
+  wait-and-retry as the InputSet: an absent or unreadable one leaves a wait
+  record, meta `itemlineage_wait:<completion>` = its cid, and is never a
+  `missing`, `block` or `block_ref` row. `input_origin` rows come from the
+  InputSet's `from` lists (written with `run_input`) and `item_input` and
+  `item_task` from the ItemLineage.
+  An ItemLineage whose `input_set` is not the RunCompletion's `input_set`
+  is skipped with one warning, since its positions would point into the
+  wrong list: no `item_input` or `item_task` rows. `forget` and `reset`
+  clear all of it by completion, as for `run_input`; a snapshot carries
+  its runs' wait records and a seed copies them.
+- Used by (`usedByOf`) reads `input_origin` by `item_cid` (the upstream
+  item), then `item_input` of that run for the derived items whose
+  `positions` contain the input's position (`json_each`). It reads
+  snapshots only, not tail runs' blocks: a tail run's derived items appear
+  once the member's snapshot catches up. Page queries are in
+  `web/src/queries.json` and in `ExplorerQueriesTest`'s no-scan check.
+
 Snapshot (§15). A snapshot copies the `project` and `handoff` rows its
-member's Store Log announced and the `run_input` and `consumer` rows of its
-runs, always; a seed copies them for the seeded runs.
+member's Store Log announced and the `run_input`, `input_origin`,
+`item_input`, `item_task` and `consumer` rows of its runs (`completion_cid
+IN main.run`), always; a seed copies them for the seeded runs.
 
 `project_stats` is written by each snapshot that has storage figures, from
 the current `add project` Claims in the cache's `claim_current`: the whole
@@ -5564,6 +5744,9 @@ refusals: { error, message }: 400 bad_request | clock_skew | not_found | wrong_k
   during the sweep stops it the same way before its next step. Such entries
   are never deleted, even as dangling. The CLI `sweep` verb is the only
   caller that starts a sweep.
+- *Amended 2026-10-26 (cross-run item lineage):* Mark keeps a run's
+  `item_lineage` as metadata, as itself, and follows nothing under it, as
+  for `input_set`. `Input.from` is not followed (§19 decision 4).
 
 ### Copy (§21)
 
@@ -5586,3 +5769,47 @@ A carried Selection brings the Handoffs that cite it and that the source's
 log announced, with their files, in the `handoffs` group at every depth,
 and the copy logs each with a `handoff` entry before the Transfer (§21). A
 Handoff deleted at the source (clean, unpinned) does not travel.
+
+*Amended 2026-10-26 (cross-run item lineage):* `item_lineage` travels in
+`run_records` at every depth, read like a record, with nothing under it
+followed (§21 `input_set` ruling).
+
+### Explorer: Lineage and Used by (2026-10-26)
+
+Spec `docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
+sections 5.5 and 5.6; the code is `web/src/views/item.js`. The ItemLineage
+and InputSet blocks are read by the page only for tail runs (a run the
+snapshot has not caught up with); otherwise the panels read the snapshot's
+`item_input` and `input_origin`.
+
+- The Lineage panel keeps its thread, inputs on top and the item
+  highlighted, and gains upstream nodes. An input with Origins shows each
+  upstream item above its file: the item linked to
+  `#/item/<collection>/<item>`, the run chip and the Selection's name from
+  its Claims (short CID when unnamed). Several Origins on one file show as
+  several upstream nodes. An input with no Origin shows the file only,
+  dashed when no member holds its bytes. The page never names an upstream
+  item it did not read from a record.
+- An Origin with a null `collection` does not name a run, since the item
+  CID alone matches every run that published identical content. Its node
+  links to `#/item/-/<item>`, reads "picked by query", and shows the
+  Selection with no run chip.
+- An upstream item held by a member is linked there (`hrefIn`). When no
+  member holds it the node shows its short CID and "not in any store here"
+  with no link, and the run and Selection labels when they can be read.
+- Run scoping: lineage is a fact about one run. With a collection in the
+  URL the panel shows that run's lineage only, so an older run's page is
+  unchanged even when a newer run recorded lineage for the same item CID.
+  With `-` in the URL the panel shows every run that recorded lineage for
+  the item, grouped under a run chip per run, ungrouped when there is one.
+- Runs without an ItemLineage (written before this change, or
+  `item_lineage: null`) show the panel as before. The generic block page
+  names the new kind "a block of kind ItemLineage".
+- Used by lists the downstream items whose runs recorded an Origin naming
+  this item, each as `output · title` under its run chip, with the
+  Selection the consumer read it through when there was one. Other members
+  are asked too (`fromEach`), and a row from another member links there.
+  The panel is absent when nothing used the item. It is scoped like
+  Lineage: a collection in the URL keeps the rows whose `via` is that
+  collection; `-` keeps all of them, so a consumer that picked the item by
+  query is listed only there.
