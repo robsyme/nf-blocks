@@ -61,7 +61,7 @@ function lineageEx({ runs = [CONSUMER], collection = PEOPLE, reads = () => true 
 }
 
 /** `members` in members.json order; `open` is the open member. Presence answers as createPresence does: the open member reads held unless hereHeld is null with several members, then it answers from `held`. */
-function ctxWith({ held = {}, hrefIn = (alias, h) => h, members = ['roblab', 'B'], open = 'roblab' } = {}) {
+function ctxWith({ held = {}, hrefIn = (alias, h) => h, members = ['roblab', 'B'], open = 'roblab', explorers = {} } = {}) {
   const fake = lineageEx()
   const stateOf = (cid, { hereHeld = true } = {}) => members.map(alias => {
     const here = alias === open
@@ -70,7 +70,7 @@ function ctxWith({ held = {}, hrefIn = (alias, h) => h, members = ['roblab', 'B'
   })
   return { tray: new Tray(null), rerender: () => {}, trayChanged: () => {}, progress: () => {}, use: () => {}, mark: () => {},
     store: { name: open, key: 'a', hrefIn },
-    members: { primary: open, list: members.map(alias => ({ alias })), explorer: async () => fake },
+    members: { primary: open, list: members.map(alias => ({ alias })), explorer: async (alias) => explorers[alias] ?? fake },
     presence: { open, several: members.length > 1, states: async (cid, o) => stateOf(cid, o), now: stateOf, dots: () => globalThis.document.createElement('span') },
     write: { available: true, here: true, writable: open, hrefFor: (h) => h, writer: {}, run: async (status, fn) => { await fn() } } }
 }
@@ -187,4 +187,62 @@ test('two inputs sharing an Origin both render the upstream node', async () => {
   assert.deepEqual(nodesOf(node).map(n => n.textContent.split(/infallible|via/)[0]), ['people · Dev', 'Dev_Patel.dat', 'people · Dev', 'again.dat', 'intros · Dev'])
   // The fake DOM does not move an element appended twice, so check the two positions hold different elements.
   assert.notEqual(nodesOf(node)[0].children[0], nodesOf(node)[2].children[0])
+})
+
+const OTHER_PEOPLE = 'bafyreiotherpeoplexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+const CONSUMER_RUN_NAME = 'consumer_run'
+
+/** The W2 shape: the consumer's `intros · Dev` and `circle` were made from `people · Dev` read through Selection `friends`. */
+function usedByEx({ rows = null } = {}) {
+  const ex = lineageEx()
+  const row = (item_cid, collection_cid) => ({ completion_cid: CONSUMER, via_cid: PEOPLE, selection_cid: FRIENDS, item_cid, collection_cid })
+  ex.usedBy = async (cid) => cid === PEOPLE_DEV ? rows ?? [row(INTRO_DEV, CONSUMER_INTROS), row(CIRCLE, CONSUMER_CIRCLE)] : []
+  return ex
+}
+const usedByPanel = (node) => [...node.querySelectorAll('section.panel')].find(p => /Used by/.test(p.querySelector('h2')?.textContent))
+
+test('people \u00b7 Dev from infallible_spence is used by intros \u00b7 Dev and circle under the consumer run', async () => {
+  const node = await page(usedByEx(), PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] }))
+  const panel = usedByPanel(node)
+  assert.ok(panel)
+  assert.match(panel.textContent, /intros \u00b7 Dev/)
+  assert.match(panel.textContent, /circle/)
+  assert.match(panel.textContent, new RegExp(CONSUMER_RUN_NAME))
+  assert.match(panel.textContent, /via Selection "friends"/)
+  assert.equal(panel.querySelectorAll('[data-used-by-run]').length, 1, 'one chip for the one consumer run')
+  assert.ok(panel.querySelectorAll('a').some(a => a.getAttribute('href') === `#/item/${CONSUMER_INTROS}/${INTRO_DEV}`))
+})
+
+test('used by lists only consumers that read this run collection', async () => {
+  const node = await page(usedByEx(), OTHER_PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] }))
+  assert.equal(usedByPanel(node), undefined)
+})
+
+test('with - used by keeps every row', async () => {
+  const node = await page(usedByEx(), '-', PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] }))
+  assert.match(usedByPanel(node).textContent, /intros \u00b7 Dev/)
+})
+
+test('an item nothing consumed has no Used by panel; neither has an Explorer without usedBy', async () => {
+  const none = await page(usedByEx(), PEOPLE, PEOPLE_ITEMS[1][1], ctxWith({ held: allHeld, members: ['roblab'] }))
+  assert.equal(usedByPanel(none), undefined)
+  const ex = usedByEx()
+  delete ex.usedBy
+  assert.equal(usedByPanel(await page(ex, PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] }))), undefined)
+})
+
+test('a consumer recorded in another member links there', async () => {
+  const other = usedByEx()
+  const none = usedByEx()
+  none.usedBy = async () => []
+  const ctx = ctxWith({ members: ['B', 'A'], open: 'B', held: allHeld, hrefIn: (a, h) => `?member=${a}${h}`, explorers: { A: other, B: none } })
+  const node = await page(none, PEOPLE, PEOPLE_DEV, ctx)
+  assert.ok(usedByPanel(node).querySelectorAll('a').some(a => a.getAttribute('href').startsWith('?member=A#/item/')))
+})
+
+test('a consumer both members recorded is listed once, linked in the open member', async () => {
+  const ctx = ctxWith({ members: ['B', 'A'], open: 'B', held: allHeld, hrefIn: (a, h) => (a === 'B' ? h : `?member=${a}${h}`), explorers: { A: usedByEx(), B: usedByEx() } })
+  const panel = usedByPanel(await page(usedByEx(), PEOPLE, PEOPLE_DEV, ctx))
+  assert.equal(panel.querySelectorAll('a').filter(a => a.getAttribute('href').includes('#/item/')).length, 2)
+  assert.equal(panel.querySelectorAll('a').some(a => a.getAttribute('href').startsWith('?member=')), false)
 })

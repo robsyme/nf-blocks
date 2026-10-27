@@ -23,7 +23,7 @@ import { leafReasonText } from '../words.js'
 import { readHead } from './block.js'
 import { holds, keepPanel, pickButton } from './common.js'
 import { projectControl } from './addproject.js'
-import { hrefIn } from '../members.js'
+import { fromEach, hrefIn } from '../members.js'
 
 const SHOWN_PAIRS = 8
 // A fold that would hide fewer pills than this costs more than it saves: show them all.
@@ -229,6 +229,55 @@ async function inputNodes(ex, ctx, pres, input, seen) {
   return [...upstream, { text: name, href: input.address ? `#/content/${input.address}` : null, ext: !held }]
 }
 
+/**
+ * The downstream items made from this one, from the open member then every other:
+ * `[{ alias, row, title, label, names }]`, a derived item listed once (the open member's
+ * copy wins). Over a run's collection only the consumers that read that collection
+ * count; `-` keeps every row.
+ */
+async function usedByRows(ex, ctx, pres, itemCid, collectionCid) {
+  const several = ctx.members?.list?.length > 1
+  const answers = several
+    ? (await fromEach(ctx.members, (e) => e.usedBy?.(itemCid) ?? [])).filter(a => 'value' in a).map(a => ({ alias: a.member.alias, reader: a.ex, rows: a.value }))
+    : [{ alias: pres.open, reader: ex, rows: await Promise.resolve(ex.usedBy?.(itemCid)).catch(() => []) ?? [] }]
+  answers.sort((a, b) => (b.alias === pres.open) - (a.alias === pres.open))
+  const listed = new Map()
+  for (const { alias, reader, rows } of answers) {
+    for (const row of rows) {
+      if (collectionCid !== '-' && row.via_cid !== collectionCid) continue
+      const key = `${row.completion_cid} ${row.collection_cid} ${row.item_cid} ${row.selection_cid}`
+      if (!listed.has(key)) listed.set(key, { alias, reader, row })
+    }
+  }
+  const labels = new Map()
+  const labelOf = (reader, coll) => {
+    if (!labels.has(reader)) labels.set(reader, new Map())
+    const mine = labels.get(reader)
+    if (!mine.has(coll)) mine.set(coll, Promise.resolve(reader.runLabel(coll)).catch(() => null))
+    return mine.get(coll)
+  }
+  return Promise.all([...listed.values()].map(async ({ alias, reader, row }) => {
+    const [it, label, claims] = await Promise.all([
+      Promise.resolve(reader.item(row.collection_cid, row.item_cid)).catch(() => null),
+      labelOf(reader, row.collection_cid),
+      row.selection_cid ? Promise.resolve(reader.claimStates?.([row.selection_cid])).catch(() => null) : null])
+    return { alias, row, title: it ? itemTitle(it) : null, label, names: claims?.get(row.selection_cid)?.names ?? [] }
+  }))
+}
+
+/** The Used by panel: derived items as links, grouped under the consumer run's chip. Null when nothing used the item. */
+function usedByPanel(ctx, used) {
+  if (!used.length) return null
+  const byRun = new Map()
+  for (const u of used) byRun.set(u.row.completion_cid, [...(byRun.get(u.row.completion_cid) ?? []), u])
+  return panel({ title: 'Used by' }, [...byRun].map(([completion, list]) => h('div', { 'data-used-by-run': completion },
+    runFact(list.find(u => u.label)?.label ?? null, completion),
+    h('ul', {}, list.map(({ alias, row, title, label, names }) => h('li', {},
+      link(hrefIn(ctx, alias, `#/item/${row.collection_cid}/${row.item_cid}`), `${label?.output ?? 'item'} \u00b7 ${title ?? shortCid(row.item_cid)}`),
+      row.selection_cid ? h('span', { class: 'muted small' }, ' via Selection ',
+        names.length ? `"${names.join(' / ')}"` : h('code', { class: 'cid', title: row.selection_cid }, shortCid(row.selection_cid))) : null))))))
+}
+
 export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
   const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString(), ctx.progress)]))
@@ -346,6 +395,8 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   }))
   const lineage = panel({ title: 'Lineage' }, groups ? h('div', {}, groups) : thread([...unpublished, ...(chains[0]?.nodes ?? []), self]))
 
+  const usedBy = usedByPanel(ctx, await usedByRows(ex, ctx, pres, itemCid, collectionCid))
+
   const runs = new Map()
   // How many of this item's stored files each run produced.
   const made = new Map()
@@ -380,6 +431,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   return h('section', {},
     head, projects.node, filesPanel, sheet,
     h('div', { class: 'grid-2' }, lineage, producedBy),
+    usedBy,
     inSelections,
     keepPanel(itemCid, it.state, ctx, { size, kind: 'item', href: itemHref, ...holds(ex, itemCid),
       intro: from?.run_name ? ['It stays while ', h('b', {}, from.run_name), ' is held. Pinning keeps it in ', h('b', {}, store.name), ' even if the run is released.']
