@@ -2891,7 +2891,7 @@ docs/identity.md).
 | `GET /m/<alias>/log/` | listing form 1 |
 | `POST /api/put[?dry_run=true]` | the same `Put` as `nf-blocks:put` (block explorer spec sections 9.2 and 9.5): `403` without the right `X-NF-Blocks-Token` header, `415` for a content type other than `application/json` or `application/vnd.ipld.dag-json` (parameters such as `charset` ignored), `413` over `Put.MAX_REQUEST_BYTES` (2 MiB), else the builder's status and DAG-JSON body with `Content-Type: application/vnd.ipld.dag-json` |
 | `GET` or `HEAD /api/samplesheet/<selection cid>.csv` or `.json` | a Selection's items as a samplesheet (decisions 1 and 18 of `docs/plans/2026-09-25-explorer-milestone-2.md`): `Content-Type: text/csv; charset=utf-8` or `application/json`, `Content-Disposition: attachment; filename="selection-<first 16 chars of the cid>.<ext>"`; `404` naming the reason when the address is not a Selection the index holds, or reaches one it does not |
-| `POST /api/copy[?dry_run=true]` | one `CopyService` run (§21), synchronous, added 2026-10-25 (P3 plan section 1.7). `/api/put`'s transport refusals first, in plain text: `403` without the right `X-NF-Blocks-Token`, `415` for any content type other than `application/json` (DAG-JSON too; parameters ignored), `413` over 2 MiB. Every other answer is JSON with `Content-Type: application/json`: `200` the plan, or the finished copy; `400` `{"error", "message"}`, `bad_request` for a body that is not a JSON object, else a CopyService code (`bad_root`, `unknown_member`, `same_member`, `not_a_target`, `root_not_found`, `bad_depth`, `bad_claims`, `bad_request`, `bad_config`); `409` with the plan (`dry_run` false, no copy fields) and `"refused"` saying why, for a real copy refused before any write: `"not_kept"` when a root or run is released or deleted at the destination (D9, §21), else `"audit"` for audit findings without `"accept_audit": true`; `409` `{"error": "copy_running", "message"}` for a real copy while another runs here; `409` `{"error": "superseded", "message"}` for a dry run a newer one replaced while it waited (D10, below); `503` `{"error": "stopping", "message"}` for a dry run still waiting when the server stops; `500` in two shapes: the §21 body with its `failures` for a copy that failed part way, or `{"error": "copy_failed", "message"}` when CopyService threw. `405` when the server was started without copying |
+| `POST /api/copy[?dry_run=true]` | one `CopyService` run (§21), synchronous, added 2026-10-25 (P3 plan section 1.7). `/api/put`'s transport refusals first, in plain text: `403` without the right `X-NF-Blocks-Token`, `415` for any content type other than `application/json` (DAG-JSON too; parameters ignored), `413` over 2 MiB. Every other answer is JSON with `Content-Type: application/json`: `200` the plan, or the finished copy (a real copy's with the destination's `index` when the server has indexing, §15); `400` `{"error", "message"}`, `bad_request` for a body that is not a JSON object, else a CopyService code (`bad_root`, `unknown_member`, `same_member`, `not_a_target`, `root_not_found`, `not_indexed`, `bad_depth`, `bad_claims`, `bad_request`, `bad_config`); `409` with the plan (`dry_run` false, no copy fields) and `"refused"` saying why, for a real copy refused before any write: `"not_kept"` when a root or run is released or deleted at the destination (D9, §21), else `"audit"` for audit findings without `"accept_audit": true`; `409` `{"error": "copy_running", "message"}` for a real copy while another runs here; `409` `{"error": "superseded", "message"}` for a dry run a newer one replaced while it waited (D10, below); `503` `{"error": "stopping", "message"}` for a dry run still waiting when the server stops; `500` in two shapes: the §21 body with its `failures` for a copy that failed part way, or `{"error": "copy_failed", "message"}` when CopyService threw. `405` when the server was started without copying |
 | `GET` or `HEAD /api/index` | `200 {"members": {"<alias>": <index>, ...}}`, every configured store, in config order; `<index>` is the object in the 2026-10-27 amendment below; `404` when the server was started without indexing. Polling it never runs `members.json`'s member probe |
 | `POST /api/index` | start an index job, added 2026-10-27. Body `{"member": "<alias>", "mode": "local" or "push"}`. `/api/put`'s transport refusals first, in plain text: `403` without the right `X-NF-Blocks-Token`, `415` for any content type other than `application/json`, `413` over 2 MiB. Every other answer is JSON: `202 {"member", "mode", "index"}` with the member's new state; `409 {"error": "index_running", "message"}` while a job runs or is queued; `400 {"error", "message"}` with `unknown_member` (not configured), `writable_member`, `not_writable` (push to a member that cannot take a write; the message is its `copy_reason`), `already_indexed` (`local` on a member that is `local` or `snapshot`, or `push` on one that is `snapshot`) or `bad_request` (a body that is not a JSON object with string `member` and `mode`, a mode other than `local` or `push`, or a member outside `cas.resolve`). `405` when the server was started without indexing or without the token |
 | anything else | `404`; a method other than `GET`, `HEAD` (or `POST` on `/api/put`, `/api/copy` or `/api/index`) is `405`, with `Allow: GET, HEAD`; the `405` for another POST path says `only /api/put, /api/copy, /api/handoff and /api/index take a POST` |
@@ -3040,8 +3040,12 @@ after a restart too. A member with a usable snapshot of its own serves its
 own and the local one is never preferred. Every other path, listings and
 descriptions go to the member as before. The Store Log tail still comes from
 the member. The local file is replaced whole when a refresh finishes; a page
-that had the old one open fails with `snapshot_changed`, so the page
-invalidates that member when a job ends and reads it again, in place.
+that had the old one open fails with `snapshot_changed`. So when a job ends
+the page invalidates that member and reads it again in place, and when the
+member is the one the page itself has open (its primary), it reloads the
+page, which opens the new file. A real copy's answer carries the
+destination's `index`, so the page also follows a refresh the copy queued
+to its end.
 
 The job. `IndexJobs` runs one job at a time on one daemon thread named
 `nf-blocks-index`, never on the server's eight-thread pool, with a queue
@@ -3051,21 +3055,30 @@ replaced whole, so a reader never sees half of one. Classifying at start:
 the writable member is `snapshot`; a member outside `cas.resolve` is
 `outside`; a member the session left out is `none` with its reason, and any
 local directory it has is deleted; a member the cache holds is `snapshot`
-when its own snapshot would seed (`ownSnapshotUnusable` is null), else
-`local` with `at` the file's modification time when a local snapshot
-exists, else `indexing` with `local` false until one is built, and both of
-those queue a refresh; anything else is `none` with `could not be read at
-start`.
+when its own snapshot would seed (`ownSnapshotUnusable` is null), and also
+when that snapshot could not be looked at (`unreadable`, such as a refused
+HEAD), which is then served as before indexing existed while any local
+snapshot is kept unserved; else it is `local` with `at` the file's
+modification time when a local snapshot exists, else `indexing` with
+`local` false until one is built, and both of those queue a refresh;
+anything else is `none` with `could not be read at start`. A member whose
+state serves a local snapshot that is gone (a cache reset deletes them all)
+reads `none` until it is indexed again.
 
 Index, in `local` or `push` mode, for a member that is `none`, or `failed`
 without a local snapshot:
 
-1. In push mode the base is the member's own snapshot (`base`) and its
-   `store-id` is created when it has none (`ensureStoreId`); in local mode
-   the member's id is only read.
+1. In push mode the base is the member's own snapshot (`base`), or none
+   when that snapshot is from another incarnation, which the push replaces.
+   The member's `store-id` is created when it has none (`ensureStoreId`)
+   and recorded in explore's cache at once, under `Put`'s monitor
+   (`Index.adoptStoreId`), so a member with runs but no Store Log entries
+   is not later taken for a replaced one and the cache is not reset. In
+   local mode the member's id is only read.
 2. The scan writes a scratch index, `nf-blocks-index-<alias>-<random>.sqlite`
-   in the session's temp directory, which records that id, through `Index.indexMember`, and
-   never explore's cache. `Index.ingestRun` holds one transaction across all
+   in the session's temp directory, through `Index.indexMember`, never into
+   explore's cache. The scratch index records the member's id first, so the
+   snapshot built from it carries that id. `Index.ingestRun` holds one transaction across all
    of a run's block reads, so a scan into the cache on a second connection
    would hold SQLite's write lock for as long as a large run takes to read
    and `Put`'s 5 s `busy_timeout` would expire.
@@ -3074,10 +3087,14 @@ without a local snapshot:
    its presence check and its `sweep.lock` read.
 4. Under `Put`'s monitor, `shared.seedFrom` copies the scratch rows into the
    cache in one transaction, then the built file replaces the local one
-   (`LocalSnapshotStorage`), and the state is `local`. This is the only
-   moment a job touches the cache, it is local SQL only, and a save, export
-   or handoff meanwhile waits on the monitor rather than failing. The cache
-   gets a member's rows whole, at the end of a successful scan, or not at all.
+   (`LocalSnapshotStorage`), and the state is `local`. This seed is the only
+   moment the scan touches the cache (a refresh and Push to store also
+   catch the cache up under the monitor, below), it is local SQL only, and
+   a save, export or handoff meanwhile waits on the monitor rather than
+   failing. The cache gets a member's rows whole, at the end of a successful
+   scan, or not at all. Once the seed is done, a stop waits for the file to
+   be placed, and a stop after the seed leaves the member `local`, or
+   `indexing` with a refresh queued, never `none`.
 5. Push mode then runs phase `push`: `pushMemberSnapshot` writes
    `index/v7.sqlite` into the member with the writable member's conditional
    write and its guards, and the member's `store-id` when it had none; it
@@ -3094,8 +3111,8 @@ without a local snapshot:
    however the job ends.
 
 Push to store on a member that is already `local` skips the scan: it creates
-the `store-id` when absent, tops the cache up under `Put`'s monitor
-(`catchUpIndex`, which also records the new id), and pushes from a
+the `store-id` when absent and records it in the cache (`adoptStoreId`),
+tops the cache up under `Put`'s monitor (`catchUpIndex`), and pushes from a
 job-owned connection. A refresh, for a `local` member at start or after a
 copy into it, tops the cache up under the monitor (phase `log`), rebuilds
 the local snapshot on a job-owned connection (phase `snapshot`), and
@@ -3104,12 +3121,17 @@ replaces the file; the member keeps serving the old file until then.
 A failed job leaves the state `failed`, `mode` kept, `at` now, `local` true
 when a local snapshot is still served, and the reason from `reasonFor`:
 `S3Failures.credentials` wording when there is one, else
-`CopyErrors.describe` with the config's roots, so paths are redacted. A scan
-that fails part way, such as credentials that expire after the listing,
-marks nothing, so the member stays not indexed. An interruption (the
-progress callback throws `CancellationException` once the thread is
-interrupted, or an `InterruptedException` arrives) returns the member to
-the state it had before the job, and reports nothing as failed. A copy
+`CopyErrors.describe` with the config's roots, so paths are redacted. A
+refresh or push whose catch-up of the member fails gives that catch-up's
+own exception (`CasSession.lastFailure`), so expired credentials read in
+the `S3Failures` wording there too. A scan that fails part way, such as
+credentials that expire after the listing, marks nothing, so the member
+stays not indexed, and the log has one line with the cause. A stop
+(`stop()` sets a flag the job checks at each progress report, and
+interrupts it) returns the member to the state it had before the job,
+except after the seed (step 4), and reports nothing as failed; a
+`CancellationException` from anywhere else is a failure. A job submitted
+but not yet started when the stop comes is dropped, its state put back. A copy
 into a member that serves a local snapshot queues a refresh of it
 (`copied`). All of this text is generic: no profile names or login
 commands, and no store name but the member's own alias.
@@ -3118,13 +3140,16 @@ The exit. The hook calls `ExploreCommand.stop(started, err)`: `server.stop()`
 first, so a write or copy in flight finishes; then `jobs.stop(10_000)`,
 which clears the queue, interrupts the running job and waits up to ten
 seconds; then the put-locked `index.close()`; then the final refresh of the
-members. The exit is bounded, nothing is scanned at exit, and a member whose
+members. The close and the refresh run in a `finally`, so they happen even
+when stopping the server or the jobs throws. The exit is bounded, nothing is scanned at exit, and a member whose
 job was stopped stays as it was, so the next start lists it as `none`.
 
 Copies. `POST /api/copy` builds each copy with
 `CopyService.Indexing(unindexed, localRoots)` from `IndexJobs.unindexedForCopy`
 and `localRootsForCopy`, taken when the copy starts, and §21 says what it
-does with them.
+does with them. A real copy's `200` body also carries `index`, the
+destination's index object after `copied`, which the copy view hands to
+the page's watch (`indexing.track`).
 
 ### The page
 
@@ -3270,8 +3295,11 @@ statement, so Gate assertion 2's counts are the query's cost.
    so it can drop out of the other member's snapshot and, once that
    snapshot's watermark passes it, out of that member's tail too. Milestone
    2's `log_entry.member` fixes it.
-2. `explore` rewrites the snapshot at start as well as at exit, so opening a
-   member through it clears the stale notice (spec section 5.4).
+2. `explore` rewrites the writable member's snapshot at start as well as at
+   exit, so opening that member through it clears the stale notice (spec
+   section 5.4). *Amended 2026-10-27:* other members' snapshots are not
+   rewritten; a member indexed on this machine is served from its local
+   snapshot instead (§15).
 3. The tail fetches a stale run's RunManifest with its RunCompletion, for the
    pipeline name.
 4. Query 3 is per run; matching across runs waits for milestone 2's
@@ -3338,7 +3366,8 @@ name typed.
 its own error body, plain JSON `{"error": <code>, "message": <text>}` with
 no `at`, and its own codes: CopyService's 400 codes (`bad_root`,
 `unknown_member`, `same_member`, `not_a_target`, `root_not_found`,
-`bad_depth`, `bad_claims`, `bad_request`, `bad_config`), `copy_running`
+`bad_depth`, `bad_claims`, `bad_request`, `bad_config`, and from the
+explorer `not_indexed`), `copy_running`
 (`409`, a real copy while another runs on the same server),
 `superseded` (`409`, a dry run a newer one replaced while it waited, D10),
 `stopping` (`503`, a dry run still waiting when the server stops) and
@@ -5027,7 +5056,10 @@ Decisions 19 to 25 come from the final review of the branch (2026-10-09).
     deletes it after its transaction commits, so a member whose store-id
     changed, or a cache recreated for another schema version, loses its
     local snapshots with its rows. A local snapshot is served only while the
-    cache holds the member (`Index.isIndexed`). At start the explorer
+    member's state serves one and its file exists (`IndexJobs.localSnapshot`);
+    the state is decided from the cache at start (`Index.isIndexed`) and by
+    each job, and a reset that deletes the file turns a `local` member back
+    to `none`. At start the explorer
     deletes the directory of a member it left out as not indexed, and of a
     member whose own snapshot is usable, which it serves instead.
 
@@ -5312,6 +5344,9 @@ The 400 codes:
   hold it; no member other than the destination does; a RunManifest that
   no RunCompletion names (the run did not finish); a `run:` reference
   `RunRef` cannot find.
+- `not_indexed` (explorer only, 2026-10-27): as `root_not_found`, when the
+  named `from` is a member the explorer has not indexed, so the cache that
+  would resolve the root does not hold it.
 
 The copy composition. A copy of the config whose `cas.resolve` is the
 configured list (every `cas.stores` alias when unset) with `from` appended
@@ -5576,19 +5611,24 @@ and `seedFrom(alias, new LocalSnapshotStorage(root))` for each local root,
 so the copy's cache seeds from the local snapshot in place of the member's
 own, all before its first catch-up. A copy from a member indexed only on
 this machine therefore reads that member's runs, Selections and closures
-from the local snapshot. The plan's "already in the destination" figure
-needs no change, since `CopyService.plan` leaves the destination out of its
-catch-up and asks it directly (`presentAt`, `destinationState`). When the destination is in
-`unindexed` or `localRoots`, the final catch-up and the snapshot step are
-skipped, since writing the snapshot would mean scanning the destination
-inside the request, or a push the user did not ask for. The body's
+from the local snapshot. The "already in the destination" figure needs no
+change, since `CopyService.plan` leaves the destination out of its catch-up
+and asks it directly (`presentAt`, `destinationState`). When the
+destination is in `unindexed` or `localRoots`, or has no snapshot of its
+own (a member outside `cas.resolve` among them), the final catch-up and the
+snapshot step are skipped, since writing the snapshot would mean scanning
+the destination inside the request, or a push the user did not ask for. The body's
 `snapshot` is then `not_indexed` (`CopyService.SNAPSHOT_NOT_INDEXED`) and
 stderr gets `nf-blocks:copy: '<to>' has no Index Snapshot, so this copy did
 not write one; index it from the explorer's Storage page`. The copy has
 succeeded and its Transfer entry is written whatever the snapshot says (§0
 rule 3). After a real copy into a member
 served from a local snapshot, the explorer queues a refresh of that snapshot
-(§15).
+(§15). A root that only the cache resolves (`run:lid://...`, or a
+RunManifest) from a `from` the copy's catch-up left out is refused with
+`400 not_indexed` (`CopyService.SOURCE_NOT_INDEXED`), naming that member and
+saying to index it, instead of `root_not_found`; a root given by its
+RunCompletion or Selection address still copies, read from the blocks.
 
 ## 22. Projects, input sets and hand-offs (explorer v0.3 P4, 2026-10-25)
 
