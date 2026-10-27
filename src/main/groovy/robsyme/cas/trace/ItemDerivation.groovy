@@ -30,22 +30,19 @@ import robsyme.cas.core.Records
 @CompileStatic
 class ItemDerivation {
 
-    /** What one task leaves for the walk: paths and strings, never the TaskRun, which would pin its values. */
+    /** What one task leaves for the walk: paths and its reference, never the TaskRun, which would pin its values. */
     @PackageScope
     @CompileStatic
     static final class Noted {
-        final String hash
+        /** The task as an item names it, its tag scrubbed. */
+        final ItemLineage.TaskRef ref
         /** Absolute and normalized. */
         final Path workDir
-        final String process
-        final String tag
         final List<InputRecorder.Staged> staged
 
-        Noted(String hash, Path workDir, String process, String tag, List<InputRecorder.Staged> staged) {
-            this.hash = hash
+        Noted(ItemLineage.TaskRef ref, Path workDir, List<InputRecorder.Staged> staged) {
+            this.ref = ref
             this.workDir = workDir
-            this.process = process
-            this.tag = tag
             this.staged = staged
         }
     }
@@ -89,14 +86,26 @@ class ItemDerivation {
         noteTask(task.hash.toString(), task.workDir, task.processor?.name, tagOf(task), staged)
     }
 
-    /** Remembers a task by hash; a null hash or work dir is ignored. */
+    /**
+     * Remembers a task by hash. A null hash or work dir is ignored, and so is a task an ItemLineage
+     * could not name (a hash that is not 32 lowercase hex, a blank process), so that one task cannot
+     * cost every item its lineage.
+     */
     void noteTask(String hash, Path workDir, String process, String tag, List<InputRecorder.Staged> staged) {
         final Path dir = normalized(workDir)
         if( hash == null || dir == null )
             return
+        final ItemLineage.TaskRef ref
+        try {
+            ref = new ItemLineage.TaskRef(hash, process, Records.scrubText(tag))
+        }
+        catch( IllegalArgumentException e ) {
+            log.debug("task ${hash} is left out of item lineage: ${e.message}")
+            return
+        }
         final List<InputRecorder.Staged> copy = Collections.unmodifiableList(
             new ArrayList<InputRecorder.Staged>(staged ?: Collections.<InputRecorder.Staged> emptyList()))
-        tasks.put(hash, new Noted(hash, dir, process, tag, copy))
+        tasks.put(hash, new Noted(ref, dir, copy))
     }
 
     /** The task noted under {@code hash}, or null. */
@@ -125,7 +134,7 @@ class ItemDerivation {
                     final Noted task = source == null ? null : holding(source, byWorkDir)
                     if( task == null )
                         continue
-                    walk.tasks.add(new ItemLineage.TaskRef(task.hash, task.process, Records.scrubText(task.tag)))
+                    walk.tasks.add(task.ref)
                     follow(task, source, walk, byWorkDir, set, runInputs)
                 }
             }
@@ -148,7 +157,7 @@ class ItemDerivation {
             final Noted task = step.task
             final Path file = step.file
             final List<InputRecorder.Staged> picked = task.staged.findAll { InputRecorder.Staged s -> stagedAt(task, s) == file }
-            if( !walk.visited.add(task.hash + '\u0000' + (picked ? file.toString() : '*')) )
+            if( !walk.visited.add(task.ref.hash + '\u0000' + (picked ? file.toString() : '*')) )
                 continue
             for( InputRecorder.Staged s : picked ?: task.staged ) {
                 final InputSet.Input input = runInputs.get(s)

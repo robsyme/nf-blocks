@@ -231,6 +231,25 @@ class ItemDerivationTest extends Specification {
         !tag.contains(System.getProperty('user.name'))
     }
 
+    def 'a task that could not be named is not noted, so the other items keep their lineage'() {
+        given: 'a hash that is not 32 lowercase hex, and a blank process'
+        def d = new ItemDerivation()
+        d.noteTask('NOT-A-HASH', work('bad'), 'Bad', null, [])
+        d.noteTask(hashOf('blank'), work('blank'), ' ', null, [])
+        d.noteTask(hashOf('T'), work('t'), 'T', null, [])
+        ['bad', 'blank', 't'].each { String n -> d.notePublish("cas://rob/${n}/o.txt".toString(), work(n).resolve('o.txt')) }
+
+        when:
+        def derived = d.derive([joined('o', ['bad', 'blank', 't'].collect { String n -> [item(n), ["cas://rob/${n}/o.txt".toString()]] })],
+            new InputSet('rob', []), [:])
+
+        then:
+        d.noted('NOT-A-HASH') == null
+        d.noted(hashOf('blank')) == null
+        derived*.item == [item('t')]
+        derived[0].tasks == [new ItemLineage.TaskRef(hashOf('T'), 'T', null)]
+    }
+
     def 'noteTask(TaskRun) copies hash, work dir, process and tag'() {
         given:
         def d = new ItemDerivation()
@@ -245,10 +264,10 @@ class ItemDerivationTest extends Specification {
         def noted = d.noted(hashOf('Dev'))
 
         then:
-        noted.hash ==~ /[0-9a-f]{32}/
+        noted.ref.hash ==~ /[0-9a-f]{32}/
         noted.workDir == work('iDev')
-        noted.process == 'Introduce'
-        noted.tag == 'Dev'
+        noted.ref.process == 'Introduce'
+        noted.ref.tag == 'Dev'
     }
 
     def 'noteTask(TaskRun) ignores a task with no hash or no work dir, and reads no tag as null'() {
@@ -266,6 +285,6 @@ class ItemDerivationTest extends Specification {
 
         then:
         d.noted(hashOf('noDir')) == null
-        d.noted(hashOf('untagged')).tag == null
+        d.noted(hashOf('untagged')).ref.tag == null
     }
 }

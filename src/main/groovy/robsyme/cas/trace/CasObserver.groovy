@@ -30,6 +30,7 @@ import robsyme.cas.core.Coordinates
 import robsyme.cas.core.Index
 import robsyme.cas.core.InputSet
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.ItemLineage
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.RunCompletion
@@ -98,6 +99,9 @@ class CasObserver implements TraceObserverV2 {
      * plan 1.3). Made on first use, by when the run's params are final.
      */
     private InputRecorder inputs
+
+    /** Which run inputs and tasks gave each output item, for the run's ItemLineage (cross-run lineage spec §5.2). */
+    private final ItemDerivation derivation = new ItemDerivation()
 
     /** Observers of this JVM whose RunCompletion is not yet written, for {@link #finishPending}. */
     private static final Set<CasObserver> PENDING = ConcurrentHashMap.newKeySet()
@@ -172,6 +176,9 @@ class CasObserver implements TraceObserverV2 {
         publishedKeys.add(key)
         if( event.labels )
             labels.put(key, event.labels)
+        // An Output Index File has no source; Nextflow writes it straight to the target.
+        if( event.source != null )
+            derivation.notePublish(key, event.source)
         // A file written by appends (a CSV Output Index File) is hashed now, once.
         finalizeSpools { cas.finalizePending(key) }
         // Our upload() already hashed and recorded this; if neither the publish
@@ -224,15 +231,23 @@ class CasObserver implements TraceObserverV2 {
      * Runs on Nextflow's task-completion thread, so it only classifies the
      * task's staged files and queues their stat and hash (InputRecorder). The
      * InputSet is a record of what the run read, so a failure here is logged
-     * and the run goes on.
+     * and the run goes on. The task is noted for item lineage either way, with
+     * whatever was staged, so its items still name it.
      */
     private void recordInputs(TaskEvent event) {
         final TaskRun task = event?.handler?.task
+        List<InputRecorder.Staged> staged = Collections.<InputRecorder.Staged> emptyList()
         try {
-            inputRecorder().recordTask(task)
+            staged = inputRecorder().recordTask(task)
         }
         catch( Exception e ) {
             log.warn("nf-blocks could not record the inputs of task ${taskName(task)}: ${e.message}", e)
+        }
+        try {
+            derivation.noteTask(task, staged)
+        }
+        catch( Exception e ) {
+            log.warn("nf-blocks could not note task ${taskName(task)} for item lineage: ${e.message}", e)
         }
     }
 
@@ -266,15 +281,18 @@ class CasObserver implements TraceObserverV2 {
         return new InputRecorder(workDir, projectDir, params, hash)
     }
 
-    /**
-     * The run's InputSet block, or null when it could not be made: the
-     * InputSet records what the run read, so a failure making it warns and
-     * the RunCompletion links none. Writing the block is a provenance write,
-     * and its failure aborts the run (rule 3).
-     */
-    private Cid writeInputSet(boolean success) {
-        final Map<String, Object> block = inputSetBlock(success)
-        return block == null ? null : putBlock(block, 'InputSet')
+    /** The run's InputSet with its block, and the Input each kept staged file became, for the item lineage. */
+    @CompileStatic
+    private static final class RunInputs {
+        final InputSet set
+        final Map<String, Object> block
+        final Map<InputRecorder.Staged, InputSet.Input> byStaged
+
+        RunInputs(InputSet set, Map<InputRecorder.Staged, InputSet.Input> byStaged) {
+            this.set = set
+            this.block = set.toCbor()
+            this.byStaged = byStaged
+        }
     }
 
     /**
@@ -285,19 +303,24 @@ class CasObserver implements TraceObserverV2 {
      * running then is listed with reason "unfinished", and the console says
      * how many. The run's status and its RunCompletion are as they would
      * have been.
+     *
+     * Null when the InputSet could not be made: it records what the run read,
+     * so a failure making it warns and the RunCompletion links none.
      */
-    private Map<String, Object> inputSetBlock(boolean success) {
+    private RunInputs collectInputs(boolean success) {
         InputRecorder recorder = null
         try {
             recorder = inputRecorder()
             recordSamplesheet()
             final long waitMillis = inputWaitMillis(success)
+            // Every fromStore read is over by the join, so the Origins are complete when collect attaches them.
+            recorder.setOrigins(cas.origins)
             final List<InputSet.Input> read = recorder.collect(waitMillis)
             final int left = recorder.leftUnfinished
             if( left > 0 )
                 ConsoleLog.LOG.warn("nf-blocks: ${left} input(s) were still being read (a stat or a hash) after ${waitMillis.intdiv(1000L)} s, so the run records them without an address, as unfinished; " +
                     "cas.inputs.waitSeconds (${cas.config.inputsWaitSeconds}) sets how long a run waits${success ? '' : ', at most 30 s for a failed run'}")
-            return new InputSet(cas.assertedBy, read).toCbor()
+            return new RunInputs(new InputSet(cas.assertedBy, read), recorder.collectedByStaged)
         }
         catch( Throwable t ) {
             ConsoleLog.LOG.warn("nf-blocks: the run's InputSet could not be made, so its RunCompletion records no inputs: ${t.message ?: t.class.name}")
@@ -312,6 +335,25 @@ class CasObserver implements TraceObserverV2 {
                 log.debug("the input hashing pool could not be stopped: ${t.message}")
             }
         }
+    }
+
+    /**
+     * The run's ItemLineage block, or null when it could not be made: like the
+     * InputSet it names, it records where the outputs came from, so a failure
+     * making it warns and the RunCompletion links none. Writing the block is a
+     * provenance write, and its failure aborts the run (rule 3).
+     */
+    private Cid writeItemLineage(List<Join.JoinedOutput> outputs, RunInputs read, Cid inputSet) {
+        final Map<String, Object> block
+        try {
+            block = new ItemLineage(cas.assertedBy, inputSet, deriveItems(outputs, read.set, read.byStaged)).toCbor()
+        }
+        catch( Throwable t ) {
+            ConsoleLog.LOG.warn("nf-blocks: the run's item lineage could not be made, so its RunCompletion records none: ${t.message ?: t.class.name}")
+            log.warn("the run's item lineage could not be made: ${t.message ?: t.class.name}", t)
+            return null
+        }
+        return putBlock(block, 'ItemLineage')
     }
 
     private long inputWaitMillis(boolean success) {
@@ -604,7 +646,10 @@ class CasObserver implements TraceObserverV2 {
         collections.addAll(byName.values())
 
         final boolean success = session.isSuccess()
-        final Cid inputSet = writeInputSet(success)
+        final RunInputs read = collectInputs(success)
+        final Cid inputSet = read == null ? null : putBlock(read.block, 'InputSet')
+        // Positions index the InputSet, so a lineage is written only beside one.
+        final Cid itemLineage = inputSet == null ? null : writeItemLineage(joined.outputs, read, inputSet)
         final WorkflowMetadata meta = session.workflowMetadata
         final Cid completion = putBlock(new RunCompletion([
             assertedBy        : cas.assertedBy,
@@ -619,6 +664,7 @@ class CasObserver implements TraceObserverV2 {
             anomalies         : anomalies,
             error             : success ? null : errorText(meta),
             providers         : joined.providers,
+            itemLineage       : itemLineage,
         ]).toCbor(), 'RunCompletion')
         // Recorded: nothing below may report the run as unrecorded, or fail it (fix round 3, G3).
         recordedAs = completion
@@ -728,6 +774,12 @@ class CasObserver implements TraceObserverV2 {
         finally {
             index?.close()
         }
+    }
+
+    /** Overridable seam so a test can make the walk fail, or act once the InputSet is written. */
+    protected List<ItemLineage.Derived> deriveItems(List<Join.JoinedOutput> outputs, InputSet set,
+                                                    Map<InputRecorder.Staged, InputSet.Input> runInputs) {
+        return derivation.derive(outputs, set, runInputs)
     }
 
     /** Overridable seam so a test can inject an index failure (DESIGN.md §11). */

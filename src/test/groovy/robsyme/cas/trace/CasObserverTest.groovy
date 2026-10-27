@@ -11,6 +11,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.Appender
 import ch.qos.logback.core.AppenderBase
 import ch.qos.logback.core.read.ListAppender
+import com.google.common.hash.HashCode
 import groovy.json.JsonSlurper
 import nextflow.Global
 import nextflow.Session
@@ -38,6 +39,7 @@ import robsyme.cas.core.Hashing
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.InputSet
+import robsyme.cas.core.ItemLineage
 import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.LocalRetentionStorage
 import robsyme.cas.core.SnapshotBase
@@ -355,7 +357,8 @@ class CasObserverTest extends Specification {
         blocksOfKind('RunCompletion').size() == 1
         StoreLog.read(cas.store).size() == 1
 
-        and: 'a successful run'
+        and: 'a successful run, at schema 3'
+        blocksOfKind('RunCompletion')[0].get('schema') == 3L
         blocksOfKind('RunCompletion')[0].get('status') == 'succeeded'
         blocksOfKind('RunCompletion')[0].get('possibly_incomplete') == false
     }
@@ -1769,6 +1772,19 @@ class CasObserverTest extends Specification {
         return new TaskEvent(handler, null)
     }
 
+    /** {@link #taskEvent} for a task of {@code process} with its hash and work dir, as item lineage needs them. */
+    private TaskEvent processTask(String process, String hash, Path workDir, String id, List<Path> reads) {
+        final TaskEvent event = taskEvent(id, reads)
+        final TaskRun task = event.handler.task
+        task.processor = Stub(TaskProcessor) {
+            getConfig() >> Stub(ProcessConfigV1)
+            getName() >> process
+        }
+        task.hash = HashCode.fromString(hash)
+        task.workDir = workDir
+        return event
+    }
+
     private Path inputFile(String rel, String text) {
         final Path p = tempDir.resolve(rel)
         Files.createDirectories(p.parent)
@@ -2021,7 +2037,7 @@ class CasObserverTest extends Specification {
         !console.list.any { it.formattedMessage.contains('waitSeconds') }
     }
 
-    def 'an InputSet that cannot be made leaves the run recorded with input_set null and one console warning (#how)'() {
+    def 'an InputSet that cannot be made leaves the run recorded with input_set and item_lineage null and one console warning (#how)'() {
         given:
         bind(config())
         cas.setNextflowRunKey('nfhash123')
@@ -2042,8 +2058,11 @@ class CasObserverTest extends Specification {
         completions.size() == 1
         completions[0].containsKey('input_set')
         completions[0].get('input_set') == null
+        completions[0].containsKey('item_lineage')
+        completions[0].get('item_lineage') == null
         completions[0].get('status') == 'succeeded'
         blocksOfKind('InputSet').isEmpty()
+        blocksOfKind('ItemLineage').isEmpty()
         latestCompletion() != null
         console.list.count { ILoggingEvent e -> e.level == Level.WARN && e.formattedMessage.contains('InputSet') } == 1
 
@@ -2073,6 +2092,175 @@ class CasObserverTest extends Specification {
         then:
         final AbortRunException e = thrown()
         e.message.contains('InputSet')
+
+        cleanup:
+        locked.each { Path d -> d.toFile().setWritable(true, false) }
+    }
+
+    // ------------------------------------------------- ItemLineage (cross-run lineage spec §5.2)
+
+    private static final String INTRODUCE_HASH = '0123456789abcdef0123456789abcdef'
+
+    /** What {@link #introduceRun} read from: Dev's datafile, and the people · Dev item and Selection behind it. */
+    private Cid dat
+    private InputSet.Origin devOrigin
+
+    /**
+     * One run of one Introduce task: it stages {@code cas://<dat>/Dev_Patel.dat}, which fromStore
+     * read from the Dev item of people through a Selection, and publishes {@code Dev_intro.txt}
+     * from its work dir as output intros. A cached task's publish finds the target already there.
+     * The observer is {@code make}'s, or a plain one.
+     */
+    private void introduceRun(boolean cached, Closure<CasObserver> make = null) {
+        bind(config())
+        if( make != null )
+            observer = make.call()
+        cas.setNextflowRunKey('nfhash123')
+        final Path work = tempDir.resolve('work')
+        final Path taskDir = work.resolve('01/23456789abcdef0123456789abcdef')
+        session.isSuccess() >> true
+        session.getWorkDir() >> work
+        observer.onFlowCreate(session)
+        observer.onFlowBegin()
+        dat = cas.store.putStreaming(new ByteArrayInputStream('Dev Patel\n'.getBytes('UTF-8')))
+        devOrigin = new InputSet.Origin(cas.store.putDagCbor([item: 'Dev']), cas.store.putDagCbor([collection: 'people']), cas.store.putDagCbor([selection: 'S']))
+        final Path staged = coord("cas://${dat}/Dev_Patel.dat")
+        cas.addOrigins(staged, [devOrigin])
+        final TaskEvent event = processTask('Introduce', INTRODUCE_HASH, taskDir, 'Dev', [staged])
+        if( cached )
+            observer.onTaskCached(event)
+        else
+            observer.onTaskComplete(event)
+        final Path intro = publishFromTask('cas://lab/intros/Dev_intro.txt', 'Hello, Dev\n', taskDir.resolve('Dev_intro.txt'))
+        observer.onWorkflowOutput(new WorkflowOutputEvent('intros', [[[id: 'Dev'], intro]], null))
+        observer.onFlowComplete()
+    }
+
+    /**
+     * Publishes a task's work-dir file as a workflow output does (Nextflow 26.04.6
+     * PublishDir.processFile): a target already there from an earlier run is deleted
+     * and uploaded again under the default overwrite 'standard', and the event names
+     * the source either way.
+     */
+    private Path publishFromTask(String uri, String text, Path source) {
+        final Path target = coord(uri)
+        Files.createDirectories(source.parent)
+        Files.writeString(source, text)
+        try {
+            provider.upload(source, target)
+        }
+        catch( java.nio.file.FileAlreadyExistsException e ) {
+            provider.delete(target)
+            provider.upload(source, target)
+        }
+        observer.onFilePublish(new FilePublishEvent(source, target, null))
+        return target
+    }
+
+    /** A second run over the same store, as a {@code -resume} is. */
+    private void unbindRun() {
+        CasSession.unbind(session)
+        Global.session = null
+    }
+
+    def 'a run with a published task output writes an ItemLineage linked from a schema 3 RunCompletion'() {
+        when:
+        introduceRun(false)
+        final Map completion = readBlock(latestCompletion())
+
+        then:
+        completion.schema == 3L
+        final ItemLineage lineage = ItemLineage.fromCbor(readBlock((Cid) completion.item_lineage))
+        lineage.inputSet == completion.input_set
+        lineage.assertedBy == 'test'
+        readBlock((Cid) completion.input_set).schema == 2L
+        final InputSet set = InputSet.fromCbor(readBlock((Cid) completion.input_set))
+        final InputSet.Input dev = set.inputs.find { it.name == 'Dev_Patel.dat' }
+        dev.address == dat
+        dev.from == [devOrigin]
+
+        and: 'the intro names the datafile its task read, and the task'
+        final Map collection = readBlock((Cid) (completion.collections as List)[0])
+        lineage.items*.item == collection.items
+        lineage.items*.inputs == [[set.positionOf(dev)]]
+        lineage.items[0].tasks == [new ItemLineage.TaskRef(INTRODUCE_HASH, 'Introduce', null)]
+    }
+
+    def 'a cached task gives the same lineage as a completed one'() {
+        when: 'the run completes its task, then a -resume of it finds the task cached'
+        introduceRun(false)
+        unbindRun()
+        introduceRun(true)
+        final List<Map> completions = blocksOfKind('RunCompletion')
+
+        then:
+        completions.size() == 2
+        completions*.item_lineage.toSet().size() == 1
+        completions[0].item_lineage != null
+        completions*.input_set.toSet().size() == 1
+        blocksOfKind('ItemLineage').size() == 1
+        ItemLineage.fromCbor(readBlock((Cid) completions[0].item_lineage)).items*.tasks == [[new ItemLineage.TaskRef(INTRODUCE_HASH, 'Introduce', null)]]
+    }
+
+    def 'the Output Index File publish (no source) is ignored'() {
+        given:
+        bind(config())
+        observer.onFlowCreate(session)
+        final Path index = coord('cas://lab/intros/index.json')
+        provider.upload(Files.writeString(tempDir.resolve('index.json'), '[]\n'), index)
+
+        when:
+        observer.onFilePublish(new FilePublishEvent(null, index, null))
+
+        then:
+        noExceptionThrown()
+    }
+
+    def 'an item lineage that cannot be derived leaves the run recorded with its InputSet, item_lineage null and one console warning'() {
+        given:
+        final ListAppender<ILoggingEvent> console = capture(ConsoleLog.NAME)
+
+        when:
+        introduceRun(false) {
+            new CasObserver() {
+                @Override
+                protected List<ItemLineage.Derived> deriveItems(List<Join.JoinedOutput> outputs, InputSet set, Map<InputRecorder.Staged, InputSet.Input> runInputs) {
+                    throw new IllegalStateException('no walk')
+                }
+            }
+        }
+        final Map completion = readBlock(latestCompletion())
+
+        then:
+        completion.input_set instanceof Cid
+        completion.containsKey('item_lineage')
+        completion.item_lineage == null
+        blocksOfKind('ItemLineage').isEmpty()
+        console.list.count { ILoggingEvent e ->
+            e.level == Level.WARN && e.formattedMessage == "nf-blocks: the run's item lineage could not be made, so its RunCompletion records none: no walk"
+        } == 1
+    }
+
+    def 'an ItemLineage block that cannot be written aborts the run (rule 3)'() {
+        given: 'the blocks become unwritable once the InputSet is written'
+        List<Path> locked = []
+
+        when:
+        introduceRun(false) {
+            new CasObserver() {
+                @Override
+                protected List<ItemLineage.Derived> deriveItems(List<Join.JoinedOutput> outputs, InputSet set, Map<InputRecorder.Staged, InputSet.Input> runInputs) {
+                    makeBlocksUnwritable(locked)
+                    return super.deriveItems(outputs, set, runInputs)
+                }
+            }
+        }
+
+        then:
+        final AbortRunException e = thrown()
+        e.message.contains('ItemLineage')
+        blocksOfKind('InputSet').size() == 1
+        blocksOfKind('RunCompletion').isEmpty()
 
         cleanup:
         locked.each { Path d -> d.toFile().setWritable(true, false) }
