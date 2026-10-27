@@ -46,6 +46,13 @@ Two pieces of information are missing from the store today:
   made from and, for each input that came through `fromStore`, the
   upstream item with its run and the Selection, each a link. Opening the
   upstream item's page shows the next step back.
+- The upstream item's page shows the reverse step, "Used by": the
+  downstream items made from it and their runs (user decision,
+  2026-10-26).
+- Each item's record names the Nextflow tasks that published its files
+  (task hash, process, tag), so a later "made by" line and a drill-down
+  into Nextflow's task records need no format change. No UI for it in this
+  work.
 - The recorded facts survive a copy between members, so a copied consumer
   run shows the same lineage.
 
@@ -140,8 +147,21 @@ type ItemLineage struct {
 type Derived struct {
   item &OutputItem               # an OutputItem of this run
   inputs [Int]                   # positions in input_set.inputs, ascending, no duplicates
+  tasks [TaskRef]                # the tasks whose outputs this item's files are; sorted by hash; may be empty
+}
+type TaskRef struct {
+  hash String                    # Nextflow task hash, 32 lowercase hex; lid://<hash> in Nextflow's lineage
+  process String                 # fully qualified process name
+  tag nullable String
 }
 ```
+
+Task references were decided by the user (2026-10-26) on the strength of
+the tradeoffs analysis: record them now, show them in the UI later. They
+name the task that published each file, not the intermediate tasks the
+walk passes through. A cached task's reference is the original
+execution's hash, which is the same on resume, so the ItemLineage CID is
+stable across `-resume`.
 
 and on RunCompletion, schema 3:
 
@@ -154,10 +174,10 @@ and on RunCompletion, schema 3:
   content-addressed, so a position is stable for a given InputSet CID.
 - No ItemLineage without an InputSet. When the InputSet could not be made,
   `item_lineage` is null.
-- An item none of whose files traces to a run input is left out (an item
-  of values only, or made by tasks that read nothing from outside the run).
-  A run where no item has inputs writes an ItemLineage with empty `items`,
-  so `item_lineage: null` keeps meaning "could not be made".
+- An item with neither an input nor a publishing task is left out (an item
+  of values only). A run where no item qualifies writes an ItemLineage
+  with empty `items`, so `item_lineage: null` keeps meaning "could not be
+  made".
 
 `inputs` is the closure at the run boundary: the walk passes through the
 run's intermediate tasks and records only run inputs. A later task-level
@@ -219,6 +239,15 @@ address.
   fan out to every item: about 6,000 to 10,000 rows per 100-sample rnaseq
   run as separate rows (estimate from the tradeoffs analysis), about 1,000
   packed.
+- `item_task(completion_cid, item_cid, task_hash, process, tag)`, one row
+  per (Derived item, TaskRef), index on `item_cid`. No page reads it in
+  this work; it is there so the "made by" line is a UI change only.
+
+"Used by" reads `input_origin` by `item_cid` (the upstream item), then
+`item_input` of that run for the derived items whose `positions` contain
+the input's position (`json_each`). It reads snapshots only: a tail run's
+derived items appear once the member's snapshot catches up (builder may
+also read tail runs' blocks if it is cheap; say which in DESIGN.md).
 
 Both ingested with the InputSet / ItemLineage the RunCompletion links, with
 the same wait-and-retry and `clearRun` handling `run_input` has, copied into
@@ -270,7 +299,18 @@ ItemLineage and InputSet blocks (tail run). Per input:
   blocks and older blocks still validate. The generic block page lists the
   new kind as "a block of kind ItemLineage", like InputSet.
 
-### 5.6 Small fixes in the same area
+### 5.6 Explorer: the Used by panel
+
+On an item page, a "Used by" panel lists the downstream items whose runs
+recorded an Origin naming this item: each derived item as a link
+(`output · title`), grouped under its run chip, with the Selection the
+consumer read it through when there was one. Members other than the open
+one are asked too (`fromEach`), and a row in another member links there
+with `hrefIn`. The panel is absent when no run used the item, so pages of
+items nothing has consumed look as they do today. It sits beside or below
+Lineage within the visual language spec; the builder places it.
+
+### 5.7 Small fixes in the same area
 
 - `InputRecorder` reads `params.input` with `params.get('input')`, which
   warns `Access to undefined parameter 'input'` in a typed script whose
@@ -312,6 +352,11 @@ plugin built from this branch and Nextflow 26.10.4:
    No blocks are deleted by hand (orchestrator's call; a sweep could not
    remove the upstream run from B while the Selection holds it).
 5. A run written by the previous build shows the Lineage panel unchanged.
+   The `people · Dev` item page from `infallible_spence` shows "Used by"
+   with `intros · Dev` and `circle` under the consumer run; the same item
+   page from a `scratch-workflow` run nothing consumed shows no Used by
+   panel. Each ItemLineage entry names its publishing task: `Introduce`
+   with tag for each `intros` item, `FriendCircle` for `circle`.
 6. The typed consumer run prints no `Access to undefined parameter 'input'`
    warning.
 7. `make test` (Spock and web) passes; the Gate's typed consumer
