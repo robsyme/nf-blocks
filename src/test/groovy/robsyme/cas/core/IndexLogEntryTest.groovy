@@ -48,7 +48,7 @@ class IndexLogEntryTest extends Specification {
         }
     }
 
-    def 'the schema is version 6 with the tables of spec section 11'() {
+    def 'the schema is version 7 with the tables of spec section 11'() {
         expect:
         Index.SCHEMA_VERSION == 7
         rows("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")*.get(0).containsAll(

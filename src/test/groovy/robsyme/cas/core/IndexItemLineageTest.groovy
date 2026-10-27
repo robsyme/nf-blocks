@@ -200,14 +200,17 @@ class IndexItemLineageTest extends Specification {
         given:
         final Cid other = f.store.putDagCbor(new InputSet(WHO, []).toCbor())
         final Map run = introsRun(datafiles(), [lineageInputSet: other])
+        appender = capture()
 
         when:
+        index.ingestRun(f.store, (Cid) run.completion, 'lab')
         index.ingestRun(f.store, (Cid) run.completion, 'lab')
 
         then:
         count('item_input') == 0
         count('item_task') == 0
         meta("${Index.ITEMLINEAGE_WAIT}${run.completion}") == null
+        warnings(appender, "item lineage ${run.lineageCid}".toString()) == 1
 
         and: 'the rest of the run is indexed'
         count('input_origin') == 4

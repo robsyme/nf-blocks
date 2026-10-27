@@ -726,7 +726,7 @@ class IndexTest extends Specification {
     }
 
     /** Records which blocks the index actually reads. */
-    def 'schema 6 carries the two query 3 indexes'() {
+    def 'schema 7 carries the two query 3 indexes'() {
         expect:
         indexNames().containsAll(['collection_completion_output', 'collection_item_collection'])
         Index.SCHEMA_VERSION == 7

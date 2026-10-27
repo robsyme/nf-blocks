@@ -5615,7 +5615,7 @@ Log with no migration):*
 
 ```
 run_input(completion_cid, role, name, address, size, sample, position)
-  -- position is the last column: the input's index in the InputSet's sorted list
+  -- run_input gains a position column, last: the input's index in the InputSet's sorted list
 input_origin(completion_cid, position, item_cid, collection_cid, selection_cid)
   index input_origin_item (item_cid)
   index input_origin_completion (completion_cid, position)
