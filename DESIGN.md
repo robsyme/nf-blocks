@@ -644,7 +644,7 @@ type ItemLineage struct {
   schema Int                     # 1
   asserted_by String
   input_set &InputSet            # the InputSet whose positions `inputs` names
-  items [Derived]                # sorted by item CID bytes; one per item with at least one input
+  items [Derived]                # sorted by item CID bytes; one per item with at least one input or one publishing task
 }
 type Derived struct {
   item &OutputItem               # an OutputItem of this run
@@ -2308,8 +2308,10 @@ section 5.1):*
 - While `fromStore` resolves its items (all of them, before any task runs)
   it fills a per-run map on `CasSession`: each emitted Path to the set of
   Origins that gave it (InputSet, §22). Nothing goes into the path, so task
-  hashes do not change. `Index.selectionItems` and `Index.items` return the
-  `via` and collection columns they used to drop.
+  hashes do not change. `Index.selectionVias` gives each item a Selection
+  reaches with the collections it was picked through, and `Index.itemRefs`
+  each item of a run's output with its collection; `Index.selectionItems`
+  and `Index.items` are unchanged.
 - A Selection item reached through several OutputCollections
   (`collection_item.via_cid`) gives one Origin per collection. The Selection
   recorded is the one the call named: for nested Selections the outer one,

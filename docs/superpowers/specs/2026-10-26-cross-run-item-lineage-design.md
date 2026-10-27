@@ -142,7 +142,7 @@ type ItemLineage struct {
   schema Int                     # 1
   asserted_by String
   input_set &InputSet            # the InputSet whose positions `inputs` names
-  items [Derived]                # sorted by item CID bytes; one per item with at least one input
+  items [Derived]                # sorted by item CID bytes; one per item with at least one input or one publishing task
 }
 type Derived struct {
   item &OutputItem               # an OutputItem of this run
