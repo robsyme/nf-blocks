@@ -586,15 +586,17 @@ class CopyClosure {
             if( manifest != null )
                 manifests.put(run, manifest)
             final Cid script = asCid(manifest?.get('script'))
-            final Cid inputSet = asCid(completion.get('input_set'))
-            if( inputSet != null ) {
-                // Run metadata, as Mark has it (META), so it travels at every depth.
-                // InputSet is reserved, so nothing under it is followed.
-                place(inputSet, RUN_RECORDS, R, null, null)
-                readRecords([inputSet])
-                final Map block = records.get(inputSet)
+            // Run metadata, as Mark has it (META), so it travels at every depth.
+            // InputSet and ItemLineage are reserved, so nothing under them is followed.
+            for( String field : ['input_set', 'item_lineage'] ) {
+                final Cid link = asCid(completion.get(field))
+                if( link == null )
+                    continue
+                place(link, RUN_RECORDS, R, null, null)
+                readRecords([link])
+                final Map block = records.get(link)
                 if( block != null )
-                    placed.get(inputSet).kind = Records.kindOf(block)
+                    placed.get(link).kind = Records.kindOf(block)
             }
             final List<Cid> collections = asList(completion.get('collections')).collect { Object c -> asCid(c) }.findAll { it != null } as List<Cid>
             readRecords(collections)

@@ -133,7 +133,7 @@ class RetentionFixture {
 
     static Map completion(Cid manifest, List<Cid> collections, Map options = [:]) {
         final String status = (options.status ?: 'succeeded') as String
-        return new RunCompletion([assertedBy: 'test', run: manifest, collections: collections, inputSet: (Cid) options.inputSet,
+        return new RunCompletion([assertedBy: 'test', run: manifest, collections: collections, inputSet: (Cid) options.inputSet, itemLineage: (Cid) options.itemLineage,
             status: status, exitStatus: status == 'succeeded' ? 0 : 1,
             possiblyIncomplete: options.possiblyIncomplete ?: false,
             startedAt: '2026-09-28T10:00:00.000Z', finishedAt: (options.finishedAt ?: '2026-09-28T10:05:00.000Z') as String,

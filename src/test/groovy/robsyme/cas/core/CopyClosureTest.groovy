@@ -365,6 +365,27 @@ class CopyClosureTest extends Specification {
         none.skippedClaims == [retain: 1, deletion: 1]
     }
 
+    def 'item_lineage travels in run_records at every depth, nothing under it'() {
+        given: 'a run whose ItemLineage names an upstream item that only its InputSet reads'
+        final Cid upstream = lab.putDagCbor(Fixtures.outputItem2([meta: [id: 'up'], u: leaf('u', raw(lab, 'up'), 'up')]))
+        final Cid inputs = lab.putDagCbor(new InputSet('test', [
+            new InputSet.Input(InputSet.TASK, 'in', raw(lab, 'staged'), 1L, null, null)
+                .withFrom([new InputSet.Origin(upstream, null, null)])]).toCbor())
+        final Cid lineage = lab.putDagCbor(new ItemLineage('test', inputs, [ItemLineage.Derived.of(r1, [0], [])]).toCbor())
+        final Cid manifest = lab.putDagCbor(Fixtures.runManifest(run_name: 'three', nf_run_hash: 'unknown', pipeline: 'p3'))
+        final Cid coll = lab.putDagCbor(Fixtures.outputCollection(manifest, 'out', [[r1, ['x1']]]))
+        final Cid completion = logged(lab, StoreLogKind.RUN, Fixtures.runCompletion(manifest, [coll], [input_set: inputs, item_lineage: lineage]))
+        index.catchUp(lab, StoreLog.of(lab), 'lab')
+
+        expect:
+        ['results', 'lineage', 'all'].every { String depth ->
+            final CopyClosure.Result r = closure(depth: depth, root: new CopyClosure.Root('run', completion))
+            r.entries.find { it.cid == lineage }?.group == 'run_records' &&
+                r.entries.find { it.cid == lineage }.kind == 'ItemLineage' &&
+                r.entries.every { it.cid != upstream }
+        }
+    }
+
     def 'a run root: the whole run is results, and lineage has nothing to add'() {
         when:
         final CopyClosure.Result r = closure(root: new CopyClosure.Root('run', completion2), depth: 'all')

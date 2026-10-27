@@ -457,6 +457,8 @@ class Mark {
                 meta(block.get('run'), META, v.cid, next)
                 // The run's InputSet is its metadata, kept as itself: its inputs are not followed (P4 R1).
                 meta(block.get('input_set'), META, v.cid, next)
+                // Its ItemLineage is the same: kept as itself, the items and tasks it names are not followed.
+                meta(block.get('item_lineage'), META, v.cid, next)
                 for( Object c : (List) (block.get('collections') ?: []) )
                     meta(c, v.want, v.cid, next)
                 break
@@ -502,7 +504,7 @@ class Mark {
                 meta(block.get('selection'), ALL, v.cid, next)
                 break
             default:
-                break   // a Claim, a Project, an InputSet or a kind this build does not know: itself only
+                break   // a Claim, a Project, an InputSet, an ItemLineage or a kind this build does not know: itself only
         }
     }
 

@@ -712,6 +712,26 @@ class MarkTest extends Specification {
         m.missingMetadata == []
     }
 
+    def 'a run keeps its ItemLineage as itself and follows nothing under it'() {
+        given: 'an InputSet reading an upstream item no run here holds, and an ItemLineage over it'
+        final Cid upstreamItem = f.store.putDagCbor(OutputItem.of([x: Leaf.of('x', f.raw('upstream'), 1L)]).toCbor())
+        final Cid inputs = f.store.putDagCbor(new InputSet('test', [
+            new InputSet.Input(InputSet.TASK, 'in', f.raw('staged'), 1L, null, null)
+                .withFrom([new InputSet.Origin(upstreamItem, null, null)])]).toCbor())
+        final Map made = f.run('a', [[x: f.raw('x')]], [inputSet: inputs])
+        final Cid lineage = f.store.putDagCbor(new ItemLineage('test', inputs,
+            [ItemLineage.Derived.of((Cid) made.items[0], [0], [])]).toCbor())
+        final Map r = f.run('b', [[y: f.raw('y')]], [inputSet: inputs, itemLineage: lineage])
+
+        when:
+        final Mark m = mark()
+
+        then:
+        m.isLive(lineage)
+        !m.isLive(upstreamItem)
+        m.missingContent == [] && m.missingMetadata == []
+    }
+
     private Set<Cid> leavesOf(Cid item) {
         return OutputItem.fromCbor((Map) DagCbor.decode(f.store.open(item).readAllBytes())).leaves()*.address as Set
     }
