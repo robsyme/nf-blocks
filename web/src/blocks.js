@@ -21,18 +21,26 @@ const PROVIDERS = new Set(['head-node', 'fusion-node', 's3-copy'])
 
 // What the IPLD Schema cannot say (DESIGN.md §6, ticket 16): an OutputItem's
 // leaves are Leaf at schema 2 and LeafV1 at schema 1; a RunCompletion carries
-// providers exactly when it is at schema 2, with known provider names; a
+// providers from schema 2 on, with known provider names, and item_lineage
+// exactly at schema 3; an InputSet carries Input.from only at schema 2; a
 // DirectoryManifest at schema 2 carries no executable entry.
-function validKind(value) {
+export function validKind(value) {
   if (value.kind === 'OutputItem') {
     if (value.schema === 2) return leavesOf(value.value).every(validLeaf)
     if (value.schema === 1) return leavesOf(value.value).every(validLeafV1)
     return false
   }
   if (value.kind === 'RunCompletion') {
-    if (value.schema === 1) return value.providers === undefined
-    return value.schema === 2 && value.providers !== undefined && Object.keys(value.providers).every(k => PROVIDERS.has(k))
+    if (value.schema === 1) return value.providers === undefined && value.item_lineage === undefined
+    if (value.providers === undefined || !Object.keys(value.providers).every(k => PROVIDERS.has(k))) return false
+    if (value.schema === 2) return value.item_lineage === undefined
+    return value.schema === 3 && value.item_lineage !== undefined
   }
+  if (value.kind === 'InputSet') {
+    if (value.schema === 1) return value.inputs.every(i => i.from === undefined)
+    return value.schema === 2
+  }
+  if (value.kind === 'ItemLineage') return value.schema === 1
   if (value.kind === 'DirectoryManifest') {
     if (value.schema === 1) return true
     return value.schema === 2 && value.entries.every(e => e.mode !== 'executable')

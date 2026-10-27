@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import * as dagCbor from '@ipld/dag-cbor'
-import { BlockFetcher } from '../src/blocks.js'
+import { BlockFetcher, validKind } from '../src/blocks.js'
+import { validBlock } from '../src/schema.js'
 import { block, blockFetch, buildMember, rangedFetch, rawCid } from './fixture.mjs'
 
 const served = (...values) => {
@@ -148,4 +149,44 @@ test('partial: the body is cancelled before a failure or a missing block is thro
     await assert.rejects(new BlockFetcher('http://h/', { fetchFn }).partial(cid, 4096), (e) => e.code === code)
     assert.ok(cancelled, `${status} body cancelled`)
   }
+})
+
+const item = block({ kind: 'OutputItem', n: 1 }).cid
+const coll = block({ kind: 'OutputCollection', n: 1 }).cid
+const sel = block({ kind: 'Selection', n: 1 }).cid
+const set = block({ kind: 'InputSet', n: 1 }).cid
+const input = (extra = {}) => ({ role: 'task', name: 'Dev_Patel.dat', address: rawCid('dev'), size: 12, sample: 'Dev', reason: null, ...extra })
+const inputSet = (schema, inputs) => ({ kind: 'InputSet', schema, asserted_by: 'rob', inputs })
+const lineage = { kind: 'ItemLineage', schema: 1, asserted_by: 'rob', input_set: set,
+  items: [{ item, inputs: [0], tasks: [{ hash: '0123456789abcdef0123456789abcdef', process: 'Introduce', tag: 'Dev' }] }] }
+
+test('an InputSet input may carry from at schema 2; schema 1 may not', () => {
+  const withFrom = input({ from: [{ item, collection: coll, selection: sel }, { item, collection: null, selection: null }] })
+  assert.equal(validBlock(inputSet(2, [withFrom])) && validKind(inputSet(2, [withFrom])), true)
+  assert.equal(validBlock(inputSet(1, [input()])) && validKind(inputSet(1, [input()])), true)
+  assert.equal(validKind(inputSet(1, [withFrom])), false)
+})
+
+test('an ItemLineage block validates; a TaskRef without process does not', () => {
+  assert.equal(validBlock(lineage), true)
+  assert.equal(validBlock({ ...lineage, items: [{ item, inputs: [0], tasks: [{ hash: 'x', tag: null }] }] }), false)
+})
+
+test('a RunCompletion carries item_lineage exactly at schema 3, null allowed', () => {
+  const rc = (schema, extra) => ({ kind: 'RunCompletion', schema, providers: {}, ...extra })
+  assert.equal(validKind(rc(3, { item_lineage: null })), true)
+  assert.equal(validKind(rc(3, { item_lineage: block(lineage).cid })), true)
+  assert.equal(validKind(rc(3, {})), false)
+  assert.equal(validKind(rc(2, { item_lineage: null })), false)
+  assert.equal(validKind(rc(2, {})), true)
+})
+
+test('a full schema 3 RunCompletion passes validBlock', () => {
+  const full = { kind: 'RunCompletion', schema: 3, asserted_by: 'test', run: block({ kind: 'RunManifest', n: 1 }).cid,
+    collections: [], input_set: null, status: 'succeeded', exit_status: 0, possibly_incomplete: false,
+    started_at: '2026-09-01T00:00:00.000Z', finished_at: '2026-09-01T00:01:00.000Z',
+    anomalies: { unresolvable: 0, unaddressed: 0, declined: 0, never_published: 0 }, error: null,
+    providers: {}, item_lineage: block(lineage).cid }
+  assert.equal(validBlock(full), true)
+  assert.equal(validKind(full), true)
 })

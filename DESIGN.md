@@ -430,6 +430,7 @@ type Block union {
   | Forget "Forget"
   | Transfer "Transfer"
   | InputSet "InputSet"
+  | ItemLineage "ItemLineage"
   | Project "Project"
   | Handoff "Handoff"
 } representation inline {
@@ -544,7 +545,8 @@ type RunCompletion struct {
   finished_at String
   anomalies Anomalies
   error nullable String
-  providers optional {String:[&Any]}  # schema 2: provider name -> every Leaf address of the run it supplied, sorted; absent at schema 1
+  providers optional {String:[&Any]}  # schema 2 and 3: provider name -> every Leaf address of the run it supplied, sorted; absent at schema 1
+  item_lineage optional nullable &ItemLineage  # schema 3: null when it could not be made; absent at schema 1 and 2
 }
 type RunStatus enum {
   | succeeded
@@ -617,9 +619,9 @@ type Transfer struct {
 
 # Explorer v0.3 P4 (§22): the files a run read, linked from RunCompletion.input_set.
 type InputSet struct {
-  schema Int                    # 1
+  schema Int                    # 1 or 2; 2 adds Input.from
   asserted_by String
-  inputs [Input]                # sorted by (role, name, address, sample, reason, size), nulls first; no two equal
+  inputs [Input]                # sorted by (role, name, address, sample, reason, size, from), nulls first; no two equal
 }
 type Input struct {
   role String                   # "samplesheet" (params.input), "param:<name>", "asset" (under projectDir) or "task"
@@ -628,6 +630,31 @@ type Input struct {
   size nullable Int
   sample nullable String        # meta.id of the task input tuple that staged it
   reason nullable String        # why address is null: "unaddressed", "unreadable", "remote", "unfinished"
+  from optional [Origin]        # schema 2: the fromStore items that gave the task this file; absent when none
+}
+type Origin struct {
+  item &OutputItem               # the upstream item fromStore emitted
+  collection nullable &OutputCollection  # the output it was reached through; null when a Selection picked it by query
+  selection nullable &Selection  # the Selection named in the fromStore call; null for run:/output:
+}
+# Origins are sorted by (item, collection, selection) as CID bytes, nulls first; no two equal.
+
+# Cross-run item lineage: which inputs made which item, linked from RunCompletion.item_lineage.
+type ItemLineage struct {
+  schema Int                     # 1
+  asserted_by String
+  input_set &InputSet            # the InputSet whose positions `inputs` names
+  items [Derived]                # sorted by item CID bytes; one per item with at least one input
+}
+type Derived struct {
+  item &OutputItem               # an OutputItem of this run
+  inputs [Int]                   # positions in input_set.inputs, ascending, no duplicates
+  tasks [TaskRef]                # the tasks whose outputs this item's files are; sorted by hash; may be empty
+}
+type TaskRef struct {
+  hash String                    # Nextflow task hash, 32 lowercase hex; lid://<hash> in Nextflow's lineage
+  process String                 # fully qualified process name
+  tag nullable String
 }
 
 # Explorer v0.3 P4 (§22): a project's root record. Its name and policies change by Claims.
