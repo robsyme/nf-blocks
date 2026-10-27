@@ -207,7 +207,8 @@ class CasSessionUnindexedTest extends Specification {
         writeCloudSnapshot(new LocalSnapshotStorage(cloudRoot), 'f' * 32)
 
         then:
-        session.ownSnapshotUnusable('cloud', index).startsWith('written for another incarnation')
+        session.ownSnapshotUnusable('cloud', index) == Index.otherIncarnation('f' * 32, id)
+        Index.isIncarnationReason(session.ownSnapshotUnusable('cloud', index))
 
         when: 'a snapshot written for this one'
         writeCloudSnapshot(new LocalSnapshotStorage(cloudRoot), id)
@@ -224,6 +225,30 @@ class CasSessionUnindexedTest extends Specification {
 
         expect:
         session.ownSnapshotUnusable('cloud', index).startsWith('its watermark ')
+        Index.isIncarnationReason(session.ownSnapshotUnusable('cloud', index))
+    }
+
+    def 'the incarnation reasons are told apart from the others'() {
+        expect:
+        Index.isIncarnationReason(Index.otherIncarnation('a', 'b'))
+        Index.isIncarnationReason(Index.earlierIncarnation('run-1'))
+        !Index.isIncarnationReason('absent') && !Index.isIncarnationReason('unreadable') && !Index.isIncarnationReason(null)
+    }
+
+    def 'building or pushing the snapshot of an unknown alias names it'() {
+        when:
+        session.buildMemberSnapshot(index, 'ghost')
+
+        then:
+        final IllegalArgumentException built = thrown()
+        built.message.contains("'ghost'")
+
+        when:
+        session.pushMemberSnapshot(index, 'ghost', null, null)
+
+        then:
+        final IllegalArgumentException pushed = thrown()
+        pushed.message.contains("'ghost'")
     }
 
     def 'buildMemberSnapshot builds any member from the cache and writes nothing to it'() {

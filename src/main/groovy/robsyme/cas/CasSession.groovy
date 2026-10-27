@@ -533,6 +533,13 @@ class CasSession {
         return members().find { BlockStore m -> m.alias() == alias }
     }
 
+    private BlockStore knownMember(String alias) {
+        final BlockStore member = member(alias)
+        if( member == null )
+            throw new IllegalArgumentException("'${alias}' is not a member of this composition".toString())
+        return member
+    }
+
     /**
      * The coordinate tree of a member by alias (DESIGN.md §7), local or S3. A
      * store configured but left out of cas.resolve still has coordinates a
@@ -685,9 +692,9 @@ class CasSession {
                 return 'absent'
             final String memberId = index.storeIdOf(alias)
             if( base.storeId != null && memberId != null && base.storeId != memberId )
-                return "written for another incarnation of the member (store_id ${base.storeId}, the member's is ${memberId})".toString()
+                return Index.otherIncarnation(base.storeId, memberId)
             if( base.storeId == null && base.watermark != null && !StoreLog.of(member).has(base.watermark) )
-                return "its watermark ${base.watermark} is not in the member's Store Log, so it may be from an earlier incarnation".toString()
+                return Index.earlierIncarnation(base.watermark)
             return null
         }
         catch( Exception e ) {
@@ -709,7 +716,7 @@ class CasSession {
      * deletes {@code file}.
      */
     IndexSnapshot.Built buildMemberSnapshot(Index index, String alias) {
-        final BlockStore member = member(alias)
+        final BlockStore member = knownMember(alias)
         return IndexSnapshot.build(index, alias, config.tmpDir, sweepGraceMillis(), presence(member), 0L, sweepLockOf(member))
     }
 
@@ -719,7 +726,7 @@ class CasSession {
      * without the page (spec §6.5). {@code storeId} is {@link #ensureStoreId}'s.
      */
     IndexSnapshot.Result pushMemberSnapshot(Index index, String alias, SnapshotBase base, String storeId) {
-        final BlockStore member = member(alias)
+        final BlockStore member = knownMember(alias)
         return IndexSnapshot.write(index, alias, snapshotsOf(alias), 0L, base, config.tmpDir, storeId, false, sweepGraceMillis(),
             presence(member), sweepLockOf(member))
     }

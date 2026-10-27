@@ -1432,6 +1432,24 @@ class Index implements Closeable {
     private static final String SEED_ITEMLINEAGE_WAITS = """INSERT OR REPLACE INTO main.meta(key, value)
         SELECT key, value FROM snap.meta WHERE key GLOB '${ITEMLINEAGE_WAIT}*' AND substr(key, ${ITEMLINEAGE_WAIT.length() + 1}) IN seed_run""".toString()
 
+    private static final String OTHER_INCARNATION = 'written for another incarnation of the member'
+    private static final String EARLIER_INCARNATION = 'so it may be from an earlier incarnation'
+
+    /** Why a snapshot whose store_id is not the member's is refused (DESIGN.md §20 decision 5). */
+    static String otherIncarnation(String snapshotId, String memberId) {
+        return "${OTHER_INCARNATION} (store_id ${snapshotId}, the member's is ${memberId})".toString()
+    }
+
+    /** Why a snapshot with no store_id whose watermark the member's Store Log lacks is refused (DESIGN.md §20 decision 9). */
+    static String earlierIncarnation(String watermark) {
+        return "its watermark ${watermark} is not in the member's Store Log, ${EARLIER_INCARNATION}".toString()
+    }
+
+    /** True for a reason from {@link #otherIncarnation} or {@link #earlierIncarnation}. */
+    static boolean isIncarnationReason(String reason) {
+        return reason != null && (reason.startsWith(OTHER_INCARNATION) || reason.endsWith(EARLIER_INCARNATION))
+    }
+
     /**
      * Copies a member's Index Snapshot into this index (ticket 04 decision 1).
      * Trusted when its schema_version matches (decision 10); claim_current is
@@ -1474,10 +1492,10 @@ class Index implements Closeable {
             final String snapId = snapMeta[IndexSnapshot.STORE_ID_KEY]
             final String memberId = storeIdOf(member)
             if( snapId != null && memberId != null && snapId != memberId )
-                throw new SnapshotUnusable("written for another incarnation of the member (store_id ${snapId}, the member's is ${memberId})")
+                throw new SnapshotUnusable(otherIncarnation(snapId, memberId))
             final String snapWatermark = snapMeta[IndexSnapshot.WATERMARK_KEY]
             if( snapId == null && snapWatermark != null && storeLog != null && !storeLog.has(snapWatermark) )
-                throw new SnapshotUnusable("its watermark ${snapWatermark} is not in the member's Store Log, so it may be from an earlier incarnation")
+                throw new SnapshotUnusable(earlierIncarnation(snapWatermark))
             try {
                 withTransaction {
                     for( String sql : SEED_TRANSFERS + SEED_P4_ROOTS )
