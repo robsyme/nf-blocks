@@ -117,6 +117,29 @@ class IndexSeedTest extends Specification {
         source?.close(); cold?.close(); full?.close()
     }
 
+    def 'seeding copies input_origin, item_input, item_task and the item lineage waits'() {
+        given:
+        final LineageFixture fixture = new LineageFixture(new RetentionFixture(lab))
+        fixture.introsRun(fixture.datafiles())
+        final Map waiting = fixture.introsRun(fixture.datafiles(false), [storeLineage: false])
+        final Index source = producer()
+        IndexSnapshot.write(source, 'lab', new LocalSnapshotStorage(lab.root), 0L, null, tmp.resolve('t'))
+        final Index cold = Index.open(tmp.resolve('cold.sqlite'))
+
+        when:
+        cold.catchUp(counting, StoreLog.of(lab), 'lab', new LocalSnapshotStorage(lab.root), tmp.resolve('t'))
+
+        then:
+        cold.metaValue('seeded_from:lab') != null
+        cold.countRows('input_origin') == 4
+        cold.countRows('item_input') == 2
+        cold.countRows('item_task') == 2
+        cold.metaValue("${Index.ITEMLINEAGE_WAIT}${waiting.completion}") == waiting.lineageCid.toString()
+
+        cleanup:
+        source?.close(); cold?.close()
+    }
+
     def 'claim_current is recomputed, never copied (ticket 04 decision 9)'() {
         given:
         final Cid rc = run('r1', 'A', System.currentTimeMillis())

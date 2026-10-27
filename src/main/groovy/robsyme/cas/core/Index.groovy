@@ -1270,12 +1270,18 @@ class Index implements Closeable {
         'INSERT INTO main.handoff SELECT * FROM snap.handoff WHERE cid NOT IN (SELECT cid FROM main.handoff)',
     ]
 
-    /** The seeded runs' inputs, after SEED has filled seed_run. Their consumer rows are in SEED. */
-    private static final String SEED_RUN_INPUTS = 'INSERT INTO main.run_input SELECT * FROM snap.run_input WHERE completion_cid IN seed_run'
+    /** The seeded runs' inputs, input origins and item lineage, after SEED has filled seed_run. Their consumer rows are in SEED. */
+    private static final List<String> SEED_RUN_RECORDS = ['run_input', 'input_origin', 'item_input', 'item_task'].collect { String t ->
+        "INSERT INTO main.${t} SELECT * FROM snap.${t} WHERE completion_cid IN seed_run".toString()
+    }.asImmutable()
 
     /** The seeded runs' InputSet wait records, which the snapshot carries in its meta. */
     private static final String SEED_INPUTSET_WAITS = """INSERT OR REPLACE INTO main.meta(key, value)
         SELECT key, value FROM snap.meta WHERE key GLOB '${INPUTSET_WAIT}*' AND substr(key, ${INPUTSET_WAIT.length() + 1}) IN seed_run""".toString()
+
+    /** The seeded runs' ItemLineage wait records. */
+    private static final String SEED_ITEMLINEAGE_WAITS = """INSERT OR REPLACE INTO main.meta(key, value)
+        SELECT key, value FROM snap.meta WHERE key GLOB '${ITEMLINEAGE_WAIT}*' AND substr(key, ${ITEMLINEAGE_WAIT.length() + 1}) IN seed_run""".toString()
 
     /**
      * Copies a member's Index Snapshot into this index (ticket 04 decision 1).
@@ -1329,8 +1335,10 @@ class Index implements Closeable {
                         update(sql, [])
                     for( String sql : SEED )
                         update(sql.replace(':member', '?'), sql.contains(':member') ? [(Object) member] : [])
-                    update(SEED_RUN_INPUTS, [])
+                    for( String sql : SEED_RUN_RECORDS )
+                        update(sql, [])
                     update(SEED_INPUTSET_WAITS, [])
+                    update(SEED_ITEMLINEAGE_WAITS, [])
                     final List<String> subjects = []
                     query('SELECT DISTINCT subject_cid FROM main.claim WHERE claim_cid IN seed_claim', []) { ResultSet rs -> subjects.add(rs.getString(1)) }
                     for( String subject : subjects )

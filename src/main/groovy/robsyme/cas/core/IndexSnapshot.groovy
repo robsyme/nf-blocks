@@ -168,13 +168,16 @@ class IndexSnapshot {
 
     /**
      * The Projects and Handoffs the member's Store Log announced, and the
-     * inputs of the runs copied (P4 plan 1.3-1.5). Their consumer rows are in
-     * COPY_CLOSURE.
+     * inputs of the runs copied (P4 plan 1.3-1.5), with their input origins and
+     * item lineage. Their consumer rows are in COPY_CLOSURE.
      */
     private static final List<String> COPY_P4 = [
         "INSERT INTO main.project SELECT * FROM src.project WHERE project_cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'project')",
         "INSERT INTO main.handoff SELECT * FROM src.handoff WHERE cid IN (SELECT cid FROM src.log_entry WHERE member = ? AND kind = 'handoff')",
         'INSERT INTO main.run_input SELECT * FROM src.run_input WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
+        'INSERT INTO main.input_origin SELECT * FROM src.input_origin WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
+        'INSERT INTO main.item_input SELECT * FROM src.item_input WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
+        'INSERT INTO main.item_task SELECT * FROM src.item_task WHERE completion_cid IN (SELECT completion_cid FROM main.run)',
     ]
 
     /**
@@ -185,6 +188,11 @@ class IndexSnapshot {
     private static final String COPY_INPUTSET_WAITS = """INSERT INTO main.meta(key, value)
         SELECT key, value FROM src.meta WHERE key GLOB '${Index.INPUTSET_WAIT}*'
           AND substr(key, ${Index.INPUTSET_WAIT.length() + 1}) IN (SELECT completion_cid FROM main.run)""".toString()
+
+    /** The copied runs' ItemLineage wait records, as COPY_INPUTSET_WAITS does for InputSets. */
+    private static final String COPY_ITEMLINEAGE_WAITS = """INSERT INTO main.meta(key, value)
+        SELECT key, value FROM src.meta WHERE key GLOB '${Index.ITEMLINEAGE_WAIT}*'
+          AND substr(key, ${Index.ITEMLINEAGE_WAIT.length() + 1}) IN (SELECT completion_cid FROM main.run)""".toString()
 
     /** Everything those runs reach, in dependency order. */
     private static final List<String> COPY_CLOSURE = [
@@ -714,8 +722,10 @@ class IndexSnapshot {
             exec(c, COPY_TRANSFERS[1])
             update(c, COPY_P4[0], [(Object) member])
             update(c, COPY_P4[1], [(Object) member])
-            exec(c, COPY_P4[2])
+            for( int i = 2; i < COPY_P4.size(); i++ )
+                exec(c, COPY_P4[i])
             exec(c, COPY_INPUTSET_WAITS)
+            exec(c, COPY_ITEMLINEAGE_WAITS)
             if( watermark != null )
                 update(c, 'INSERT INTO meta(key, value) VALUES (?, ?)', [(Object) WATERMARK_KEY, watermark])
             if( storeId != null )

@@ -101,6 +101,31 @@ class IndexSnapshotTest extends Specification {
         !rows(file, 'SELECT completion_cid FROM run')*.get(0).contains(b[0].toString())
     }
 
+    def 'a snapshot carries the runs input origins and item lineage, and nothing of runs it leaves out'() {
+        given: 'a lab run with its lineage, a lab run whose lineage has not arrived, and another member run'
+        final RetentionFixture labFixture = new RetentionFixture(labRoot)
+        final LineageFixture fixture = new LineageFixture(labFixture)
+        final Map ran = fixture.introsRun(fixture.datafiles())
+        final Map waiting = fixture.introsRun(fixture.datafiles(false), [storeLineage: false])
+        final LineageFixture sharedFixture = new LineageFixture(new RetentionFixture(sharedRoot))
+        // One input more than the lab run's, so the two runs are not the same blocks.
+        final Map other = sharedFixture.introsRun(new InputSet(LineageFixture.WHO, sharedFixture.datafiles().inputs +
+            [new InputSet.Input(InputSet.TASK, 'extra.txt', Fixtures.contentCid('extra'), 1L, null, null)]))
+        catchUp()
+
+        when:
+        final Path file = IndexSnapshot.write(index, 'lab', labRoot, 0L).path
+
+        then:
+        rows(file, 'SELECT count(*) FROM input_origin') == [[4]]
+        rows(file, "SELECT positions FROM item_input WHERE item_cid = '${ran.circle}'") == [['[0,1,2,3]']]
+        rows(file, 'SELECT count(*) FROM item_task') == [[2]]
+        rows(file, "SELECT count(*) FROM item_input WHERE completion_cid = '${other.completion}'") == [[0]]
+        rows(file, "SELECT count(*) FROM input_origin WHERE completion_cid = '${other.completion}'") == [[0]]
+        rows(file, "SELECT key, value FROM meta WHERE key GLOB 'itemlineage_wait:*'") ==
+            [["${Index.ITEMLINEAGE_WAIT}${waiting.completion}".toString(), waiting.lineageCid.toString()]]
+    }
+
     def 'the snapshot is one rollback-journal file of 4096-byte pages with the cache schema'() {
         given:
         run(lab, 'a', ['A'])
