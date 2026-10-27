@@ -236,3 +236,41 @@ test('a card stops listening once it has been connected and then removed', async
   change('cloud', none('absent'))
   assert.equal(listeners.size, before - 1)
 })
+
+test('during a refresh of a member indexed on this machine the card keeps its figures beside the progress line', async () => {
+  const at = minutesAgo(3)
+  const refreshing = (phase) => index('indexing', { mode: 'local', local: true, at, progress: { phase, done: -1, total: -1, startedAt: new Date().toISOString() } })
+  const { cardOf, change } = await page({ cloud: { index: refreshing('log') }, runningAlias: 'cloud', open: true })
+  const card = cardOf('cloud')
+  assert.match(text(card.querySelector('[data-index-progress]')), /^Reading the Store Log…/)
+  assert.match(text(card), /1\.82 TB stored/)
+  change('cloud', refreshing('snapshot'))
+  assert.match(text(card.querySelector('[data-index-progress]')), /^Building the snapshot…/)
+  assert.match(text(card), /1\.82 TB stored/, 'a progress tick does not read the figures again')
+})
+
+test('a refused click message clears once the card state changes', async () => {
+  const { cardOf, change } = await page({ cloud: { index: none('absent') }, startError: new IndexError('index_running', 'Another store is already being indexed.', 409) })
+  const card = cardOf('cloud')
+  await card.querySelector('[data-index-mode=local]').click()
+  assert.ok(card.querySelector('[data-index-error]'))
+  change('cloud', index('indexing', { mode: 'local', progress: { phase: 'listing', done: 0, total: 0, startedAt: new Date().toISOString() } }))
+  assert.equal(card.querySelector('[data-index-error]'), null)
+})
+
+test('a refused click message clears once another job starts or ends', async () => {
+  const { cardOf, change, state } = await page({ cloud: { index: none('absent') }, startError: new IndexError('index_running', 'Another store is already being indexed.', 409) })
+  const card = cardOf('cloud')
+  await card.querySelector('[data-index-mode=local]').click()
+  change('org-s3', index('snapshot', { at: minutesAgo(1) }))
+  assert.ok(card.querySelector('[data-index-error]'), 'a change elsewhere that leaves the running job alone keeps it')
+  state.runningAlias = 'org-s3'
+  change('org-s3', index('indexing', { mode: 'local', progress: { phase: 'listing', done: 0, total: 0, startedAt: new Date().toISOString() } }))
+  assert.equal(card.querySelector('[data-index-error]'), null)
+})
+
+test('a member indexed on this machine whose snapshot does not open says it could not be read', async () => {
+  const card = await cardOf('cloud', { index: local(minutesAgo(2)) })
+  assert.match(text(card), /Could not be read \(no Index Snapshot\)\./)
+  assert.doesNotMatch(text(card), /No snapshot yet/)
+})

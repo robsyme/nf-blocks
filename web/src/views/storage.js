@@ -258,27 +258,40 @@ function storeCards(ctx, viewer, open) {
       : { class: 'panel storage-card', 'data-storage-card': m.alias }, h('div', { class: 'pb' }, main, actions))
     const said = (text, attrs = {}) => h('p', { class: 'muted', 'data-storage-card-note': '', ...attrs }, text)
     const noFigures = () => said('Its snapshot leaves out storage figures.')
-    const loadFigures = () => ctx.members.explorer(m.alias).then(async (mex) => {
+    // A member served from its local snapshot has one: "No snapshot yet" would be wrong there.
+    const loadFigures = (idx) => ctx.members.explorer(m.alias).then(async (mex) => {
       const stats = await mex.storeStats()
       if (!stats) return [noFigures()]
       const people = await mex.asserterStats()
       const changes = mex.storageChanges()
       return figures(stats, yoursOf(people, viewer), changes.claims || changes.logged)
-    }).catch((e) => [said(ctx.members.status(m.alias).state !== 'no_snapshot' ? `Could not be read (${e?.message ?? e}).`
+    }).catch((e) => [said(ctx.members.status(m.alias).state !== 'no_snapshot' || servesLocal(idx) ? `Could not be read (${e?.message ?? e}).`
       : e?.older ? 'Its snapshot is older than this explorer reads; nextflow plugin nf-blocks:snapshot rewrites it.' : 'No snapshot yet.')])
 
-    let drawn = 0
     let refused = null
+    let notes = []
+    let figs = []
+    // The figures are read again only when the state, time or local flag moves, not on a progress tick.
+    let figsFor = null
+    const draw = () => body.replaceChildren(...notes, ...figs)
     const paintBody = () => {
-      const mine = ++drawn
       const idx = indexing?.stateOf(m.alias) ?? null
-      const notes = [...indexNotes(idx, m.alias), refused ? said(refused, { 'data-index-error': '' }) : null].filter(Boolean)
-      let figs = []
-      const draw = () => { if (mine === drawn) body.replaceChildren(...notes, ...figs) }
+      notes = [...indexNotes(idx, m.alias), refused ? said(refused, { 'data-index-error': '' }) : null].filter(Boolean)
       if (shown) figs = open.stats ? figures(open.stats, yoursOf(open.people, viewer), open.stale) : [noFigures()]
-      else if (opensSnapshot(idx)) { figs = [said('…')]; loadFigures().then((nodes) => { figs = nodes; draw() }) }
+      else if (!opensSnapshot(idx)) { figs = []; figsFor = null }
+      else {
+        const key = JSON.stringify([idx?.state, idx?.at, idx?.local])
+        if (key !== figsFor) {
+          figsFor = key
+          figs = [said('…')]
+          loadFigures(idx).then((nodes) => { if (figsFor === key) { figs = nodes; draw() } })
+        }
+      }
       draw()
     }
+    // A refused click's message holds until the card's state or the running job changes.
+    const seen = () => JSON.stringify([indexing?.stateOf(m.alias)?.state ?? null, indexing?.running() ?? null])
+    let refusedAt = null
     const paintActions = () => {
       const idx = indexing?.stateOf(m.alias) ?? null
       const buttons = (idx ? indexButtons(idx) : []).map(([label, mode]) => {
@@ -291,7 +304,7 @@ function storeCards(ctx, viewer, open) {
     }
     async function start(mode) {
       refused = null
-      try { await indexing.start(m.alias, mode) } catch (e) { refused = e?.message ?? String(e) }
+      try { await indexing.start(m.alias, mode) } catch (e) { refused = e?.message ?? String(e); refusedAt = seen() }
       paintBody()
       paintActions()
     }
@@ -300,11 +313,13 @@ function storeCards(ctx, viewer, open) {
     paintActions()
     if (indexing) {
       // Alive until the card has been on the page and then left it (copy.js's rule); the fake DOM of tests is never connected.
-      let seen = false
+      let connected = false
       const off = indexing.onChange((alias) => {
-        if (card.isConnected) seen = true
-        else if (seen) { off(); return }
-        if (alias === m.alias) paintBody()
+        if (card.isConnected) connected = true
+        else if (connected) { off(); return }
+        const cleared = refused !== null && seen() !== refusedAt
+        if (cleared) refused = null
+        if (alias === m.alias || cleared) paintBody()
         paintActions()
       })
     }
@@ -314,8 +329,11 @@ function storeCards(ctx, viewer, open) {
     h('p', { class: 'muted storage-caption', 'data-storage-caption': '' }, CARDS_CAPTION)]
 }
 
+/** Whether the member is served from the snapshot indexed on this machine: local, or a job on it running or failed with that one kept. */
+const servesLocal = (idx) => idx?.state === 'local' || (!!idx?.local && (idx.state === 'indexing' || idx.state === 'failed'))
+
 /** Whether a member's card reads its snapshot: no index object (an older server) means it always tries, as before. */
-const opensSnapshot = (idx) => !idx || idx.state === 'snapshot' || idx.state === 'local' || (idx.state === 'failed' && idx.local)
+const opensSnapshot = (idx) => !idx || idx.state === 'snapshot' || servesLocal(idx)
 
 /** What each index state says in its card; `snapshot` and no index object say nothing beyond the figures. */
 function indexNotes(idx, alias) {
