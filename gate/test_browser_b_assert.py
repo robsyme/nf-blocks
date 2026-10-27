@@ -111,6 +111,10 @@ class World(object):
         self.typed_input_set_schema = 2
         self.typed_origins = True       # every task input names the S2 item it read
         self.typed_item_lineage = True  # False writes item_lineage: None
+        self.typed_origin_edit = None      # callable(key, origin dict) -> list of Origins for that task input
+        self.typed_lineage_other_input_set = False   # the ItemLineage names a different InputSet
+        self.typed_positions = {}          # key -> input positions replacing the default one
+        self.typed_unlisted = None         # key whose hashes item the ItemLineage leaves out
         self.typed_lineage_tasks = {k: [("HASH", "%032x" % n)] for n, k in enumerate("ABC")}
         # B21 (layout B): the items view's filtered call on cold's aligned, run verbatim in selection-where.
         self.where_call = "channel.fromStore(run: 'lid://cold', output: 'aligned', where: [sample: 'A'])"
@@ -404,7 +408,7 @@ class World(object):
             task = {"role": "task", "name": files[k]["name"], "address": cas.Cid(files[k]["cid"]), "size": 1,
                     "sample": k, "reason": None}
             if self.typed_origins and self.typed_input_set_schema >= 2:
-                task["from"] = [origin(k)]
+                task["from"] = self.typed_origin_edit(k, origin(k)) if self.typed_origin_edit else [origin(k)]
             inputs.append(task)
         input_set = B._put_block(root, {"kind": "InputSet", "schema": self.typed_input_set_schema, "asserted_by": "gate",
                                         "inputs": inputs})
@@ -413,11 +417,13 @@ class World(object):
             "size": 1, "reason": None}}) for k in "ABC"}
         collection = B._put_block(root, {"kind": "OutputCollection", "schema": 1, "asserted_by": "gate", "name": "hashes",
                                          "items": [cas.Cid(published[k]) for k in "ABC"]})
-        derived = [{"item": cas.Cid(published[k]), "inputs": [1 + "ABC".index(k)],
+        derived = [{"item": cas.Cid(published[k]), "inputs": self.typed_positions.get(k, [1 + "ABC".index(k)]),
                     "tasks": [{"hash": h, "process": p, "tag": None} for p, h in self.typed_lineage_tasks[k]]}
-                   for k in "ABC"]
+                   for k in "ABC" if k != self.typed_unlisted]
+        other = B._put_block(root, {"kind": "InputSet", "schema": 2, "asserted_by": "gate", "inputs": inputs[:1]})
         lineage = B._put_block(root, {"kind": "ItemLineage", "schema": 1, "asserted_by": "gate",
-                                      "input_set": cas.Cid(input_set), "items": derived})
+                                      "input_set": cas.Cid(other if self.typed_lineage_other_input_set else input_set),
+                                      "items": derived})
         B._put_block(root, {"kind": "RunCompletion", "schema": self.typed_completion_schema, "asserted_by": "gate",
                             "collections": [cas.Cid(collection)], "input_set": cas.Cid(input_set), "status": "succeeded",
                             "item_lineage": cas.Cid(lineage) if self.typed_item_lineage else None})
@@ -853,6 +859,42 @@ class CheckTest(unittest.TestCase):
     def test_b18_fails_without_item_lineage(self):
         self.w.typed_item_lineage = False
         self.assertFail(18, "item_lineage")
+
+    def test_b18_fails_when_an_origin_item_is_not_in_s2(self):
+        self.w.typed_origin_edit = lambda k, o: [dict(o, item=cas.Cid(dcid("an item S2 lacks")))] if k == "A" else [o]
+        self.assertFail(18, "A.bam")
+
+    def test_b18_fails_when_an_origin_selection_is_not_s2(self):
+        self.w.typed_origin_edit = lambda k, o: [dict(o, selection=cas.Cid(self.w.s1))] if k == "B" else [o]
+        self.assertFail(18, "B.bam")
+
+    def test_b18_fails_when_an_origin_has_no_selection(self):
+        self.w.typed_origin_edit = lambda k, o: [dict(o, selection=None)] if k == "B" else [o]
+        self.assertFail(18, "B.bam")
+
+    def test_b18_fails_with_two_origins_on_one_input(self):
+        self.w.typed_origin_edit = lambda k, o: [o, dict(o, item=cas.Cid(ITEMS["B"]))] if k == "C" else [o]
+        self.assertFail(18, "C.stats")
+
+    def test_b18_fails_when_the_item_lineage_names_another_input_set(self):
+        self.w.typed_lineage_other_input_set = True
+        self.assertFail(18, "not the RunCompletion's")
+
+    def test_b18_fails_with_an_out_of_range_input_position(self):
+        self.w.typed_positions = {"A": [99]}
+        self.assertFail(18, "exactly one into the InputSet")
+
+    def test_b18_fails_with_a_doubled_input_position(self):
+        self.w.typed_positions = {"B": [2, 3]}
+        self.assertFail(18, "exactly one into the InputSet")
+
+    def test_b18_fails_when_a_hashes_item_is_missing_from_the_item_lineage(self):
+        self.w.typed_unlisted = "C"
+        self.assertFail(18, "does not list hashes item")
+
+    def test_b18_fails_with_a_malformed_task_hash(self):
+        self.w.typed_lineage_tasks["A"] = [("HASH", "AB" * 16)]
+        self.assertFail(18, "32 lowercase hex")
 
     def test_b18_fails_when_a_hashes_item_has_no_hash_task(self):
         self.w.typed_lineage_tasks["B"] = [("FASTQC", "f" * 32)]

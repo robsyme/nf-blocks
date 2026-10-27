@@ -975,6 +975,9 @@ def evaluate(root):
                 problems.append("hashes item %s has input positions %s, expected exactly one into the InputSet"
                                 % (item, d.get("inputs")))
             tasks = d.get("tasks") or []
+            bad = [t.get("hash") for t in tasks if not re.fullmatch(r"[0-9a-f]{32}", str(t.get("hash")))]
+            if bad:
+                problems.append("hashes item %s has task hash %s, expected 32 lowercase hex" % (item, bad))
             if len(tasks) != 1 or not str(tasks[0].get("process", "")).endswith("HASH"):
                 problems.append("hashes item %s has %d task(s) %s, expected 1 task whose process ends in HASH"
                                 % (item, len(tasks), [t.get("process") for t in tasks]))
@@ -1015,7 +1018,10 @@ def evaluate(root):
         with open(exit_path) as fh:
             statuses = fh.read().split()
         err_path = os.path.join(out, "cli-put.err")
-        err = open(err_path, encoding="utf-8", errors="replace").read().strip() if os.path.isfile(err_path) else ""
+        err = ""
+        if os.path.isfile(err_path):
+            with open(err_path, encoding="utf-8", errors="replace") as fh:
+                err = fh.read().strip()
         if statuses != ["0", "0"]:
             return FAIL, ("items | put exited %s, expected 0 0; put said %r (see browser-b/cli-items.err, cli-put.err)"
                           % (" ".join(statuses) or "<nothing>", err[-300:]))
