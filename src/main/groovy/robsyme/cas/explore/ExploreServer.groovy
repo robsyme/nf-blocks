@@ -95,6 +95,7 @@ class ExploreServer {
     private MemberProbe memberProbe
     private Copier copier
     private HandoffWriter handoffs
+    private IndexJobs jobs
     private PrintStream err
     /** Held by a real copy for its whole run: one at a time per server (plan 1.7). Never Put's monitor. */
     private final ReentrantLock copying = new ReentrantLock()
@@ -174,12 +175,25 @@ class ExploreServer {
      * copy in flight.
      */
     ExploreServer copies(Map config, PrintStream err) {
-        return copies({ Map request, boolean dryRun -> CopyService.execute(config, request, dryRun, err, principal) } as Copier, err)
+        return copies({ Map request, boolean dryRun ->
+            // Built as each copy starts: the members to leave out change as indexing goes on.
+            final CopyService.Indexing indexing = jobs == null ? null : new CopyService.Indexing(jobs.unindexedForCopy(), jobs.localRootsForCopy())
+            CopyService.execute(config, request, dryRun, err, principal, indexing)
+        } as Copier, err)
     }
 
     ExploreServer copies(Copier copier, PrintStream err) {
         this.copier = copier
         this.err = err
+        return this
+    }
+
+    /**
+     * Lets members.json and `/api/index` report each member's index state, and
+     * `POST /api/index` start a job. Without it none of that exists.
+     */
+    ExploreServer indexing(IndexJobs jobs) {
+        this.jobs = jobs
         return this
     }
 
@@ -284,9 +298,11 @@ class ExploreServer {
                     copy(exchange)
                 else if( exchange.requestURI.rawPath == '/api/handoff' )
                     handoff(exchange)
+                else if( exchange.requestURI.rawPath == '/api/index' )
+                    startIndex(exchange)
                 else {
                     exchange.responseHeaders.set('Allow', 'GET, HEAD')
-                    text(exchange, 405, 'only /api/put, /api/copy and /api/handoff take a POST')
+                    text(exchange, 405, 'only /api/put, /api/copy, /api/handoff and /api/index take a POST')
                 }
                 return
             }
@@ -342,6 +358,10 @@ class ExploreServer {
             bytes(exchange, 200, 'application/json', membersJson())
             return
         }
+        if( path == '/api/index' && jobs != null ) {
+            bytes(exchange, 200, 'application/json', JsonOutput.toJson([members: jobs.states()]).getBytes('UTF-8'))
+            return
+        }
         final Matcher sheet = SAMPLESHEET.matcher(path)
         if( sheet.matches() && exporter != null ) {
             samplesheet(exchange, Cid.parse(sheet.group(1)), sheet.group(2))
@@ -386,9 +406,12 @@ class ExploreServer {
         final List<Map> list = members.keySet().collect { String alias ->
             final MemberInfo info = memberInfo.get(alias) ?: new MemberInfo('local', null, true, null)
             final String unreached = unreachable.get(alias)
-            [alias: alias, writable: alias == writableAlias, base: "m/${alias}/".toString(),
+            final Map<String, Object> entry = [alias: alias, writable: alias == writableAlias, base: "m/${alias}/".toString(),
              kind: info.kind, location: info.location,
-             copy_target: info.copyTarget && unreached == null, copy_reason: unreached ?: info.copyReason] as Map
+             copy_target: info.copyTarget && unreached == null, copy_reason: unreached ?: info.copyReason] as Map<String, Object>
+            if( jobs != null )
+                entry.put('index', jobs.stateOf(alias))
+            entry as Map
         }
         final Map<String, Object> body = [members: list, write: put != null] as Map<String, Object>
         final Principal signer = principal?.get()
@@ -559,7 +582,35 @@ class ExploreServer {
             json(exchange, 500, error('copy_failed', e instanceof CopyService.Failed ? e.message : CopyErrors.describe(e, Collections.<String, String> emptyMap())))
             return
         }
+        if( !dryRun && outcome.status == 200 )
+            jobs?.copied(request.get('to') as String)
         json(exchange, outcome.status, outcome.body)
+    }
+
+    /** POST /api/index: the member and the mode, then IndexJobs' answer as JSON. */
+    private void startIndex(HttpExchange exchange) {
+        if( jobs == null || token == null ) {
+            text(exchange, 405, 'this server was started without indexing')
+            return
+        }
+        final byte[] body = admitted(exchange, COPY_TYPES, 'application/json')
+        if( body == null )
+            return
+        Object parsed
+        try {
+            parsed = parseJson(body)
+        }
+        catch( Exception e ) {
+            parsed = null
+        }
+        final Object member = parsed instanceof Map ? ((Map) parsed).get('member') : null
+        final Object mode = parsed instanceof Map ? ((Map) parsed).get('mode') : null
+        if( !(member instanceof String) || !(mode instanceof String) ) {
+            json(exchange, 400, error('bad_request', 'send {"member": "<alias>", "mode": "local" or "push"}'))
+            return
+        }
+        final IndexJobs.Answer answer = jobs.start((String) member, (String) mode)
+        json(exchange, answer.status, answer.body)
     }
 
     private static Object parseJson(byte[] body) {
