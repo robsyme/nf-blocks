@@ -103,13 +103,17 @@ class InputRecorder {
     /** Where a staged file's local path lies relative to the run's work directory. */
     enum Placement { OUTSIDE, STAGED, RUN }
 
-    /** One file a task staged: its source (the value the task was given), where Nextflow put it, and the sample of the tuple that held it. */
+    /**
+     * One file a task staged: its source (the value the task was given), where Nextflow put it, the
+     * sample of the tuple that held it, and the name it was staged under in the task directory.
+     */
     @Canonical
     @CompileStatic
     static final class Staged {
         Object source
         Path store
         String sample
+        String stageName
     }
 
     /** What reading (or not reading) one source file found. */
@@ -161,6 +165,15 @@ class InputRecorder {
     /** One entry per (role, name, sample, source). */
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>()
 
+    /** The staged files that created or matched each entry, by entry key. */
+    private final ConcurrentHashMap<String, Set<Staged>> stagedByEntry = new ConcurrentHashMap<>()
+
+    /** The fromStore items behind each cas:// source, handed in before {@link #collect}. */
+    private volatile Map<Path, Set<InputSet.Origin>> origins = Collections.emptyMap()
+
+    /** What the last {@link #collect} returned for each staged file it kept. */
+    private volatile Map<Staged, InputSet.Input> collectedByStaged = Collections.emptyMap()
+
     /**
      * The storeDir of every task recorded (as given and with symlinks followed). A file
      * under one is a task's output that Nextflow keeps outside the work directory.
@@ -200,7 +213,7 @@ class InputRecorder {
         this.params = params ?: Collections.emptyMap()
         this.hash = hash
         this.fileParams = fileParams(this.params)
-        final String input = locationText(this.params.get('input'))
+        final String input = locationText(inputParam())
         this.samplesheetName = input != null && looksLikeFile(input) ? baseName(input) : null
     }
 
@@ -212,11 +225,23 @@ class InputRecorder {
      * noted first, so a later task reading what this one stored there does
      * not count it.
      */
-    void recordTask(TaskRun task) {
+    List<Staged> recordTask(TaskRun task) {
         if( task == null )
-            return
+            return Collections.<Staged> emptyList()
         noteStoreDir(storeDirOf(task))
-        recordStaged(staged(groupsOf(task), task.inputFiles))
+        final List<Staged> staged = staged(groupsOf(task), task.inputFiles)
+        recordStaged(staged)
+        return staged
+    }
+
+    /** params.input, read only when the run declared it: a params map may fail on an unknown name. */
+    private Object inputParam() {
+        return params.containsKey('input') ? params.get('input') : null
+    }
+
+    /** Hands over the fromStore items behind each cas:// source; {@link #collect} attaches them to the inputs read from those paths. */
+    void setOrigins(Map<Path, Set<InputSet.Origin>> origins) {
+        this.origins = origins ?: Collections.<Path, Set<InputSet.Origin>> emptyMap()
     }
 
     /**
@@ -266,7 +291,7 @@ class InputRecorder {
     void recordSamplesheet() {
         if( !samplesheetSeen.compareAndSet(false, true) )
             return
-        final Object value = params.get('input')
+        final Object value = inputParam()
         final String text = locationText(value)
         if( text == null || !looksLikeFile(text) )
             return
@@ -289,26 +314,32 @@ class InputRecorder {
     }
 
     private void record(Staged s) {
+        final String key = keyOf(s)
+        if( key != null )
+            stagedByEntry.computeIfAbsent(key) { String k -> ConcurrentHashMap.<Staged> newKeySet() }.add(s)
+    }
+
+    /** Records one staged file; the key of the entry it created or matched, null when it is not an input. */
+    private String keyOf(Staged s) {
         if( !(s.source instanceof Path) )
-            return
+            return null
         final Path source = (Path) s.source
         final String name = fileNameOf(source)
         String role = roleOf(name, samplesheetName, fileParams)
         String sample = s.sample
         if( source instanceof CasPath ) {
-            addKnown(role, name, sample, source, (CasPath) source, s.store)
-            return
+            return addKnown(role, name, sample, source, (CasPath) source, s.store)
         }
         final Path store = s.store ?: source
         if( placement(store, workDirs) == Placement.RUN || placement(source, workDirs) == Placement.RUN )
-            return
+            return null
         if( storedByRun(source) )
-            return
+            return null
         if( role == InputSet.TASK && placement(source, projectDirs) != Placement.OUTSIDE ) {
             role = InputSet.ASSET
             sample = null
         }
-        addFile(role, name, sample, source, source, store)
+        return addFile(role, name, sample, source, source, store)
     }
 
     /**
@@ -320,16 +351,13 @@ class InputRecorder {
      * Nextflow staged to a remote work directory. Neither on this host by its
      * text: the file is remote, and only stat'ed.
      */
-    private void addFile(String role, String name, String sample, Path origin, Path source, Path store) {
+    private String addFile(String role, String name, String sample, Path origin, Path source, Path store) {
         final List<Path> here = new ArrayList<Path>(2)
         for( Path p : [store, source] ) {
             if( mayBeHere(p) && !here.contains(p) )
                 here.add(p)
         }
-        if( here.isEmpty() )
-            addRemote(role, name, sample, origin, store)
-        else
-            addLocal(role, name, sample, origin, here)
+        return here.isEmpty() ? addRemote(role, name, sample, origin, store) : addLocal(role, name, sample, origin, here)
     }
 
     /** Whether a path lies under the storeDir of a task recorded so far. */
@@ -344,8 +372,8 @@ class InputRecorder {
      * /fusion the file is remote, and the real path is only stat'ed. A path
      * with no real path is judged by its stat alone ({@link #unresolved}).
      */
-    private void addLocal(String role, String name, String sample, Path origin, List<Path> here) {
-        add(role, name, sample, origin, 'local:' + here[0], { Job job ->
+    private String addLocal(String role, String name, String sample, Path origin, List<Path> here) {
+        return add(role, name, sample, origin, 'local:' + here[0], { Job job ->
             Path fused = null
             for( Path candidate : here ) {
                 final Path real = realPathOrNull(candidate)
@@ -413,8 +441,8 @@ class InputRecorder {
     }
 
     /** A file only remote storage holds: never opened; its size from a stat on the pool, or none. */
-    private void addRemote(String role, String name, String sample, Path origin, Path file) {
-        add(role, name, sample, origin, 'remote:' + file.toUri(), { Job job -> statRemote(file, name, job) })
+    private String addRemote(String role, String name, String sample, Path origin, Path file) {
+        return add(role, name, sample, origin, 'remote:' + file.toUri(), { Job job -> statRemote(file, name, job) })
     }
 
     private Addressed statRemote(Path file, String name, Job job) {
@@ -435,8 +463,8 @@ class InputRecorder {
      * address; anything else (a coordinate, a leaf of an item) is resolved
      * through the provider's attributes, whose file key is the address.
      */
-    private void addKnown(String role, String name, String sample, Path origin, CasPath path, Path copy) {
-        add(role, name, sample, origin, 'cas:' + path, { Job job ->
+    private String addKnown(String role, String name, String sample, Path origin, CasPath path, Path copy) {
+        return add(role, name, sample, origin, 'cas:' + path, { Job job ->
             final Long copySize = copy != null && mayBeHere(copy) ? sizeOrNull(copy) : null
             if( path.isStoreUri() && path.segments.size() <= 1 && path.cid().isRaw() )
                 return new Addressed(path.cid(), copySize != null ? copySize : sizeOrNull(path), null)
@@ -456,14 +484,16 @@ class InputRecorder {
     }
 
     /** Queues {@code work} once per source key; every entry naming that source shares the job. */
-    private void add(String role, String name, String sample, Path origin, String sourceKey, Closure<Addressed> work) {
+    private String add(String role, String name, String sample, Path origin, String sourceKey, Closure<Addressed> work) {
         if( entries.containsKey(entryKey(role, name, sample, sourceKey)) )
-            return
-        put(role, name, sample, origin, sourceKey, jobs.computeIfAbsent(sourceKey) { String k -> submit(name, work) })
+            return entryKey(role, name, sample, sourceKey)
+        return put(role, name, sample, origin, sourceKey, jobs.computeIfAbsent(sourceKey) { String k -> submit(name, work) })
     }
 
-    private void put(String role, String name, String sample, Path origin, String sourceKey, Job job) {
-        entries.putIfAbsent(entryKey(role, name, sample, sourceKey), new Entry(role, name, sample, origin, job))
+    private String put(String role, String name, String sample, Path origin, String sourceKey, Job job) {
+        final String key = entryKey(role, name, sample, sourceKey)
+        entries.putIfAbsent(key, new Entry(role, name, sample, origin, job))
+        return key
     }
 
     private static String entryKey(String role, String name, String sample, String sourceKey) {
@@ -535,9 +565,12 @@ class InputRecorder {
                 // Past the deadline the storeDir counts as given only.
             }
         }
+        final Map<Path, Set<InputSet.Origin>> originsOf = origins
         final List<InputSet.Input> out = new ArrayList<InputSet.Input>(entries.size())
+        final Map<String, InputSet.Input> byKey = new LinkedHashMap<String, InputSet.Input>()
         int abandoned = 0
-        for( Entry e : entries.values() ) {
+        for( Map.Entry<String, Entry> kept : entries.entrySet() ) {
+            final Entry e = kept.value
             if( storedByRun(e.origin) )
                 continue
             final Future<Addressed> result = e.job.result
@@ -558,7 +591,12 @@ class InputRecorder {
                 abandoned++
                 a = new Addressed(null, e.job.size, InputSet.UNFINISHED)
             }
-            out.add(new InputSet.Input(e.role, e.name, a.address, a.size, e.sample, a.reason))
+            InputSet.Input input = new InputSet.Input(e.role, e.name, a.address, a.size, e.sample, a.reason)
+            final Set<InputSet.Origin> from = e.origin == null ? null : originsOf.get(e.origin)
+            if( from )
+                input = input.withFrom(from)
+            out.add(input)
+            byKey.put(kept.key, input)
         }
         // A remote params.input is never read, but a task may stage it (Nextflow downloads it into
         // stage-*), and that local copy is hashed: then it stands for the samplesheet, and the
@@ -568,11 +606,29 @@ class InputRecorder {
             if( i.role == InputSet.SAMPLESHEET && i.address != null )
                 addressedSheets.add(i.name)
         out.removeAll { InputSet.Input i -> i.role == InputSet.SAMPLESHEET && i.address == null && i.reason == InputSet.REMOTE && addressedSheets.contains(i.name) }
+        final Set<InputSet.Input> returned = Collections.newSetFromMap(new IdentityHashMap<InputSet.Input, Boolean>())
+        returned.addAll(out)
+        final Map<Staged, InputSet.Input> byStaged = new LinkedHashMap<Staged, InputSet.Input>()
+        for( Map.Entry<String, InputSet.Input> k : byKey.entrySet() ) {
+            if( !returned.contains(k.value) )
+                continue
+            for( Staged s : stagedByEntry.getOrDefault(k.key, Collections.<Staged> emptySet()) )
+                byStaged.put(s, k.value)
+        }
+        collectedByStaged = byStaged
         leftUnfinished = abandoned
         final long waited = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
         log.info("nf-blocks: ${out.size()} input(s) recorded; ${hashedFiles.get()} file(s), ${hashedBytes.get()} bytes hashed; " +
             "waited ${waited} ms for inputs at completion${abandoned ? ", ${abandoned} left unfinished" : ''}")
         return out
+    }
+
+    /**
+     * Each staged file that became a kept input, to the exact Input the last {@link #collect} returned
+     * for it. A file left out (under the run's work dir or a storeDir, not a Path) is absent.
+     */
+    Map<Staged, InputSet.Input> getCollectedByStaged() {
+        return collectedByStaged
     }
 
     /** How many inputs the last {@link #collect} gave up on at its deadline (reason "unfinished"). */
@@ -711,10 +767,10 @@ class InputRecorder {
                     ids.add(samples[i])
             }
             if( ids.isEmpty() )
-                out.add(new Staged(source, holder.storePath, null))
+                out.add(new Staged(source, holder.storePath, null, holder.stageName))
             else
                 for( String id : ids )
-                    out.add(new Staged(source, holder.storePath, id))
+                    out.add(new Staged(source, holder.storePath, id, holder.stageName))
         }
         return out
     }

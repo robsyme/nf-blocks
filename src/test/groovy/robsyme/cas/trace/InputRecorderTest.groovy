@@ -502,6 +502,104 @@ class InputRecorderTest extends Specification {
         hash << [true, false]
     }
 
+    private Path casPath(Cid cid, String name) {
+        return new CasFileSystemProvider().getPath(URI.create("cas://${cid}/${name}"))
+    }
+
+    private Cid blockOf(String name, String text) {
+        return Hashing.hashRaw(file("blocks/${name}", text))
+    }
+
+    def 'a cas:// input from fromStore lists its origins'() {
+        given:
+        Cid dat = blockOf('dat', 'dev')
+        Cid devItem = blockOf('item', 'item')
+        Cid peopleColl = blockOf('coll', 'people')
+        Cid sel = blockOf('sel', 'select')
+        Path path = casPath(dat, 'Dev_Patel.dat')
+        InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), [:], true)
+        InputRecorder.Staged s = new InputRecorder.Staged(path, tempDir.resolve('work/ab/cdef/Dev_Patel.dat'), 'Dev', 'Dev_Patel.dat')
+        recorder.recordStaged([s])
+        recorder.origins = [(path): [new InputSet.Origin(devItem, peopleColl, sel)] as Set]
+
+        when:
+        List<InputSet.Input> inputs = recorder.collect(-1)
+
+        then:
+        inputs*.from == [[new InputSet.Origin(devItem, peopleColl, sel)]]
+        recorder.collectedByStaged[s].is(inputs[0])
+
+        cleanup:
+        recorder.close()
+    }
+
+    def 'two directory paths from two items stay two inputs'() {
+        given: 'cas://<item1>/qc and cas://<item2>/qc, each with its own origin'
+        Cid c1 = blockOf('qc1', 'one')
+        Cid c2 = blockOf('qc2', 'two')
+        Path p1 = casPath(c1, 'qc')
+        Path p2 = casPath(c2, 'qc')
+        InputSet.Origin o1 = new InputSet.Origin(blockOf('i1', 'item1'), null, null)
+        InputSet.Origin o2 = new InputSet.Origin(blockOf('i2', 'item2'), null, null)
+        InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), [:], true)
+        recorder.recordStaged([staged(p1, p1, null), staged(p2, p2, null)])
+        recorder.origins = [(p1): [o1] as Set, (p2): [o2] as Set]
+
+        when:
+        InputSet set = new InputSet('rob', recorder.collect(-1))
+
+        then:
+        set.inputs.size() == 2
+        set.inputs*.from.collect { it[0] } as Set == [o1, o2] as Set
+
+        cleanup:
+        recorder.close()
+    }
+
+    def 'a file under the run work dir is not in collectedByStaged'() {
+        given:
+        InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), [:], true)
+        InputRecorder.Staged intermediate = new InputRecorder.Staged(
+            tempDir.resolve('work/aa/bbbb/Dev_intro.txt'), tempDir.resolve('work/cc/dddd/Dev_intro.txt'), 'Dev')
+        recorder.recordStaged([intermediate])
+
+        expect:
+        recorder.collect(-1) == []
+        !recorder.collectedByStaged.containsKey(intermediate)
+
+        cleanup:
+        recorder.close()
+    }
+
+    def 'recordTask returns what it staged'() {
+        given:
+        Path reads = file('data/S1.fq', 'ACGT')
+        InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), [:], true)
+        TaskRun task = storeTask([reads], null)
+
+        expect:
+        recorder.recordTask(task) == [new InputRecorder.Staged(reads, reads.toRealPath(), null, reads.fileName.toString())]
+        recorder.recordTask(null) == []
+
+        cleanup:
+        recorder.close()
+    }
+
+    def 'a params map without input is never asked for it'() {
+        given:
+        Map params = Mock(Map) { containsKey('input') >> false; entrySet() >> ([] as Set) }
+
+        when:
+        InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), null, params, true)
+        recorder.recordSamplesheet()
+
+        then:
+        0 * params.get('input')
+
+        cleanup:
+        recorder.close()
+    }
+
     def 'with cas.inputs.hash = false a local input is listed with its size, unaddressed'() {
         given:
         Path reads = file('data/S1_1.fq', 'ACGT')
