@@ -483,6 +483,85 @@ class IndexJobsTest extends Specification {
         new LocalSnapshotStorage(cloudRoot).base(tmp).runs == 2
     }
 
+    /** cloud in a bucket with two logged runs; the session is opened over it once, so its store-id can be made. */
+    private Map s3Cloud() {
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        final S3BlockStore cloud = new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp)
+        logRun(cloud, 'cloud-1')
+        logRun(cloud, 'cloud-2')
+        open(cfg)
+        return [bucket: bucket, cfg: cfg, cloud: cloud]
+    }
+
+    def 'Index and push over an S3 member own snapshot from another incarnation replaces it'() {
+        given: 'cloud has a store-id, and its own snapshot was written for another id'
+        final Map s3 = s3Cloud()
+        final String id = session.ensureStoreId('cloud')
+        final String otherId = StoreIds.newId()
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        other.reconcileStoreIds([cloud: otherId], { String a, String w -> true })
+        other.catchUp(s3.cloud as BlockStore, StoreLog.of(s3.cloud as BlockStore), 'cloud')
+        assert IndexSnapshot.write(other, 'cloud', session.snapshotsOf('cloud'), 0L, null, tmp, otherId).written
+        open(s3.cfg as CasConfig)
+        assert (jobs.stateOf('cloud').reason as String).startsWith('written for another incarnation')
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'snapshot'
+        session.snapshotsOf('cloud').base(tmp).storeId == id
+    }
+
+    def 'Index and push over an S3 member own snapshot from an earlier incarnation that lists more runs replaces it'() {
+        given: 'its own snapshot has no store_id, three runs, and a watermark its Store Log lacks'
+        final Map s3 = s3Cloud()
+        final LocalBlockStore elsewhere = new LocalBlockStore(tmp.resolve('elsewhere'), 'cloud', true)
+        (1..3).each { logRun(elsewhere, "old-${it}".toString()) }
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        other.catchUp(elsewhere, StoreLog.of(elsewhere), 'cloud')
+        assert IndexSnapshot.write(other, 'cloud', session.snapshotsOf('cloud'), 0L, null, tmp).written
+        open(s3.cfg as CasConfig)
+        assert (jobs.stateOf('cloud').reason as String).contains('earlier incarnation')
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'snapshot'
+        session.snapshotsOf('cloud').base(tmp).runs == 2
+    }
+
+    def 'Push to store over an S3 member own snapshot from another writer of this incarnation is still refused'() {
+        given: 'cloud indexed here, then another writer pushes a snapshot of this incarnation with more runs'
+        final Map s3 = s3Cloud()
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        final String id = session.ensureStoreId('cloud')
+        (s3.cloud as S3BlockStore).putDagCbor(Fixtures.runCompletion((s3.cloud as S3BlockStore).putDagCbor(Fixtures.runManifest(run_name: 'cloud-3', nf_run_hash: 'cloud-3')), []))
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        other.reconcileStoreIds([cloud: id], { String a, String w -> true })
+        other.catchUp(s3.cloud as BlockStore, StoreLog.of(s3.cloud as BlockStore), 'cloud')
+        assert IndexSnapshot.write(other, 'cloud', session.snapshotsOf('cloud'), 0L, null, tmp, id).written
+        final String before = session.snapshotsOf('cloud').base(tmp).tag
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'failed'
+        jobs.stateOf('cloud').reason == "the store's own snapshot lists more runs than this index, so it was kept"
+        session.snapshotsOf('cloud').base(tmp).tag == before
+    }
+
     def 'an S3 member whose reads are refused ends failed with the credentials wording'() {
         given: 'cloud in a bucket whose block reads are refused once a job has listed them'
         final RefusingS3 bucket = new RefusingS3('member-bucket')

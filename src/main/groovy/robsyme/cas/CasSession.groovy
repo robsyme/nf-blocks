@@ -685,6 +685,11 @@ class CasSession {
     static final String UNREADABLE = 'unreadable'
 
     String ownSnapshotUnusable(String alias, Index index) {
+        return ownSnapshotUnusable(alias, index.storeIdOf(alias))
+    }
+
+    /** As {@link #ownSnapshotUnusable(String, Index)}, given the member's id as the cache records it, so no cache is read here. */
+    String ownSnapshotUnusable(String alias, String memberId) {
         final SnapshotStorage storage = snapshotsOf(alias)
         final BlockStore member = member(alias)
         if( storage == null || member == null )
@@ -693,7 +698,6 @@ class CasSession {
             final SnapshotBase base = storage.base(config.tmpDir)
             if( base == null )
                 return 'absent'
-            final String memberId = index.storeIdOf(alias)
             if( base.storeId != null && memberId != null && base.storeId != memberId )
                 return Index.otherIncarnation(base.storeId, memberId)
             if( base.storeId == null && base.watermark != null && !StoreLog.of(member).has(base.watermark) )
@@ -729,8 +733,18 @@ class CasSession {
      * without the page (spec §6.5). {@code storeId} is {@link #ensureStoreId}'s.
      */
     IndexSnapshot.Result pushMemberSnapshot(Index index, String alias, SnapshotBase base, String storeId) {
+        return pushMemberSnapshot(index, alias, base, storeId, false)
+    }
+
+    /**
+     * As the 4-argument push; with {@code replacing}, {@code base} is an own
+     * snapshot of another incarnation that the push replaces, so the guards
+     * that judge it (watermark, run count) are skipped as on a rebuild, while
+     * the write still lands only over that version of it.
+     */
+    IndexSnapshot.Result pushMemberSnapshot(Index index, String alias, SnapshotBase base, String storeId, boolean replacing) {
         final BlockStore member = knownMember(alias)
-        return IndexSnapshot.write(index, alias, snapshotsOf(alias), 0L, base, config.tmpDir, storeId, false, sweepGraceMillis(),
+        return IndexSnapshot.write(index, alias, snapshotsOf(alias), 0L, base, config.tmpDir, storeId, replacing, sweepGraceMillis(),
             presence(member), sweepLockOf(member))
     }
 

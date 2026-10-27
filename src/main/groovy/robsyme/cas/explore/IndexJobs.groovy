@@ -479,7 +479,8 @@ class IndexJobs {
         final BlockStore member = session.member(alias)
         final StoreLog storeLog = StoreLog.of(member)
         // Taken before the scan, so the push's guard covers whatever is written meanwhile.
-        final SnapshotBase base = push ? pushBase(alias) : null
+        final SnapshotBase base = push ? session.snapshotsOf(alias).base(tmp) : null
+        final boolean replacing = push && replacesIncarnation(alias)
         final String storeId = push ? session.ensureStoreId(alias) : StoreIds.read(member)
         if( push )
             adoptStoreId(alias, storeId)
@@ -513,7 +514,7 @@ class IndexJobs {
                 return
             }
             progress.report(IndexProgress.PUSH, -1L, -1L)
-            pushed(run, session.pushMemberSnapshot(scratch, alias, base, storeId))
+            pushed(run, session.pushMemberSnapshot(scratch, alias, base, storeId, replacing))
         }
         finally {
             scratch?.close()
@@ -525,7 +526,8 @@ class IndexJobs {
     /** Push to store on a member the cache holds: top up, then write its snapshot from explore's cache, with no scan. */
     private void pushHeld(Run run, IndexProgress progress) {
         final String alias = run.alias
-        final SnapshotBase base = pushBase(alias)
+        final SnapshotBase base = session.snapshotsOf(alias).base(session.config.tmpDir)
+        final boolean replacing = replacesIncarnation(alias)
         final String storeId = session.ensureStoreId(alias)
         adoptStoreId(alias, storeId)
         progress.report(IndexProgress.LOG, -1L, -1L)
@@ -533,7 +535,7 @@ class IndexJobs {
         progress.report(IndexProgress.PUSH, -1L, -1L)
         final Index own = session.openIndex()
         try {
-            pushed(run, session.pushMemberSnapshot(own, alias, base, storeId))
+            pushed(run, session.pushMemberSnapshot(own, alias, base, storeId, replacing))
         }
         finally {
             own.close()
@@ -586,14 +588,17 @@ class IndexJobs {
     }
 
     /**
-     * What a push guards the member's own snapshot as: none when that snapshot
-     * is from another incarnation, which the explorer would not use and the
-     * push is there to replace.
+     * True when the member's own snapshot is from another incarnation, which
+     * the explorer would not use and a push is there to replace: the push
+     * skips the guards that judge it and still writes only over it. The
+     * cache is read under Put; the snapshot's HEAD is not.
      */
-    private SnapshotBase pushBase(String alias) {
-        if( Index.isIncarnationReason(session.ownSnapshotUnusable(alias, shared)) )
-            return null
-        return session.snapshotsOf(alias).base(session.config.tmpDir)
+    private boolean replacesIncarnation(String alias) {
+        final String memberId
+        synchronized( putLock ) {
+            memberId = shared.storeIdOf(alias)
+        }
+        return Index.isIncarnationReason(session.ownSnapshotUnusable(alias, memberId))
     }
 
     private void indexedLocally(Run run) {
