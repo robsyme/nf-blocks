@@ -32,7 +32,8 @@ const leaf = (name, address) => ({ kind: 'Leaf', name, size: 10, address })
 const TITLES = { [INTRO_DEV]: 'Dev', [CIRCLE]: 'circle', ...Object.fromEntries(PEOPLE_ITEMS.map(([n, c]) => [c, n])) }
 
 /** The W2 shape for the spec's consumer: `intros` items read people items picked by Selection `friends`. */
-function lineageEx({ runs = [CONSUMER], collection = PEOPLE } = {}) {
+/** `reads(cid)` says whether this member can read the item block (the open member's probe). */
+function lineageEx({ runs = [CONSUMER], collection = PEOPLE, reads = () => true } = {}) {
   const origin = (item_cid) => ({ item_cid, collection_cid: collection, selection_cid: FRIENDS })
   const inputsOf = (cid) => cid === CIRCLE
     ? PEOPLE_ITEMS.map(([n, c], position) => ({ position, role: 'path', name: `${n}.dat`, address: DEV_DAT, size: 10, sample: null, origins: [origin(c)] }))
@@ -43,6 +44,7 @@ function lineageEx({ runs = [CONSUMER], collection = PEOPLE } = {}) {
       return runs.filter(r => !completion || r === completion).sort().map(r => ({ completion_cid: r, source: 'snapshot', inputs: inputsOf(cid) }))
     },
     item: async (coll, cid) => {
+      if (!reads(cid)) throw Object.assign(new Error('missing'), { code: 'block_missing' })
       const title = TITLES[cid]
       return { cid, value: {}, view: { id: title }, state: claimState([]), leaves: [leaf(`${title}.dat`, DEV_DAT)] }
     },
@@ -58,14 +60,19 @@ function lineageEx({ runs = [CONSUMER], collection = PEOPLE } = {}) {
   return ex
 }
 
-function ctxWith({ held = {}, hrefIn = (alias, h) => h } = {}) {
+/** `members` in members.json order; `open` is the open member. Presence answers as createPresence does: the open member reads held unless hereHeld is null with several members, then it answers from `held`. */
+function ctxWith({ held = {}, hrefIn = (alias, h) => h, members = ['roblab', 'B'], open = 'roblab' } = {}) {
   const fake = lineageEx()
-  const stateOf = (cid) => ['roblab', 'B'].map(alias => ({ alias, key: alias === 'B' ? 'b' : 'a', here: alias === 'roblab', state: (held[cid] ?? []).includes(alias) ? 'held' : 'not' }))
+  const stateOf = (cid, { hereHeld = true } = {}) => members.map(alias => {
+    const here = alias === open
+    const state = here && (members.length < 2 || hereHeld !== null) ? (hereHeld === false ? 'not' : 'held') : (held[cid] ?? []).includes(alias) ? 'held' : 'not'
+    return { alias, key: alias === 'B' ? 'b' : 'a', here, state }
+  })
   return { tray: new Tray(null), rerender: () => {}, trayChanged: () => {}, progress: () => {}, use: () => {}, mark: () => {},
-    store: { name: 'roblab', key: 'a', hrefIn },
-    members: { primary: 'roblab', list: [{ alias: 'roblab' }, { alias: 'B' }], explorer: async () => fake },
-    presence: { open: 'roblab', several: true, states: async (cid) => stateOf(cid), now: stateOf, dots: () => globalThis.document.createElement('span') },
-    write: { available: true, here: true, writable: 'roblab', hrefFor: (h) => h, writer: {}, run: async (status, fn) => { await fn() } } }
+    store: { name: open, key: 'a', hrefIn },
+    members: { primary: open, list: members.map(alias => ({ alias })), explorer: async () => fake },
+    presence: { open, several: members.length > 1, states: async (cid, o) => stateOf(cid, o), now: stateOf, dots: () => globalThis.document.createElement('span') },
+    write: { available: true, here: true, writable: open, hrefFor: (h) => h, writer: {}, run: async (status, fn) => { await fn() } } }
 }
 
 async function page(ex, collection, itemCid, ctx) {
@@ -97,12 +104,12 @@ test('circle shows four upstream nodes', async () => {
 
 test('an upstream item held only in member B links there with ?member=B', async () => {
   const ctx = ctxWith({ held: { [PEOPLE_DEV]: ['B'] }, hrefIn: (alias, h) => `?member=${alias}${h}` })
-  const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctx)
+  const node = await page(lineageEx({ reads: c => c !== PEOPLE_DEV }), CONSUMER_INTROS, INTRO_DEV, ctx)
   assert.ok(hrefs(node).includes(`?member=B#/item/${PEOPLE}/${PEOPLE_DEV}`))
 })
 
 test('held nowhere: short CID, "not in any store here", no link; the file node is dashed', async () => {
-  const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: {} }))
+  const node = await page(lineageEx({ reads: c => c === INTRO_DEV }), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: {} }))
   const first = nodesOf(node)[0]
   assert.match(first.textContent, /not in any store here/)
   assert.equal(first.querySelectorAll('a').some(a => a.getAttribute('href').includes('#/item/')), false)
@@ -145,4 +152,29 @@ test('an input with no Origin shows its file only', async () => {
   ex.itemLineage = async (...a) => (await lineage(...a)).map(r => ({ ...r, inputs: r.inputs.map(i => ({ ...i, origins: [] })) }))
   const node = await page(ex, CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [DEV_DAT]: ['roblab'] } }))
   assert.deepEqual(nodesOf(node).map(n => n.textContent), ['Dev_Patel.dat', 'intros · Dev'])
+})
+
+test('both members hold the upstream item: the link stays in the open member even when it is listed second', async () => {
+  const ctx = ctxWith({ members: ['B', 'roblab'], held: { [PEOPLE_DEV]: ['B', 'roblab'] }, hrefIn: (alias, h) => (alias === 'roblab' ? h : `?member=${alias}${h}`) })
+  const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctx)
+  assert.ok(hrefs(node).includes(`#/item/${PEOPLE}/${PEOPLE_DEV}`))
+  assert.equal(hrefs(node).some(h => h.startsWith('?member=B#/item/')), false)
+})
+
+test('a file only member B holds is not dashed; one no member holds is', async () => {
+  const only = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'], [DEV_DAT]: ['B'] } }))
+  assert.equal(nodesOf(only).filter(n => n.classes().includes('ext')).length, 0)
+  const none = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'] } }))
+  assert.equal(nodesOf(none).filter(n => n.classes().includes('ext')).length, 1)
+})
+
+test('an Origin repeated across inputs is read once', async () => {
+  const ex = lineageEx()
+  const lineage = ex.itemLineage
+  ex.itemLineage = async (...a) => (await lineage(...a)).map(r => ({ ...r, inputs: r.inputs.concat(r.inputs.map(i => ({ ...i, position: 1, name: 'again.dat' }))) }))
+  let reads = 0
+  const item = ex.item
+  ex.item = async (coll, cid) => { if (cid === PEOPLE_DEV) reads++; return item(coll, cid) }
+  await page(ex, CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'] } }))
+  assert.equal(reads, 1)
 })

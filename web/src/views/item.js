@@ -198,7 +198,7 @@ async function originNode(ex, ctx, pres, origin) {
   const coll = collection ?? '-'
   const probe = await Promise.resolve(ex.item(coll, itemCid)).catch(() => null)
   const states = await pres.states(itemCid, { hereHeld: probe !== null }).catch(() => [])
-  const holder = states.find(s => s.state === 'held')?.alias ?? null
+  const holder = (states.find(s => s.here && s.state === 'held') ?? states.find(s => s.state === 'held'))?.alias ?? null
   const reader = !holder || holder === pres.open ? ex : await Promise.resolve(ctx.members?.explorer?.(holder)).catch(() => null) ?? ex
   const it = !holder ? null : reader === ex ? probe : await Promise.resolve(reader.item(coll, itemCid)).catch(() => null)
   const label = collection ? await Promise.resolve(reader.runLabel(collection)).catch(() => null) : null
@@ -214,9 +214,15 @@ async function originNode(ex, ctx, pres, origin) {
 }
 
 /** An input's upstream nodes, one per Origin, then the file's own node (dashed when no member holds it). */
-async function inputNodes(ex, ctx, pres, input) {
-  const upstream = await Promise.all((input.origins ?? []).map(o => originNode(ex, ctx, pres, o)))
-  const held = input.address ? (await pres.states(input.address).catch(() => [])).some(s => s.state === 'held') : false
+async function inputNodes(ex, ctx, pres, input, seen) {
+  // The same (item, run, Selection) is read once, however many inputs name it.
+  const once = (o) => {
+    const key = `${o.item_cid} ${o.collection_cid} ${o.selection_cid}`
+    if (!seen.has(key)) seen.set(key, originNode(ex, ctx, pres, o))
+    return seen.get(key)
+  }
+  const upstream = await Promise.all((input.origins ?? []).map(once))
+  const held = input.address ? (await pres.states(input.address, { hereHeld: null }).catch(() => [])).some(s => s.state === 'held') : false
   const name = input.name ?? shortCid(input.address)
   return [...upstream, { text: name, href: input.address ? `#/content/${input.address}` : null, ext: !held }]
 }
@@ -330,7 +336,8 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const lineageRuns = collectionCid === '-' || from?.completion
     ? await Promise.resolve(ex.itemLineage?.(itemCid, collectionCid === '-' ? null : from.completion)).catch(() => []) ?? []
     : []
-  const chains = await Promise.all(lineageRuns.map(async run => ({ run, nodes: (await Promise.all(run.inputs.map(i => inputNodes(ex, ctx, pres, i)))).flat() })))
+  const seen = new Map()
+  const chains = await Promise.all(lineageRuns.map(async run => ({ run, nodes: (await Promise.all(run.inputs.map(i => inputNodes(ex, ctx, pres, i, seen)))).flat() })))
   const groups = chains.length < 2 ? null : await Promise.all(chains.map(async ({ run, nodes }) => {
     const identity = await Promise.resolve(ex.runIdentity?.(run.completion_cid)).catch(() => null)
     return h('div', { 'data-lineage-run': run.completion_cid }, runFact(identity, run.completion_cid), thread([...unpublished, ...nodes, self]))
