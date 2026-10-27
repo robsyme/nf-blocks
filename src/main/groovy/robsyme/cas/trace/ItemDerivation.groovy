@@ -40,10 +40,26 @@ class ItemDerivation {
         final Path workDir
         final List<InputRecorder.Staged> staged
 
+        /** Each staged file by where Nextflow linked it in the work dir, built on the walk's first look. */
+        private Map<Path, List<InputRecorder.Staged>> byLink
+
         Noted(ItemLineage.TaskRef ref, Path workDir, List<InputRecorder.Staged> staged) {
             this.ref = ref
             this.workDir = workDir
             this.staged = staged
+        }
+
+        /** The staged files linked at {@code file}, empty when it is not a staged link; one pass over the staged list per task. */
+        List<InputRecorder.Staged> linkedAt(Path file) {
+            if( byLink == null ) {
+                final Map<Path, List<InputRecorder.Staged>> links = new HashMap<Path, List<InputRecorder.Staged>>()
+                for( InputRecorder.Staged s : staged ) {
+                    if( s.stageName != null )
+                        links.computeIfAbsent(workDir.resolve(s.stageName).normalize(), { Path p -> new ArrayList<InputRecorder.Staged>() }).add(s)
+                }
+                byLink = links
+            }
+            return byLink.get(file) ?: Collections.<InputRecorder.Staged> emptyList()
         }
     }
 
@@ -156,7 +172,7 @@ class ItemDerivation {
             final Step step = pending.pop()
             final Noted task = step.task
             final Path file = step.file
-            final List<InputRecorder.Staged> picked = task.staged.findAll { InputRecorder.Staged s -> stagedAt(task, s) == file }
+            final List<InputRecorder.Staged> picked = task.linkedAt(file)
             if( !walk.visited.add(task.ref.hash + '\u0000' + (picked ? file.toString() : '*')) )
                 continue
             for( InputRecorder.Staged s : picked ?: task.staged ) {
@@ -173,11 +189,6 @@ class ItemDerivation {
                     pending.push(new Step(upstream, upstreamFile))
             }
         }
-    }
-
-    /** Where Nextflow linked a staged file in the task's work dir, or null when it has no stage name. */
-    private static Path stagedAt(Noted task, InputRecorder.Staged s) {
-        return s.stageName == null ? null : task.workDir.resolve(s.stageName).normalize()
     }
 
     /** The task whose work dir holds {@code file}, nearest first, or null. */
