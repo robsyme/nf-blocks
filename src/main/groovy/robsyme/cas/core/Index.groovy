@@ -1241,14 +1241,20 @@ class Index implements Closeable {
      * Indexes {@code member} from every block, telling {@code progress} how
      * far it has got (background store indexing, spec §6.3): the listing,
      * each metadata block read, each record ingested, then the Store Log.
-     * Unlike catch-up's scan, a block that cannot be read stops it, so a
-     * member whose reads start failing part way (expired credentials) is
-     * never left marked as indexed in part; one that reads but does not
-     * decode is skipped. Whatever {@code progress} throws stops it too. Only
-     * at the end does one transaction set the watermark and `block_scan`.
+     * Unlike catch-up's scan, a block that cannot be read stops it, while
+     * listing, reading or ingesting, so a member whose reads start failing
+     * part way (expired credentials) is never left marked as indexed in part
+     * (spec §4). A block that is absent is not a failure: one listed but gone
+     * by its read (a sweep) is skipped, and one a record names is `missing`,
+     * as in catch-up. One that reads but does not decode is skipped. Whatever
+     * {@code progress} throws stops it too. Only at the end does one
+     * transaction set the watermark and `block_scan`.
      */
     void indexMember(BlockStore store, StoreLog storeLog, String member, BlockStore holders, IndexProgress progress) throws IOException {
-        final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS, progress)
+        // The ingest paths keep going past a read that fails, as catch-up needs; this one
+        // remembers the first such failure and indexMember rethrows it after each step.
+        final ReadFailures reads = new ReadFailures(store)
+        final Map<String, List<Cid>> found = blocksOfKinds(reads, SCANNED_KINDS, progress)
         long total = 0L
         for( List<Cid> cids : found.values() )
             total += cids.size()
@@ -1256,24 +1262,85 @@ class Index implements Closeable {
         progress.report(IndexProgress.INGESTING, done, total)
         for( String kind : SCANNED_KINDS ) {
             for( Cid cid : found.get(kind) ) {
-                ingestLogged(store, SCANNED_LOG_KINDS.get(kind), cid, member, holders)
+                ingestLogged(reads, SCANNED_LOG_KINDS.get(kind), cid, member, holders)
+                reads.rethrow()
                 progress.report(IndexProgress.INGESTING, ++done, total)
             }
         }
         progress.report(IndexProgress.LOG, -1L, -1L)
-        retryMissingLogged(store, member, holders)
-        retryMissingContent(store)
-        retryMissingInputSets(store, member)
-        retryMissingItemLineages(store, member)
+        retryMissingLogged(reads, member, holders)
+        retryMissingContent(reads)
+        retryMissingInputSets(reads, member)
+        retryMissingItemLineages(reads, member)
+        reads.rethrow()
         final List<StoreLogEntry> entries = storeLog.entriesSince(null)
         // entriesSince is newest first; ingest in the order they were written.
-        for( int i = entries.size() - 1; i >= 0; i-- )
-            ingestEntry(store, entries[i], member, holders)
+        for( int i = entries.size() - 1; i >= 0; i-- ) {
+            ingestEntry(reads, entries[i], member, holders)
+            reads.rethrow()
+        }
         final String scanned = total == 0L ? SCANNED_EMPTY : 'done'
         withTransaction {
             if( entries )
                 setMeta(watermarkKey(member), entries[0].name)
             setMeta(META_SCANNED + ':' + member, scanned)
+        }
+    }
+
+    /**
+     * A store that remembers the first read of it that failed for any reason
+     * but absence ({@link NoSuchBlockException}), which the ingest paths
+     * record as `missing` and pass over. Once one has failed, every later
+     * read fails the same way at once, so a member whose credentials expired
+     * is not read to the end before {@link #rethrow} stops the scan.
+     */
+    private static final class ReadFailures implements BlockStore {
+        private final BlockStore delegate
+        private Exception failure
+
+        ReadFailures(BlockStore delegate) { this.delegate = delegate }
+
+        /** Throws the first read failure, if there was one. */
+        void rethrow() throws IOException {
+            if( failure instanceof IOException )
+                throw (IOException) failure
+            if( failure instanceof RuntimeException )
+                throw (RuntimeException) failure
+            if( failure != null )
+                throw new IOException(failure.message, failure)
+        }
+
+        private <T> T read(Closure<T> call) {
+            rethrow()
+            try {
+                return call.call()
+            }
+            catch( NoSuchBlockException e ) {
+                throw e
+            }
+            catch( Exception e ) {
+                failure = e
+                throw e
+            }
+        }
+
+        @Override String alias() { delegate.alias() }
+        @Override boolean has(Cid cid) { read { delegate.has(cid) } }
+        @Override long size(Cid cid) { read { delegate.size(cid) } }
+        @Override long lastModifiedMillis(Cid cid) { read { delegate.lastModifiedMillis(cid) } }
+        @Override Stream<Cid> listBlocks() { read { delegate.listBlocks() } }
+        @Override boolean isWritable() { delegate.isWritable() }
+        @Override void put(Cid cid, InputStream input, long expectedSize) { delegate.put(cid, input, expectedSize) }
+        @Override Cid putStreaming(InputStream input) { delegate.putStreaming(input) }
+        @Override Cid putDagCbor(Object value) { delegate.putDagCbor(value) }
+
+        @Override
+        InputStream open(Cid cid) {
+            final InputStream input = read { delegate.open(cid) }
+            return new FilterInputStream(input) {
+                @Override int read() throws IOException { ReadFailures.this.read { input.read() } }
+                @Override int read(byte[] b, int off, int len) throws IOException { ReadFailures.this.read { input.read(b, off, len) } }
+            }
         }
     }
 
@@ -2337,14 +2404,20 @@ class Index implements Closeable {
     }
 
     /**
-     * The kind of a metadata block, or null when it is too large to be a
-     * record, does not decode, or has none. A block that cannot be read
-     * throws.
+     * The kind of a metadata block, or null when it is absent (listed, then
+     * swept before this read), too large to be a record, does not decode, or
+     * has none. A block that is there but cannot be read throws.
      */
     private static String readKind(BlockStore store, Cid cid) throws IOException {
-        if( store.size(cid) > MAX_BLOCK_BYTES )
+        final byte[] bytes
+        try {
+            if( store.size(cid) > MAX_BLOCK_BYTES )
+                return null
+            bytes = store.open(cid).withCloseable { InputStream input -> input.readAllBytes() }
+        }
+        catch( NoSuchBlockException e ) {
             return null
-        final byte[] bytes = store.open(cid).withCloseable { InputStream input -> input.readAllBytes() }
+        }
         try {
             final Object value = DagCbor.decode(bytes)
             return value instanceof Map ? Records.kindOf((Map) value) : null

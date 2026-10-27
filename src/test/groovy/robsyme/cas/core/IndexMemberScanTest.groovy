@@ -17,6 +17,8 @@ class IndexMemberScanTest extends Specification {
     int runs = 0
     /** Each run's one item, by completion. */
     Map<Cid, Cid> items = [:]
+    /** Each run's one OutputCollection, by completion. */
+    Map<Cid, Cid> collections = [:]
 
     def setup() {
         cloudRoot = tmp.resolve('cloud')
@@ -40,6 +42,7 @@ class IndexMemberScanTest extends Specification {
         final Cid rc = cloud.putDagCbor(Fixtures.runCompletion(m, [coll], [finished_at: String.format('2026-10-27T10:%02d:00.000Z', runs++)]))
         StoreLog.append(cloud, StoreLogKind.RUN, rc, at)
         items[rc] = item
+        collections[rc] = coll
         return rc
     }
 
@@ -161,6 +164,45 @@ class IndexMemberScanTest extends Specification {
         then:
         thrown(IOException)
         !index.isIndexed('cloud') && index.watermark('cloud') == null && index.metaValue('block_scan:cloud') == null
+    }
+
+    def 'a read that fails while ingesting throws and marks nothing'() {
+        given: 'a run collection that reads in the reading phase and fails when its run is ingested'
+        final Cid collection = collections.values().first()
+        final BlockStore failing = new IndexTest.Counting(cloud) {
+            int collectionOpens = 0
+            @Override InputStream open(Cid cid) {
+                if( cid == collection && ++collectionOpens > 1 ) throw new IOException('expired')
+                return super.open(cid)
+            }
+        }
+        final List<String> phases = []
+
+        when:
+        index.indexMember(failing, StoreLog.of(cloud), 'cloud', cloud, { String p, long d, long t -> phases << p } as IndexProgress)
+
+        then:
+        final IOException e = thrown()
+        e.message == 'expired'
+        phases.contains('ingesting')
+        !index.isIndexed('cloud') && index.watermark('cloud') == null && index.metaValue('block_scan:cloud') == null
+    }
+
+    def 'a block that vanishes between the listing and its read is skipped'() {
+        given: 'a listing that names a metadata block the store no longer holds'
+        final Cid gone = Cid.of(Cid.DAG_CBOR, Hashing.sha256('swept'.getBytes('UTF-8')))
+        final BlockStore swept = new IndexTest.Counting(cloud) {
+            @Override java.util.stream.Stream<Cid> listBlocks() { (delegate.listBlocks().toList() + [gone]).stream() }
+        }
+        final List<List<Object>> seen = []
+
+        when:
+        index.indexMember(swept, StoreLog.of(cloud), 'cloud', cloud, { String p, long d, long t -> seen << [p, d, t] } as IndexProgress)
+
+        then:
+        seen.findAll { it[0] == 'reading' }.last() == ['reading', dagCborBlocksIn(cloud) + 1, dagCborBlocksIn(cloud) + 1]
+        index.metaValue('block_scan:cloud') == 'done'
+        index.countRows('run') == 2
     }
 
     def 'a progress callback that throws stops the scan and marks nothing'() {
