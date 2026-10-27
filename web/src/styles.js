@@ -104,11 +104,12 @@ export const APP_CSS = `
     border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 4px 8px; min-height: 30px; }
   input[type=text]:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
   form { display: grid; gap: 8px; margin: 12px 0; } fieldset { border: 1px solid var(--line); border-radius: var(--r-md); }
-  .main button:not([class]), .rail button:not([class]), button.primary, button.quiet {
+  /* Bare buttons only: a menu's [role=option] buttons keep their own layout (several lines, the menu's width). */
+  .main button:not([class]):not([role=option]), .rail button:not([class]):not([role=option]), button.primary, button.quiet {
     display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 28px; padding: 0 10px; font-size: var(--fs-sm);
     font-weight: 600; border-radius: var(--r-md); border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); cursor: pointer;
     white-space: nowrap; vertical-align: middle; }
-  .main button:not([class]):hover, .rail button:not([class]):hover, button.quiet:hover { border-color: var(--ink-3); }
+  .main button:not([class]):not([role=option]):hover, .rail button:not([class]):not([role=option]):hover, button.quiet:hover { border-color: var(--ink-3); }
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   button.primary:hover { filter: brightness(.96); }
   button.quiet { height: 22px; padding: 0 7px; font-size: var(--fs-xs); font-weight: 500; }

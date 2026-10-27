@@ -11,6 +11,7 @@ import { copyView, copyToButton, lineageRuleText, REPLAN_DELAY_MS } from '../src
 import { CopyError, copyAvailability, copyClient } from '../src/copy.js'
 import { openRoblab, ROBLAB } from './storage-fixture.mjs'
 import { fullWhenText } from '../src/words.js'
+import { APP_CSS } from '../src/styles.js'
 
 const PLAN = JSON.parse(readFileSync(new URL('./fixtures/copy-plan-wigshop.json', import.meta.url), 'utf8'))
 const WIGSHOP = PLAN.root.cid
@@ -184,6 +185,13 @@ test('the head, depth cards, chain, plan, claims and command from the canned wig
   assert.equal(el.querySelector('[data-accept-row]'), null, 'no "Copy anyway" without findings (audit checked 1, found 0)')
   assert.deepEqual(strayTexts(el), [], 'no null child written as text')
   assert.doesNotMatch(el.textContent, /null/)
+})
+
+test('a destination option is not styled as a bare page button, so its location and reason wrap inside the menu', () => {
+  // The options are unclassed buttons inside .main; the bare-button look (one line, 28px high) made a long
+  // "Can't copy here" reason run past the menu's right edge and below its bottom.
+  assert.match(APP_CSS, /\.main button:not\(\[class\]\):not\(\[role=option\]\), \.rail button:not\(\[class\]\):not\(\[role=option\]\)/)
+  assert.match(APP_CSS, /\.main button:not\(\[class\]\):not\(\[role=option\]\):hover/)
 })
 
 test('the destination switch: only stores that can take a copy are choosable, the others say why; choosing one asks again', async () => {
