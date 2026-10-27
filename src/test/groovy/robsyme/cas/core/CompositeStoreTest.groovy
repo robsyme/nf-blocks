@@ -161,4 +161,30 @@ class CompositeStoreTest extends Specification {
         listed.toSet() == [shared, onlyLab, onlyBundle].toSet()
         listed.size() == 3
     }
+
+    /** A read-only member whose every check fails, as an S3 member does once its login expires. */
+    private static BlockStore unreadable(String alias) {
+        return [alias: { -> alias }, isWritable: { -> false },
+                has: { Cid c -> throw new IllegalStateException('Forbidden (Service: S3, Status Code: 403)') }] as BlockStore
+    }
+
+    def 'hasInReadable counts a member whose check throws as not holding the block, and reports it'() {
+        given:
+        final CompositeStore three = new CompositeStore([writable, unreadable('cloud'), readOnly])
+        final Cid onlyBundle = new LocalBlockStore(tempDir.resolve('bundle'), 'bundle', true).putDagCbor([n: 'bundle'])
+        final Cid onlyLab = writable.putDagCbor([n: 'lab'])
+        final List<String> reported = []
+
+        expect: 'a later member still answers, and the writable member is asked first'
+        three.hasInReadable(onlyBundle) { BlockStore m, Exception e -> reported << "${m.alias()}: ${e.message}".toString() }
+        three.hasInReadable(onlyLab) { BlockStore m, Exception e -> reported << m.alias() }
+        !three.hasInReadable(Fixtures.contentCid('nowhere')) { BlockStore m, Exception e -> reported << m.alias() }
+        reported == ['cloud: Forbidden (Service: S3, Status Code: 403)', 'cloud']
+
+        when: 'has itself still fails, so a caller that needs the answer never reads a failure as absence'
+        three.has(Fixtures.contentCid('nowhere'))
+
+        then:
+        thrown(IllegalStateException)
+    }
 }

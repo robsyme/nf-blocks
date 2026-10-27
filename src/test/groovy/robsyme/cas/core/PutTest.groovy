@@ -349,6 +349,30 @@ class PutTest extends Specification {
         sendTo(both, json, true).here
     }
 
+    def 'a read-only member that cannot be read does not stop a dry run or a write (an expired S3 login)'() {
+        given:
+        final BlockStore cloud = [alias: { -> 'cloud' }, isWritable: { -> false },
+                                  has: { Cid c -> throw new IllegalStateException('Forbidden (Service: S3, Status Code: 403)') }] as BlockStore
+        final Put both = new Put(new CompositeStore([store, cloud]), store, index, { -> 'ada' }, { now },
+            { index.catchUp(store, StoreLog.of(store), 'lab') })
+        final String json = selection(item(itemA, [collB]))
+
+        when:
+        final PutResult dry = sendTo(both, json, true)
+
+        then: 'the dry run answers from the members it could read'
+        !dry.exists
+        !dry.here
+
+        when:
+        final PutResult written = sendTo(both, json)
+
+        then:
+        written.written
+        store.has(written.address)
+        sendTo(both, json, true).here
+    }
+
     def 'a dry run reports the composition\'s deletion state, a deletion held elsewhere included (ticket 10)'() {
         given:
         final Put seed = seedShared()

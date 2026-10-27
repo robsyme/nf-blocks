@@ -201,7 +201,7 @@ class Put {
         final Cid address = DagCbor.cidOf(bytes)
         catchUp.call()
         if( dryRun )
-            return PutResult.dryRun(address, store.has(address), writable.has(address), index.claimState(address))
+            return PutResult.dryRun(address, heldAnywhere(address), writable.has(address), index.claimState(address))
         if( writable.has(address) )
             return PutResult.written(address, block, entryFor(address, draft.logKind), false)
         draft.validate.call()
@@ -598,6 +598,19 @@ class Put {
         final long now = clock.call()
         if( Math.abs(now - millis) > CLOCK_SKEW_MILLIS )
             throw new PutError(PutError.CLOCK_SKEW, "${field} ${text} is more than 10 minutes from this server's clock (${Index.isoMillis(now)})", "/${field}".toString())
+    }
+
+    /**
+     * The dry run's "exists": advice for the page, so a member that cannot be
+     * read is warned about and skipped rather than blocking a write to the
+     * writable member.
+     */
+    private boolean heldAnywhere(Cid address) {
+        if( !(store instanceof CompositeStore) )
+            return store.has(address)
+        return ((CompositeStore) store).hasInReadable(address) { BlockStore member, Exception e ->
+            log.warn("store member '${member.alias()}' could not be read, so the dry run does not count it: ${e.message}")
+        }
     }
 
     private Map blockAt(Cid cid, String at) {

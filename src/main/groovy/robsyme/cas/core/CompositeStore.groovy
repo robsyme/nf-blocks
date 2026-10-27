@@ -1,5 +1,6 @@
 package robsyme.cas.core
 
+import java.util.function.BiConsumer
 import java.util.stream.Stream
 
 import groovy.transform.CompileStatic
@@ -45,6 +46,24 @@ class CompositeStore implements BlockStore {
         for( BlockStore member : members )
             if( member.has(cid) )
                 return true
+        return false
+    }
+
+    /**
+     * As {@link #has}, for an answer that is only advice (Put's dry run): a
+     * member whose check throws, such as an S3 member whose login expired, is
+     * handed to {@code unreadable} and counted as not holding the block.
+     */
+    boolean hasInReadable(Cid cid, BiConsumer<BlockStore, Exception> unreadable) {
+        for( BlockStore member : members ) {
+            try {
+                if( member.has(cid) )
+                    return true
+            }
+            catch( Exception e ) {
+                unreadable.accept(member, e)
+            }
+        }
         return false
     }
 
