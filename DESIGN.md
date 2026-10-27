@@ -3035,17 +3035,18 @@ wrapper. For that one path it answers, in order: the local file when
 is `snapshot` or `outside`; else `404`. So a member that is not indexed
 answers `404` for its snapshot even when it holds one of its own that the
 cache cannot use (another incarnation, an unreadable file), and a member
-indexed here whose own snapshot is unusable serves the local one over it,
-after a restart too. A member with a usable snapshot of its own serves its
-own and the local one is never preferred. Every other path, listings and
-descriptions go to the member as before. The Store Log tail still comes from
-the member. The local file is replaced whole when a refresh finishes; a page
-that had the old one open fails with `snapshot_changed`. So when a job ends
-the page invalidates that member and reads it again in place, and when the
-member is the one the page itself has open (its primary), it reloads the
-page, which opens the new file. A real copy's answer carries the
-destination's `index`, so the page also follows a refresh the copy queued
-to its end.
+indexed here whose own snapshot is from another incarnation serves the local
+one over it, after a restart too. One whose own snapshot could not be looked
+at at start is `snapshot` and serves its own (below). A member with a usable
+snapshot of its own serves its own and the local one is never preferred.
+Every other path, listings and descriptions go to the member as before. The
+Store Log tail still comes from the member. The local file is replaced whole
+when a refresh finishes; a page that had the old one open fails with
+`snapshot_changed`. So when a job ends the page invalidates that member and
+reads it again in place, and when the member is the one the page itself has
+open (its primary), it reloads the page, which opens the new file. A real
+copy's answer carries the destination's `index`, so the page also follows a
+refresh the copy queued to its end.
 
 The job. `IndexJobs` runs one job at a time on one daemon thread named
 `nf-blocks-index`, never on the server's eight-thread pool, with a queue
@@ -3068,20 +3069,22 @@ reads `none` until it is indexed again.
 Index, in `local` or `push` mode, for a member that is `none`, or `failed`
 without a local snapshot:
 
-1. In push mode the base is the member's own snapshot (`base`), or none
-   when that snapshot is from another incarnation, which the push replaces.
-   The member's `store-id` is created when it has none (`ensureStoreId`)
-   and recorded in explore's cache at once, under `Put`'s monitor
-   (`Index.adoptStoreId`), so a member with runs but no Store Log entries
-   is not later taken for a replaced one and the cache is not reset. In
-   local mode the member's id is only read.
+1. In push mode the base is the member's own snapshot (`base`), taken before
+   the scan. When that snapshot is from another incarnation (either reason),
+   the push is there to replace it: it skips the guards that judge the base
+   (watermark, run count), as a rebuild does, and still writes only over
+   that version of it (`If-Match` on S3). The member's `store-id` is created
+   when it has none (`ensureStoreId`) and recorded in explore's cache at
+   once, under `Put`'s monitor (`Index.adoptStoreId`), so a member with runs
+   but no Store Log entries is not later taken for a replaced one and the
+   cache is not reset. In local mode the member's id is only read.
 2. The scan writes a scratch index, `nf-blocks-index-<alias>-<random>.sqlite`
    in the session's temp directory, through `Index.indexMember`, never into
    explore's cache. The scratch index records the member's id first, so the
-   snapshot built from it carries that id. `Index.ingestRun` holds one transaction across all
-   of a run's block reads, so a scan into the cache on a second connection
-   would hold SQLite's write lock for as long as a large run takes to read
-   and `Put`'s 5 s `busy_timeout` would expire.
+   snapshot built from it carries that id. `Index.ingestRun` holds one
+   transaction across all of a run's block reads, so a scan into the cache
+   on a second connection would hold SQLite's write lock for as long as a
+   large run takes to read and `Put`'s 5 s `busy_timeout` would expire.
 3. Phase `snapshot`: `buildMemberSnapshot` builds the member's snapshot from
    the scratch index, as `nf-blocks:snapshot` would against that member, with
    its presence check and its `sweep.lock` read.
@@ -3140,9 +3143,10 @@ The exit. The hook calls `ExploreCommand.stop(started, err)`: `server.stop()`
 first, so a write or copy in flight finishes; then `jobs.stop(10_000)`,
 which clears the queue, interrupts the running job and waits up to ten
 seconds; then the put-locked `index.close()`; then the final refresh of the
-members. The close and the refresh run in a `finally`, so they happen even
-when stopping the server or the jobs throws. The exit is bounded, nothing is scanned at exit, and a member whose
-job was stopped stays as it was, so the next start lists it as `none`.
+members. Each step runs even when one before it throws, and the first
+failure is the one raised, with the later ones suppressed on it. The exit
+is bounded, nothing is scanned at exit, and a member whose job was stopped
+stays as it was, so the next start lists it as `none`.
 
 Copies. `POST /api/copy` builds each copy with
 `CopyService.Indexing(unindexed, localRoots)` from `IndexJobs.unindexedForCopy`
@@ -5606,29 +5610,29 @@ a `CopyService.Indexing` of two maps: `unindexed` (alias to reason) and
 `localRoots` (alias to the directory holding an `index/v7.sqlite` built on
 this machine); the five-argument overload passes null and changes nothing.
 With it, the copy session calls `leaveUnindexedOut(indexing.unindexed)`, so
-those members are skipped by every catch-up of the copy without a fetch,
-and `seedFrom(alias, new LocalSnapshotStorage(root))` for each local root,
-so the copy's cache seeds from the local snapshot in place of the member's
-own, all before its first catch-up. A copy from a member indexed only on
-this machine therefore reads that member's runs, Selections and closures
-from the local snapshot. The "already in the destination" figure needs no
-change, since `CopyService.plan` leaves the destination out of its catch-up
-and asks it directly (`presentAt`, `destinationState`). When the
-destination is in `unindexed` or `localRoots`, or has no snapshot of its
-own (a member outside `cas.resolve` among them), the final catch-up and the
-snapshot step are skipped, since writing the snapshot would mean scanning
-the destination inside the request, or a push the user did not ask for. The body's
+those members are skipped by every catch-up of the copy without a fetch, and
+`seedFrom(alias, new LocalSnapshotStorage(root))` for each local root, so
+the copy's cache seeds from the local snapshot in place of the member's own,
+all before its first catch-up. A copy from a member indexed only on this
+machine therefore reads that member's runs, Selections and closures from the
+local snapshot. The "already in the destination" figure needs no change,
+since `CopyService.plan` leaves the destination out of its catch-up and asks
+it directly (`presentAt`, `destinationState`). When the destination is in
+`unindexed` or `localRoots`, or has no snapshot of its own (a member outside
+`cas.resolve` among them), the final catch-up and the snapshot step are
+skipped, since writing the snapshot would mean scanning the destination
+inside the request, or a push the user did not ask for. The body's
 `snapshot` is then `not_indexed` (`CopyService.SNAPSHOT_NOT_INDEXED`) and
 stderr gets `nf-blocks:copy: '<to>' has no Index Snapshot, so this copy did
 not write one; index it from the explorer's Storage page`. The copy has
 succeeded and its Transfer entry is written whatever the snapshot says (§0
-rule 3). After a real copy into a member
-served from a local snapshot, the explorer queues a refresh of that snapshot
-(§15). A root that only the cache resolves (`run:lid://...`, or a
-RunManifest) from a `from` the copy's catch-up left out is refused with
-`400 not_indexed` (`CopyService.SOURCE_NOT_INDEXED`), naming that member and
-saying to index it, instead of `root_not_found`; a root given by its
-RunCompletion or Selection address still copies, read from the blocks.
+rule 3). After a real copy into a member served from a local snapshot, the
+explorer queues a refresh of that snapshot (§15). A root that only the cache
+resolves (`run:lid://...`, or a RunManifest) from a `from` the copy's
+catch-up left out is refused with `400 not_indexed`
+(`CopyService.SOURCE_NOT_INDEXED`), naming that member and saying to index
+it, instead of `root_not_found`; a root given by its RunCompletion or
+Selection address still copies, read from the blocks.
 
 ## 22. Projects, input sets and hand-offs (explorer v0.3 P4, 2026-10-25)
 
