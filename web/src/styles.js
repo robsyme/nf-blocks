@@ -407,7 +407,13 @@ export const APP_CSS = `
   /* P3 multi-store card row (mockup 09): one card per store, the one broken down below outlined in ink */
   .storage .storage-card { display: block; color: inherit; text-decoration: none; min-width: 0; }
   .storage .storage-card .pb { display: grid; gap: 10px; }
-  .storage a.storage-card:hover { border-color: var(--line-2); }
+.storage .storage-card-main { display: grid; gap: 10px; color: inherit; text-decoration: none; min-width: 0; }
+  .storage .storage-card-body { display: grid; gap: 10px; min-width: 0; }
+  .storage a.storage-card-main:hover b { text-decoration: underline; }
+  .storage .storage-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .storage .storage-card-actions:empty { display: none; }
+  .storage .storage-card-actions [data-index-why] { flex-basis: 100%; margin: 0; font-size: 12px; }
+  .storage .storage-card-body [data-index-error] { color: var(--fail); }
   .storage .storage-card.on { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
   .storage .storage-caption { margin: -6px 0 0; font-size: 12px; }
   /* A route without the rail (panel.js showsRail: Storage, Copy and the project pages, as mockups 09, 11 and 13 draw them) gives its width to the page. */

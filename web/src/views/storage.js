@@ -28,6 +28,7 @@ import { extLabel } from '../sizes.js'
 import { ask, storedTitle } from './home.js'
 import { enc, omittedNote, shortCid, staleFiguresText, unreadableTransfersNote } from './common.js'
 import { hrefIn } from '../members.js'
+import { progressText } from '../indexing.js'
 
 const TOP_KINDS = 7
 const KIND_LABELS = { bam: 'BAM', html: 'HTML reports', zip: 'Zip', txt: 'Text', json: 'JSON', pdf: 'PDF', bigwig: 'bigWig' }
@@ -242,34 +243,103 @@ export const CARDS_CAPTION = 'Each store keeps its own pins and runs its own cle
  */
 function storeCards(ctx, viewer, open) {
   const write = ctx.write ?? null
+  const indexing = ctx.indexing ?? null
   const cards = ctx.members.list.map((m) => {
     const shown = m.alias === ctx.members.primary
     const writable = shown ? open.writable : !!write?.available && write.writable === m.alias
     const reason = shown || !write?.available ? write?.reason : `This explore server writes only to ${write.writable}.`
     const where = (m.kind === 's3' ? m.location : m.kind) ?? null
-    const pb = h('div', { class: 'pb' })
-    const fill = (...body) => pb.replaceChildren(storeHead({ name: m.alias, key: m.key }, writable, reason, where), ...body.filter(Boolean))
-    const said = (text) => h('p', { class: 'muted', 'data-storage-card-note': '' }, text)
+    const head = storeHead({ name: m.alias, key: m.key }, writable, reason, where)
+    const body = h('div', { class: 'storage-card-body' })
+    const actions = h('div', { class: 'storage-card-actions', 'data-index-actions': '' })
+    const main = shown ? h('div', { class: 'storage-card-main' }, head, body)
+      : h('a', { class: 'storage-card-main', href: hrefIn(ctx, m.alias, '#/storage'), 'data-storage-card-open': '', title: `Open the Storage page in ${m.alias}` }, head, body)
+    const card = h('div', shown ? { class: 'panel storage-card on', 'aria-current': 'true', 'data-storage-card': m.alias, title: `${m.alias} is broken down below` }
+      : { class: 'panel storage-card', 'data-storage-card': m.alias }, h('div', { class: 'pb' }, main, actions))
+    const said = (text, attrs = {}) => h('p', { class: 'muted', 'data-storage-card-note': '', ...attrs }, text)
     const noFigures = () => said('Its snapshot leaves out storage figures.')
-    if (shown) {
-      fill(...(open.stats ? figures(open.stats, yoursOf(open.people, viewer), open.stale) : [noFigures()]))
-    } else {
-      fill(said('…'))
-      ctx.members.explorer(m.alias).then(async (mex) => {
-        const stats = await mex.storeStats()
-        if (!stats) { fill(noFigures()); return }
-        const people = await mex.asserterStats()
-        const changes = mex.storageChanges()
-        fill(...figures(stats, yoursOf(people, viewer), changes.claims || changes.logged))
-      }).catch((e) => fill(said(ctx.members.status(m.alias).state !== 'no_snapshot' ? `Could not be read (${e?.message ?? e}).`
-        : e?.older ? 'Its snapshot is older than this explorer reads; nextflow plugin nf-blocks:snapshot rewrites it.' : 'No snapshot yet.')))
+    const loadFigures = () => ctx.members.explorer(m.alias).then(async (mex) => {
+      const stats = await mex.storeStats()
+      if (!stats) return [noFigures()]
+      const people = await mex.asserterStats()
+      const changes = mex.storageChanges()
+      return figures(stats, yoursOf(people, viewer), changes.claims || changes.logged)
+    }).catch((e) => [said(ctx.members.status(m.alias).state !== 'no_snapshot' ? `Could not be read (${e?.message ?? e}).`
+      : e?.older ? 'Its snapshot is older than this explorer reads; nextflow plugin nf-blocks:snapshot rewrites it.' : 'No snapshot yet.')])
+
+    let drawn = 0
+    let refused = null
+    const paintBody = () => {
+      const mine = ++drawn
+      const idx = indexing?.stateOf(m.alias) ?? null
+      const notes = [...indexNotes(idx, m.alias), refused ? said(refused, { 'data-index-error': '' }) : null].filter(Boolean)
+      let figs = []
+      const draw = () => { if (mine === drawn) body.replaceChildren(...notes, ...figs) }
+      if (shown) figs = open.stats ? figures(open.stats, yoursOf(open.people, viewer), open.stale) : [noFigures()]
+      else if (opensSnapshot(idx)) { figs = [said('…')]; loadFigures().then((nodes) => { figs = nodes; draw() }) }
+      draw()
     }
-    return shown
-      ? h('div', { class: 'panel storage-card on', 'aria-current': 'true', 'data-storage-card': m.alias, title: `${m.alias} is broken down below` }, pb)
-      : h('a', { class: 'panel storage-card', href: hrefIn(ctx, m.alias, '#/storage'), 'data-storage-card': m.alias, title: `Open the Storage page in ${m.alias}` }, pb)
+    const paintActions = () => {
+      const idx = indexing?.stateOf(m.alias) ?? null
+      const buttons = (idx ? indexButtons(idx) : []).map(([label, mode]) => {
+        const cannotPush = mode === 'push' && m.copy_target === false
+        const why = cannotPush ? (m.copy_reason || "this store can't be written") : indexing.running() ? 'another store is being indexed' : null
+        return h('button', { type: 'button', class: 'btn sm', 'data-index-mode': mode, disabled: why !== null, title: why, onclick: why === null ? () => start(mode) : null }, label)
+      })
+      const blocked = buttons.some(b => b.dataset.indexMode === 'push') && m.copy_target === false
+      actions.replaceChildren(...buttons, ...(blocked ? [h('p', { class: 'muted', 'data-index-why': '' }, `Can't push here: ${m.copy_reason || "this store can't be written"}`)] : []))
+    }
+    async function start(mode) {
+      refused = null
+      try { await indexing.start(m.alias, mode) } catch (e) { refused = e?.message ?? String(e) }
+      paintBody()
+      paintActions()
+    }
+
+    paintBody()
+    paintActions()
+    if (indexing) {
+      // Alive until the card has been on the page and then left it (copy.js's rule); the fake DOM of tests is never connected.
+      let seen = false
+      const off = indexing.onChange((alias) => {
+        if (card.isConnected) seen = true
+        else if (seen) { off(); return }
+        if (alias === m.alias) paintBody()
+        paintActions()
+      })
+    }
+    return card
   })
   return [h('div', { class: 'grid-3 storage-cards', 'data-storage-cards': '' }, cards),
     h('p', { class: 'muted storage-caption', 'data-storage-caption': '' }, CARDS_CAPTION)]
+}
+
+/** Whether a member's card reads its snapshot: no index object (an older server) means it always tries, as before. */
+const opensSnapshot = (idx) => !idx || idx.state === 'snapshot' || idx.state === 'local' || (idx.state === 'failed' && idx.local)
+
+/** What each index state says in its card; `snapshot` and no index object say nothing beyond the figures. */
+function indexNotes(idx, alias) {
+  if (!idx) return []
+  const say = (text, attrs = {}) => h('p', { class: 'muted', 'data-storage-card-note': '', ...attrs }, text)
+  const onThisMachine = say(['Indexed on this machine', idx.at ? agoText(idx.at) : null].filter(Boolean).join(' · '))
+  switch (idx.state) {
+    case 'local': return [onThisMachine]
+    case 'none': return [say(['Not indexed: its runs and Selections are not listed.', idx.reason && idx.reason !== 'absent' ? `Its own snapshot can't be used (${idx.reason}).` : null].filter(Boolean).join(' '))]
+    case 'indexing': return [say(progressText(idx, alias), { 'data-index-progress': '' })]
+    case 'failed': return [say(`Indexing failed: ${idx.reason}`), idx.local ? onThisMachine : null].filter(Boolean)
+    case 'outside': return [say('Not in cas.resolve, so the explorer does not index it')]
+    default: return []
+  }
+}
+
+/** The buttons a state offers, as [label, mode]. */
+function indexButtons(idx) {
+  switch (idx.state) {
+    case 'local': return [['Push to store', 'push']]
+    case 'none': return [['Index locally', 'local'], ['Index and push', 'push']]
+    case 'failed': return [['Retry', idx.mode ?? 'local']]
+    default: return []
+  }
 }
 
 export async function storage(ex, ctx) {
