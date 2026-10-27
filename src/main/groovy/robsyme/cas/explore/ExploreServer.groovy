@@ -582,9 +582,16 @@ class ExploreServer {
             json(exchange, 500, error('copy_failed', e instanceof CopyService.Failed ? e.message : CopyErrors.describe(e, Collections.<String, String> emptyMap())))
             return
         }
-        if( !dryRun && outcome.status == 200 )
-            jobs?.copied(request.get('to') as String)
-        json(exchange, outcome.status, outcome.body)
+        if( dryRun || outcome.status != 200 || jobs == null ) {
+            json(exchange, outcome.status, outcome.body)
+            return
+        }
+        // The destination's index after the copy, so the page sees the refresh it may have queued and watches it.
+        final String to = request.get('to') as String
+        jobs.copied(to)
+        final Map<String, Object> body = new LinkedHashMap<String, Object>(outcome.body)
+        body.put('index', jobs.stateOf(to))
+        json(exchange, outcome.status, body)
     }
 
     /** POST /api/index: the member and the mode, then IndexJobs' answer as JSON. */

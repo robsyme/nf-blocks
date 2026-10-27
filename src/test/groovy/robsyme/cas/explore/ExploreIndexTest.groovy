@@ -272,11 +272,28 @@ class ExploreIndexTest extends Specification {
         when:
         final RawHttp.Response copied = post('/api/copy', [root: 'run:x', from: null, to: 'cloud', depth: 'results'])
 
-        then:
+        then: 'the answer carries the index of the destination, its refresh already running'
         copied.status == 200
+        json(copied).copied == 1
+        json(copied).index.state == 'indexing' && json(copied).index.local
         jobs.awaitIdle(30_000)
         jobs.stateOf('cloud').state == 'local'
         jobs.stateOf('cloud').at > before
+    }
+
+    def 'a real copy into a member with no local snapshot carries its index as it is'() {
+        given:
+        server = serve()
+        server.copies({ Map request, boolean dryRun -> new CopyService.Outcome(200, [copied: 1] as Map<String, Object>) } as ExploreServer.Copier,
+            new PrintStream(new ByteArrayOutputStream(), true))
+
+        when:
+        final RawHttp.Response copied = post('/api/copy', [root: 'run:x', from: null, to: 'ro', depth: 'results'])
+
+        then:
+        copied.status == 200
+        json(copied).index == jobs.stateOf('ro')
+        json(copied).index.state == 'none'
     }
 
     def 'a dry run into a member indexed on this machine queues nothing'() {
@@ -294,6 +311,7 @@ class ExploreIndexTest extends Specification {
 
         then:
         dry.status == 200
+        !(json(dry) as Map).containsKey('index')
         jobs.awaitIdle(30_000)
         jobs.stateOf('cloud').at == before
     }
