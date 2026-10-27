@@ -65,17 +65,32 @@ class ExploreCommand {
 
     /** The exit hook's body: stops serving, ends a running index job, closes the index, rewrites the snapshot. */
     static void stop(Started started, PrintStream err) {
-        try {
-            started.server.stop()
-            // A job that is mid-scan leaves its member as it was; the bound keeps the exit prompt.
-            started.jobs.stop(10_000)
-        }
-        finally {
-            // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
+        // Each step runs whatever the one before it threw; the first failure is raised, the later ones ride on it.
+        Throwable failed = attempt(null) { -> started.server.stop() }
+        // A job that is mid-scan leaves its member as it was; the bound keeps the exit prompt.
+        failed = attempt(failed) { -> started.jobs.stop(10_000) }
+        // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
+        failed = attempt(failed) { ->
             synchronized( started.put ) {
                 started.index.close()
             }
-            refresh(started.cas, err)
+        }
+        failed = attempt(failed) { -> refresh(started.cas, err) }
+        if( failed != null )
+            throw failed
+    }
+
+    /** Runs {@code step}; returns {@code failed}, or what the step threw, added to {@code failed} as suppressed when there is one. */
+    private static Throwable attempt(Throwable failed, Closure step) {
+        try {
+            step.call()
+            return failed
+        }
+        catch( Throwable e ) {
+            if( failed == null )
+                return e
+            failed.addSuppressed(e)
+            return failed
         }
     }
 

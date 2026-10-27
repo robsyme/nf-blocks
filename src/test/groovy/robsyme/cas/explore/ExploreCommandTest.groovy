@@ -185,6 +185,33 @@ class ExploreCommandTest extends Specification {
         started.jobs.stop(5_000)
     }
 
+    def 'the exit stops the jobs when stopping the server throws, and that first failure is the one raised'() {
+        given:
+        started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
+        final ExploreServer failingServer = new ExploreServer(new LinkedHashMap<String, MemberFiles>(), 'lab', '<!doctype html>'.bytes) {
+            @Override void stop() { throw new IllegalStateException('server would not stop') }
+        }
+        List<Long> jobsStopped = []
+        final IndexJobs failingJobs = new IndexJobs(started.cas, started.index, started.put, tempDir.resolve('local'), [:]) {
+            @Override void stop(long waitMillis) { jobsStopped << waitMillis; throw new IllegalStateException('jobs would not stop') }
+        }
+        final ExploreCommand.Started failing = new ExploreCommand.Started(failingServer, started.cas, started.index, started.put, failingJobs, started.identity)
+        logRun(tempDir.resolve('lab'), 'lab-late')
+
+        when:
+        ExploreCommand.stop(failing, new PrintStream(err, true))
+
+        then:
+        final IllegalStateException e = thrown()
+        e.message == 'server would not stop'
+        e.suppressed*.message == ['jobs would not stop']
+        jobsStopped == [10_000L]
+        new LocalSnapshotStorage(tempDir.resolve('lab')).base(tempDir).runs == 1
+
+        cleanup:
+        started.jobs.stop(5_000)
+    }
+
     def 'explore listens before identity resolves; stdout is the URL line and the signing line goes to stderr'() {
         given: 'a git double that takes a while to answer'
         Files.createDirectories(tempDir.resolve('shared'))
