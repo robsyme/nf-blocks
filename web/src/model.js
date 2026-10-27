@@ -441,6 +441,62 @@ export class Explorer {
     return rows
   }
 
+  /**
+   * The inputs that made an item, per run that recorded lineage for it:
+   * `[{ completion_cid, source, inputs: [{ position, role, name, address,
+   * size, sample, origins: [{ item_cid, collection_cid, selection_cid }] }] }]`,
+   * runs by completion cid, inputs by position; `[]` when none did. With
+   * `completionCid`, only that run. A snapshot run answers from its
+   * item_input, run_input and input_origin rows (no rows, no lineage); a
+   * tail run reads its ItemLineage and InputSet blocks, and an unreadable
+   * block leaves that run out.
+   */
+  async itemLineage(itemCid, completionCid = null) {
+    const runs = []
+    const snapshot = (await this.db.query(SQL.itemInputsOf, [itemCid])).filter(r => completionCid === null || r.completion_cid === completionCid)
+    for (const r of snapshot) {
+      const positions = JSON.stringify(JSON.parse(r.positions))
+      const params = [r.completion_cid, positions]
+      const origins = Map.groupBy(await this.db.query(SQL.originsAt, params), o => o.position)
+      const inputs = (await this.db.query(SQL.runInputsAt, params)).map(i => ({ ...i,
+        origins: (origins.get(i.position) ?? []).map(o => ({ item_cid: o.item_cid, collection_cid: o.collection_cid, selection_cid: o.selection_cid })) }))
+      runs.push({ completion_cid: r.completion_cid, source: 'snapshot', inputs })
+    }
+    const have = new Set(runs.map(r => r.completion_cid))
+    const tail = this.stale.filter(s => s.row && !have.has(s.cid) && (completionCid === null || s.cid === completionCid))
+    for (const s of tail) {
+      const lineage = s.completion.item_lineage
+      if (!lineage) continue
+      try {
+        const derived = (await this.blocks.ofKind(text(lineage), 'ItemLineage')).value
+        const mine = derived.items.find(d => text(d.item) === itemCid)
+        if (!mine || text(derived.input_set) !== text(s.completion.input_set)) continue
+        const set = (await this.blocks.ofKind(text(derived.input_set), 'InputSet')).value
+        const inputs = mine.inputs.map(position => {
+          const i = set.inputs[position]
+          return { position, role: i.role, name: i.name ?? null, address: text(i.address), size: i.size ?? null, sample: i.sample ?? null,
+            origins: (i.from ?? []).map(o => ({ item_cid: text(o.item), collection_cid: text(o.collection), selection_cid: text(o.selection) })) }
+        })
+        runs.push({ completion_cid: s.cid, source: 'tail', inputs })
+      } catch (e) {
+        if (e instanceof BlockError) continue
+        throw e
+      }
+    }
+    return runs.sort((a, b) => (a.completion_cid < b.completion_cid ? -1 : a.completion_cid > b.completion_cid ? 1 : 0))
+  }
+
+  /**
+   * The items derived from an item, `[{ completion_cid, via_cid,
+   * selection_cid, item_cid, collection_cid }]`: the consumer run, the
+   * collection (`via_cid`) and Selection its fromStore read the item
+   * through, and the derived item with the collection holding it. The
+   * snapshot's rows only (lineage spec 5.4).
+   */
+  async usedBy(itemCid) {
+    return this.db.query(SQL.usedByOf, [itemCid])
+  }
+
   /** Tail Handoff entries whose block could not be read, `[{ cid, error }]`: handoffs() leaves them out, so the Activity tab can say so. */
   unreadableHandoffs() {
     return this.tailHandoffs.filter(t => t.error).map(t => ({ cid: t.cid, error: t.error }))
