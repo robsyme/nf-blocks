@@ -96,6 +96,8 @@ class ExploreCommand {
         final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter,
             { -> session.principal } as Supplier<Principal>)
             .memberInfo(memberInfoOf(cas))
+            // members.json greys out an S3 copy target it cannot reach now, saying what to do.
+            .memberProbe(new MemberProbe(members))
             // POST /api/copy: each copy builds its own composition from the loaded config (CopyService).
             .copies(config, err)
             // POST /api/handoff: the same writable member, index and signer as Put, under Put's monitor.

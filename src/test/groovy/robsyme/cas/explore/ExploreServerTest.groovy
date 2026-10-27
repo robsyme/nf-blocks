@@ -281,4 +281,62 @@ class ExploreServerTest extends Specification {
         expect:
         !get('/m/lab/index/v3.sqlite', [Origin: "http://127.0.0.1:${server.port}".toString()]).headers.keySet().any { it.startsWith('access-control') }
     }
+
+    def 'members.json greys out an S3 copy target that cannot be reached, and leaves the rest as judged'() {
+        given:
+        final MemberProbeTest.Fake cloud = new MemberProbeTest.Fake(answer: { ->
+            throw software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(403).message('Forbidden').build() })
+        final MemberProbeTest.Fake bundle = new MemberProbeTest.Fake()
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        members.put('cloud', cloud)
+        members.put('bundle', bundle)
+        // Copying needs a copier and the token, as from nf-blocks:explore.
+        final ExploreServer probed = new ExploreServer(members, 'lab', page, null, ExploreServer.newToken())
+            .memberInfo([lab   : new ExploreServer.MemberInfo('local', null, true, null),
+                         cloud : new ExploreServer.MemberInfo('s3', 's3://bucket/cas', true, null),
+                         bundle: new ExploreServer.MemberInfo('s3', 's3://bundle/cas', false, 'readOnly is set for this store')])
+            .memberProbe(new MemberProbe(members))
+            .copies({ Map request, boolean dryRun -> null } as ExploreServer.Copier, null)
+            .start(0)
+
+        when:
+        final List<Map> listed = (List<Map>) new JsonSlurper().parse(RawHttp.send(probed.port, 'GET', '/members.json').body).members
+
+        then: 'the unreachable target is no target now, and says what to do'
+        listed.find { it.alias == 'cloud' }.copy_target == false
+        listed.find { it.alias == 'cloud' }.copy_reason == "${robsyme.cas.s3.S3Failures.REFUSED}. Refresh your AWS credentials, then reload this page".toString()
+
+        and: 'a store that was never a target keeps its own reason and is not asked'
+        listed.find { it.alias == 'bundle' } .copy_reason == 'readOnly is set for this store'
+        bundle.asked.get() == 0
+
+        and: 'the local writable member is not asked either'
+        listed.find { it.alias == 'lab' }.copy_target == true
+
+        cleanup:
+        probed?.stop()
+    }
+
+    def 'members.json asks nothing when this server cannot copy'() {
+        given:
+        final MemberProbeTest.Fake cloud = new MemberProbeTest.Fake()
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        members.put('cloud', cloud)
+        final ExploreServer quiet = new ExploreServer(members, 'lab', page, null, ExploreServer.newToken())
+            .memberInfo([lab  : new ExploreServer.MemberInfo('local', null, true, null),
+                         cloud: new ExploreServer.MemberInfo('s3', 's3://bucket/cas', true, null)])
+            .memberProbe(new MemberProbe(members))
+            .start(0)
+
+        when:
+        RawHttp.send(quiet.port, 'GET', '/members.json')
+
+        then:
+        cloud.asked.get() == 0
+
+        cleanup:
+        quiet?.stop()
+    }
 }

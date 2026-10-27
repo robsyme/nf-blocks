@@ -92,6 +92,7 @@ class ExploreServer {
     private final String token
     private final Exporter exporter
     private Map<String, MemberInfo> memberInfo = Collections.emptyMap()
+    private MemberProbe memberProbe
     private Copier copier
     private HandoffWriter handoffs
     private PrintStream err
@@ -153,6 +154,16 @@ class ExploreServer {
      */
     ExploreServer memberInfo(Map<String, MemberInfo> info) {
         this.memberInfo = info ?: Collections.<String, MemberInfo>emptyMap()
+        return this
+    }
+
+    /**
+     * Lets members.json grey out an S3 copy target that cannot be reached now
+     * (expired credentials, no network), with a reason that says what to do.
+     * Asked only while this server can copy.
+     */
+    ExploreServer memberProbe(MemberProbe probe) {
+        this.memberProbe = probe
         return this
     }
 
@@ -359,11 +370,25 @@ class ExploreServer {
         text(exchange, 404, 'not found')
     }
 
+    /** The S3 copy targets that cannot be reached now, with why; empty when this server cannot copy. */
+    private Map<String, String> unreachableTargets() {
+        if( memberProbe == null || !canCopy() )
+            return Collections.<String, String>emptyMap()
+        final List<String> targets = members.keySet().findAll { String alias ->
+            final MemberInfo info = memberInfo.get(alias)
+            info != null && info.kind == 's3' && info.copyTarget
+        } as List<String>
+        return targets ? memberProbe.unreachable(targets) : Collections.<String, String>emptyMap()
+    }
+
     private byte[] membersJson() {
+        final Map<String, String> unreachable = unreachableTargets()
         final List<Map> list = members.keySet().collect { String alias ->
             final MemberInfo info = memberInfo.get(alias) ?: new MemberInfo('local', null, true, null)
+            final String unreached = unreachable.get(alias)
             [alias: alias, writable: alias == writableAlias, base: "m/${alias}/".toString(),
-             kind: info.kind, location: info.location, copy_target: info.copyTarget, copy_reason: info.copyReason] as Map
+             kind: info.kind, location: info.location,
+             copy_target: info.copyTarget && unreached == null, copy_reason: unreached ?: info.copyReason] as Map
         }
         final Map<String, Object> body = [members: list, write: put != null] as Map<String, Object>
         final Principal signer = principal?.get()

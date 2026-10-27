@@ -190,4 +190,15 @@ class CopyErrorsTest extends Specification {
         text.contains('lab:/x')
         text.startsWith('IOException: PUT failed for ')
     }
+
+    def 'a credentials failure is told in plain words, with no request ids and no exception class'() {
+        given:
+        final def refused = software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(403)
+            .message('Forbidden (Service: S3, Status Code: 403, Request ID: ME5RW14WJ17EM449, Extended Request ID: MGs2=)').build()
+
+        expect:
+        CopyErrors.describe(refused, ROOTS) == "${robsyme.cas.s3.S3Failures.REFUSED}. Refresh your AWS credentials, then try again".toString()
+        CopyErrors.describe(new RuntimeException('planning failed', refused), ROOTS) ==
+            "${robsyme.cas.s3.S3Failures.REFUSED}. Refresh your AWS credentials, then try again".toString()
+    }
 }

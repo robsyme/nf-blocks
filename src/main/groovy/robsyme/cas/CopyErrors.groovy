@@ -5,11 +5,13 @@ import java.util.regex.Pattern
 
 import groovy.transform.CompileStatic
 import robsyme.cas.core.Leaks
+import robsyme.cas.s3.S3Failures
 
 /**
  * The text of a copy failure, as it may leave the process: in `failures[].error`,
  * the snapshot outcome, a 500 body from the explore server, and on stderr.
- * Always `<ExceptionClass simple name>: <message>`. Within it a configured
+ * `<ExceptionClass simple name>: <message>`, except an AWS credentials failure,
+ * which is told in plain words (see {@link #describe}). Within it a configured
  * member's root (a local directory, or `s3://bucket/prefix`) becomes
  * `<alias>:`, and any other absolute local path becomes `[local path]`, so a
  * message never says where on the operator's disk the stores, the index cache
@@ -56,8 +58,15 @@ class CopyErrors {
         return roots
     }
 
-    /** `<ExceptionClass>: <message>`, redacted; the bare class name when the exception has no message. */
+    /**
+     * `<ExceptionClass>: <message>`, redacted; the bare class name when the
+     * exception has no message. A credentials failure is told in plain words
+     * instead ({@link S3Failures}), since its message is mostly request ids.
+     */
     static String describe(Throwable t, Map<String, String> roots) {
+        final String credentials = S3Failures.credentials(t)
+        if( credentials != null )
+            return "${credentials}. Refresh your AWS credentials, then try again".toString()
         // An anonymous class has an empty simple name.
         final String name = t.getClass().simpleName ?: t.getClass().name
         final String message = t.message
