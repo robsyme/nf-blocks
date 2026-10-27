@@ -681,6 +681,9 @@ class CasSession {
      * the snapshot's HEAD (and a GET only for an uncounted S3 snapshot), not the
      * snapshot itself, so its schema_version is not checked.
      */
+    /** What {@link #ownSnapshotUnusable} answers when the snapshot could not be looked at. */
+    static final String UNREADABLE = 'unreadable'
+
     String ownSnapshotUnusable(String alias, Index index) {
         final SnapshotStorage storage = snapshotsOf(alias)
         final BlockStore member = member(alias)
@@ -699,7 +702,7 @@ class CasSession {
         }
         catch( Exception e ) {
             log.debug("could not look at the Index Snapshot of '${alias}': ${e.message}", e)
-            return 'unreadable'
+            return UNREADABLE
         }
     }
 

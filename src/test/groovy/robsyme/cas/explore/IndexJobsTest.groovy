@@ -2,8 +2,12 @@ package robsyme.cas.explore
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import org.slf4j.LoggerFactory
 import robsyme.cas.CasConfig
 import robsyme.cas.CasSession
 import robsyme.cas.GitEmail
@@ -61,7 +65,13 @@ class IndexJobsTest extends Specification {
 
     Closure<S3Ops> savedS3
 
+    /** IndexJobs logs a failed job's stack trace at DEBUG; the failures here are on purpose. */
+    final Logger jobsLog = (Logger) LoggerFactory.getLogger(IndexJobs)
+    Level savedLevel
+
     def setup() {
+        savedLevel = jobsLog.level
+        jobsLog.level = Level.INFO
         CasSession.platformIdentity = { String e, String t -> throw new IOException('no platform in tests') } as PlatformIdentity
         CasSession.gitEmail = { -> 'someone@example.org' } as GitEmail
         CasSession.env = [:]
@@ -82,6 +92,7 @@ class IndexJobsTest extends Specification {
         opened.each { it.stop(5_000) }
         indexes.each { it.close() }
         CasSession.s3OpsFactory = savedS3
+        jobsLog.level = savedLevel
     }
 
     private CasConfig config(Map cloud = [location: cloudRoot.toString()]) {
@@ -348,6 +359,128 @@ class IndexJobsTest extends Specification {
         jobs.stateOf('cloud') == [state: 'none', at: null, progress: null, reason: 'absent', mode: null, local: false]
         !shared.isIndexed('cloud') && !Files.exists(localRoot.resolve('cloud'))
         !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
+    }
+
+    def 'a stop that lands once the cache holds the member never puts it back to none'() {
+        given: 'a stop between the seed and placing the local snapshot, as an interrupted copy would throw'
+        jobs.onSeeded = { -> jobs.stop(0); throw new CancellationException('stopped while placing') }
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        shared.isIndexed('cloud')
+        jobs.stateOf('cloud').state == 'indexing'
+        jobs.unindexedForCopy() == [cloud: IndexJobs.BEING_INDEXED, ro: 'absent']
+    }
+
+    def 'once the cache holds the member a stop waits for its local snapshot to be placed'() {
+        given:
+        jobs.onSeeded = { -> jobs.stop(0) }
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        shared.isIndexed('cloud')
+        jobs.stateOf('cloud').state == 'local' && jobs.localSnapshot('cloud') != null
+    }
+
+    def 'a CancellationException that is not a stop fails the job'() {
+        given:
+        jobs.onReport = { String p, long d, long t -> if( p == 'reading' ) throw new CancellationException('not a stop') }
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'failed'
+        (jobs.stateOf('cloud').reason as String).contains('not a stop')
+    }
+
+    def 'stop() before a submitted job has started leaves no job running'() {
+        given: 'the job thread busy, so the job waits to start'
+        final CountDownLatch busy = new CountDownLatch(1)
+        jobs.thread.execute({ ->
+            try { busy.await() } catch( InterruptedException e ) { }
+        } as Runnable)
+        jobs.start('cloud', 'local')
+
+        when:
+        jobs.stop(5_000)
+
+        then:
+        jobs.awaitIdle(1_000)
+        jobs.stateOf('cloud') == [state: 'none', at: null, progress: null, reason: 'absent', mode: null, local: false]
+    }
+
+    def 'a local member whose snapshot a cache reset deleted reads none and can be indexed again'() {
+        given:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        assert jobs.stateOf('cloud').state == 'local'
+
+        when:
+        synchronized( putLock ) {
+            shared.reset()
+        }
+
+        then:
+        jobs.stateOf('cloud').state == 'none' && !jobs.stateOf('cloud').local
+        jobs.localSnapshot('cloud') == null && jobs.localRootsForCopy() == [:]
+        jobs.unindexedForCopy().containsKey('cloud')
+
+        when:
+        final IndexJobs.Answer again = jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        again.status == 202
+        jobs.stateOf('cloud').state == 'local' && jobs.localSnapshot('cloud') != null
+        shared.isIndexed('cloud')
+    }
+
+    def 'a held member whose own snapshot cannot be looked at when the explorer starts is snapshot'() {
+        given: 'cloud in a bucket with a snapshot of its own'
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        logRun(new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp), 'cloud-1')
+        open(cfg)
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+        assert jobs.stateOf('cloud').state == 'snapshot'
+
+        when: 'the next start finds every read of the bucket refused'
+        bucket.refuseAll = true
+        final IndexJobs again = open(cfg)
+
+        then:
+        again.stateOf('cloud').state == 'snapshot'
+        again.servesOwn('cloud') && again.localSnapshot('cloud') == null
+    }
+
+    def 'index and push replaces an own snapshot from an earlier incarnation that lists more runs'() {
+        given: 'cloud has an own snapshot with no store_id whose watermark is not in its Store Log'
+        final LocalBlockStore elsewhere = new LocalBlockStore(tmp.resolve('elsewhere'), 'cloud', true)
+        (1..3).each { logRun(elsewhere, "old-${it}".toString()) }
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        other.catchUp(elsewhere, StoreLog.of(elsewhere), 'cloud')
+        assert IndexSnapshot.write(other, 'cloud', new LocalSnapshotStorage(cloudRoot), 0L, null, tmp).written
+        open()
+        assert (jobs.stateOf('cloud').reason as String).contains('earlier incarnation')
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'snapshot'
+        new LocalSnapshotStorage(cloudRoot).base(tmp).runs == 2
     }
 
     def 'an S3 member whose reads are refused ends failed with the credentials wording'() {

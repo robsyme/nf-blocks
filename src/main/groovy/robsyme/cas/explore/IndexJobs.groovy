@@ -1,6 +1,5 @@
 package robsyme.cas.explore
 
-import java.nio.channels.ClosedByInterruptException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
@@ -124,6 +123,8 @@ class IndexJobs {
         final State before
         final long startedAt
         volatile boolean local
+        /** True once explore's cache holds the member this job scanned. */
+        volatile boolean seeded
 
         Run(String alias, String mode, State before, long startedAt) {
             this.alias = alias
@@ -143,19 +144,22 @@ class IndexJobs {
     @PackageScope Closure<Long> clock = { -> System.currentTimeMillis() }
     /** Called on the job thread with each (phase, done, total), after the state has it. */
     @PackageScope Closure onReport
+    /** Called on the job thread once explore's cache holds the scanned member, before its local snapshot is placed. */
+    @PackageScope Closure onSeeded
 
     private final Map<String, State> states = new ConcurrentHashMap<String, State>()
 
-    /** Guards {@link #queued}, {@link #running}, {@link #started} and {@link #stopping}; notified when a job ends. */
+    /** Guards {@link #queued}, {@link #running} and {@link #started}; notified when a job ends. */
     private final Object lock = new Object()
     /** Members whose local snapshot waits for a refresh, in order. */
     private final LinkedHashSet<String> queued = new LinkedHashSet<String>()
-    /** The member of the job on the thread, or null. */
-    private String running
+    /** The job on the thread, or submitted to it, or null. */
+    private Run running
     private boolean started
-    private boolean stopping
+    /** Set once by {@link #stop}: a job that ends after it was stopped, however it ends. */
+    private volatile boolean stopping
 
-    private final ExecutorService thread = Executors.newSingleThreadExecutor({ Runnable r ->
+    @PackageScope final ExecutorService thread = Executors.newSingleThreadExecutor({ Runnable r ->
         final Thread t = new Thread(r, 'nf-blocks-index')
         t.daemon = true
         return t
@@ -171,7 +175,19 @@ class IndexJobs {
 
     /** The member's index object for members.json and /api/index, every key present; null for an unknown alias. */
     Map<String, Object> stateOf(String alias) {
-        return states.get(alias)?.toMap()
+        return current(alias)?.toMap()
+    }
+
+    /**
+     * The member's state, read as none when it serves a local snapshot whose
+     * file is gone: a cache reset deletes them all, and the cache no longer
+     * holds the member. A running job's state stands until the job ends.
+     */
+    private State current(String alias) {
+        final State s = states.get(alias)
+        if( s == null || s.state == INDEXING || !s.servesLocal() || Files.isRegularFile(localFile(alias)) )
+            return s
+        return new State(NONE, null, session.unindexed().get(alias) ?: 'absent', null, false)
     }
 
     /** Every configured member's index object, in config order. */
@@ -212,8 +228,14 @@ class IndexJobs {
     }
 
     private void classifyHeld(String alias) {
-        if( session.ownSnapshotUnusable(alias, shared) == null ) {
+        final String unusable = session.ownSnapshotUnusable(alias, shared)
+        if( unusable == null ) {
             deleteLocal(alias)
+            states.put(alias, new State(SNAPSHOT, null, null, null, false))
+            return
+        }
+        // A snapshot that could not be looked at (a refused HEAD) is served as before indexing existed, and fails there if it must.
+        if( unusable == CasSession.UNREADABLE ) {
             states.put(alias, new State(SNAPSHOT, null, null, null, false))
             return
         }
@@ -256,7 +278,7 @@ class IndexJobs {
         synchronized( lock ) {
             if( running != null || !queued.isEmpty() || stopping )
                 return refused(409, 'index_running', RUNNING)
-            final State before = states.get(alias)
+            final State before = current(alias)
             if( before.state == SNAPSHOT || (mode == MODE_LOCAL && before.state == LOCAL) )
                 return refused(400, 'already_indexed', "'${alias}' is already indexed".toString())
             final State begun
@@ -276,7 +298,7 @@ class IndexJobs {
 
     /** The member's local snapshot file when it exists and its state serves it; else null. */
     Path localSnapshot(String alias) {
-        final State s = states.get(alias)
+        final State s = current(alias)
         if( s == null || !s.servesLocal() )
             return null
         final Path file = localFile(alias)
@@ -303,7 +325,7 @@ class IndexJobs {
     Map<String, String> unindexedForCopy() {
         final Map<String, String> out = new LinkedHashMap<String, String>()
         for( String alias : session.config.configuredAliases ) {
-            final State s = states.get(alias)
+            final State s = current(alias)
             if( s == null || s.servesLocal() )
                 continue
             if( s.state == NONE || s.state == FAILED )
@@ -330,7 +352,15 @@ class IndexJobs {
             queued.clear()
             stopping = true
         }
-        thread.shutdownNow()
+        final List<Runnable> unstarted = thread.shutdownNow()
+        synchronized( lock ) {
+            // A job submitted but never started has no thread left to end it.
+            if( !unstarted.isEmpty() && running != null ) {
+                states.put(running.alias, running.before)
+                running = null
+                lock.notifyAll()
+            }
+        }
         try {
             thread.awaitTermination(waitMillis, TimeUnit.MILLISECONDS)
         }
@@ -364,7 +394,7 @@ class IndexJobs {
     private State submit(String alias, String mode, State before, String phase, Closure<Void> body) {
         final Run run = new Run(alias, mode, before, clock.call())
         final State begun = new State(INDEXING, before.at, null, mode, run.local, phase, -1L, -1L, run.startedAt)
-        running = alias
+        running = run
         states.put(alias, begun)
         final IndexProgress progress = { String p, long done, long total -> report(run, p, done, total) } as IndexProgress
         thread.execute({ -> runJob(run, progress, body) } as Runnable)
@@ -376,7 +406,7 @@ class IndexJobs {
         while( started && !stopping && running == null && !queued.isEmpty() ) {
             final String alias = queued.iterator().next()
             queued.remove(alias)
-            final State before = states.get(alias)
+            final State before = current(alias)
             // Since it was queued the member may have been pushed, or have failed with nothing to refresh.
             if( before == null || !(before.servesLocal() || before.state == INDEXING) )
                 continue
@@ -389,8 +419,8 @@ class IndexJobs {
             body.call(run, progress)
         }
         catch( Throwable e ) {
-            if( stopped(e) ) {
-                states.put(run.alias, run.before)
+            if( stopping ) {
+                states.put(run.alias, run.seeded ? stoppedAfterSeed(run) : run.before)
             }
             else {
                 final String reason = reasonFor(e)
@@ -408,6 +438,21 @@ class IndexJobs {
         }
     }
 
+    /**
+     * A stop after explore's cache took the member never puts back the state
+     * it started from: local when its snapshot was placed, else indexing with
+     * a refresh queued, as {@link #classify} would find it.
+     */
+    private State stoppedAfterSeed(Run run) {
+        final Path file = localFile(run.alias)
+        if( Files.isRegularFile(file) )
+            return new State(LOCAL, Files.getLastModifiedTime(file).toMillis(), null, run.mode, true)
+        synchronized( lock ) {
+            queued.add(run.alias)
+        }
+        return new State(INDEXING, null, null, MODE_LOCAL, false, IndexProgress.LOG, -1L, -1L, clock.call())
+    }
+
     /** The progress callback: the state takes the step, then {@link #onReport} sees it; a stopped job throws. */
     private void report(Run run, String phase, long done, long total) {
         checkStopped()
@@ -417,20 +462,9 @@ class IndexJobs {
             observer.call(phase, done, total)
     }
 
-    private static void checkStopped() {
-        if( Thread.currentThread().isInterrupted() )
+    private void checkStopped() {
+        if( stopping || Thread.currentThread().isInterrupted() )
             throw new CancellationException('the index job was stopped')
-    }
-
-    /** True when {@code e} is how a stopped job ends rather than a failure. */
-    private static boolean stopped(Throwable e) {
-        for( Throwable c = e; c != null; c = c.cause ) {
-            if( c instanceof CancellationException || c instanceof InterruptedException || c instanceof ClosedByInterruptException )
-                return true
-            if( c.cause == c )
-                break
-        }
-        return Thread.currentThread().isInterrupted()
     }
 
     /**
@@ -445,7 +479,7 @@ class IndexJobs {
         final BlockStore member = session.member(alias)
         final StoreLog storeLog = StoreLog.of(member)
         // Taken before the scan, so the push's guard covers whatever is written meanwhile.
-        final SnapshotBase base = push ? session.snapshotsOf(alias).base(tmp) : null
+        final SnapshotBase base = push ? pushBase(alias) : null
         final String storeId = push ? session.ensureStoreId(alias) : StoreIds.read(member)
         if( push )
             adoptStoreId(alias, storeId)
@@ -464,7 +498,11 @@ class IndexJobs {
                 synchronized( putLock ) {
                     shared.seedFrom(built.file, alias, storeLog)
                 }
-                place(alias, built)
+                run.seeded = true
+                final Closure seeded = onSeeded
+                if( seeded != null )
+                    seeded.call()
+                placeWhole(alias, built)
                 run.local = true
             }
             finally {
@@ -487,7 +525,7 @@ class IndexJobs {
     /** Push to store on a member the cache holds: top up, then write its snapshot from explore's cache, with no scan. */
     private void pushHeld(Run run, IndexProgress progress) {
         final String alias = run.alias
-        final SnapshotBase base = session.snapshotsOf(alias).base(session.config.tmpDir)
+        final SnapshotBase base = pushBase(alias)
         final String storeId = session.ensureStoreId(alias)
         adoptStoreId(alias, storeId)
         progress.report(IndexProgress.LOG, -1L, -1L)
@@ -547,6 +585,17 @@ class IndexJobs {
         }
     }
 
+    /**
+     * What a push guards the member's own snapshot as: none when that snapshot
+     * is from another incarnation, which the explorer would not use and the
+     * push is there to replace.
+     */
+    private SnapshotBase pushBase(String alias) {
+        if( Index.isIncarnationReason(session.ownSnapshotUnusable(alias, shared)) )
+            return null
+        return session.snapshotsOf(alias).base(session.config.tmpDir)
+    }
+
     private void indexedLocally(Run run) {
         states.put(run.alias, new State(LOCAL, clock.call(), null, run.mode, true))
     }
@@ -568,6 +617,22 @@ class IndexJobs {
 
     private Path localFile(String alias) {
         return IndexSnapshot.pathIn(localRoot.resolve(alias))
+    }
+
+    /**
+     * {@link #place}, with an interrupt that came before it held back until it
+     * is done: once the cache holds the member, its local snapshot is placed
+     * even when the job is being stopped.
+     */
+    private void placeWhole(String alias, IndexSnapshot.Built built) {
+        final boolean interrupted = Thread.interrupted()
+        try {
+            place(alias, built)
+        }
+        finally {
+            if( interrupted )
+                Thread.currentThread().interrupt()
+        }
     }
 
     /** Puts {@code built} in place as the member's local snapshot, atomically. */
