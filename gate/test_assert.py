@@ -1107,6 +1107,34 @@ class ProvidersTest(unittest.TestCase):
             self.assertEqual(gate_assert._command_cas_problems(d), ["%s: .command.cas names gone.txt, which is not in the task directory" % d])
 
 
+class CompletionShapeTest(unittest.TestCase):
+    """assert_two requires each run's RunCompletion at schema 3 with providers and an item_lineage link."""
+
+    LINEAGE = cas.Cid(cas.cid_dagcbor(cas.encode({"kind": "ItemLineage"})))
+
+    def problems(self, **rc):
+        return gate_assert._completion_shape_problems("cold", rc)
+
+    def test_schema_3_with_providers_and_an_item_lineage_passes(self):
+        self.assertEqual(self.problems(schema=3, providers={}, item_lineage=self.LINEAGE), [])
+
+    def test_schema_2_fails(self):
+        (message,) = self.problems(schema=2, providers={}, item_lineage=self.LINEAGE)
+        self.assertIn("schema 2", message)
+
+    def test_schema_3_without_providers_fails(self):
+        (message,) = self.problems(schema=3, item_lineage=self.LINEAGE)
+        self.assertIn("without providers", message)
+
+    def test_a_null_item_lineage_fails(self):
+        (message,) = self.problems(schema=3, providers={}, item_lineage=None)
+        self.assertIn("item_lineage", message)
+
+    def test_an_absent_item_lineage_fails(self):
+        (message,) = self.problems(schema=3, providers={})
+        self.assertIn("item_lineage", message)
+
+
 class WalkTest(unittest.TestCase):
     def test_an_executable_file_is_regular(self):
         with tempfile.TemporaryDirectory() as d:

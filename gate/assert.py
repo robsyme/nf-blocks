@@ -560,9 +560,7 @@ def assert_two(gate):
     # item addresses above must not care which.
     cold_rc, again_rc = gate.run("cold").completion or {}, gate.run("again").completion or {}
     for name, rc in (("cold", cold_rc), ("again", again_rc)):
-        if rc.get("schema") != 2 or "providers" not in rc:
-            problems.append("run %s's RunCompletion is schema %r without providers; "
-                            "ticket 16 moves them there" % (name, rc.get("schema")))
+        problems.extend(_completion_shape_problems(name, rc))
     cold_p, again_p = _provider_of(cold_rc), _provider_of(again_rc)
     raw_leaves = {_address_text(leaf.get("address")) for _cid, item in gate.run("again").items(gate)
                   for leaf in _leaves(item.get("value")) if leaf.get("address") is not None
@@ -589,6 +587,19 @@ def assert_two(gate):
                   % (len(after_again["blocks"]), len(after_again["log"]),
                      len(after_again["nf"]), len(after_again["coords"]),
                      len(raw_cold), len(cold_items), len(raw_leaves)))
+
+
+def _completion_shape_problems(name, rc):
+    """Problems with a run's RunCompletion shape: schema 3 (ticket 16's providers,
+    cross-run item lineage's item_lineage), with the ItemLineage linked."""
+    if rc.get("schema") != 3 or "providers" not in rc:
+        return ["run %s's RunCompletion is schema %r without providers; ticket 16 "
+                "moves them there and cross-run item lineage makes it schema 3"
+                % (name, rc.get("schema"))]
+    if rc.get("item_lineage") is None:
+        return ["run %s's RunCompletion has item_lineage %r, expected a link to "
+                "its ItemLineage" % (name, rc.get("item_lineage"))]
+    return []
 
 
 def _provider_of(completion):
