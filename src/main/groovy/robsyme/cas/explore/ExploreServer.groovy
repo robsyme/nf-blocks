@@ -292,7 +292,14 @@ class ExploreServer {
             // may carry a query string, and this endpoint's only query
             // parameter is dry_run, but a client could still send ?token=...
             // by mistake (the token belongs in a header, never a query).
-            log.warn("explore: ${exchange.requestMethod} ${exchange.requestURI.rawPath} failed: ${e.message}", e)
+            final String failed = "explore: ${exchange.requestMethod} ${exchange.requestURI.rawPath} failed: ${e.message}"
+            log.warn(failed, e)
+            // A plugin verb keeps no log file, so the page's "internal error"
+            // would otherwise leave nothing to read.
+            if( err != null ) {
+                err.println("nf-blocks:${failed}")
+                err.flush()
+            }
             try {
                 text(exchange, 500, 'internal error')
             }

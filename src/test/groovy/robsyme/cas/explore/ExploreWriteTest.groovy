@@ -14,6 +14,7 @@ import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.Put
+import robsyme.cas.core.PutResult
 import robsyme.cas.core.Samplesheet
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
@@ -358,5 +359,31 @@ class ExploreWriteTest extends Specification {
         csv.text().contains(text)
         json.status == 200
         ((List<Map>) new JsonSlurper().parseText(json.text())).find { it.sample == 'A' }.note == text
+    }
+
+    def 'a put that fails unexpectedly answers 500 and names the failure on the terminal, without the query string'() {
+        given:
+        server.stop()
+        final Put failing = new Put(store, store, index, { -> 'ada' }, { -> System.currentTimeMillis() }, { -> }) {
+            @Override
+            PutResult put(byte[] body, boolean dryRun) { throw new IllegalStateException('Forbidden (Service: S3, Status Code: 403)') }
+        }
+        final ByteArrayOutputStream terminal = new ByteArrayOutputStream()
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        // ExploreCommand always hands the server its stderr through copies(); this test copies nothing.
+        server = new ExploreServer(members, 'lab', '<!doctype html>'.bytes, failing, token)
+            .copies({ Map request, boolean dryRun -> null } as ExploreServer.Copier, new PrintStream(terminal, true, 'UTF-8'))
+            .start(0)
+
+        when:
+        final def r = post('/api/put?dry_run=true&token=' + token, good())
+
+        then:
+        r.status == 500
+        r.text().trim() == 'internal error'
+        final String said = terminal.toString('UTF-8')
+        said.contains('nf-blocks:explore: POST /api/put failed: Forbidden (Service: S3, Status Code: 403)')
+        !said.contains(token)
     }
 }
