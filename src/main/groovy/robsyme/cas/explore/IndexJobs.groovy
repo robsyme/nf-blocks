@@ -447,6 +447,8 @@ class IndexJobs {
         // Taken before the scan, so the push's guard covers whatever is written meanwhile.
         final SnapshotBase base = push ? session.snapshotsOf(alias).base(tmp) : null
         final String storeId = push ? session.ensureStoreId(alias) : StoreIds.read(member)
+        if( push )
+            adoptStoreId(alias, storeId)
         Files.createDirectories(tmp)
         final Path file = tmp.resolve("nf-blocks-index-${alias}-${UUID.randomUUID()}.sqlite".toString())
         Index scratch = null
@@ -487,8 +489,8 @@ class IndexJobs {
         final String alias = run.alias
         final SnapshotBase base = session.snapshotsOf(alias).base(session.config.tmpDir)
         final String storeId = session.ensureStoreId(alias)
+        adoptStoreId(alias, storeId)
         progress.report(IndexProgress.LOG, -1L, -1L)
-        // Records the store-id just created, and adds what the member logged since.
         catchUp(alias)
         progress.report(IndexProgress.PUSH, -1L, -1L)
         final Index own = session.openIndex()
@@ -532,6 +534,17 @@ class IndexJobs {
         }
         if( cause != null )
             throw new IOException("could not catch up the index from store member '${alias}': ${cause.message}".toString(), cause)
+    }
+
+    /**
+     * A push's store-id in explore's cache before anything catches up: else a
+     * member with no Store Log entries, whose rows here no watermark dates,
+     * would read as replaced and the whole cache would be reset.
+     */
+    private void adoptStoreId(String alias, String storeId) {
+        synchronized( putLock ) {
+            shared.adoptStoreId(alias, storeId)
+        }
     }
 
     private void indexedLocally(Run run) {

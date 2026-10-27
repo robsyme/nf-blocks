@@ -2150,6 +2150,19 @@ class Index implements Closeable {
     String storeIdOf(String member) { meta(META_STORE_ID + ':' + member) }
 
     /**
+     * Records {@code id} as the store-id of {@code member} when this cache has
+     * none for it, without {@link #reconcileStoreIds}'s look at the rows it
+     * holds: for a writer that has just given the member its first id and
+     * knows those rows came from that member (an explorer push, background
+     * store indexing spec §6.5). A different recorded id is left for
+     * {@link #reconcileStoreIds} to judge.
+     */
+    void adoptStoreId(String member, String id) {
+        if( id != null && storeIdOf(member) == null )
+            setMeta(META_STORE_ID + ':' + member, id)
+    }
+
+    /**
      * Empties every table but schema_version, meta included: a cold cache (plan
      * decision 1). The one meta row kept is `block_present_generation`, moved
      * on by one, so a build in another process that read it before the reset

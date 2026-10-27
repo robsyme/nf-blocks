@@ -239,6 +239,41 @@ class IndexJobsTest extends Specification {
         jobs.unindexedForCopy() == [ro: 'absent']
     }
 
+    def 'a push on a member with no store-id and an empty Store Log keeps the cache and pushes its runs (#how)'() {
+        given: 'cloud holds a run as a block only: no Store Log entry and no store-id'
+        final Path quietRoot = tmp.resolve('quiet')
+        final LocalBlockStore quiet = new LocalBlockStore(quietRoot, 'cloud', true)
+        quiet.putDagCbor(Fixtures.runCompletion(quiet.putDagCbor(Fixtures.runManifest(run_name: 'quiet-1', nf_run_hash: 'quiet-1')), []))
+        open(config([location: quietRoot.toString()]))
+        and: 'ro indexed on this machine'
+        jobs.start('ro', 'local')
+        jobs.awaitIdle(30_000)
+        assert jobs.localSnapshot('ro') != null
+        and:
+        if( how == 'Push to store' ) {
+            jobs.start('cloud', 'local')
+            jobs.awaitIdle(30_000)
+            assert jobs.stateOf('cloud').state == 'local'
+        }
+
+        when: 'the push, then a catch-up as the next save would run'
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+        synchronized( putLock ) {
+            session.catchUpIndex(shared)
+        }
+
+        then:
+        jobs.stateOf('cloud').state == 'snapshot'
+        new LocalSnapshotStorage(quietRoot).base(tmp).runs == 1
+        shared.storeIdOf('cloud') == StoreIds.read(quiet)
+        shared.countRows('run') == labRuns + 1
+        shared.isIndexed('ro') && jobs.localSnapshot('ro') != null
+
+        where:
+        how << ['Index and push', 'Push to store']
+    }
+
     def 'refusals: #alias #mode is #status #error'() {
         expect:
         jobs.start(alias, mode).with { [status, body.error] } == [status, error]
