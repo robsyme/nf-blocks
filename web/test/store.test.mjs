@@ -60,7 +60,7 @@ test('a file:// page may still name an http store', async () => {
 
 test('a failure while the page server is down is explained as server_gone, naming explore and the origin', async () => {
   const down = async () => { throw new TypeError('Load failed') }
-  const failure = new Error('could not fetch http://127.0.0.1:54905/index/v6.sqlite: Load failed')
+  const failure = new Error('could not fetch http://127.0.0.1:54905/index/v7.sqlite: Load failed')
   const e = await explainFailure(failure, 'http://127.0.0.1:54905/?member=lab&token=t#/run/x', { fetchFn: down })
   assert.equal(e.code, 'server_gone')
   assert.match(e.message, /http:\/\/127\.0\.0\.1:54905 is not answering/)

@@ -79,7 +79,7 @@ test('itemBlock reads the item from its block alone; item adds the claim state',
 test('on a lean snapshot a collection is sized from its OutputCollection block, with no snapshot query', async () => {
   const now = Date.now()
   const member = await buildMember({ now, lean: true })
-  const { explorer, queries } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer, queries } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const size = await explorer.collectionSize(member.runs.R1.collection)
   assert.deepEqual([size.bytes, size.blocks, size.items, size.partial], [20, 2, 2, false])
   assert.equal((await explorer.runSize(member.runs.R1.completion)).bytes, 20)

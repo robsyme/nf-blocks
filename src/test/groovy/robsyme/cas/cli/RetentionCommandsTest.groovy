@@ -314,7 +314,7 @@ class RetentionCommandsTest extends Specification {
         then:
         status == 0
         ((String) json.snapshot).startsWith('wrote')
-        runsIn(store.resolve('index/v6.sqlite')) == [kept.completion.toString()]
+        runsIn(store.resolve('index/v7.sqlite')) == [kept.completion.toString()]
         runsIn(indexPath) == [kept.completion.toString()]
         StoreLog.read(f.store).any { it.kind == StoreLogKind.FORGET }
     }
@@ -333,7 +333,7 @@ class RetentionCommandsTest extends Specification {
 
         then:
         line.startsWith('wrote')
-        runsIn(store.resolve('index/v6.sqlite')) == [kept.completion.toString()]
+        runsIn(store.resolve('index/v7.sqlite')) == [kept.completion.toString()]
         runsIn(indexPath) == [kept.completion.toString()]
     }
 }

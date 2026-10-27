@@ -92,9 +92,9 @@ async function open({ log = null, inputSetStored = true } = {}) {
           snapshotClaim('MA', item.A, 'add', 'project', linkText(ids.P1))
           snapshotClaim('MP2', R1, 'add', 'project', linkText(ids.P2))
           snapshotClaim('N1', ids.P1, 'set', 'name', 'Liver')
-          row("INSERT INTO run_input VALUES (?, 'task', 'A_R1.fastq.gz', ?, 100, 'A')", [runs.R1.completion, ids.reads.toString()])
-          row("INSERT INTO run_input VALUES (?, 'task', 'B_R1.fastq.gz', ?, 100, 'B')", [runs.R1.completion, rawCid('reads-B').toString()])
-          row("INSERT INTO run_input VALUES (?, 'task', 'other.fastq.gz', ?, 100, 'Q')", ['bafyother', rawCid('reads-B').toString()])
+          row("INSERT INTO run_input VALUES (?, 'task', 'A_R1.fastq.gz', ?, 100, 'A', 0)", [runs.R1.completion, ids.reads.toString()])
+          row("INSERT INTO run_input VALUES (?, 'task', 'B_R1.fastq.gz', ?, 100, 'B', 1)", [runs.R1.completion, rawCid('reads-B').toString()])
+          row("INSERT INTO run_input VALUES (?, 'task', 'other.fastq.gz', ?, 100, 'Q', 0)", ['bafyother', rawCid('reads-B').toString()])
           row("INSERT INTO handoff VALUES (?, 'nf-core/differentialabundance', 'bafysel', ?, 'ben@x', '2026-10-24T10:00:00.000Z')", [ids.Hs.toString(), ids.P1.toString()])
           row("INSERT INTO handoff VALUES ('bafyhother', 'nf-core/differentialabundance', 'bafysel', NULL, 'ben@x', '2026-10-23T10:00:00.000Z')", [])
         },

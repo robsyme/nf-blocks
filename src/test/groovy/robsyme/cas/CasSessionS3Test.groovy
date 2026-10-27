@@ -77,7 +77,7 @@ class CasSessionS3Test extends Specification {
         then:
         buckets['member'].objects.keySet().any { it.startsWith('cas/log/') && it.contains('-selection-') }
         snap.written
-        buckets['member'].objects['cas/index/v6.sqlite'].metadata.runs == '0'
+        buckets['member'].objects['cas/index/v7.sqlite'].metadata.runs == '0'
 
         cleanup:
         index?.close()

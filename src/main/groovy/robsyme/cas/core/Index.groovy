@@ -14,6 +14,7 @@ import java.sql.Statement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Stream
 
+import groovy.json.JsonOutput
 import groovy.transform.Canonical
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
@@ -35,7 +36,7 @@ import groovy.util.logging.Slf4j
 class Index implements Closeable {
 
     /** Bumped whenever the schema below changes; a mismatch deletes and recreates. */
-    static final int SCHEMA_VERSION = 6
+    static final int SCHEMA_VERSION = 7
 
     // The SQL the block explorer's page runs too (DESIGN.md §12, §15). The page
     // holds a copy in web/src/queries.json; ExplorerQueriesTest pins them equal.
@@ -556,18 +557,34 @@ class Index implements Closeable {
             // block a `project` entry announced. `project_stats`: per project,
             // written by the snapshot build only, from the current membership
             // Claims. `run_input`: one row per InputSet input of an indexed
-            // run; `address` is null when the run did not hash it. `handoff`:
+            // run; `address` is null when the run did not hash it, `position`
+            // is the input's index in the InputSet's `inputs`. `handoff`:
             // one row per Handoff block a `handoff` entry announced.
             // `claim_current_attribute_value`: "members of a project" without a scan.
             'CREATE TABLE project(project_cid TEXT PRIMARY KEY, name TEXT, description TEXT, created_by TEXT, created_at TEXT)',
             '''CREATE TABLE project_stats(project_cid TEXT PRIMARY KEY, reachable_bytes INTEGER, pinned_bytes INTEGER,
              held_bytes INTEGER, releasing_bytes INTEGER, roots INTEGER)''',
-            'CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT)',
+            'CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT, position INTEGER)',
             'CREATE INDEX run_input_address ON run_input(address, role, completion_cid)',
             'CREATE INDEX run_input_completion ON run_input(completion_cid)',
             '''CREATE TABLE handoff(
              cid TEXT PRIMARY KEY, template TEXT, selection_cid TEXT, project_cid TEXT, asserted_by TEXT, at TEXT)''',
             'CREATE INDEX claim_current_attribute_value ON claim_current(attribute, value)',
+            // Cross-run lineage (spec §5.4), keyed by position in the run's
+            // InputSet. `input_origin`: one row per (input, Origin), the
+            // collection and Selection null when the Origin has none.
+            // `item_input`: one row per item of the run's ItemLineage,
+            // `positions` the JSON array of its input positions. `item_task`:
+            // one row per (item, task that made it).
+            'CREATE TABLE input_origin(completion_cid TEXT, position INTEGER, item_cid TEXT, collection_cid TEXT, selection_cid TEXT)',
+            'CREATE INDEX input_origin_item ON input_origin(item_cid)',
+            'CREATE INDEX input_origin_completion ON input_origin(completion_cid, position)',
+            'CREATE TABLE item_input(completion_cid TEXT, item_cid TEXT, positions TEXT)',
+            'CREATE INDEX item_input_item ON item_input(item_cid)',
+            'CREATE INDEX item_input_completion ON item_input(completion_cid)',
+            'CREATE TABLE item_task(completion_cid TEXT, item_cid TEXT, task_hash TEXT, process TEXT, tag TEXT)',
+            'CREATE INDEX item_task_item ON item_task(item_cid)',
+            'CREATE INDEX item_task_completion ON item_task(completion_cid)',
         ]
     }
 
@@ -607,8 +624,9 @@ class Index implements Closeable {
     /**
      * Indexes one RunCompletion and its closure: the RunManifest, every
      * OutputCollection, every OutputItem and every Leaf, the blocks the
-     * Leaves reach through DirectoryManifests, and its InputSet when it links
-     * one ({@link #ingestInputSet}). Idempotent: the run's rows are
+     * Leaves reach through DirectoryManifests, and its InputSet and
+     * ItemLineage when it links them ({@link #ingestInputSet},
+     * {@link #ingestItemLineage}). Idempotent: the run's rows are
      * replaced, not added to. A referenced block that has not arrived leaves a
      * `missing(have, needed)` row and the rest of the run is indexed.
      */
@@ -638,6 +656,9 @@ class Index implements Closeable {
             final Cid inputSet = asCid(completionBlock.get('input_set'))
             if( inputSet != null )
                 ingestInputSet(store, completion, inputSet)
+            final Cid itemLineage = asCid(completionBlock.get('item_lineage'))
+            if( itemLineage != null )
+                ingestItemLineage(store, completion, itemLineage, inputSet)
             clearAbsentNamedBy(store, completion, member)
         }
     }
@@ -695,62 +716,92 @@ class Index implements Closeable {
         }
     }
 
-    /** The meta key prefix of a run's wait record (see {@link #ingestInputSet}); IndexSnapshot and the seed copy them with the run. */
+    /** The meta key prefixes of a run's wait records (see {@link #readRunRecord}); IndexSnapshot and the seed copy them with the run. */
     @PackageScope static final String INPUTSET_WAIT = 'inputset_wait:'
+    @PackageScope static final String ITEMLINEAGE_WAIT = 'itemlineage_wait:'
+
+    /** A record a RunCompletion links beside its collections, as {@link #readRunRecord} waits for it and warns about it. */
+    @Canonical
+    private static final class RunRecord {
+        String kind
+        String waitPrefix
+        /** How a warning names the record, and what a run is indexed without when it is malformed. */
+        String what
+        String without
+    }
+
+    private static final RunRecord INPUT_SET_RECORD = new RunRecord(Records.INPUT_SET, INPUTSET_WAIT, 'input set', 'its inputs')
+    private static final RunRecord ITEM_LINEAGE_RECORD = new RunRecord(Records.ITEM_LINEAGE, ITEMLINEAGE_WAIT, 'item lineage', 'item lineage')
 
     /**
-     * The run's InputSet (P4 plan 1.3): one `run_input` row per input, and
-     * one `consumer` row per distinct (address, name, role) of the addressed
-     * ones, `how` the role. Inputs are what the run read, not what it owns
-     * or the store holds, so an input address is never a `missing`, `block`
-     * or `block_ref` row (R2), and neither is the InputSet itself: an InputSet
-     * says nothing of stored bytes, so it must not make storage figures
-     * partial. One not arrived, or one that cannot be read for now, leaves a
-     * wait record, meta `inputset_wait:<completion>` = its cid, which
-     * {@link #retryMissingInputSets} asks about at every catch-up of the
-     * run's member. One that is there but does not read as an InputSet is
-     * warned about once and skipped, with no wait record; the run is indexed
-     * either way. The caller owns the transaction.
+     * A run's InputSet or ItemLineage, parsed, or null when there is none to
+     * index for now. Inputs and lineage are what the run read, not what it
+     * owns or the store holds, so neither the record nor anything it names is
+     * a `missing`, `block` or `block_ref` row (R2): it says nothing of stored
+     * bytes and must not make storage figures partial. One not arrived, or one
+     * that cannot be read for now, leaves a wait record, meta
+     * `<record.waitPrefix><completion>` = its cid, which {@link #retryWaiting} asks
+     * about at every catch-up of the run's member. One that is there but does
+     * not parse is warned about once and skipped, with no wait record. Clears
+     * the run's previous wait record first; the caller owns the transaction.
      */
-    private void ingestInputSet(BlockStore store, Cid completion, Cid inputSetCid) {
-        final String wait = INPUTSET_WAIT + completion
-        final String c = completion.toString()
-        update('DELETE FROM run_input WHERE completion_cid = ?', [(Object) c])
-        update('DELETE FROM consumer WHERE completion_cid = ?', [(Object) c])
+    private <T> T readRunRecord(BlockStore store, Cid completion, Cid cid, RunRecord record, Closure<T> parse) {
+        final String wait = record.waitPrefix + completion
         update('DELETE FROM meta WHERE key = ?', [(Object) wait])
-        InputSet set = null
+        T parsed = null
         String refused = null
         try {
-            final Map block = readBlock(store, inputSetCid, Records.INPUT_SET, true)
+            final Map block = readBlock(store, cid, record.kind, true)
             if( block != null ) {
                 try {
-                    set = InputSet.fromCbor(block)
+                    parsed = parse.call(block)
                 }
                 catch( RuntimeException e ) {
                     refused = e.message
                 }
             }
-            else if( store.has(inputSetCid) )
-                refused = "not an ${Records.INPUT_SET} block of at most ${MAX_BLOCK_BYTES} bytes"
+            else if( store.has(cid) )
+                refused = "not an ${record.kind} block of at most ${MAX_BLOCK_BYTES} bytes"
         }
         catch( IOException | UncheckedIOException e ) {
-            warnOnce(inputSetCid.toString(), "input set ${inputSetCid} of run ${completion} could not be read (${e.message}); it will be retried")
-            setMeta(wait, inputSetCid.toString())
-            return
+            warnOnce(cid.toString(), "${record.what} ${cid} of run ${completion} could not be read (${e.message}); it will be retried")
+            setMeta(wait, cid.toString())
+            return null
         }
         if( refused != null ) {
-            warnOnce('input-set-malformed:' + inputSetCid, "input set ${inputSetCid} of run ${completion} is not a readable InputSet block (${refused}); " +
-                'the run is indexed without its inputs')
-            return
+            warnOnce("${record.kind}-malformed:${cid}".toString(), "${record.what} ${cid} of run ${completion} is not a readable ${record.kind} block (${refused}); " +
+                "the run is indexed without ${record.without}")
+            return null
         }
-        if( set == null ) {
-            setMeta(wait, inputSetCid.toString())
+        if( parsed == null )
+            setMeta(wait, cid.toString())
+        return parsed
+    }
+
+    /**
+     * The run's InputSet (P4 plan 1.3, cross-run lineage spec §5.4): one
+     * `run_input` row per input at its position in `inputs`, one
+     * `input_origin` row per Origin of each, and one `consumer` row per
+     * distinct (address, name, role) of the addressed ones, `how` the role.
+     * Waits and warns as {@link #readRunRecord} says; the run is indexed
+     * either way. The caller owns the transaction.
+     */
+    private void ingestInputSet(BlockStore store, Cid completion, Cid inputSetCid) {
+        final String c = completion.toString()
+        update('DELETE FROM run_input WHERE completion_cid = ?', [(Object) c])
+        update('DELETE FROM input_origin WHERE completion_cid = ?', [(Object) c])
+        update('DELETE FROM consumer WHERE completion_cid = ?', [(Object) c])
+        final InputSet set = readRunRecord(store, completion, inputSetCid, INPUT_SET_RECORD) { Map block -> InputSet.fromCbor(block) }
+        if( set == null )
             return
-        }
         final Set<List<String>> consumers = new LinkedHashSet<List<String>>()
-        for( InputSet.Input input : set.inputs ) {
-            update('INSERT INTO run_input(completion_cid, role, name, address, size, sample) VALUES (?, ?, ?, ?, ?, ?)',
-                [(Object) c, input.role, input.name, input.address?.toString(), input.size, input.sample])
+        for( int position = 0; position < set.inputs.size(); position++ ) {
+            final InputSet.Input input = set.inputs.get(position)
+            update('INSERT INTO run_input(completion_cid, role, name, address, size, sample, position) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [(Object) c, input.role, input.name, input.address?.toString(), input.size, input.sample, position])
+            for( InputSet.Origin origin : input.from ?: Collections.<InputSet.Origin> emptyList() )
+                update('INSERT INTO input_origin(completion_cid, position, item_cid, collection_cid, selection_cid) VALUES (?, ?, ?, ?, ?)',
+                    [(Object) c, position, origin.item.toString(), origin.collection?.toString(), origin.selection?.toString()])
             if( input.address != null )
                 consumers.add([input.address.toString(), input.name, input.role])
         }
@@ -759,33 +810,81 @@ class Index implements Closeable {
     }
 
     /**
-     * The wait records of the member's runs ({@link #ingestInputSet}): each
-     * InputSet is asked about at every catch-up of the member, one `has`
-     * each, and ingested once it is there, which clears the record (a
-     * malformed one clears it too, with its warning). Nothing else of a run
-     * is asked about here: a missing manifest or OutputCollection waits as
-     * before.
+     * The run's ItemLineage (cross-run lineage spec §5.4): one `item_input`
+     * row per item, its input positions as a JSON array, and one `item_task`
+     * row per task that made it. Its positions index the InputSet it names,
+     * so a lineage naming another InputSet than the run's
+     * ({@code inputSetCid}) is warned about once and nothing of it is
+     * written. Waits and warns as {@link #readRunRecord} says; the run is
+     * indexed either way. The caller owns the transaction.
+     */
+    private void ingestItemLineage(BlockStore store, Cid completion, Cid lineageCid, Cid inputSetCid) {
+        final String c = completion.toString()
+        update('DELETE FROM item_input WHERE completion_cid = ?', [(Object) c])
+        update('DELETE FROM item_task WHERE completion_cid = ?', [(Object) c])
+        final ItemLineage lineage = readRunRecord(store, completion, lineageCid, ITEM_LINEAGE_RECORD) { Map block -> ItemLineage.fromCbor(block) }
+        if( lineage == null )
+            return
+        if( lineage.inputSet != inputSetCid ) {
+            warnOnce("item-lineage-input-set:${lineageCid}".toString(), "item lineage ${lineageCid} of run ${completion} names input set ${lineage.inputSet}, " +
+                "not the run's ${inputSetCid}; the run is indexed without item lineage")
+            return
+        }
+        for( ItemLineage.Derived derived : lineage.items ) {
+            final String item = derived.item.toString()
+            update('INSERT INTO item_input(completion_cid, item_cid, positions) VALUES (?, ?, ?)', [(Object) c, item, JsonOutput.toJson(derived.inputs)])
+            for( ItemLineage.TaskRef task : derived.tasks )
+                update('INSERT INTO item_task(completion_cid, item_cid, task_hash, process, tag) VALUES (?, ?, ?, ?, ?)',
+                    [(Object) c, item, task.hash, task.process, task.tag])
+        }
+    }
+
+    /**
+     * The InputSet wait records of the member's runs ({@link #readRunRecord}).
+     * Nothing else of a run is asked about here: a missing manifest or
+     * OutputCollection waits as before.
      */
     private void retryMissingInputSets(BlockStore store, String member) {
+        retryWaiting(store, member, INPUTSET_WAIT) { Cid completion, Cid inputSet -> ingestInputSet(store, completion, inputSet) }
+    }
+
+    /** The ItemLineage wait records of the member's runs, each checked against the InputSet its RunCompletion links. */
+    private void retryMissingItemLineages(BlockStore store, String member) {
+        retryWaiting(store, member, ITEMLINEAGE_WAIT) { Cid completion, Cid lineage ->
+            final Map completionBlock = readBlock(store, completion, 'RunCompletion')
+            // An indexed run's completion has arrived; one unreadable for now keeps its wait record.
+            if( completionBlock != null )
+                ingestItemLineage(store, completion, lineage, asCid(completionBlock.get('input_set')))
+        }
+    }
+
+    /**
+     * Each wait record under {@code prefix} of the member's runs: its record
+     * is asked about at every catch-up of the member, one `has` each, and
+     * handed to {@code ingest} (completion, record cid) in its own
+     * transaction once it is there, which clears the wait record (a malformed
+     * one clears it too, with its warning).
+     */
+    private void retryWaiting(BlockStore store, String member, String prefix, Closure ingest) {
         final List<Cid[]> waiting = new ArrayList<Cid[]>()
         // The GLOB prefix is searched in meta's key index; a run is looked up by its key.
         query('''SELECT r.completion_cid, m.value FROM meta m JOIN run r ON r.completion_cid = substr(m.key, ?)
                  WHERE m.key GLOB ? AND (r.member = ? OR r.completion_cid IN (SELECT cid FROM log_entry WHERE member = ? AND kind = 'run'))
-                 ORDER BY r.completion_cid''', [(Object) (INPUTSET_WAIT.length() + 1), INPUTSET_WAIT + '*', member, member]) { ResultSet rs ->
+                 ORDER BY r.completion_cid''', [(Object) (prefix.length() + 1), prefix + '*', member, member]) { ResultSet rs ->
             waiting.add([Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2))] as Cid[])
         }
         for( Cid[] each : waiting ) {
             final Cid completion = each[0]
-            final Cid inputSet = each[1]
+            final Cid record = each[1]
             try {
-                if( !store.has(inputSet) )
+                if( !store.has(record) )
                     continue
             }
             catch( IOException | UncheckedIOException e ) {
-                warnOnce(inputSet.toString(), "block ${inputSet} is still unreachable (${e.message}); will retry")
+                warnOnce(record.toString(), "block ${record} is still unreachable (${e.message}); will retry")
                 continue
             }
-            withTransaction { ingestInputSet(store, completion, inputSet) }
+            withTransaction { ingest.call(completion, record) }
         }
     }
 
@@ -949,7 +1048,11 @@ class Index implements Closeable {
         update('DELETE FROM producer WHERE completion_cid = ?', [text])
         update('DELETE FROM consumer WHERE completion_cid = ?', [text])
         update('DELETE FROM run_input WHERE completion_cid = ?', [text])
+        update('DELETE FROM input_origin WHERE completion_cid = ?', [text])
+        update('DELETE FROM item_input WHERE completion_cid = ?', [text])
+        update('DELETE FROM item_task WHERE completion_cid = ?', [text])
         update('DELETE FROM meta WHERE key = ?', [(Object) (INPUTSET_WAIT + text)])
+        update('DELETE FROM meta WHERE key = ?', [(Object) (ITEMLINEAGE_WAIT + text)])
         update('DELETE FROM collection WHERE completion_cid = ?', [text])
         update('DELETE FROM run WHERE completion_cid = ?', [text])
     }
@@ -983,6 +1086,7 @@ class Index implements Closeable {
         retryMissingLogged(store, member, holders)
         retryMissingContent(store)
         retryMissingInputSets(store, member)
+        retryMissingItemLineages(store, member)
         final String key = watermarkKey(member)
         final List<StoreLogEntry> entries = storeLog.entriesSince(meta(key))
         if( !entries )
@@ -2432,12 +2536,16 @@ class Index implements Closeable {
                         'DELETE FROM transfer WHERE cid = ?',
                         'DELETE FROM consumer WHERE completion_cid = ?',
                         'DELETE FROM run_input WHERE completion_cid = ?',
+                        'DELETE FROM input_origin WHERE completion_cid = ?',
+                        'DELETE FROM item_input WHERE completion_cid = ?',
+                        'DELETE FROM item_task WHERE completion_cid = ?',
                         'DELETE FROM project WHERE project_cid = ?',
                         'DELETE FROM handoff WHERE cid = ?',
                         'DELETE FROM log_entry WHERE cid = ?',
                         'DELETE FROM missing WHERE have_cid = ? OR needed_cid = ?'] )
                     update(sql, sql.count('?') == 2 ? [t, t] as List<Object> : [t] as List<Object>)
                 update('DELETE FROM meta WHERE key = ?', [(Object) (INPUTSET_WAIT + t)])
+                update('DELETE FROM meta WHERE key = ?', [(Object) (ITEMLINEAGE_WAIT + t)])
             }
             dropUnreachableContentMissing()
             // A forgotten pin or retain Claim may leave a block releasing-only: every member looks again.

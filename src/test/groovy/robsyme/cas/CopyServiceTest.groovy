@@ -217,7 +217,7 @@ class CopyServiceTest extends Specification {
         t.timestamp == Index.isoMillis(log[0].writtenAtMillis)
 
         and: 'the snapshot of org was written'
-        Files.exists(tmp.resolve('org/index/v6.sqlite'))
+        Files.exists(tmp.resolve('org/index/v7.sqlite'))
     }
 
     def 'a carried membership brings its Project, logged as project with its Claims, (P4 1.8)'() {
@@ -569,7 +569,7 @@ class CopyServiceTest extends Specification {
         dest.has(log[0].cid)
         log*.kind.count { it == StoreLogKind.RUN } == 1
         o.body.snapshot == 'written'
-        buckets['org-bucket'].objects.containsKey('cas/index/v6.sqlite')
+        buckets['org-bucket'].objects.containsKey('cas/index/v7.sqlite')
     }
 
     def 'a read-only member is not a target'() {

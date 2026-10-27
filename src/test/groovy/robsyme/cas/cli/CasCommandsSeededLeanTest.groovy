@@ -47,7 +47,7 @@ class CasCommandsSeededLeanTest extends Specification {
     }
 
     private Map snapMeta() {
-        DriverManager.getConnection("jdbc:sqlite:${tempDir.resolve('store/index/v6.sqlite')}").withCloseable { c ->
+        DriverManager.getConnection("jdbc:sqlite:${tempDir.resolve('store/index/v7.sqlite')}").withCloseable { c ->
             def rs = c.createStatement().executeQuery('SELECT key, value FROM meta'); def m = [:]
             while( rs.next() ) m[rs.getString(1)] = rs.getString(2)
             def r2 = c.createStatement().executeQuery('SELECT (SELECT count(*) FROM block_ref), (SELECT count(*) FROM store_stats), (SELECT count(*) FROM run)')

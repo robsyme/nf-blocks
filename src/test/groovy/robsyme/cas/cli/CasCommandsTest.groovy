@@ -50,7 +50,7 @@ class CasCommandsTest extends Specification {
 
         when:
         final int status = run('snapshot')
-        final Path file = tempDir.resolve('store/index/v6.sqlite')
+        final Path file = tempDir.resolve('store/index/v7.sqlite')
 
         then:
         status == 0
@@ -65,7 +65,7 @@ class CasCommandsTest extends Specification {
     def 'snapshot says not rewritten: fewer_runs, and exits 0, when the stored snapshot has more runs than the cache'() {
         given: 'a stored snapshot counting three runs, and a Store Log with one'
         logRun()
-        final Path file = tempDir.resolve('store/index/v6.sqlite')
+        final Path file = tempDir.resolve('store/index/v7.sqlite')
         Files.createDirectories(file.parent)
         DriverManager.getConnection("jdbc:sqlite:${file}").withCloseable { c ->
             c.createStatement().withCloseable { st ->
@@ -94,7 +94,7 @@ class CasCommandsTest extends Specification {
             }
         }
         // A lean-seeded cache does not replace a snapshot with figures (fix round 3, item 3): this is a first write.
-        java.nio.file.Files.delete(tempDir.resolve('store/index/v6.sqlite'))
+        java.nio.file.Files.delete(tempDir.resolve('store/index/v7.sqlite'))
         out.reset()
 
         when:
@@ -187,7 +187,7 @@ class CasCommandsTest extends Specification {
 
         then:
         status == 0
-        Files.isRegularFile(tempDir.resolve('store/index/v6.sqlite'))
+        Files.isRegularFile(tempDir.resolve('store/index/v7.sqlite'))
         out.toString().contains('1 runs')
     }
 
@@ -204,7 +204,7 @@ class CasCommandsTest extends Specification {
 
         then: 'cas.stores comes from the home config, lineage from the launch directory'
         status == 0
-        Files.isRegularFile(tempDir.resolve('store/index/v6.sqlite'))
+        Files.isRegularFile(tempDir.resolve('store/index/v7.sqlite'))
     }
 
     def 'without a Launcher, NXF_CONFIG_FILE names the launch directory config'() {
@@ -219,7 +219,7 @@ class CasCommandsTest extends Specification {
 
         then:
         status == 0
-        Files.isRegularFile(tempDir.resolve('store/index/v6.sqlite'))
+        Files.isRegularFile(tempDir.resolve('store/index/v7.sqlite'))
     }
 
     def 'without a Launcher and without any config file, the verb reports the missing store'() {
@@ -280,9 +280,9 @@ class CasCommandsTest extends Specification {
         then: 'the cache and the snapshot both lose the run, though the snapshot had a watermark and more runs'
         status == 0
         out.toString().contains('reindexed')
-        out.toString().contains("wrote ${tempDir.resolve('store/index/v6.sqlite')} (0 runs, was 1)")
+        out.toString().contains("wrote ${tempDir.resolve('store/index/v7.sqlite')} (0 runs, was 1)")
         runCount(tempDir.resolve('cache/index.sqlite')) == 0
-        runCount(tempDir.resolve('store/index/v6.sqlite')) == 0
+        runCount(tempDir.resolve('store/index/v7.sqlite')) == 0
     }
 
     private static int runCount(Path sqlite) {
@@ -306,7 +306,7 @@ class CasCommandsTest extends Specification {
         status == 0
         out.toString().contains('(1 runs, was 1)')
         runCount(tempDir.resolve('cache/index.sqlite')) == 1
-        runCount(tempDir.resolve('store/index/v6.sqlite')) == 1
+        runCount(tempDir.resolve('store/index/v7.sqlite')) == 1
 
         when: 'scanning instead of seeding drops it from the cache and the snapshot'
         out.reset()
@@ -316,7 +316,7 @@ class CasCommandsTest extends Specification {
         status == 0
         out.toString().contains('(0 runs, was 1)')
         runCount(tempDir.resolve('cache/index.sqlite')) == 0
-        runCount(tempDir.resolve('store/index/v6.sqlite')) == 0
+        runCount(tempDir.resolve('store/index/v7.sqlite')) == 0
     }
 
     def 'reindex takes only --seed, as true or false'() {

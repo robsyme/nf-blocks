@@ -61,7 +61,7 @@ class IndexProjectTablesTest extends Specification {
     def 'reset empties the P4 tables'() {
         given:
         exec(index.file, "INSERT INTO project VALUES ('p', 'n', '', 'a', 't')")
-        exec(index.file, "INSERT INTO run_input VALUES ('c', 'task', 'x.fq', 'b', 1, 's')")
+        exec(index.file, "INSERT INTO run_input VALUES ('c', 'task', 'x.fq', 'b', 1, 's', 0)")
         exec(index.file, "INSERT INTO handoff VALUES ('h', 't', 's', NULL, 'a', 't')")
 
         when:

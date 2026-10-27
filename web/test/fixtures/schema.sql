@@ -67,9 +67,18 @@ CREATE INDEX transfer_root_root ON transfer_root(root_cid);
 CREATE TABLE project(project_cid TEXT PRIMARY KEY, name TEXT, description TEXT, created_by TEXT, created_at TEXT);
 CREATE TABLE project_stats(project_cid TEXT PRIMARY KEY, reachable_bytes INTEGER, pinned_bytes INTEGER,
              held_bytes INTEGER, releasing_bytes INTEGER, roots INTEGER);
-CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT);
+CREATE TABLE run_input(completion_cid TEXT, role TEXT, name TEXT, address TEXT, size INTEGER, sample TEXT, position INTEGER);
 CREATE INDEX run_input_address ON run_input(address, role, completion_cid);
 CREATE INDEX run_input_completion ON run_input(completion_cid);
 CREATE TABLE handoff(
              cid TEXT PRIMARY KEY, template TEXT, selection_cid TEXT, project_cid TEXT, asserted_by TEXT, at TEXT);
 CREATE INDEX claim_current_attribute_value ON claim_current(attribute, value);
+CREATE TABLE input_origin(completion_cid TEXT, position INTEGER, item_cid TEXT, collection_cid TEXT, selection_cid TEXT);
+CREATE INDEX input_origin_item ON input_origin(item_cid);
+CREATE INDEX input_origin_completion ON input_origin(completion_cid, position);
+CREATE TABLE item_input(completion_cid TEXT, item_cid TEXT, positions TEXT);
+CREATE INDEX item_input_item ON item_input(item_cid);
+CREATE INDEX item_input_completion ON item_input(completion_cid);
+CREATE TABLE item_task(completion_cid TEXT, item_cid TEXT, task_hash TEXT, process TEXT, tag TEXT);
+CREATE INDEX item_task_item ON item_task(item_cid);
+CREATE INDEX item_task_completion ON item_task(completion_cid);

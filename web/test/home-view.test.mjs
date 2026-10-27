@@ -228,7 +228,7 @@ test('home: the subline carries the store-wide figures from the snapshot, and no
   const subline = page.querySelector('.page-head').querySelector('.subline')
   assert.match(subline.textContent, /roblab/)
   assert.equal(subline.querySelector('[data-store-figures]').textContent, '142 MB stored · 220 MB referenced · 1.55× dedup')
-  const lean = (await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot('over_cap') })).explorer
+  const lean = (await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot('over_cap') })).explorer
   const none = await home(lean, ctx())
   await settle()
   assert.equal(none.querySelector('[data-store-figures]'), null)

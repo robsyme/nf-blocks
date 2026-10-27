@@ -67,10 +67,10 @@ class IndexRunInputTest extends Specification {
     private List<List<Object>> expectedInputs(Cid completion) {
         final String c = completion.toString()
         return [
-            [c, 'param:fasta', 'genome.fa', null, null, null],
-            [c, 'samplesheet', 'samplesheet.csv', sheet.toString(), 40, null],
-            [c, 'task', 'a.fq.gz', readsA.toString(), 10, 'A'],
-            [c, 'task', 'b.fq.gz', readsB.toString(), 10, 'B'],
+            [c, 'param:fasta', 'genome.fa', null, null, null, 0],
+            [c, 'samplesheet', 'samplesheet.csv', sheet.toString(), 40, null, 1],
+            [c, 'task', 'a.fq.gz', readsA.toString(), 10, 'A', 2],
+            [c, 'task', 'b.fq.gz', readsB.toString(), 10, 'B', 3],
         ]
     }
 

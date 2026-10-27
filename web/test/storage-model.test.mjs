@@ -90,7 +90,7 @@ async function memberWithIndex() {
     db.exec({ sql: 'INSERT INTO collection_size VALUES (?, 20, 2)', bind: [runs.R1.collection] })
     db.exec({ sql: 'INSERT INTO item_size VALUES (?, 777, 1)', bind: [item.A.toString()] })
   } }) })
-  const opened = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const opened = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   opened.fetchFn.asked.length = 0
   return { member, ...opened }
 }
@@ -213,38 +213,38 @@ test('rootStorage: a run\'s roots, and the runs and Selections it shares with, n
   assert.deepEqual(fetchFn.asked, [])
 })
 
-test('the page opens index/v6.sqlite and no other; the footer names v6', async () => {
+test('the page opens index/v7.sqlite and no other; the footer names v7', async () => {
   const asked = []
   const fetchFn = async (url) => { asked.push(new URL(url).pathname); return new Response('no', { status: 404 }) }
   const { opened } = await openRoblab()
-  assert.deepEqual(opened, ['http://h/m/lab/index/v6.sqlite'])
+  assert.deepEqual(opened, ['http://h/m/lab/index/v7.sqlite'])
   // The 404 is db.js's no_snapshot, the code Explorer.open looks for older snapshots on.
-  await assert.rejects(probeSnapshot('http://h/m/lab/index/v6.sqlite', { fetchFn }), (e) => e.code === 'no_snapshot')
-  assert.deepEqual(asked, ['/m/lab/index/v6.sqlite'])
+  await assert.rejects(probeSnapshot('http://h/m/lab/index/v7.sqlite', { fetchFn }), (e) => e.code === 'no_snapshot')
+  assert.deepEqual(asked, ['/m/lab/index/v7.sqlite'])
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8')
   assert.match(app, /snapshotModeText\(mode\)/)
-  assert.equal(snapshotModeText('range'), 'Index v6 · read by range')
+  assert.equal(snapshotModeText('range'), 'Index v7 · read by range')
 })
 
-test('a store whose only snapshot is v5, v4 or v3 has no current snapshot, and the error says to rewrite it', async () => {
+test('a store whose only snapshot is v6, v5, v4 or v3 has no current snapshot, and the error says to rewrite it', async () => {
   const old = await roblabSnapshot()
-  for (const path of ['index/v5.sqlite', 'index/v4.sqlite', 'index/v3.sqlite']) {
+  for (const path of ['index/v6.sqlite', 'index/v5.sqlite', 'index/v4.sqlite', 'index/v3.sqlite']) {
     let failure
     const probed = []
     const opened = []
     await assert.rejects(openSnapshots({ [path]: old }, { probed, opened }).catch((e) => { failure = e; throw e }), (e) => e.code === 'no_snapshot' && e.older === path)
-    assert.equal(failure.message, `This store's snapshot (${path}) is older than this explorer, which reads index/v6.sqlite. Run nextflow plugin nf-blocks:snapshot to rewrite it.`)
-    assert.deepEqual(opened, ['http://h/m/lab/index/v6.sqlite'], 'no database is opened for the probe')
-    assert.ok(new Set(probed).size === probed.length && probed.length <= 3, 'at most one request per old path')
+    assert.equal(failure.message, `This store's snapshot (${path}) is older than this explorer, which reads index/v7.sqlite. Run nextflow plugin nf-blocks:snapshot to rewrite it.`)
+    assert.deepEqual(opened, ['http://h/m/lab/index/v7.sqlite'], 'no database is opened for the probe')
+    assert.ok(new Set(probed).size === probed.length && probed.length <= 4, 'at most one request per old path')
   }
 })
 
-test('no snapshot at any path is the v6 path\'s no_snapshot; any other failure does not fall back', async () => {
+test('no snapshot at any path is the v7 path\'s no_snapshot; any other failure does not fall back', async () => {
   const probed = []
   const probeOpened = []
-  await assert.rejects(openSnapshots({}, { probed, opened: probeOpened }), (e) => e.code === 'no_snapshot' && /v6\.sqlite/.test(e.message) && !e.older)
-  assert.deepEqual(probed, ['http://h/m/lab/index/v5.sqlite', 'http://h/m/lab/index/v4.sqlite', 'http://h/m/lab/index/v3.sqlite'], 'one request per old path')
-  assert.deepEqual(probeOpened, ['http://h/m/lab/index/v6.sqlite'], 'no database is opened for the probe')
+  await assert.rejects(openSnapshots({}, { probed, opened: probeOpened }), (e) => e.code === 'no_snapshot' && /v7\.sqlite/.test(e.message) && !e.older)
+  assert.deepEqual(probed, ['http://h/m/lab/index/v6.sqlite', 'http://h/m/lab/index/v5.sqlite', 'http://h/m/lab/index/v4.sqlite', 'http://h/m/lab/index/v3.sqlite'], 'one request per old path')
+  assert.deepEqual(probeOpened, ['http://h/m/lab/index/v7.sqlite'], 'no database is opened for the probe')
   const { Explorer } = await import('../src/model.js')
   const opened = []
   await assert.rejects(Explorer.open({ base: 'http://h/m/lab/', blocks: null, listFn: async () => ({ names: [], readable: true }),
@@ -260,7 +260,7 @@ test('a run newer than the snapshot walks its blocks, and so does its pipeline; 
     db.exec("INSERT INTO pipeline_stats VALUES ('demo', 1, 20, 2, 0), ('other', 1, 5, 1, 0)")
     db.exec('INSERT INTO store_stats VALUES (25, 3, 25, 0, 25, 0, 0, 0)')
   } }) })
-  const { explorer, fetchFn } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer, fetchFn } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   fetchFn.asked.length = 0
   assert.deepEqual(await explorer.runSize(member.runs.R1.completion), { bytes: 20, blocks: 2, partial: false })
   assert.deepEqual(fetchFn.asked, [], 'R1 is in the snapshot')
@@ -289,7 +289,7 @@ test('a refresh that finds a new deletion Claim sizes the pipeline again, withou
     entry = entryName(at.R3 + 2, 'claim', del)
     return { log: [entry], rows: (db) => db.exec("INSERT INTO pipeline_stats VALUES ('demo', 1, 20, 2, 0)") }
   } })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot },
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot },
     { blocks: member.blocks, log: member.log.filter(n => n !== entry), now })
   assert.equal((await explorer.pipelineSize('demo')).bytes, 40, '20 B indexed, plus R2 and R3 (B and C)')
   await explorer.refreshTail(async () => ({ names: member.log, readable: true }))
@@ -302,7 +302,7 @@ test('a tail run hidden by a delete Claim adds nothing to its pipeline\'s Stored
     db.exec("INSERT INTO pipeline_stats VALUES ('demo', 1, 20, 2, 0)")
     db.exec('INSERT INTO store_stats VALUES (20, 2, 20, 0, 20, 0, 0, 0)')
   } }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   explorer.tailClaims = [{ cid: 'bafyreidelr2', entry: null, error: null, value: { subject: member.runs.R2.completion, verb: 'delete', attribute: null,
     value: null, supersedes: [], asserted_by: 'test', timestamp: 't' } }]
   const demo = await explorer.pipelineSize('demo')
@@ -330,7 +330,7 @@ test('the roblab fixture opens directly too (helpers for later tasks)', async ()
 // table and no storage rows. The page has no figures there, and says why.
 test('a lean snapshot: storeStats is null, storageOmitted gives the reason, and the sizes walk as P0 walks them', async () => {
   for (const reason of ['over_cap', 'out_of_memory']) {
-    const { explorer, fetchFn } = await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot(reason, { cap: 67_108_864 }) })
+    const { explorer, fetchFn } = await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot(reason, { cap: 67_108_864 }) })
     assert.equal(explorer.storageOmitted, reason)
     assert.equal(explorer.snapshotCapBytes, 67_108_864)
     assert.equal(explorer.storage, false, 'no storage figures to read')
@@ -341,7 +341,7 @@ test('a lean snapshot: storeStats is null, storageOmitted gives the reason, and 
       assert.deepEqual(await empty, [])
     assert.deepEqual(fetchFn.asked, [])
   }
-  const { explorer: noCap } = await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot('over_cap') })
+  const { explorer: noCap } = await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot('over_cap') })
   assert.equal(noCap.snapshotCapBytes, null)
   const { explorer: full } = await openRoblab()
   assert.equal(full.storageOmitted, null)
@@ -349,7 +349,7 @@ test('a lean snapshot: storeStats is null, storageOmitted gives the reason, and 
   // A lean member's runs, collections and pipelines are walked, as P0 walks them, never read as 0 B from empty tables.
   const now = Date.now()
   const member = await buildMember({ now, lean: true })
-  const walked = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const walked = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   walked.fetchFn.asked.length = 0
   assert.deepEqual(await walked.explorer.runSize(member.runs.R1.completion), { bytes: 20, blocks: 2, partial: false })
   assert.ok(walked.fetchFn.asked.includes(member.item.A), 'walked to the item')
@@ -374,7 +374,7 @@ test('storageStale: a run or Selection logged since the snapshot makes its figur
   // buildMember logs R2 and R3 after the snapshot.
   const now = Date.now()
   const member = await buildMember({ now })
-  const { explorer: tail } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer: tail } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   assert.ok(tail.staleCount > 0)
   assert.equal(tail.storageStale(), true, 'a new run')
   assert.deepEqual(tail.storageChanges(), { claims: false, logged: true })

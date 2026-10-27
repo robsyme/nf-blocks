@@ -725,7 +725,7 @@ class CasObserverTest extends Specification {
         observer.onFlowCreate(session)
         observer.onFlowBegin()
         observer.onFlowComplete()
-        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v7.sqlite')
 
         then:
         Files.isRegularFile(snapshot)
@@ -739,7 +739,7 @@ class CasObserverTest extends Specification {
         bind(cfg)
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v7.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
 
@@ -831,7 +831,7 @@ class CasObserverTest extends Specification {
         observer.onFlowComplete()
 
         then:
-        !Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        !Files.exists(tempDir.resolve('store/index/v7.sqlite'))
         warnings(logged, 'is over cas.snapshot.maxBytes (1 bytes) even without its storage figures') == 1
     }
 
@@ -853,7 +853,7 @@ class CasObserverTest extends Specification {
         observer.onFlowComplete()
 
         then:
-        Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        Files.exists(tempDir.resolve('store/index/v7.sqlite'))
         logged.list.count { ILoggingEvent e ->
             e.level == Level.INFO && e.formattedMessage.contains('without storage figures (seeded_lean)') &&
                 e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
@@ -872,7 +872,7 @@ class CasObserverTest extends Specification {
         bind(cfg)
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v7.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
         final ListAppender<ILoggingEvent> logged = capture()
@@ -909,7 +909,7 @@ class CasObserverTest extends Specification {
         observer.onFlowComplete()
 
         then:
-        !Files.exists(tempDir.resolve('store/index/v6.sqlite'))
+        !Files.exists(tempDir.resolve('store/index/v7.sqlite'))
         logged.list.count { ILoggingEvent e ->
             e.level == Level.WARN && e.formattedMessage.contains('`nextflow plugin nf-blocks:reindex --seed false`')
         } == 1
@@ -925,7 +925,7 @@ class CasObserverTest extends Specification {
         java.sql.DriverManager.getConnection("jdbc:sqlite:${indexFile}").withCloseable { c ->
             c.createStatement().executeUpdate("INSERT INTO meta(key, value) VALUES ('snapshot_seeded_lean:lab', 'out_of_memory')")
         }
-        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v7.sqlite')
         final byte[] before = Files.readAllBytes(snapshot)
         bind(cfg)
         cas.setNextflowRunKey('nfhash123')
@@ -1196,7 +1196,7 @@ class CasObserverTest extends Specification {
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
         // A directory where the snapshot file must go makes the atomic move fail.
-        Files.createDirectories(tempDir.resolve('store/index/v6.sqlite/blocker'))
+        Files.createDirectories(tempDir.resolve('store/index/v7.sqlite/blocker'))
 
         when:
         observer.onFlowCreate(session)
@@ -1235,7 +1235,7 @@ class CasObserverTest extends Specification {
         bind(config())
         cas.setNextflowRunKey('nfhash123')
         session.isSuccess() >> true
-        final Path snapshot = tempDir.resolve('store/index/v6.sqlite')
+        final Path snapshot = tempDir.resolve('store/index/v7.sqlite')
         Files.createDirectories(snapshot.parent)
         Files.write(snapshot, 'old'.bytes)
         final ListAppender<ILoggingEvent> logged = capture()

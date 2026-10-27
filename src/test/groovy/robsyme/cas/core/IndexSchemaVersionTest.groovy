@@ -93,12 +93,13 @@ class IndexSchemaVersionTest extends Specification {
                   'UPDATE schema_version SET version = 4'])
     }
 
-    def 'the schema version is 6'() {
+    def 'the schema version is 7'() {
         // 6 (P4 second follow-up): a v5 cache that ingested a Handoff before its files were recorded
         // as content (1f994d4) has no block_ref rows for them; a version bump rebuilds it.
+        // 7 (cross-run item lineage): run_input.position, input_origin, item_input and item_task.
         expect:
-        Index.SCHEMA_VERSION == 6
-        IndexSnapshot.relativePath() == 'index/v6.sqlite'
+        Index.SCHEMA_VERSION == 7
+        IndexSnapshot.relativePath() == 'index/v7.sqlite'
     }
 
     def 'a cache of an older version (v4) is recreated as the current one when opened, and its catch-up ingests Transfers, Projects, Handoffs and InputSets'() {

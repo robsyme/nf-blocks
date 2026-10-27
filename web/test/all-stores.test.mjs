@@ -24,7 +24,7 @@ import { ROBLAB, openRoblab } from './storage-fixture.mjs'
 const PAGE = 'http://h/index.html'
 const settle = async () => { await frame(); await frame(); await new Promise(r => setTimeout(r, 10)) }
 const text = (el) => el.textContent.replace(/\s+/g, ' ')
-const noSnapshot = () => new SnapshotError('no_snapshot', 'no Index Snapshot at http://h/m/ana/index/v6.sqlite (HTTP 404)')
+const noSnapshot = () => new SnapshotError('no_snapshot', 'no Index Snapshot at http://h/m/ana/index/v7.sqlite (HTTP 404)')
 
 const MEMBERS = [
   { alias: 'lab', writable: true, base: 'm/lab/', kind: 'local', location: null },

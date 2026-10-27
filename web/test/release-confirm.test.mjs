@@ -39,7 +39,7 @@ function ctxFor({ viewer = null, calls = [], writable = true } = {}) {
  * `fetchFn.asked` holds only what the Storage tab itself fetched.
  */
 async function roblabRun(name, { claims = [], extra = [], grace, tail = [], now = Date.now() } = {}) {
-  const opened = await openSnapshots({ 'index/v6.sqlite': await roblabSnapshot({ extra, grace }) }, { now })
+  const opened = await openSnapshots({ 'index/v7.sqlite': await roblabSnapshot({ extra, grace }) }, { now })
   // Claims written since the snapshot, as refreshTail leaves them.
   opened.explorer.tailClaims = tail.map(c => ({ cid: c.cid, entry: null, value: c, error: null }))
   const r = R[name]
@@ -262,7 +262,7 @@ test('a run newer than the snapshot: its size walks, and the confirmation names 
     db.exec('INSERT INTO root_stats VALUES (1, 20, 2, 20, 2, 0, 0)')
     db.exec('INSERT INTO store_stats VALUES (20, 2, 20, 0, 20, 0, 0, 0)')
   } }) })
-  const { explorer, fetchFn } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer, fetchFn } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   fetchFn.asked.length = 0
   const page = await run(explorer, member.runs.R2.completion, ctxFor(), { tab: 'storage', release: true })
   await settle()
@@ -287,7 +287,7 @@ async function memberWithPins() {
     db.exec({ sql: 'INSERT INTO item_size VALUES (?, 777, 1)', bind: [item.A.toString()] })
     db.exec({ sql: "INSERT INTO pinned_overlap VALUES (?, 'ben@x', 10), (?, 'ben@x', 20)", bind: [item.A.toString(), runs.R1.collection] })
   } }) })
-  const opened = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const opened = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   return { member, ...opened }
 }
 
@@ -699,7 +699,7 @@ test('a run logged since the snapshot makes a snapshot run\'s Release figures st
     db.exec('INSERT INTO root_stats VALUES (1, 20, 2, 20, 2, 0, 0)')
     db.exec('INSERT INTO store_stats VALUES (20, 2, 20, 0, 20, 0, 0, 0)')
   } }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const snap = await run(explorer, member.runs.R1.completion, ctxFor(), { tab: 'storage', release: true })
   await settle()
   const confirm = snap.querySelector('[data-release-confirm]')
@@ -717,7 +717,7 @@ test('the run\'s Storage tab on a lean snapshot says why its figures are missing
   installDom(); resetFolds()
   const now = Date.now()
   const member = await buildMember({ now, extra: () => ({ log: [], rows: (db) => db.exec("INSERT INTO meta VALUES ('storage_omitted', 'out_of_memory')") }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const page = await run(explorer, member.runs.R1.completion, ctxFor(), { tab: 'storage' })
   await settle()
   assert.match(page.querySelector('[data-storage-omitted]').textContent,
@@ -746,7 +746,7 @@ test('a lean snapshot keeps the sweep grace: the confirmation names its earliest
   const now = Date.now()
   const member = await buildMember({ now, extra: () => ({ log: [], rows: (db) => db.exec(
     "INSERT INTO meta VALUES ('storage_omitted', 'over_cap'), ('sweep_grace_ms', '1209600000'), ('snapshot_max_bytes', '67108864')") }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   assert.equal(await explorer.storeStats(), null)
   assert.equal(await explorer.sweepGraceMs(), 1_209_600_000)
   const page = await run(explorer, member.runs.R1.completion, ctxFor(), { tab: 'storage', release: true })
@@ -795,7 +795,7 @@ test('the run\'s Storage tab on a seeded_lean snapshot names reindex --seed fals
   const now = Date.now()
   const member = await buildMember({ now, extra: () => ({ log: [], rows: (db) => db.exec(
     "INSERT INTO meta VALUES ('storage_omitted', 'seeded_lean'), ('snapshot_max_bytes', '0')") }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const page = await run(explorer, member.runs.R1.completion, ctxFor(), { tab: 'storage' })
   await settle()
   const note = page.querySelector('[data-storage-omitted]')

@@ -205,7 +205,7 @@ test('nav: a Storage link under Browse, and the store entry shows what it stores
 
 test('nav: on a lean snapshot the store entry stays as it was', async () => {
   installDom()
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot('over_cap') })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot('over_cap') })
   const el = document.createElement('div')
   const storesEl = document.createElement('div')
   storesEl.append(document.createElement('a'))
@@ -303,7 +303,7 @@ test('storage: a run or Selection logged since the snapshot makes the figures st
     db.exec('INSERT INTO root_stats VALUES (1, 20, 2, 20, 2, 0, 0)')
     db.exec('INSERT INTO store_stats VALUES (20, 2, 20, 0, 20, 0, 0, 0)')
   } }) })
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const node = await storage(explorer, ctx({ write: WRITABLE }))
   await settle()
   assert.equal(text(node.querySelector('[data-storage-stale]')),
@@ -317,7 +317,7 @@ test('storage: a run or Selection logged since the snapshot makes the figures st
 
 test('storage: a lean snapshot says why its storage figures are missing', async () => {
   installDom()
-  const open = async (reason, options) => (await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot(reason, options) })).explorer
+  const open = async (reason, options) => (await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot(reason, options) })).explorer
   const over = await storage(await open('over_cap', { cap: 67_108_864 }), ctx())
   const note = over.querySelector('[data-storage-omitted]')
   assert.equal(text(note), "Storage figures are left out of this store's snapshot: with them it would pass cas.snapshot.maxBytes (67.1 MB). "
@@ -353,7 +353,7 @@ test('storage.js tells anonymous principals apart with identity.js, as every oth
 // Fix round 2 (F3), a third lean reason: the cache was itself seeded from a lean snapshot.
 test('storage: a seeded_lean snapshot names reindex --seed false, and a cap of 0 or none is never printed', async () => {
   installDom()
-  const open = async (reason, options) => (await openSnapshots({ 'index/v6.sqlite': await roblabLeanSnapshot(reason, options) })).explorer
+  const open = async (reason, options) => (await openSnapshots({ 'index/v7.sqlite': await roblabLeanSnapshot(reason, options) })).explorer
   for (const options of [{}, { cap: 0 }]) {
     const seeded = await open('seeded_lean', options)
     assert.equal(seeded.storageOmitted, 'seeded_lean')
@@ -385,7 +385,7 @@ test('storage: after a Claim since the snapshot, Durability is each run\'s Claim
   const earlier = new Date(now - 10 * DAY_MS).toISOString()
   const released = now - 3_600_000
   // sharp_magritte was released in the snapshot; sad_yonath was pinned by ana there.
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': await (await import('./storage-fixture.mjs')).roblabSnapshot({ extra: [
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': await (await import('./storage-fixture.mjs')).roblabSnapshot({ extra: [
     `UPDATE root SET state = 'released', since = '${earlier}' WHERE id = 1`,
     `INSERT INTO claim VALUES ('k-rel', '${R.sharp_magritte.cid}', 'set', 'retain', 'lineage', '${earlier}', 'anonymous')`,
     `INSERT INTO root VALUES (6, '${R.sad_yonath.cid}', 'pin', 'ana@x', 'pinned', '${earlier}')`,
@@ -430,7 +430,7 @@ test('storage: the empty Pinned panel is marked as of the snapshot after a Claim
     db.exec('INSERT INTO root_stats VALUES (1, 20, 2, 20, 2, 0, 0)')
     db.exec('INSERT INTO store_stats VALUES (20, 2, 20, 0, 20, 0, 0, 0)')
   } }) })
-  const { explorer: logged } = await openSnapshots({ 'index/v6.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
+  const { explorer: logged } = await openSnapshots({ 'index/v7.sqlite': member.snapshot }, { blocks: member.blocks, log: member.log, now })
   const quiet = (await storage(logged, ctx())).querySelector('[data-storage-pins]')
   assert.equal(quiet.querySelector('.ph').querySelector('.muted'), null)
 })
@@ -438,7 +438,7 @@ test('storage: the empty Pinned panel is marked as of the snapshot after a Claim
 test('storage: its days are written by the Explorer\'s clock (ex.now), so a date in another year names that year', async () => {
   installDom()
   const now = Date.parse('2027-03-01T12:00:00Z')
-  const { explorer } = await openSnapshots({ 'index/v6.sqlite': await (await import('./storage-fixture.mjs')).roblabSnapshot() }, { now })
+  const { explorer } = await openSnapshots({ 'index/v7.sqlite': await (await import('./storage-fixture.mjs')).roblabSnapshot() }, { now })
   const node = await storage(explorer, ctx())
   assert.match(text(runRow(node, 'distraught_murdock')), /Oct 24, 2026/)
 })

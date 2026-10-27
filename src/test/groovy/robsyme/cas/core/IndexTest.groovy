@@ -729,7 +729,7 @@ class IndexTest extends Specification {
     def 'schema 6 carries the two query 3 indexes'() {
         expect:
         indexNames().containsAll(['collection_completion_output', 'collection_item_collection'])
-        Index.SCHEMA_VERSION == 6
+        Index.SCHEMA_VERSION == 7
     }
 
     private List<String> indexNames() {

@@ -2,11 +2,11 @@
 // DESIGN.md section it comes from; a change here without one there is a bug.
 
 /** Index schema version (DESIGN.md §12, Index.SCHEMA_VERSION). Task 5 pins them equal. */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 /** Where a member keeps its Index Snapshot (spec section 4), the only one the page opens. */
 export const SNAPSHOT_PATH = `index/v${SCHEMA_VERSION}.sqlite`
 /** Snapshots an older plugin wrote. The page never reads them: a member with one and no SNAPSHOT_PATH is told to rewrite it. */
-export const OLDER_SNAPSHOT_PATHS = ['index/v5.sqlite', 'index/v4.sqlite', 'index/v3.sqlite']
+export const OLDER_SNAPSHOT_PATHS = ['index/v6.sqlite', 'index/v5.sqlite', 'index/v4.sqlite', 'index/v3.sqlite']
 /** The whole-file fallback's cap, cas.snapshot.maxBytes' default (spec section 4). */
 export const DEFAULT_CAP_BYTES = 64 * 1024 * 1024
 /** The snapshot's page size, and the unit the VFS fetches in (spec section 4). */

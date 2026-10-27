@@ -93,7 +93,7 @@ export async function roblabLeanSnapshot(reason, { cap = null } = {}) {
 }
 
 /**
- * An Explorer over `snapshots` (`{ 'index/v6.sqlite': bytes, ... }`), opened
+ * An Explorer over `snapshots` (`{ 'index/v7.sqlite': bytes, ... }`), opened
  * the way the page opens one: a path with no snapshot answers no_snapshot.
  * Records every snapshot URL asked for (`opened`), every query (`queries`)
  * and every block fetch (`fetchFn.asked`). Every older-snapshot existence

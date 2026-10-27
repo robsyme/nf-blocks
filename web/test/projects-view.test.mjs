@@ -73,10 +73,10 @@ async function open({ together = false, noProjects = false, noInputs = false, ma
             row('INSERT INTO claim_current VALUES (?, ?, ?, ?, 0)', [subject.toString(), attribute, value, ids[c].toString()])
           }
           if (noInputs) return
-          row("INSERT INTO run_input VALUES (?, 'task', 'A_R1.fastq.gz', ?, 100, 'A')", [runs.R1.completion, rawCid('reads-A').toString()])
+          row("INSERT INTO run_input VALUES (?, 'task', 'A_R1.fastq.gz', ?, 100, 'A', 0)", [runs.R1.completion, rawCid('reads-A').toString()])
           for (const run of [runs.R2.completion, runs.R3.completion, ...(many ? ['bafyx1', 'bafyx2'] : [])]) {
-            for (const s of ['B', 'C'])
-              row("INSERT INTO run_input VALUES (?, 'task', ?, ?, 100, ?)", [run, `${s}_R1.fastq.gz`, rawCid(`reads-${s}`).toString(), s])
+            for (const [position, s] of ['B', 'C'].entries())
+              row("INSERT INTO run_input VALUES (?, 'task', ?, ?, 100, ?, ?)", [run, `${s}_R1.fastq.gz`, rawCid(`reads-${s}`).toString(), s, position])
           }
         },
       }

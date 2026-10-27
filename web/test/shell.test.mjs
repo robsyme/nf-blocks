@@ -21,7 +21,7 @@ test('the footer keeps #where, #snapshot-mode and #stale, #stale inside the snap
   assert.ok(foot.indexOf('id="stale"') > foot.indexOf('id="where"') && foot.indexOf('id="stale"') < foot.indexOf('id="snapshot-mode"'))
 })
 
-test('the footer lines: "Snapshot 2 min ago · 0 newer runs", "Index v6 · read by range"', () => {
+test('the footer lines: "Snapshot 2 min ago · 0 newer runs", "Index v7 · read by range"', () => {
   const now = Date.parse('2026-10-24T12:00:00Z')
   assert.equal(agoText('2026-10-24T11:59:40Z', now), 'just now')
   assert.equal(agoText('2026-10-24T11:58:00Z', now), '2 min ago')
@@ -31,8 +31,8 @@ test('the footer lines: "Snapshot 2 min ago · 0 newer runs", "Index v6 · read 
   assert.equal(staleText({ staleCount: 0, logReadable: true }), '0 newer runs')
   assert.equal(staleText({ staleCount: 1, logReadable: true }), '1 newer run')
   assert.equal(staleText({ staleCount: 2, logReadable: false }), 'newer runs unknown: the Store Log is not readable here (2 found)')
-  assert.equal(snapshotModeText('range'), 'Index v6 · read by range')
-  assert.equal(snapshotModeText('whole'), 'Index v6 · downloaded whole (this server ignores Range)')
+  assert.equal(snapshotModeText('range'), 'Index v7 · read by range')
+  assert.equal(snapshotModeText('whole'), 'Index v7 · downloaded whole (this server ignores Range)')
 })
 
 // app.js runs on import, so this reads its text: the search box ships enabled in

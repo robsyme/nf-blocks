@@ -109,7 +109,7 @@ test('with one member the page asks for members.json, the snapshot, the log and 
   assert.equal(ex.base, 'http://h/m/lab/')
   assert.equal(members.status('lab').state, 'open')
   const mine = asked.slice()
-  assert.deepEqual(mine.slice(0, 3), ['http://h/members.json', 'http://h/m/lab/index/v6.sqlite', 'http://h/m/lab/log/'])
+  assert.deepEqual(mine.slice(0, 3), ['http://h/members.json', 'http://h/m/lab/index/v7.sqlite', 'http://h/m/lab/log/'])
   // The rest are the tail run's blocks, all under the one member's base.
   assert.ok(mine.slice(3).length > 0 && mine.slice(3).every(u => u.startsWith('http://h/m/lab/blocks/')), mine.join('\n'))
 
