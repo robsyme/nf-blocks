@@ -120,6 +120,10 @@ class ExplorerQueriesTest extends Specification {
         'runInputsOf'             | page.runInputsOf
         'sharedInputRows'         | page.sharedInputRows
         'handoffsKnown'           | page.handoffsKnown
+        'itemInputsOf'            | page.itemInputsOf
+        'runInputsAt'             | page.runInputsAt
+        'originsAt'               | page.originsAt
+        'usedByOf'                | page.usedByOf
     }
 
     def 'shared input addresses are found from the run_input index alone'() {

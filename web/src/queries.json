@@ -70,5 +70,9 @@
   "runInputsOf": "SELECT completion_cid, role, name, address, size, sample FROM run_input WHERE completion_cid IN (SELECT value FROM json_each(?)) ORDER BY completion_cid, role, name, address",
   "sharedInputRows": "SELECT completion_cid, role, name, address, size, sample FROM run_input WHERE role = 'task' AND sample IS NOT NULL AND address IN (SELECT address FROM run_input WHERE address IS NOT NULL AND role = 'task' GROUP BY address HAVING COUNT(DISTINCT completion_cid) > 1) ORDER BY address, completion_cid",
   "handoffsKnown": "SELECT cid FROM handoff WHERE cid IN (SELECT value FROM json_each(?))",
-  "handoffs": "SELECT cid, template, selection_cid, project_cid, asserted_by, at FROM handoff ORDER BY at DESC, cid ASC"
+  "handoffs": "SELECT cid, template, selection_cid, project_cid, asserted_by, at FROM handoff ORDER BY at DESC, cid ASC",
+  "itemInputsOf": "SELECT completion_cid, positions FROM item_input WHERE item_cid = ? ORDER BY completion_cid",
+  "runInputsAt": "SELECT position, role, name, address, size, sample FROM run_input WHERE completion_cid = ? AND position IN (SELECT value FROM json_each(?)) ORDER BY position",
+  "originsAt": "SELECT position, item_cid, collection_cid, selection_cid FROM input_origin WHERE completion_cid = ? AND position IN (SELECT value FROM json_each(?)) ORDER BY position, item_cid, collection_cid, selection_cid",
+  "usedByOf": "SELECT DISTINCT o.completion_cid, o.collection_cid AS via_cid, o.selection_cid, d.item_cid, ci.collection_cid FROM input_origin o JOIN item_input d ON d.completion_cid = o.completion_cid JOIN collection c ON c.completion_cid = o.completion_cid JOIN collection_item ci ON ci.collection_cid = c.collection_cid AND ci.item_cid = d.item_cid WHERE o.item_cid = ? AND EXISTS (SELECT 1 FROM json_each(d.positions) WHERE json_each.value = o.position) ORDER BY o.completion_cid, ci.collection_cid, d.item_cid"
 }
