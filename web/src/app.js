@@ -27,7 +27,7 @@ import { ICON_CSS } from './icons.js'
 import { createPanel, showsRail, useLabel } from './panel.js'
 import { argsOf, routeOf } from './routes.js'
 import { createNav, drawStores } from './nav.js'
-import { createIndexing, indexClient } from './indexing.js'
+import { createIndexing, indexChangeHandler, indexClient } from './indexing.js'
 import { createSizes, memberHref, mountSwitcher } from './views/switcher.js'
 import { agoText, fullWhenText, snapshotModeText, staleText } from './words.js'
 
@@ -305,15 +305,6 @@ function renderIdentity(identity) {
   if (chip) document.getElementById('tray')?.after(chip)
 }
 
-/** A member's index state moved: its size and the Stores list follow; a finished job also refreshes who holds what, and the Storage page. */
-function indexChanged(alias, index) {
-  sizes?.forget(alias)
-  redrawStores?.()
-  if (index.state === 'indexing') return
-  presence?.invalidate()
-  if ((location.hash || '').startsWith('#/storage')) render()
-}
-
 async function start() {
   document.head.append(h('style', {}, KIT_CSS), h('style', {}, APP_CSS), h('style', {}, PAIRS_CSS), h('style', {}, ICON_CSS))
   window.__nfBlocks = { verified: [] }
@@ -365,7 +356,9 @@ async function start() {
         client: indexClient({ endpoint: new URL('api/index', location.href).href.split('?')[0], token }),
         fetchStatus: () => fetch('api/index', { cache: 'no-store' }).then(r => r.json()),
       })
-      indexing.onChange(indexChanged)
+      // The primary's snapshot is the page's own open file: a job that rewrites it reloads the page (final review Important 1).
+      indexing.onChange(indexChangeHandler({ primary: store.member, sizes, redrawStores, presence, render, reload: () => location.reload(),
+        storageShowing: () => (location.hash || '').startsWith('#/storage') }))
       indexing.watch()
     }
     // The primary is opened here, once; the other members only when something asks members.explorer(alias).

@@ -1,7 +1,7 @@
 // The page's index client, its progress words and the watch that polls while a job runs.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { IndexError, createIndexing, elapsedText, indexClient, progressText } from '../src/indexing.js'
+import { IndexError, createIndexing, elapsedText, indexChangeHandler, indexClient, progressText } from '../src/indexing.js'
 
 const t0 = Date.parse('2026-10-27T10:00:00.000Z')
 const at = (phase, done = null, total = null) => ({ state: 'indexing', at: null, reason: null, mode: 'local', local: false,
@@ -178,4 +178,105 @@ test('a successful poll resets the failure count', async () => {
   for (let i = 0; i < 5; i++) await timer.tick()
   assert.equal(polls, 5)
   assert.equal(timer.pending(), true)
+})
+
+test('progress text without a progress object or with a bad start time leaves out what it cannot say', () => {
+  assert.equal(progressText({ state: 'indexing', progress: null }, 'cloud'), 'Indexing…')
+  const bad = at('listing')
+  bad.progress.startedAt = 'not a time'
+  assert.equal(progressText(bad, 'cloud', t0), 'Listing blocks…')
+})
+
+test('a listener or invalidate that throws is reported, not counted as a failed poll', async () => {
+  const members = { list: [{ alias: 'cloud', index: at('reading', 1, 9) }], invalidate: () => { throw new Error('invalidate broke') } }
+  const answers = [at('reading', 2, 9), at('reading', 3, 9), at('reading', 4, 9), settled('local')]
+  let polls = 0
+  const fetchStatus = async () => ({ members: { cloud: answers[polls++] } })
+  const timer = manualTimer()
+  const errors = []
+  const indexing = createIndexing(members, { client: null, fetchStatus, onError: (e) => errors.push(e.message), ...timer })
+  let heard = 0
+  indexing.onChange(() => { heard++; throw new Error('listener broke') })
+  indexing.onChange(() => heard++)
+  indexing.watch()
+  for (let i = 0; i < 4; i++) await timer.tick()
+  assert.equal(polls, 4, 'three throwing polls in a row did not stop the watch')
+  assert.equal(heard, 8, 'the second listener heard every change')
+  assert.deepEqual(errors, ['listener broke', 'listener broke', 'listener broke', 'invalidate broke', 'listener broke'])
+  assert.equal(indexing.running(), null)
+})
+
+test('a member indexing that a poll answer leaves out stops being treated as running', async () => {
+  const cloud = { alias: 'cloud', index: at('reading', 1, 9) }
+  const invalidated = []
+  const members = { list: [cloud], invalidate: (a) => invalidated.push(a) }
+  const timer = manualTimer()
+  const indexing = createIndexing(members, { client: null, fetchStatus: async () => ({ members: {} }), ...timer })
+  const heard = []
+  indexing.onChange((alias, index) => heard.push([alias, index]))
+  indexing.watch()
+  await timer.tick()
+  assert.equal(indexing.running(), null)
+  assert.equal(cloud.index, null)
+  assert.deepEqual(heard, [['cloud', null]])
+  assert.deepEqual(invalidated, ['cloud'])
+  assert.equal(timer.pending(), false)
+})
+
+test('track takes the index a copy answered with, and watches the refresh it queued to its end', async () => {
+  const cloud = { alias: 'cloud', index: settled('local') }
+  const invalidated = []
+  const members = { list: [cloud], invalidate: (a) => invalidated.push(a) }
+  const timer = manualTimer()
+  const indexing = createIndexing(members, { client: null, fetchStatus: async () => ({ members: { cloud: settled('local', { at: '2026-10-27T10:09:00.000Z' }) } }), ...timer })
+  const heard = []
+  indexing.onChange((alias, index) => heard.push([alias, index.state]))
+  indexing.track('cloud', { ...at('log'), local: true })
+  assert.equal(cloud.index.state, 'indexing')
+  assert.equal(indexing.running(), 'cloud')
+  assert.equal(timer.pending(), true)
+  await timer.tick()
+  assert.deepEqual(heard, [['cloud', 'indexing'], ['cloud', 'local']])
+  assert.deepEqual(invalidated, ['cloud'])
+  assert.equal(timer.pending(), false)
+})
+
+/** indexChangeHandler with recording collaborators; `primary` is the member the page has open. */
+function handler({ primary = 'roblab', storage = false } = {}) {
+  const did = []
+  const fn = indexChangeHandler({
+    primary,
+    sizes: { forget: (a) => did.push(['forget', a]) },
+    redrawStores: () => did.push(['redraw']),
+    presence: { invalidate: () => did.push(['presence']) },
+    storageShowing: () => storage,
+    render: () => did.push(['render']),
+    reload: () => did.push(['reload']),
+  })
+  return { fn, did }
+}
+
+test('a progress tick redraws the Stores list and forgets nothing', () => {
+  const { fn, did } = handler({ storage: true })
+  fn('cloud', at('reading', 2, 9), at('reading', 1, 9))
+  assert.deepEqual(did, [['redraw']])
+})
+
+test('a job starting forgets the member size; its end also refreshes presence and the Storage page', () => {
+  const { fn, did } = handler({ storage: true })
+  fn('cloud', at('listing'), settled('none', { at: null, local: false }))
+  assert.deepEqual(did, [['forget', 'cloud'], ['redraw']])
+  did.length = 0
+  fn('cloud', settled('local'), at('snapshot'))
+  assert.deepEqual(did, [['forget', 'cloud'], ['redraw'], ['presence'], ['render']])
+})
+
+test('the end of a job on the member the page has open reloads the page, which opens it again', () => {
+  const { fn, did } = handler({ primary: 'cloud', storage: true })
+  fn('cloud', at('reading', 2, 9), at('reading', 1, 9))
+  fn('cloud', { ...at('log'), local: true }, settled('local'))
+  assert.ok(!did.some(([what]) => what === 'reload'), 'a running job does not reload')
+  fn('cloud', settled('snapshot', { local: false }), { ...at('push'), local: true })
+  assert.deepEqual(did.at(-1), ['reload'])
+  assert.ok(!did.some(([what]) => what === 'render'))
 })

@@ -16,8 +16,13 @@ export function elapsedText(ms) {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
-/** What a running job is doing, and for how long: `Reading 1,240 of 8,615 metadata blocks · 2m 10s`. */
+/**
+ * What a running job is doing, and for how long: `Reading 1,240 of 8,615
+ * metadata blocks · 2m 10s`. Without a progress object it says `Indexing…`,
+ * and without a start time it leaves the time out.
+ */
 export function progressText(index, alias, now = Date.now()) {
+  if (!index?.progress) return 'Indexing…'
   const { phase, done, total, startedAt } = index.progress
   const words = {
     listing: 'Listing blocks…',
@@ -27,7 +32,31 @@ export function progressText(index, alias, now = Date.now()) {
     snapshot: 'Building the snapshot…',
     push: `Pushing to ${alias}…`,
   }[phase] ?? 'Indexing…'
-  return `${words} · ${elapsedText(now - Date.parse(startedAt))}`
+  const started = Date.parse(startedAt)
+  return Number.isFinite(started) ? `${words} · ${elapsedText(now - started)}` : words
+}
+
+/** Whether a member's index moved in a way that changes what the page reads: its state, its time or whether it is served locally. */
+export const moved = (before, index) => before?.state !== index?.state || before?.at !== index?.at || before?.local !== index?.local
+
+/**
+ * What the page does when a member's index changes (app.js wires it to the
+ * watch's onChange). The Stores list redraws on every change. A move
+ * (`moved`) also forgets the member's size; one to anything but `indexing`
+ * is a job's end, which refreshes who holds what and a showing Storage page.
+ * The `primary` member is the snapshot the page itself has open, so its
+ * job's end reloads the page, which opens it again.
+ */
+export function indexChangeHandler({ primary, sizes, redrawStores, presence, storageShowing, render, reload }) {
+  return (alias, index, before) => {
+    const changed = moved(before, index)
+    if (changed) sizes?.forget(alias)
+    redrawStores?.()
+    if (!changed || index?.state === 'indexing') return
+    if (alias === primary) { reload(); return }
+    presence?.invalidate()
+    if (storageShowing()) render()
+  }
 }
 
 /**
@@ -66,11 +95,15 @@ const MAX_FAILED_POLLS = 3
  * The members' index states and the watch over them. `fetchStatus()` resolves
  * `{ members: { alias: index } }` (GET /api/index). The watch polls every
  * `interval` ms while some member is indexing, and stops after three failed
- * polls in a row; `start` and `watch()` begin it again. A member whose job
- * ended is invalidated before the listeners hear of it, so whoever re-renders
- * reads its new snapshot.
+ * polls in a row; `start`, `track` and `watch()` begin it again. A member
+ * whose job ended is invalidated before the listeners hear of it, so whoever
+ * re-renders reads its new snapshot. Listeners hear `(alias, index, before)`;
+ * one that throws, or an invalidate that does, goes to `onError` and is not a
+ * failed poll. A member the answer leaves out while it reads `indexing` is
+ * no longer known to the server: its index becomes null.
  */
-export function createIndexing(members, { client, fetchStatus, interval = 1000, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function createIndexing(members, { client, fetchStatus, interval = 1000, setTimer = setTimeout, clearTimer = clearTimeout,
+  onError = (e) => console.error('indexing: a listener failed', e) }) {
   const listeners = new Set()
   let timer = null
   let polling = false
@@ -80,28 +113,33 @@ export function createIndexing(members, { client, fetchStatus, interval = 1000, 
   const stateOf = (alias) => find(alias)?.index ?? null
   const running = () => members.list.find(m => m.index?.state === 'indexing')?.alias ?? null
 
+  const guarded = (fn) => { try { fn() } catch (e) { onError(e) } }
+
   function apply(alias, index) {
     const member = find(alias)
-    if (!member || !index) return
+    if (!member) return
     const before = member.index ?? null
     if (JSON.stringify(before) === JSON.stringify(index)) return
     member.index = index
-    const moved = before?.state !== index.state || before?.at !== index.at || before?.local !== index.local
-    if (moved && index.state !== 'indexing') members.invalidate(alias)
-    for (const fn of [...listeners]) fn(alias, index)
+    if (moved(before, index) && index?.state !== 'indexing') guarded(() => members.invalidate(alias))
+    for (const fn of [...listeners]) guarded(() => fn(alias, index, before))
   }
 
   async function poll() {
     timer = null
     polling = true
+    let answer = null
     try {
-      const answer = await fetchStatus()
+      answer = (await fetchStatus())?.members ?? {}
       failures = 0
-      for (const [alias, index] of Object.entries(answer?.members ?? {})) apply(alias, index)
     } catch {
       failures++
     } finally {
       polling = false
+    }
+    if (answer) {
+      for (const [alias, index] of Object.entries(answer)) if (index) apply(alias, index)
+      for (const m of members.list) if (m.index?.state === 'indexing' && !(m.alias in answer)) apply(m.alias, null)
     }
     if (failures < MAX_FAILED_POLLS) watch()
   }
@@ -122,6 +160,12 @@ export function createIndexing(members, { client, fetchStatus, interval = 1000, 
       failures = 0
       watch()
       return index
+    },
+    /** Takes `index` for `alias` from another answer (a copy's), and watches it when it is indexing. */
+    track(alias, index) {
+      if (index) apply(alias, index)
+      failures = 0
+      watch()
     },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn) },
     watch() { failures = 0; watch() },
