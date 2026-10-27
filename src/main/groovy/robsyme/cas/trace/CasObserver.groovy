@@ -176,9 +176,8 @@ class CasObserver implements TraceObserverV2 {
         publishedKeys.add(key)
         if( event.labels )
             labels.put(key, event.labels)
-        // An Output Index File has no source; Nextflow writes it straight to the target.
-        if( event.source != null )
-            derivation.notePublish(key, event.source)
+        // An Output Index File has no source (Nextflow writes it straight to the target); notePublish ignores a null one.
+        derivation.notePublish(key, event.source)
         // A file written by appends (a CSV Output Index File) is hashed now, once.
         finalizeSpools { cas.finalizePending(key) }
         // Our upload() already hashed and recorded this; if neither the publish
@@ -343,10 +342,10 @@ class CasObserver implements TraceObserverV2 {
      * making it warns and the RunCompletion links none. Writing the block is a
      * provenance write, and its failure aborts the run (rule 3).
      */
-    private Cid writeItemLineage(List<Join.JoinedOutput> outputs, RunInputs read, Cid inputSet) {
+    private Cid writeItemLineage(List<Join.JoinedOutput> outputs, RunInputs inputs, Cid inputSet) {
         final Map<String, Object> block
         try {
-            block = new ItemLineage(cas.assertedBy, inputSet, deriveItems(outputs, read.set, read.byStaged)).toCbor()
+            block = new ItemLineage(cas.assertedBy, inputSet, deriveItems(outputs, inputs.set, inputs.byStaged)).toCbor()
         }
         catch( Throwable t ) {
             ConsoleLog.LOG.warn("nf-blocks: the run's item lineage could not be made, so its RunCompletion records none: ${t.message ?: t.class.name}")
@@ -646,10 +645,10 @@ class CasObserver implements TraceObserverV2 {
         collections.addAll(byName.values())
 
         final boolean success = session.isSuccess()
-        final RunInputs read = collectInputs(success)
-        final Cid inputSet = read == null ? null : putBlock(read.block, 'InputSet')
+        final RunInputs inputs = collectInputs(success)
+        final Cid inputSet = inputs == null ? null : putBlock(inputs.block, 'InputSet')
         // Positions index the InputSet, so a lineage is written only beside one.
-        final Cid itemLineage = inputSet == null ? null : writeItemLineage(joined.outputs, read, inputSet)
+        final Cid itemLineage = inputSet == null ? null : writeItemLineage(joined.outputs, inputs, inputSet)
         final WorkflowMetadata meta = session.workflowMetadata
         final Cid completion = putBlock(new RunCompletion([
             assertedBy        : cas.assertedBy,
@@ -778,8 +777,8 @@ class CasObserver implements TraceObserverV2 {
 
     /** Overridable seam so a test can make the walk fail, or act once the InputSet is written. */
     protected List<ItemLineage.Derived> deriveItems(List<Join.JoinedOutput> outputs, InputSet set,
-                                                    Map<InputRecorder.Staged, InputSet.Input> runInputs) {
-        return derivation.derive(outputs, set, runInputs)
+                                                    Map<InputRecorder.Staged, InputSet.Input> byStaged) {
+        return derivation.derive(outputs, set, byStaged)
     }
 
     /** Overridable seam so a test can inject an index failure (DESIGN.md §11). */

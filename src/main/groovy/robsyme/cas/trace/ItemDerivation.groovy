@@ -116,7 +116,7 @@ class ItemDerivation {
             ref = new ItemLineage.TaskRef(hash, process, Records.scrubText(tag))
         }
         catch( IllegalArgumentException e ) {
-            log.debug("task ${hash} is left out of item lineage: ${e.message}")
+            log.warn("task ${hash} is left out of item lineage: ${e.message}")
             return
         }
         final List<InputRecorder.Staged> copy = Collections.unmodifiableList(
