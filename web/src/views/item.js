@@ -217,7 +217,9 @@ function originNode(ctx, { itemCid, collection, selection, coll, holder, title, 
   const head = !holder ? [h('code', { class: 'cid', title: itemCid }, shortCid(itemCid)), ' · not in any store here']
     : link(hrefIn(ctx, holder, `#/item/${coll}/${itemCid}`), collection ? itemLinkText(label, title, itemCid) : `${title ?? shortCid(itemCid)} · picked by query`)
   const via = selection ? viaSelection(selection, names) : null
-  const run = label?.completion ? runFact(label, label.completion) : null
+  // The run is read from the holder (the open member when none holds the item), so its page opens there too.
+  const runHash = `#/run/${label?.completion}`
+  const run = label?.completion ? runFact(label, label.completion, null, { href: holder ? hrefIn(ctx, holder, runHash) : runHash }) : null
   return { text: h('span', {}, head, run || via ? h('div', { class: 'row', style: 'gap:8px' }, run, via) : null) }
 }
 
@@ -277,7 +279,8 @@ function usedByPanel(ctx, used) {
   const byRun = new Map()
   for (const u of used) byRun.set(u.row.completion_cid, [...(byRun.get(u.row.completion_cid) ?? []), u])
   return panel({ title: 'Used by' }, [...byRun].map(([completion, list]) => h('div', { 'data-used-by-run': completion },
-    runFact(list.find(u => u.label)?.label ?? null, completion),
+    // The first row's member: the open member's when it recorded this run.
+    runFact(list.find(u => u.label)?.label ?? null, completion, null, { href: hrefIn(ctx, list[0].alias, `#/run/${completion}`) }),
     h('ul', {}, list.map(({ alias, row, title, label, names }) => h('li', {},
       link(hrefIn(ctx, alias, `#/item/${row.collection_cid}/${row.item_cid}`), itemLinkText(label, title, row.item_cid)),
       row.selection_cid ? viaSelection(row.selection_cid, names) : null))))))

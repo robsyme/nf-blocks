@@ -108,10 +108,18 @@ test('an upstream item held only in member B links there with ?member=B', async 
   assert.ok(hrefs(node).includes(`?member=B#/item/${PEOPLE}/${PEOPLE_DEV}`))
 })
 
+test('the run chip of an upstream item held only in member B opens the run there', async () => {
+  const ctx = ctxWith({ held: { [PEOPLE_DEV]: ['B'] }, hrefIn: (alias, h) => `?member=${alias}${h}` })
+  const node = await page(lineageEx({ reads: c => c !== PEOPLE_DEV }), CONSUMER_INTROS, INTRO_DEV, ctx)
+  const chip = nodesOf(node)[0].querySelector('.sealed-fact')
+  assert.equal(chip.getAttribute('href'), `?member=B#/run/${PEOPLE_RUN}`)
+})
+
 test('held nowhere: short CID, "not in any store here", no link; the file node is dashed', async () => {
-  const node = await page(lineageEx({ reads: c => c === INTRO_DEV }), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: {} }))
+  const node = await page(lineageEx({ reads: c => c === INTRO_DEV }), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: {}, hrefIn: (alias, h) => `?member=${alias}${h}` }))
   const first = nodesOf(node)[0]
   assert.match(first.textContent, /not in any store here/)
+  assert.equal(first.querySelector('.sealed-fact').getAttribute('href'), `#/run/${PEOPLE_RUN}`, 'the run was read here, so it opens here')
   assert.equal(first.querySelectorAll('a').some(a => a.getAttribute('href').includes('#/item/')), false)
   assert.match(first.textContent, /infallible_spence/, 'the run still shows when the open member can read it')
   assert.ok(nodesOf(node).some(n => n.classes().includes('ext')))
@@ -238,6 +246,21 @@ test('a consumer recorded in another member links there', async () => {
   const ctx = ctxWith({ members: ['B', 'A'], open: 'B', held: allHeld, hrefIn: (a, h) => `?member=${a}${h}`, explorers: { A: other, B: none } })
   const node = await page(none, PEOPLE, PEOPLE_DEV, ctx)
   assert.ok(usedByPanel(node).querySelectorAll('a').some(a => a.getAttribute('href').startsWith('?member=A#/item/')))
+})
+
+test('the run chip of a consumer recorded in another member opens the run there', async () => {
+  const none = usedByEx()
+  none.usedBy = async () => []
+  const ctx = ctxWith({ members: ['B', 'A'], open: 'B', held: allHeld, hrefIn: (a, h) => `?member=${a}${h}`, explorers: { A: usedByEx(), B: none } })
+  const chip = usedByPanel(await page(none, PEOPLE, PEOPLE_DEV, ctx)).querySelector('[data-used-by-run]').querySelector('.sealed-fact')
+  assert.equal(chip.getAttribute('href'), `?member=A#/run/${CONSUMER}`)
+})
+
+test('with one member the run chips keep their plain href', async () => {
+  const lineage = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: allHeld, members: ['roblab'] }))
+  assert.equal(nodesOf(lineage)[0].querySelector('.sealed-fact').getAttribute('href'), `#/run/${PEOPLE_RUN}`)
+  const used = usedByPanel(await page(usedByEx(), PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] })))
+  assert.equal(used.querySelector('[data-used-by-run]').querySelector('.sealed-fact').getAttribute('href'), `#/run/${CONSUMER}`)
 })
 
 test('a consumer both members recorded is listed once, linked in the open member', async () => {

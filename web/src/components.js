@@ -54,10 +54,11 @@ export function factTag(kind, label, cid, href = null, { tone = null } = {}) {
 /**
  * A run as a fact: its seal, RUN, its name (a run label: run_name, status,
  * possibly_incomplete), the status in words unless it succeeded whole, then `extra`.
+ * `href` replaces the run page's link, for a run another member holds.
  */
-export function runFact(label, completion, extra = null) {
+export function runFact(label, completion, extra = null, { href = completion ? `#/run/${completion}` : null } = {}) {
   const word = label?.status && statusTone(label) !== 'good' ? h('span', { class: 'muted' }, ` ${statusText(label).toLowerCase()}`) : null
-  return factTag('run', [label?.run_name ?? 'unnamed run', word, extra], completion, completion ? `#/run/${completion}` : null, { tone: runTone(label) })
+  return factTag('run', [label?.run_name ?? 'unnamed run', word, extra], completion, href, { tone: runTone(label) })
 }
 
 const isAnonymous = (who) => isAnon({ principal: who })
