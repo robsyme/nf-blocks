@@ -60,7 +60,8 @@ export function drawStores(el, { store, members, figure, href }) {
     // All stores (?member=*) opens none of them in particular.
     const here = !store.all && m.alias === store.member
     const f = figure(m.alias)
-    const said = f.state === 'no_snapshot' ? 'no snapshot' : f.state === 'failed' ? 'unavailable'
+    const said = f.state !== 'open' && m.index?.state === 'indexing' ? 'indexing…'
+      : f.state === 'no_snapshot' ? 'no snapshot' : f.state === 'failed' ? 'unavailable'
       : [f.state === 'open' && f.stored !== null ? bytes(f.stored) : null, m.writable ? 'writable' : null].filter(Boolean).join(' · ')
     const small = h('small', f.state === 'open' && f.stored !== null ? { 'data-store-stored': String(f.stored), title: 'Stored in this store, as of the snapshot' } : {}, said)
     return h('a', { href: href(m.alias), class: here ? 'on' : null, 'aria-current': here ? 'page' : null, 'data-store-entry': m.alias },

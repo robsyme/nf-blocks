@@ -67,8 +67,9 @@ export function createSizes(members) {
   }
 }
 
-/** The words for a member's size, or '' while it is still loading. */
-export function sizeText(figure) {
+/** The words for a member's size, or '' while it is still loading; `indexing…` while a job indexes `member`. */
+export function sizeText(figure, member = null) {
+  if (figure.state !== 'open' && member?.index?.state === 'indexing') return 'indexing…'
   if (figure.state === 'no_snapshot') return 'no snapshot'
   if (figure.state === 'failed') return 'unavailable'
   return figure.state === 'open' && figure.stored !== null ? bytes(figure.stored) : ''
@@ -106,7 +107,7 @@ export function mountSwitcher(wrap, { store, members = null, sizes = null, pageH
   const sized = new Map() // alias -> the option's size element
   const paint = (alias) => {
     const el = sized.get(alias)
-    if (el) el.textContent = sizeText(sizes.get(alias))
+    if (el) el.textContent = sizeText(sizes.get(alias), list.find(m => m.alias === alias))
   }
 
   const option = (key, label, href, selected, ...details) => h('button', { type: 'button', role: 'option', tabindex: '-1', 'aria-selected': String(selected),

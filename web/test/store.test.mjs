@@ -32,7 +32,7 @@ test('new members.json fields are kept; an older server\'s reads as null/false',
     { alias: 'org', writable: false, base: 'm/org/', kind: 's3', location: 's3://lab-blocks', copy_target: false, copy_reason: 'read-only in this config' }] }
   const s = await resolveStore('http://h/', { fetchFn: async () => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }) })
   assert.equal(s.copy, true)
-  assert.deepEqual(s.members[1], { alias: 'org', writable: false, base: 'm/org/', kind: 's3', location: 's3://lab-blocks', copy_target: false, copy_reason: 'read-only in this config' })
+  assert.deepEqual(s.members[1], { alias: 'org', writable: false, base: 'm/org/', kind: 's3', location: 's3://lab-blocks', copy_target: false, copy_reason: 'read-only in this config', index: null })
   assert.equal(s.members[0].kind, 'local')
   const old = await resolveStore('http://h/', { fetchFn: explore })
   assert.equal(old.copy, false)
@@ -80,4 +80,12 @@ test('a file:// page never asks', async () => {
   const local = Object.assign(new Error('x'), { code: 'fetch_failed' })
   assert.equal(await explainFailure(local, 'file:///Users/me/index.html', { fetchFn: counting }), local)
   assert.equal(asked, 0)
+})
+
+test('a members.json member keeps its index object, null when the server sends none', async () => {
+  const index = { state: 'indexing', at: null, progress: { phase: 'reading', done: 3, total: 9, startedAt: '2026-10-27T10:00:00Z' }, reason: null, mode: 'local', local: false }
+  const body = { members: [{ alias: 'lab', writable: true, base: 'm/lab/' }, { alias: 'cloud', writable: false, base: 'm/cloud/', index }] }
+  const s = await resolveStore('http://h/', { fetchFn: async () => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }) })
+  assert.deepEqual(s.members[1].index, index)
+  assert.equal(s.members[0].index, null)
 })

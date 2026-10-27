@@ -227,3 +227,9 @@ test('sizes.forget after a copy: the Stores section hears the member again, then
   await flush()
   assert.deepEqual(quiet, [])
 })
+
+test('a member being indexed reads indexing… instead of no snapshot', () => {
+  assert.equal(sizeText({ state: 'no_snapshot', stored: null }, { index: { state: 'indexing' } }), 'indexing…')
+  assert.equal(sizeText({ state: 'no_snapshot', stored: null }, { index: { state: 'none' } }), 'no snapshot')
+  assert.equal(sizeText({ state: 'open', stored: 2048 }, { index: { state: 'indexing' } }), '2.05 KB')
+})
