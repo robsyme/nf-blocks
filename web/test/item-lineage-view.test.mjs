@@ -178,3 +178,13 @@ test('an Origin repeated across inputs is read once', async () => {
   await page(ex, CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'] } }))
   assert.equal(reads, 1)
 })
+
+test('two inputs sharing an Origin both render the upstream node', async () => {
+  const ex = lineageEx()
+  const lineage = ex.itemLineage
+  ex.itemLineage = async (...a) => (await lineage(...a)).map(r => ({ ...r, inputs: r.inputs.concat(r.inputs.map(i => ({ ...i, position: 1, name: 'again.dat' }))) }))
+  const node = await page(ex, CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'], [DEV_DAT]: ['roblab'] } }))
+  assert.deepEqual(nodesOf(node).map(n => n.textContent.split(/infallible|via/)[0]), ['people · Dev', 'Dev_Patel.dat', 'people · Dev', 'again.dat', 'intros · Dev'])
+  // The fake DOM does not move an element appended twice, so check the two positions hold different elements.
+  assert.notEqual(nodesOf(node)[0].children[0], nodesOf(node)[2].children[0])
+})

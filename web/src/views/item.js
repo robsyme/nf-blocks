@@ -189,11 +189,10 @@ export function itemTitle(it) {
 }
 
 /**
- * The node for one Origin: the upstream item read from the first member that
- * holds its block, with the run that made it and the Selection that picked it.
- * What no member can read is not named beyond its short CID.
+ * What the members say about one Origin: the upstream item read from the first
+ * member that holds its block, the run that made it and the Selection's names.
  */
-async function originNode(ex, ctx, pres, origin) {
+async function readOrigin(ex, ctx, pres, origin) {
   const { item_cid: itemCid, collection_cid: collection, selection_cid: selection } = origin
   const coll = collection ?? '-'
   const probe = await Promise.resolve(ex.item(coll, itemCid)).catch(() => null)
@@ -203,8 +202,11 @@ async function originNode(ex, ctx, pres, origin) {
   const it = !holder ? null : reader === ex ? probe : await Promise.resolve(reader.item(coll, itemCid)).catch(() => null)
   const label = collection ? await Promise.resolve(reader.runLabel(collection)).catch(() => null) : null
   const names = selection ? (await Promise.resolve(reader.claimStates?.([selection])).catch(() => null))?.get(selection)?.names ?? [] : []
+  return { itemCid, collection, selection, coll, holder, title: it ? itemTitle(it) : null, label, names }
+}
 
-  const title = it ? itemTitle(it) : null
+/** The thread node for one read Origin; each position gets its own elements. What no member can read is not named beyond its short CID. */
+function originNode(ctx, { itemCid, collection, selection, coll, holder, title, label, names }) {
   const head = !holder ? [h('code', { class: 'cid', title: itemCid }, shortCid(itemCid)), ' · not in any store here']
     : link(hrefIn(ctx, holder, `#/item/${coll}/${itemCid}`), collection ? `${label?.output ?? 'item'} · ${title ?? shortCid(itemCid)}` : `${title ?? shortCid(itemCid)} · picked by query`)
   const via = selection ? h('span', { class: 'muted small' }, ' via Selection ',
@@ -215,13 +217,13 @@ async function originNode(ex, ctx, pres, origin) {
 
 /** An input's upstream nodes, one per Origin, then the file's own node (dashed when no member holds it). */
 async function inputNodes(ex, ctx, pres, input, seen) {
-  // The same (item, run, Selection) is read once, however many inputs name it.
+  // The same (item, run, Selection) is read once, however many inputs name it; each position draws its own node.
   const once = (o) => {
     const key = `${o.item_cid} ${o.collection_cid} ${o.selection_cid}`
-    if (!seen.has(key)) seen.set(key, originNode(ex, ctx, pres, o))
+    if (!seen.has(key)) seen.set(key, readOrigin(ex, ctx, pres, o))
     return seen.get(key)
   }
-  const upstream = await Promise.all((input.origins ?? []).map(once))
+  const upstream = (await Promise.all((input.origins ?? []).map(once))).map(read => originNode(ctx, read))
   const held = input.address ? (await pres.states(input.address, { hereHeld: null }).catch(() => [])).some(s => s.state === 'held') : false
   const name = input.name ?? shortCid(input.address)
   return [...upstream, { text: name, href: input.address ? `#/content/${input.address}` : null, ext: !held }]
