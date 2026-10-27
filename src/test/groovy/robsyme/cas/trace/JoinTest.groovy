@@ -5,6 +5,7 @@ import java.nio.file.Path
 import robsyme.cas.CasSession
 import robsyme.cas.core.Anomalies
 import robsyme.cas.core.Cid
+import robsyme.cas.core.Coordinates
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputItem
@@ -353,6 +354,30 @@ class JoinTest extends Specification {
         result.anomalies.unaddressed == 0
         result.anomalies.declined == 0
         result.joinedKeys == ['cas://lab/quant/A/A.sf'] as Set
+    }
+
+    def 'each joined item carries its cid and its cas leaves join keys, in leaf order'() {
+        given:
+        final Path bamPath = coord('cas://lab/aligned/A/A.bam')
+        final Path baiPath = coord('cas://lab/aligned/A/A.bam.bai')
+        final session = sessionWith([
+            'cas://lab/aligned/A/A.bam'    : new CasSession.Publish(new StoreRef(rawCid(1), 'A.bam'), 100L, 'head-node'),
+            'cas://lab/aligned/A/A.bam.bai': new CasSession.Publish(new StoreRef(rawCid(2), 'A.bam.bai'), 10L, 'head-node'),
+        ], dagCid(9))
+        final Path local = java.nio.file.Paths.get('/data/reads/A.fq')
+        final captured = [
+            aligned: [
+                [[sample: 'A'], bamPath, local, baiPath],
+                [[sample: 'B'], null],
+            ],
+        ] as Map<String, Object>
+
+        when:
+        final out = Join.join(captured, session).outputs[0]
+
+        then: 'a non-cas leaf contributes no key; an item with no cas leaf has none'
+        out.itemCids == out.items.collect { DagCbor.cidOf(DagCbor.encode(it.toCbor())) }
+        out.itemKeys == [[Coordinates.key(bamPath), Coordinates.key(baiPath)], []]
     }
 
     def 'a malformed cas path is still refused'() {

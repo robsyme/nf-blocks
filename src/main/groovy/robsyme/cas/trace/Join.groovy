@@ -40,12 +40,22 @@ class Join {
         final String name
         /** The items in arrival order, for the observer to store as blocks. */
         final List<OutputItem> items
+        /** Each item's address, aligned with {@link #items}. */
+        final List<Cid> itemCids
+        /**
+         * Each item's {@code cas://} leaves' join keys in leaf order, aligned with
+         * {@link #items}; a leaf outside the store has none (cross-run lineage spec §5.2).
+         */
+        final List<List<String>> itemKeys
         /** The collection, its {@code items}/{@code paths} already sorted by cid. */
         final OutputCollection collection
 
-        JoinedOutput(String name, List<OutputItem> items, OutputCollection collection) {
+        JoinedOutput(String name, List<OutputItem> items, List<Cid> itemCids, List<List<String>> itemKeys,
+                     OutputCollection collection) {
             this.name = name
             this.items = items
+            this.itemCids = itemCids
+            this.itemKeys = itemKeys
             this.collection = collection
         }
     }
@@ -118,18 +128,21 @@ class Join {
             final List<OutputItem> items = new ArrayList<OutputItem>(rawItems.size())
             final List<Cid> itemCids = new ArrayList<Cid>(rawItems.size())
             final List<List<String>> itemPaths = new ArrayList<List<String>>(rawItems.size())
+            final List<List<String>> itemKeys = new ArrayList<List<String>>(rawItems.size())
             for( Object raw : rawItems ) {
                 final List<String> leafPaths = new ArrayList<String>()
-                final Object built = build(raw, leafPaths, counters, session, byProvider, joined)
+                final List<String> leafKeys = new ArrayList<String>()
+                final Object built = build(raw, leafPaths, leafKeys, counters, session, byProvider, joined)
                 final OutputItem item = OutputItem.of(built)
                 items.add(item)
                 itemCids.add(DagCbor.cidOf(DagCbor.encode(item.toCbor())))
                 itemPaths.add(leafPaths)
+                itemKeys.add(leafKeys)
             }
             final Path indexPath = indexes.get(name)
             final OutputIndex index = indexPath == null ? null : indexFor(indexPath, counters, session, byProvider, joined)
             final OutputCollection collection = new OutputCollection(assertedBy, run, name, itemCids, itemPaths, index)
-            outputs.add(new JoinedOutput(name, items, collection))
+            outputs.add(new JoinedOutput(name, items, itemCids, itemKeys, collection))
         }
         final Map<String, List<Cid>> providers = byProvider.collectEntries {
             String k, TreeMap<String, Cid> v -> [(k): new ArrayList<Cid>(v.values())]
@@ -147,34 +160,35 @@ class Join {
     /**
      * Rebuilds one item's structure, replacing every file/directory leaf (a
      * {@code cas://} coordinate {@link Path}) with a {@link Leaf}, and appending
-     * each leaf's publish path to {@code leafPaths} in the depth-first order
+     * each leaf's publish path to {@code leafPaths} and each {@code cas://} leaf's
+     * join key to {@code leafKeys}, in the depth-first order
      * {@link OutputItem#leaves} uses. A {@code null} stays a null: nothing says
      * it was a file, and readers treat it as an absent key (DESIGN.md §6,
      * amended 2026-10-24).
      */
-    private static Object build(Object raw, List<String> leafPaths, Counters counters, CasSession session,
-                                Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
+    private static Object build(Object raw, List<String> leafPaths, List<String> leafKeys, Counters counters,
+                                CasSession session, Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
         if( raw instanceof Path )
-            return leafFor((Path) raw, leafPaths, counters, session, byProvider, joined)
+            return leafFor((Path) raw, leafPaths, leafKeys, counters, session, byProvider, joined)
         if( raw == null )
             return null
         if( raw instanceof Map ) {
             final Map<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) raw).entrySet() )
-                out.put(String.valueOf(e.key), build(e.value, leafPaths, counters, session, byProvider, joined))
+                out.put(String.valueOf(e.key), build(e.value, leafPaths, leafKeys, counters, session, byProvider, joined))
             return out
         }
         if( raw instanceof Collection ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (Collection) raw )
-                out.add(build(element, leafPaths, counters, session, byProvider, joined))
+                out.add(build(element, leafPaths, leafKeys, counters, session, byProvider, joined))
             return out
         }
         return raw
     }
 
-    private static Leaf leafFor(Path path, List<String> leafPaths, Counters counters, CasSession session,
-                               Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
+    private static Leaf leafFor(Path path, List<String> leafPaths, List<String> leafKeys, Counters counters,
+                               CasSession session, Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
         if( !isCas(path) ) {
             // A path outside the store (an https or local input carried in the item)
             // never received a publish event: never_published, no publish path and no
@@ -185,6 +199,7 @@ class Join {
         }
         final String key = Coordinates.key(path)
         joined.add(key)
+        leafKeys.add(key)
         final List<String> segments = segmentsOf(key)
         final String name = segments.isEmpty() ? null : segments.last()
         final String relPath = segments.join('/')
@@ -218,8 +233,7 @@ class Join {
      */
     private static OutputIndex indexFor(Path indexPath, Counters counters, CasSession session,
                                         Map<String, TreeMap<String, Cid>> byProvider, Set<String> joined) {
-        final List<String> ignored = new ArrayList<String>()
-        final Leaf leaf = leafFor(indexPath, ignored, counters, session, byProvider, joined)
+        final Leaf leaf = leafFor(indexPath, new ArrayList<String>(), new ArrayList<String>(), counters, session, byProvider, joined)
         return new OutputIndex(leaf, segmentsOf(Coordinates.key(indexPath)).join('/'))
     }
 
