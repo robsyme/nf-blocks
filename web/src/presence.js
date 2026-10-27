@@ -4,7 +4,8 @@
 // member is held unless the page already knows the block is missing here;
 // every other member answers a HEAD for the block's URL under its own base,
 // the URL BlockFetcher reads: 200 held, 404 not held, anything else unknown.
-// With one member, or none (?store=), nothing is asked: one dot, as before.
+// With one member, or none (?store=), nothing is asked unless the page cannot
+// tell (hereHeld null): one dot, as before.
 import { h } from './html.js'
 import { blockHref } from './blocks.js'
 import { button } from './components.js'
@@ -93,7 +94,7 @@ export function knownDots(states, { title = null } = {}) {
 
 /**
  * `members`: createMembers' `{ primary, list }` (or null with no
- * members.json). `here`: `{ name, key }` for the store the page reads when
+ * members.json). `here`: `{ name, key, base }` for the store the page reads when
  * the list does not name it. `pageUrl` resolves each member's base, as
  * memberOpener does.
  *
@@ -101,7 +102,8 @@ export function knownDots(states, { title = null } = {}) {
  * - `dots(cid, { hereHeld, held })`: a `.presence` that renders at once and fills
  *   in as the HEADs answer. `hereHeld`: true (held, the default), false (the
  *   page knows it is missing here: a ring), or null (the page cannot tell, so
- *   the open member is asked too; with one member it reads as held).
+ *   the open member is asked too, however many members there are; a store
+ *   with no base to ask reads as held).
  *   `held`: the aliases the page already knows hold it (a list row their
  *   indexes list, rule D5); those are drawn held and not asked.
  * - `states(cid, { hereHeld })`: a Promise of `[{ alias, key, here, state }]`
@@ -115,7 +117,7 @@ export function createPresence(members, { fetchFn = (...a) => fetch(...a), pageU
   const list = members?.list ?? []
   const several = list.length > 1
   const openAlias = members?.primary ?? null
-  const fallback = { alias: here?.name ?? here?.label ?? openAlias ?? 'this store', key: here?.key ?? 'a', base: null }
+  const fallback = { alias: here?.name ?? here?.label ?? openAlias ?? 'this store', key: here?.key ?? 'a', base: here?.base ?? null }
   const stores = list.length && list.some(m => m.alias === openAlias) ? list : [fallback]
   const open = stores.find(m => m.alias === openAlias) ?? stores[0]
   const answers = new Map() // `${alias} ${cid}` -> { state, promise }
@@ -141,7 +143,7 @@ export function createPresence(members, { fetchFn = (...a) => fetch(...a), pageU
   const entries = (cid, hereHeld, held = []) => stores.map((m) => {
     const isHere = m === open
     const fixed = held.includes(m.alias) ? 'held'
-      : isHere && (!several || hereHeld !== null) ? (hereHeld === false ? 'not' : 'held') : null
+      : isHere && (hereHeld !== null || !m.base) ? (hereHeld === false ? 'not' : 'held') : null
     const entry = fixed ? { state: fixed, promise: Promise.resolve(fixed) } : ask(m, cid)
     return { m, isHere, entry }
   })

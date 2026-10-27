@@ -344,7 +344,7 @@ async function start() {
       },
     })
     members = createMembers(store, { openExplorer: open })
-    presence = createPresence(members, { pageUrl: location.href, here: { name: storeName(store), key: storeKey(store) } })
+    presence = createPresence(members, { pageUrl: location.href, here: { name: storeName(store), key: storeKey(store), base: store.base } })
     renderStores(store)
     // The primary is opened here, once; the other members only when something asks members.explorer(alias).
     explorer = await (store.members ? members.explorer(store.member) : open({ alias: null, base: store.base }))

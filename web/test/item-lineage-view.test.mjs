@@ -6,6 +6,7 @@ import { Tray } from '../src/tray.js'
 import { claimState } from '../src/claims.js'
 import { item } from '../src/views/item.js'
 import { resetFolds } from '../src/folds.js'
+import { createPresence } from '../src/presence.js'
 import { FAKE_STORAGE } from './helpers.mjs'
 
 const PEOPLE = 'bafyreiabfmoro4h5zrbnzltdc5u4bguxoptvjq2pkn32fkczz3woqtcyju'
@@ -60,12 +61,12 @@ function lineageEx({ runs = [CONSUMER], collection = PEOPLE, reads = () => true 
   return ex
 }
 
-/** `members` in members.json order; `open` is the open member. Presence answers as createPresence does: the open member reads held unless hereHeld is null with several members, then it answers from `held`. */
+/** `members` in members.json order; `open` is the open member. Presence answers as createPresence does: the open member reads held unless hereHeld is null, then it answers from `held`. */
 function ctxWith({ held = {}, hrefIn = (alias, h) => h, members = ['roblab', 'B'], open = 'roblab', explorers = {} } = {}) {
   const fake = lineageEx()
   const stateOf = (cid, { hereHeld = true } = {}) => members.map(alias => {
     const here = alias === open
-    const state = here && (members.length < 2 || hereHeld !== null) ? (hereHeld === false ? 'not' : 'held') : (held[cid] ?? []).includes(alias) ? 'held' : 'not'
+    const state = here && hereHeld !== null ? (hereHeld === false ? 'not' : 'held') : (held[cid] ?? []).includes(alias) ? 'held' : 'not'
     return { alias, key: alias === 'B' ? 'b' : 'a', here, state }
   })
   return { tray: new Tray(null), rerender: () => {}, trayChanged: () => {}, progress: () => {}, use: () => {}, mark: () => {},
@@ -174,6 +175,27 @@ test('a file only member B holds is not dashed; one no member holds is', async (
   assert.equal(nodesOf(only).filter(n => n.classes().includes('ext')).length, 0)
   const none = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: { [PEOPLE_DEV]: ['roblab'] } }))
   assert.equal(nodesOf(none).filter(n => n.classes().includes('ext')).length, 1)
+})
+
+/** The real presence over one member, `lab`, whose HEAD for each block answers `status(cid)`. */
+function onePresenceCtx(status) {
+  const fetchFn = async (url) => new Response(null, { status: status(String(url).split('/').at(-1)) })
+  const ctx = ctxWith({ members: ['lab'], open: 'lab' })
+  ctx.members = { primary: 'lab', list: [{ alias: 'lab', key: 'a', base: 'm/lab/' }], explorer: async () => null }
+  ctx.presence = createPresence(ctx.members, { fetchFn, pageUrl: 'http://h/index.html' })
+  return ctx
+}
+
+test('with one member, a file the open member does not hold is dashed (real presence)', async () => {
+  const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, onePresenceCtx((cid) => (cid === DEV_DAT ? 404 : 200)))
+  const file = nodesOf(node).find(n => /Dev_Patel\.dat/.test(n.textContent))
+  assert.ok(file.classes().includes('ext'))
+})
+
+test('with one member, a file the open member holds stays solid (real presence)', async () => {
+  const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, onePresenceCtx(() => 200))
+  const file = nodesOf(node).find(n => /Dev_Patel\.dat/.test(n.textContent))
+  assert.equal(file.classes().includes('ext'), false)
 })
 
 test('an Origin repeated across inputs is read once', async () => {

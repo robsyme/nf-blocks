@@ -369,13 +369,24 @@ test('item page: a file missing here shows a ring and Missing here, and its Down
   assert.ok(asked.some(([, alias, cid]) => alias === 'lab' && cid === ZIP))
 })
 
-test('item page: one store and a swept item ask nothing, and every file keeps its dot', async () => {
+test('item page: one store and a swept item ask that store which files it still has', async () => {
+  installDom(); resetFolds()
+  const asked = []
+  const presence = createPresence({ primary: 'lab', list: [{ alias: 'lab', key: 'a', base: 'm/lab/' }] },
+    { fetchFn: async (u) => { asked.push(String(u)); return new Response(null, { status: String(u).endsWith(ZIP) ? 404 : 200 }) }, pageUrl: 'http://h/index.html' })
+  const ex = itemEx({ itemStoredSize: async () => ({ bytes: 2663, blocks: 1, partial: false }) })
+  const page = await item(ex, COLL, ITEM, { ...ctxFor(), presence })
+  await frame()
+  assert.deepEqual(asked.map(u => u.split('/').at(-1)).sort(), [ZIP, LOG].sort())
+  assert.deepEqual(page.querySelectorAll('[data-missing]').map(r => r.dataset.file), [ZIP])
+})
+
+test('item page: one store and an item stored whole ask nothing', async () => {
   installDom(); resetFolds()
   const asked = []
   const presence = createPresence({ primary: 'lab', list: [{ alias: 'lab', key: 'a', base: 'm/lab/' }] },
     { fetchFn: async (u) => { asked.push(u); return new Response(null) }, pageUrl: 'http://h/index.html' })
-  const ex = itemEx({ itemStoredSize: async () => ({ bytes: 2663, blocks: 1, partial: false }) })
-  const page = await item(ex, COLL, ITEM, { ...ctxFor(), presence })
+  const page = await item(itemEx(), COLL, ITEM, { ...ctxFor(), presence })
   await frame()
   assert.deepEqual(asked, [])
   assert.equal(page.querySelectorAll('[data-missing]').length, 0)

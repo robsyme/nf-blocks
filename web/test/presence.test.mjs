@@ -47,9 +47,26 @@ test('one member: one filled dot named for it, and no request at all', async () 
   await frame()
   assert.deepEqual(classes(node), ['dot a'])
   assert.equal(node.getAttribute('title'), 'Held in lab')
-  assert.deepEqual(await p.states(CID, { hereHeld: null }), [{ alias: 'lab', key: 'a', here: true, state: 'held' }], 'null reads as held with one member')
   assert.equal(p.several, false)
   assert.equal(fetchFn.asked.length, 0)
+})
+
+test('hereHeld null asks the open member with one member too', async () => {
+  installDom()
+  const fetchFn = heads(() => 404)
+  const p = createPresence(ONE, { fetchFn, pageUrl: PAGE })
+  assert.deepEqual(await p.states(CID, { hereHeld: null }), [{ alias: 'lab', key: 'a', here: true, state: 'not' }])
+  assert.deepEqual(fetchFn.asked.map(a => a.alias), ['lab'])
+})
+
+test('no members.json: hereHeld null asks the store ctx names when it has a base, else reads as held', async () => {
+  installDom()
+  const fetchFn = heads(() => 404)
+  const withBase = createPresence(null, { fetchFn, pageUrl: PAGE, here: { name: 'results', key: 'a', base: 'm/results/' } })
+  assert.deepEqual((await withBase.states(CID, { hereHeld: null })).map(s => s.state), ['not'])
+  const noBase = createPresence(null, { fetchFn, pageUrl: PAGE, here: { name: 'results', key: 'a' } })
+  assert.deepEqual((await noBase.states(CID, { hereHeld: null })).map(s => s.state), ['held'])
+  assert.deepEqual(fetchFn.asked.map(a => a.alias), ['results'])
 })
 
 test('no members.json: the one store ctx names, and no request', async () => {
