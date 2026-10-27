@@ -1,0 +1,489 @@
+package robsyme.cas.explore
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+
+import robsyme.cas.CasConfig
+import robsyme.cas.CasSession
+import robsyme.cas.GitEmail
+import robsyme.cas.PlatformIdentity
+import robsyme.cas.core.BlockStore
+import robsyme.cas.core.Cid
+import robsyme.cas.core.Fixtures
+import robsyme.cas.core.Index
+import robsyme.cas.core.IndexPaths
+import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.LocalSnapshotStorage
+import robsyme.cas.core.LocalStoreIdStorage
+import robsyme.cas.core.StoreIds
+import robsyme.cas.core.StoreLog
+import robsyme.cas.core.StoreLogEntry
+import robsyme.cas.core.StoreLogKind
+import robsyme.cas.s3.MemoryS3Ops
+import robsyme.cas.s3.S3BlockStore
+import robsyme.cas.s3.S3Failures
+import robsyme.cas.s3.S3Ops
+import software.amazon.awssdk.services.s3.model.S3Exception
+import spock.lang.Specification
+import spock.lang.TempDir
+import spock.lang.Timeout
+
+/**
+ * Each member's index state in the explorer and the one job thread that
+ * indexes, pushes and refreshes (background store indexing, spec §5, §6.3 to
+ * §6.6). The composition is `lab` (writable, local, one run), `cloud` (local,
+ * two logged runs, no snapshot, no store-id), `ro` (local, readOnly, no
+ * snapshot) and `out` (configured, not in cas.resolve).
+ */
+@Timeout(60)
+class IndexJobsTest extends Specification {
+
+    @TempDir
+    Path tmp
+
+    Path labRoot
+    Path cloudRoot
+    Path localRoot
+    CasSession session
+    Index shared
+    Object putLock
+    IndexJobs jobs
+
+    /** The runs lab holds as blocks with no Store Log entry. */
+    int labRuns = 1
+
+    /** Every IndexJobs and Index a test opened, stopped and closed in cleanup. */
+    List<IndexJobs> opened = []
+    List<Index> indexes = []
+
+    Closure<S3Ops> savedS3
+
+    def setup() {
+        CasSession.platformIdentity = { String e, String t -> throw new IOException('no platform in tests') } as PlatformIdentity
+        CasSession.gitEmail = { -> 'someone@example.org' } as GitEmail
+        CasSession.env = [:]
+        savedS3 = CasSession.s3OpsFactory
+        labRoot = tmp.resolve('lab')
+        cloudRoot = tmp.resolve('cloud')
+        localRoot = IndexPaths.localSnapshotsDir(tmp.resolve('cache.sqlite'))
+        final LocalBlockStore lab = new LocalBlockStore(labRoot, 'lab', true)
+        lab.putDagCbor(Fixtures.runCompletion(lab.putDagCbor(Fixtures.runManifest(run_name: 'lab-1', nf_run_hash: 'lab-1')), []))
+        logRun(new LocalBlockStore(cloudRoot, 'cloud', true), 'cloud-1')
+        logRun(new LocalBlockStore(cloudRoot, 'cloud', true), 'cloud-2')
+        Files.createDirectories(tmp.resolve('ro'))
+        Files.createDirectories(tmp.resolve('out'))
+        open()
+    }
+
+    def cleanup() {
+        opened.each { it.stop(5_000) }
+        indexes.each { it.close() }
+        CasSession.s3OpsFactory = savedS3
+    }
+
+    private CasConfig config(Map cloud = [location: cloudRoot.toString()]) {
+        return CasConfig.from([cas: [stores : [lab  : [location: labRoot.toString()], cloud: cloud,
+                                               ro   : [location: tmp.resolve('ro').toString(), readOnly: true],
+                                               out  : [location: tmp.resolve('out').toString()]],
+                                     resolve: ['lab', 'cloud', 'ro'],
+                                     tmpDir : tmp.toString(),
+                                     index  : [path: tmp.resolve('cache.sqlite').toString()]]], 'cas://lab')
+    }
+
+    /** A fresh explorer start over the same cache: a session with the rule on, its first catch-up, then classify. */
+    private IndexJobs open(CasConfig cfg = config()) {
+        session = CasSession.forCommand(cfg, new PrintStream(new ByteArrayOutputStream(), true, 'UTF-8'))
+        session.leaveUnindexedOut([:])
+        shared = session.openIndex()
+        indexes << shared
+        putLock = session.newPut(shared)
+        session.catchUpIndex(shared)
+        jobs = new IndexJobs(session, shared, putLock, localRoot, ExploreCommand.memberInfoOf(cfg))
+        opened << jobs
+        jobs.classify()
+        return jobs
+    }
+
+    /** One run in {@code member}, announced in its Store Log. */
+    private static void logRun(BlockStore member, String run) {
+        final Cid m = member.putDagCbor(Fixtures.runManifest(run_name: run, nf_run_hash: run))
+        final Cid rc = member.putDagCbor(Fixtures.runCompletion(m, []))
+        StoreLog.append(member, StoreLogKind.RUN, rc, System.currentTimeMillis())
+    }
+
+    /** The local snapshot's version tag: size, mtime and inode. */
+    private String localTag(String alias) {
+        return new LocalSnapshotStorage(localRoot.resolve(alias)).base(tmp).tag
+    }
+
+    /** Holds the job at its first `reading` report until {@code release} counts down. */
+    private CountDownLatch holdAtReading(CountDownLatch release) {
+        final CountDownLatch held = new CountDownLatch(1)
+        jobs.onReport = { String p, long d, long t -> if( p == 'reading' ) { held.countDown(); release.await() } }
+        return held
+    }
+
+    def 'classify: the writable member snapshot, a member with no snapshot none with its reason, one outside cas.resolve outside'() {
+        expect:
+        jobs.stateOf('lab').state == 'snapshot'
+        jobs.stateOf('cloud') == [state: 'none', at: null, progress: null, reason: 'absent', mode: null, local: false]
+        jobs.stateOf('out').state == 'outside'
+        jobs.states().keySet() as List == ['lab', 'cloud', 'ro', 'out']
+    }
+
+    def 'index locally: each phase in order, then local; nothing is written to the member and the cache holds it'() {
+        given:
+        final List<String> phases = []
+        jobs.onReport = { String p, long d, long t -> phases << p }
+
+        when:
+        final IndexJobs.Answer a = jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        a.status == 202 && a.body.index.state == 'indexing'
+        a.body.member == 'cloud' && a.body.mode == 'local'
+        phases.unique() == ['listing', 'reading', 'ingesting', 'log', 'snapshot']
+        jobs.stateOf('cloud').state == 'local' && jobs.stateOf('cloud').local
+        jobs.stateOf('cloud').at != null && jobs.stateOf('cloud').progress == null && jobs.stateOf('cloud').mode == 'local'
+        Files.isRegularFile(localRoot.resolve('cloud/index/v7.sqlite'))
+        jobs.localSnapshot('cloud') == localRoot.resolve('cloud/index/v7.sqlite')
+        !jobs.servesOwn('cloud')
+        !Files.exists(cloudRoot.resolve('index')) && !Files.exists(cloudRoot.resolve('store-id'))
+        shared.isIndexed('cloud') && shared.countRows('run') == labRuns + 2
+        !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
+    }
+
+    def 'while a job runs its state is indexing with the phase, counts and start time'() {
+        given:
+        final CountDownLatch release = new CountDownLatch(1)
+        final CountDownLatch held = holdAtReading(release)
+
+        when:
+        jobs.start('cloud', 'local')
+        held.await()
+        final Map<String, Object> during = jobs.stateOf('cloud')
+        release.countDown()
+        jobs.awaitIdle(30_000)
+
+        then:
+        during.state == 'indexing' && during.mode == 'local' && !during.local
+        (during.progress as Map).phase == 'reading' && (during.progress as Map).done == 0L && (during.progress as Map).total > 0L
+        (during.progress as Map).startedAt ==~ /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/
+    }
+
+    def 'index and push writes index/v7.sqlite and a store-id into the member, no index.html, and serves its own'() {
+        given:
+        final List<String> phases = []
+        jobs.onReport = { String p, long d, long t -> phases << p }
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        phases.unique() == ['listing', 'reading', 'ingesting', 'log', 'snapshot', 'push']
+        jobs.stateOf('cloud').state == 'snapshot' && jobs.localSnapshot('cloud') == null && jobs.servesOwn('cloud')
+        Files.isRegularFile(cloudRoot.resolve('index/v7.sqlite')) && Files.exists(cloudRoot.resolve('store-id'))
+        !Files.exists(cloudRoot.resolve('index.html')) && !Files.exists(localRoot.resolve('cloud'))
+        shared.isIndexed('cloud')
+        !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
+    }
+
+    def 'push to store on a local member writes without scanning again'() {
+        given:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        final List<String> phases = []
+        jobs.onReport = { String p, long d, long t -> phases << p }
+
+        when:
+        final IndexJobs.Answer a = jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        a.status == 202 && a.body.index.state == 'indexing' && a.body.index.local
+        phases.unique() in [['log', 'push'], ['push']]
+        jobs.stateOf('cloud').state == 'snapshot' && jobs.stateOf('cloud').mode == 'push'
+        Files.isRegularFile(cloudRoot.resolve('index/v7.sqlite')) && Files.exists(cloudRoot.resolve('store-id'))
+        !Files.exists(localRoot.resolve('cloud'))
+    }
+
+    def 'a push the guard refuses fails with its reason and keeps the local index'() {
+        given: 'cloud indexed here'
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        and: 'another writer scanned a third run that is not in the Store Log, and wrote a snapshot of cloud listing it'
+        final LocalBlockStore cloud = new LocalBlockStore(cloudRoot, 'cloud', true)
+        cloud.putDagCbor(Fixtures.runCompletion(cloud.putDagCbor(Fixtures.runManifest(run_name: 'cloud-3', nf_run_hash: 'cloud-3')), []))
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        other.catchUp(cloud, StoreLog.of(cloud), 'cloud')
+        final LocalSnapshotStorage own = new LocalSnapshotStorage(cloudRoot)
+        assert IndexSnapshot.write(other, 'cloud', own, 0L, null, tmp).written
+        final String before = own.base(tmp).tag
+
+        when:
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'failed'
+        jobs.stateOf('cloud').reason == "the store's own snapshot lists more runs than this index, so it was kept"
+        jobs.stateOf('cloud').mode == 'push' && jobs.stateOf('cloud').local
+        jobs.localSnapshot('cloud') != null && !jobs.servesOwn('cloud')
+        own.base(tmp).tag == before
+        jobs.unindexedForCopy() == [ro: 'absent']
+    }
+
+    def 'refusals: #alias #mode is #status #error'() {
+        expect:
+        jobs.start(alias, mode).with { [status, body.error] } == [status, error]
+        jobs.start(alias, mode).body.message
+
+        where:
+        alias   | mode    || status | error
+        'nope'  | 'local' || 400    | 'unknown_member'
+        'lab'   | 'local' || 400    | 'writable_member'
+        'ro'    | 'push'  || 400    | 'not_writable'
+        'cloud' | 'redo'  || 400    | 'bad_request'
+        'cloud' | null    || 400    | 'bad_request'
+        'out'   | 'local' || 400    | 'bad_request'
+    }
+
+    def 'one job at a time: a second start is 409 while the first runs'() {
+        given:
+        final CountDownLatch release = new CountDownLatch(1)
+        final CountDownLatch held = holdAtReading(release)
+        jobs.start('cloud', 'local')
+        held.await()
+
+        when:
+        final IndexJobs.Answer second = jobs.start('ro', 'local')
+        release.countDown()
+        jobs.awaitIdle(30_000)
+
+        then:
+        second.status == 409
+        second.body == [error: 'index_running', message: 'another store is being indexed; try again when it has finished']
+        jobs.stateOf('ro').state == 'none'
+        jobs.start('cloud', 'local').with { [status, body.error] } == [400, 'already_indexed']
+    }
+
+    def 'a write to the cache while a job scans is not held behind it'() {
+        given:
+        final CountDownLatch release = new CountDownLatch(1)
+        final CountDownLatch held = holdAtReading(release)
+        final LocalBlockStore lab = new LocalBlockStore(labRoot, 'lab', true)
+        final Cid cid = lab.putDagCbor(Fixtures.runManifest(run_name: 'lab-2', nf_run_hash: 'lab-2'))
+        final StoreLogEntry entry = StoreLog.parse(StoreLog.entryName(StoreLogKind.RUN, cid, System.currentTimeMillis()))
+        jobs.start('cloud', 'local')
+        held.await()
+
+        when:
+        final long t0 = System.nanoTime()
+        synchronized( putLock ) {
+            shared.recordLogEntry(entry, 'lab')
+        }
+
+        then:
+        (System.nanoTime() - t0) < 1_000_000_000L
+        !shared.isIndexed('cloud')
+
+        cleanup:
+        release.countDown()
+        jobs.awaitIdle(30_000)
+    }
+
+    def 'stop() ends a running job and leaves the member as it was'() {
+        given:
+        final CountDownLatch held = holdAtReading(new CountDownLatch(1))
+        jobs.start('cloud', 'local')
+        held.await()
+
+        when:
+        final long t0 = System.currentTimeMillis()
+        jobs.stop(5_000)
+
+        then:
+        System.currentTimeMillis() - t0 < 5_000
+        jobs.stateOf('cloud') == [state: 'none', at: null, progress: null, reason: 'absent', mode: null, local: false]
+        !shared.isIndexed('cloud') && !Files.exists(localRoot.resolve('cloud'))
+        !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
+    }
+
+    def 'an S3 member whose reads are refused ends failed with the credentials wording'() {
+        given: 'cloud in a bucket whose block reads are refused once a job has listed them'
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        final S3BlockStore cloud = new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp)
+        logRun(cloud, 'cloud-1')
+        logRun(cloud, 'cloud-2')
+        open(cfg)
+        bucket.armed = true
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        bucket.refused > 0
+        jobs.stateOf('cloud').state == 'failed'
+        jobs.stateOf('cloud').reason == S3Failures.REFUSED
+        jobs.stateOf('cloud').mode == 'local' && !jobs.stateOf('cloud').local && jobs.stateOf('cloud').at != null
+        !shared.isIndexed('cloud') && jobs.localSnapshot('cloud') == null
+        jobs.unindexedForCopy() == [cloud: S3Failures.REFUSED, ro: 'absent']
+        !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
+    }
+
+    def 'restart: a locally indexed member is local at once and a refresh rebuilds its snapshot'() {
+        given:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        final String before = localTag('cloud')
+        final long mtime = Files.getLastModifiedTime(localRoot.resolve('cloud/index/v7.sqlite')).toMillis()
+        logRun(new LocalBlockStore(cloudRoot, 'cloud', true), 'cloud-3')
+
+        when:
+        final IndexJobs again = open()
+
+        then:
+        again.stateOf('cloud').state == 'local' && again.stateOf('cloud').local
+        again.stateOf('cloud').at == Index.isoMillis(mtime)
+        again.localSnapshot('cloud') != null
+
+        when:
+        again.startQueued()
+        again.awaitIdle(30_000)
+
+        then:
+        again.stateOf('cloud').state == 'local'
+        localTag('cloud') != before
+        shared.countRows('run') == labRuns + 3
+    }
+
+    def 'a member the cache holds without a local snapshot is indexing until its snapshot is built'() {
+        given: 'the cache caught up cloud with the rule off (ro left out, so it stays not indexed)'
+        final CasSession plain = CasSession.forCommand(config(), new PrintStream(new ByteArrayOutputStream(), true, 'UTF-8'))
+        plain.catchUpIndex(shared, true, ['ro'] as Set<String>)
+        assert shared.isIndexed('cloud')
+
+        when:
+        final IndexJobs again = open()
+
+        then:
+        again.stateOf('cloud').state == 'indexing' && !again.stateOf('cloud').local
+        again.localSnapshot('cloud') == null
+        again.unindexedForCopy() == [cloud: IndexJobs.BEING_INDEXED, ro: 'absent']
+        again.start('ro', 'local').status == 409
+
+        when:
+        again.startQueued()
+        again.awaitIdle(30_000)
+
+        then:
+        again.stateOf('cloud').state == 'local' && again.stateOf('cloud').local
+        again.localSnapshot('cloud') != null
+        !Files.exists(cloudRoot.resolve('index'))
+    }
+
+    def 'an own snapshot from another incarnation leaves the member none; once indexed, the local one is served'() {
+        given: 'cloud has a store-id and an index/v7.sqlite written for another id'
+        final String id = StoreIds.ensure(new LocalStoreIdStorage(cloudRoot))
+        final String otherId = StoreIds.newId()
+        final Index other = Index.open(tmp.resolve('other.sqlite'))
+        indexes << other
+        final LocalBlockStore cloud = new LocalBlockStore(cloudRoot, 'cloud', false)
+        other.reconcileStoreIds([cloud: otherId], { String a, String w -> true })
+        other.catchUp(cloud, StoreLog.of(cloud), 'cloud')
+        assert IndexSnapshot.write(other, 'cloud', new LocalSnapshotStorage(cloudRoot), 0L, null, tmp, otherId).written
+
+        when:
+        open()
+
+        then:
+        jobs.stateOf('cloud').state == 'none'
+        (jobs.stateOf('cloud').reason as String).startsWith('written for another incarnation')
+        !jobs.servesOwn('cloud') && jobs.localSnapshot('cloud') == null
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'local'
+        jobs.localSnapshot('cloud') != null && !jobs.servesOwn('cloud')
+        shared.storeIdOf('cloud') == id
+
+        when:
+        final IndexJobs again = open()
+
+        then:
+        again.stateOf('cloud').state == 'local'
+        again.localSnapshot('cloud') != null && !again.servesOwn('cloud')
+    }
+
+    def 'copied() refreshes a local member; the copy view lists unindexed members and local roots'() {
+        given:
+        jobs.startQueued()
+
+        expect:
+        jobs.unindexedForCopy() == [cloud: 'absent', ro: 'absent']
+        jobs.localRootsForCopy() == [:]
+
+        when:
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        final String before = localTag('cloud')
+
+        then:
+        jobs.unindexedForCopy() == [ro: 'absent']
+        jobs.localRootsForCopy() == [cloud: localRoot.resolve('cloud')]
+
+        when:
+        logRun(new LocalBlockStore(cloudRoot, 'cloud', true), 'cloud-3')
+        jobs.copied('cloud')
+        jobs.copied('ro')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'local'
+        localTag('cloud') != before
+        shared.countRows('run') == labRuns + 3
+        jobs.stateOf('ro').state == 'none'
+    }
+
+    def 'a failure reason redacts local paths; a credentials failure is told in plain words'() {
+        expect:
+        !jobs.reasonFor(new IOException("cannot read ${tmp.resolve('x')}")).contains(tmp.toString())
+        jobs.reasonFor(new RuntimeException('wrapped', S3Exception.builder().statusCode(403).build() as Throwable)) == S3Failures.REFUSED
+    }
+
+    /** A bucket whose block GETs answer 403 once it is armed and a block listing has happened, as when credentials expire mid-scan. */
+    static class RefusingS3 extends MemoryS3Ops {
+        volatile boolean armed
+        volatile boolean listed
+        volatile int refused
+
+        RefusingS3(String bucket) { super(bucket) }
+
+        @Override
+        List list(String prefix, int maxKeys) {
+            if( armed && prefix.contains('blocks/') )
+                listed = true
+            return super.list(prefix, maxKeys)
+        }
+
+        @Override
+        InputStream get(String key, String ifMatch, long start, long length) {
+            if( listed && key.contains('/blocks/') ) {
+                refused++
+                throw S3Exception.builder().statusCode(403).message('Access Denied').build()
+            }
+            return super.get(key, ifMatch, start, length)
+        }
+    }
+}
