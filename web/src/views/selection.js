@@ -215,7 +215,7 @@ export async function selection(ex, selectionCid, ctx) {
       h('div', { class: 'tbox' }, grid.table)),
     ctx.write.served ? panel({ title: 'Samplesheet',
       actions: [h('a', { class: 'btn sm', href: `api/samplesheet/${selectionCid}.csv`, download: '', 'data-samplesheet': 'csv' }, 'Download CSV'),
-        h('a', { class: 'btn sm ghost', href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'JSON')] }, h('p', { class: 'muted' }, 'One row per item, with its metadata and the address of each file.')) : null)
+        h('a', { class: 'btn sm', href: `api/samplesheet/${selectionCid}.json`, download: '', 'data-samplesheet': 'json' }, 'Download JSON')] }, h('p', { class: 'muted' }, 'One row per item, with its metadata and the address of each file.')) : null)
 }
 
 /**
