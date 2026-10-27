@@ -233,7 +233,7 @@ async function inputNodes(ex, ctx, pres, input, seen) {
   }
   const upstream = (await Promise.all((input.origins ?? []).map(once))).map(read => originNode(ctx, read))
   const held = input.address ? (await pres.states(input.address, { hereHeld: null }).catch(() => [])).some(s => s.state === 'held') : false
-  const name = input.name ?? shortCid(input.address)
+  const name = input.name ?? (input.address ? shortCid(input.address) : 'unnamed input')
   return [...upstream, { text: name, href: input.address ? `#/content/${input.address}` : null, ext: !held }]
 }
 
@@ -398,7 +398,9 @@ export async function item(ex, collectionCid, itemCid, ctx) {
     ? await Promise.resolve(ex.itemLineage?.(itemCid, collectionCid === '-' ? null : from.completion)).catch(() => []) ?? []
     : []
   const seen = new Map()
-  const chains = await Promise.all(lineageRuns.map(async run => ({ run, nodes: (await Promise.all(run.inputs.map(i => inputNodes(ex, ctx, pres, i, seen)))).flat() })))
+  // A run whose lineage cannot be drawn shows no nodes; the page and the other runs still render.
+  const nodesOf = async (run) => (await Promise.all(run.inputs.map(i => inputNodes(ex, ctx, pres, i, seen)))).flat()
+  const chains = await Promise.all(lineageRuns.map(async run => ({ run, nodes: await nodesOf(run).catch(() => []) })))
   const groups = chains.length < 2 ? null : await Promise.all(chains.map(async ({ run, nodes }) => {
     const identity = await Promise.resolve(ex.runIdentity?.(run.completion_cid)).catch(() => null)
     return h('div', { 'data-lineage-run': run.completion_cid }, runFact(identity, run.completion_cid), thread([...unpublished, ...nodes, self]))

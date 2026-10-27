@@ -163,6 +163,26 @@ test('an input with no Origin shows its file only', async () => {
   assert.deepEqual(nodesOf(node).map(n => n.textContent), ['Dev_Patel.dat', 'intros · Dev'])
 })
 
+test('an input with neither name nor address gets a fixed label', async () => {
+  const ex = lineageEx()
+  const lineage = ex.itemLineage
+  ex.itemLineage = async (...a) => (await lineage(...a)).map(r => ({ ...r, inputs: r.inputs.map(i => ({ ...i, name: null, address: null, origins: [] })) }))
+  const node = await page(ex, CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: {} }))
+  assert.deepEqual(nodesOf(node).map(n => n.textContent), ['unnamed input', 'intros · Dev'])
+})
+
+test('a run whose lineage cannot be drawn shows no nodes; the page and the other run still render', async () => {
+  const ex = lineageEx({ runs: [CONSUMER, CONSUMER_2] })
+  const lineage = ex.itemLineage
+  ex.itemLineage = async (...a) => (await lineage(...a)).map(r => (r.completion_cid === CONSUMER_2 ? { ...r, inputs: null } : r))
+  const node = await page(ex, '-', INTRO_DEV, ctxWith({ held: allHeld }))
+  const groups = node.querySelectorAll('[data-lineage-run]')
+  assert.equal(groups.length, 2)
+  const nodes = (g) => g.querySelectorAll('.node').map(n => n.textContent.split(/infallible|via/)[0])
+  assert.deepEqual(nodes(groups.find(g => g.getAttribute('data-lineage-run') === CONSUMER)), ['people · Dev', 'Dev_Patel.dat', 'item · Dev'])
+  assert.deepEqual(nodes(groups.find(g => g.getAttribute('data-lineage-run') === CONSUMER_2)), ['item · Dev'])
+})
+
 test('both members hold the upstream item: the link stays in the open member even when it is listed second', async () => {
   const ctx = ctxWith({ members: ['B', 'roblab'], held: { [PEOPLE_DEV]: ['B', 'roblab'] }, hrefIn: (alias, h) => (alias === 'roblab' ? h : `?member=${alias}${h}`) })
   const node = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctx)
