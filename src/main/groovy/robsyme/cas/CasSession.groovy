@@ -363,6 +363,11 @@ class CasSession {
      * {@code leftOut} alone: neither their logs nor their store-ids are read,
      * and the writable member's store-id is not created when it is left out.
      * A copy plans this way, so planning never writes to the destination.
+     *
+     * With {@link #leaveUnindexedOut} called, a non-writable member this cache
+     * does not hold is seeded from its snapshot or left out, never scanned
+     * (background store indexing, spec §6.1); a member left out is named once
+     * through this session's notices and is not in the returned set.
      */
     Set<String> catchUpIndex(Index index, boolean seed, Set<String> leftOut) {
         final Set<String> failed = new LinkedHashSet<String>()
@@ -373,18 +378,78 @@ class CasSession {
             log.warn("could not compare this cache with the store's ids; it is derived: ${e.message}", e)
         }
         for( BlockStore member : members() ) {
-            if( leftOut.contains(member.alias()) )
+            final String alias = member.alias()
+            if( leftOut.contains(alias) )
                 continue
             try {
-                final Set<String> quietFor = member.alias() == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
-                index.catchUp(member, StoreLog.of(member), member.alias(), seed ? snapshotsOf(member.alias()) : null, config.tmpDir, quietFor, store)
+                if( unindexedLeftOut && alias != config.writableAlias && !index.isIndexed(alias) ) {
+                    if( !seededOrLeftOut(index, member) )
+                        continue
+                    index.catchUp(member, StoreLog.of(member), alias, store)
+                    continue
+                }
+                final Set<String> quietFor = alias == config.writableAlias ? loggedThisRun : Collections.<String> emptySet()
+                index.catchUp(member, StoreLog.of(member), alias, seed ? seedSourceOf(alias) : null, config.tmpDir, quietFor, store)
             }
             catch( Exception e ) {
-                failed.add(member.alias())
-                log.warn("could not catch up the index from store member '${member.alias()}'; it is derived: ${e.message}", e)
+                failed.add(alias)
+                log.warn("could not catch up the index from store member '${alias}'; it is derived: ${e.message}", e)
             }
         }
         return failed
+    }
+
+    /** Whether {@link #catchUpIndex} leaves out the members this cache does not hold and cannot seed; set once by {@link #leaveUnindexedOut}. */
+    private volatile boolean unindexedLeftOut
+
+    /** alias -> why the rule left that member out: the reason its snapshot could not seed, or what the caller already knew. */
+    private final ConcurrentHashMap<String, String> unindexed = new ConcurrentHashMap<>()
+
+    /** alias -> where the rule seeds that member from instead of its own snapshot ({@link #seedFrom}). */
+    private final ConcurrentHashMap<String, SnapshotStorage> seedSources = new ConcurrentHashMap<>()
+
+    /**
+     * Turns on the rule in {@link #catchUpIndex(Index, boolean, Set)} for this
+     * session: explore's, never a command's or a run's. {@code known} (alias
+     * to reason) is what the caller has already decided is not indexed; those
+     * members are skipped without fetching their snapshots.
+     */
+    void leaveUnindexedOut(Map<String, String> known) {
+        unindexed.putAll(known)
+        unindexedLeftOut = true
+    }
+
+    /** The members the rule has left out, alias to reason. */
+    Map<String, String> unindexed() {
+        return new LinkedHashMap<String, String>(unindexed)
+    }
+
+    /** The rule seeds {@code alias} from {@code storage}, a snapshot kept elsewhere, instead of the member's own. */
+    void seedFrom(String alias, SnapshotStorage storage) {
+        seedSources.put(alias, storage)
+    }
+
+    private SnapshotStorage seedSourceOf(String alias) {
+        return seedSources.get(alias) ?: snapshotsOf(alias)
+    }
+
+    /** True once {@code member} is seeded; false when it is left out, which is recorded and named the first time. */
+    private boolean seededOrLeftOut(Index index, BlockStore member) {
+        final String alias = member.alias()
+        if( unindexed.containsKey(alias) )
+            return false
+        final String reason = index.trySeed(member, StoreLog.of(member), alias, seedSourceOf(alias), config.tmpDir)
+        if( reason == null )
+            return true
+        unindexed.put(alias, reason)
+        notices.warn(notListedLine(alias, reason))
+        return false
+    }
+
+    /** The line a member the explorer leaves out gets (spec §5.1), with the reason when its snapshot is there but unusable. */
+    static String notListedLine(String alias, String reason) {
+        final String has = reason == 'absent' ? 'has no Index Snapshot' : "has no usable Index Snapshot (${reason})"
+        return "store member '${alias}' ${has}, so the explorer does not list it. Index it from the Storage page, or run nf-blocks:snapshot against it.".toString()
     }
 
     private volatile String writableId
@@ -436,7 +501,7 @@ class CasSession {
     }
 
     private Boolean watermarkLogged(String alias, String watermark) {
-        final BlockStore member = members().find { BlockStore m -> m.alias() == alias }
+        final BlockStore member = member(alias)
         if( member == null )
             return null
         try {
@@ -451,6 +516,11 @@ class CasSession {
     /** The store's members, writable first; a single-store session has one. */
     List<BlockStore> members() {
         return store instanceof CompositeStore ? ((CompositeStore) store).members : [store]
+    }
+
+    /** The composition member {@code alias}, or null. */
+    BlockStore member(String alias) {
+        return members().find { BlockStore m -> m.alias() == alias }
     }
 
     /**
@@ -560,14 +630,9 @@ class CasSession {
         if( failed?.contains(config.writableAlias) )
             return new IndexSnapshot.Result(false, null, 0L, -1, null, IndexSnapshot.CATCH_UP_FAILED)
         final SnapshotStorage storage = snapshotsOf(config.writableAlias)
-        // A sweep takes what only released or deleted runs reached, and a copy brings a run's records without all its
-        // files (P3 plan D8): the build asks the writable member which blocks of those, and of transferred roots and runs, it lacks.
         final BlockStore writable = members()[0]
-        final Closure<Boolean> present = { Cid cid -> writable.has(cid) }
-        // Its sweep.lock: the build records no presence while a sweep may be deleting (null: none is recorded).
-        final RetentionStorage sweepLock = writable instanceof RetainedStore ? ((RetainedStore) writable).retentionStorage() : null
         final IndexSnapshot.Result result = IndexSnapshot.write(index, config.writableAlias, storage, maxBytes, base, config.tmpDir, writableStoreId(), rebuild,
-            sweepGraceMillis(), present, sweepLock)
+            sweepGraceMillis(), presence(writable), sweepLockOf(writable))
         if( result.written ) {
             final byte[] page = IndexSnapshot.bundledPage()
             if( page != null )
@@ -576,6 +641,77 @@ class CasSession {
                 warnOnce('this build of nf-blocks carries no explorer page; the snapshot was written without index.html')
         }
         return result
+    }
+
+    /**
+     * A sweep takes what only released or deleted runs reached, and a copy brings a run's records without all its
+     * files (P3 plan D8): a snapshot build asks the member which blocks of those, and of transferred roots and runs, it lacks.
+     */
+    private static Closure<Boolean> presence(BlockStore member) {
+        return { Cid cid -> member.has(cid) }
+    }
+
+    /** The member's sweep.lock: the build records no presence while a sweep may be deleting (null: none is recorded). */
+    private static RetentionStorage sweepLockOf(BlockStore member) {
+        return member instanceof RetainedStore ? ((RetainedStore) member).retentionStorage() : null
+    }
+
+    /**
+     * Why the rule would not seed {@code alias} from the member's own snapshot,
+     * in {@link Index#trySeed}'s words, or null when it would: the snapshot is
+     * there, and its store id is the one this cache recorded for the member, or
+     * it has none and its watermark is null or in the member's Store Log. Reads
+     * the snapshot's HEAD (and a GET only for an uncounted S3 snapshot), not the
+     * snapshot itself, so its schema_version is not checked.
+     */
+    String ownSnapshotUnusable(String alias, Index index) {
+        final SnapshotStorage storage = snapshotsOf(alias)
+        final BlockStore member = member(alias)
+        if( storage == null || member == null )
+            return 'absent'
+        try {
+            final SnapshotBase base = storage.base(config.tmpDir)
+            if( base == null )
+                return 'absent'
+            final String memberId = index.storeIdOf(alias)
+            if( base.storeId != null && memberId != null && base.storeId != memberId )
+                return "written for another incarnation of the member (store_id ${base.storeId}, the member's is ${memberId})".toString()
+            if( base.storeId == null && base.watermark != null && !StoreLog.of(member).has(base.watermark) )
+                return "its watermark ${base.watermark} is not in the member's Store Log, so it may be from an earlier incarnation".toString()
+            return null
+        }
+        catch( Exception e ) {
+            log.debug("could not look at the Index Snapshot of '${alias}': ${e.message}", e)
+            return 'unreadable'
+        }
+    }
+
+    /** The store-id of {@code alias}, created when absent (a push writes one, spec §6.5); null when the member keeps none. */
+    String ensureStoreId(String alias) {
+        final BlockStore member = member(alias)
+        return member instanceof IdentifiedStore ? StoreIds.ensure(((IdentifiedStore) member).storeIdStorage()) : null
+    }
+
+    /**
+     * The snapshot of {@code alias} built from {@code index} as a local file in
+     * the session's tmpDir, as {@code nf-blocks:snapshot} would build it against
+     * that member: its presence check and its sweep.lock (spec §6.4). The caller
+     * deletes {@code file}.
+     */
+    IndexSnapshot.Built buildMemberSnapshot(Index index, String alias) {
+        final BlockStore member = member(alias)
+        return IndexSnapshot.build(index, alias, config.tmpDir, sweepGraceMillis(), presence(member), 0L, sweepLockOf(member))
+    }
+
+    /**
+     * Writes the snapshot of {@code alias} into the member with
+     * {@link #snapshotWritable}'s guards against {@code base}, at any size and
+     * without the page (spec §6.5). {@code storeId} is {@link #ensureStoreId}'s.
+     */
+    IndexSnapshot.Result pushMemberSnapshot(Index index, String alias, SnapshotBase base, String storeId) {
+        final BlockStore member = member(alias)
+        return IndexSnapshot.write(index, alias, snapshotsOf(alias), 0L, base, config.tmpDir, storeId, false, sweepGraceMillis(),
+            presence(member), sweepLockOf(member))
     }
 
     /** The explorer page beside a written snapshot. Derived (rule 3): a failure warns, and the snapshot stands. */
