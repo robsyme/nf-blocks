@@ -911,6 +911,75 @@ def evaluate(root):
         return PASS, ("a pick from query 3 carried cold's aligned as its via, Add all put all %d items of stats in the tray "
                       "with stats as theirs, and the saved Selection has the Gate's address with every via kept" % len(stats_items))
 
+    def s2_items(selection, seen_selections=()):
+        """The item addresses a Selection holds, through its nested Selections."""
+        if selection in seen_selections:
+            return set()
+        found = set()
+        for member in store.read_block(selection).get("members") or []:
+            if "selection" in member:
+                found |= s2_items(_text(member["selection"]), seen_selections + (selection,))
+            else:
+                found.add(_text(member["item"]["address"]))
+        return found
+
+    def typed_lineage(s2):
+        """([problems], task inputs with an Origin, hashes items in the ItemLineage) of the typed consumer's own run."""
+        typed = cas.Store(os.path.join(out, "store-typed"))
+        completions = [(cid, typed.read_block(cid)) for cid, _path in typed.blocks("dagcbor")]
+        completions = [(cid, b) for cid, b in completions if isinstance(b, dict) and b.get("kind") == "RunCompletion"]
+        if len(completions) != 1:
+            return ["store-typed holds %d RunCompletion(s), expected the typed run's one" % len(completions)], 0, 0
+        completion = completions[0][1]
+        problems = []
+        if completion.get("schema") != 3:
+            problems.append("the typed run's RunCompletion is schema %r, expected 3" % completion.get("schema"))
+        input_set = typed.read_block(_text(completion["input_set"])) if completion.get("input_set") is not None else None
+        if input_set is None:
+            return problems + ["the typed run's RunCompletion has no input_set"], 0, 0
+        if input_set.get("schema") != 2:
+            problems.append("the typed run's InputSet is schema %r, expected 2" % input_set.get("schema"))
+        members = s2_items(s2) if s2 else set()
+        task_inputs = [i for i in input_set.get("inputs") or [] if i.get("role") == "task"]
+        if not task_inputs:
+            problems.append("the typed run's InputSet has no input with role task")
+        origins = 0
+        for i in task_inputs:
+            origin = i.get("from") or []
+            good = len(origin) == 1 and _text(origin[0].get("item")) in members and _text(origin[0].get("selection")) == s2
+            if good:
+                origins += 1
+            else:
+                problems.append("the task input %s has from %s, expected exactly one Origin naming an item of S2 and S2 %s"
+                                % (i.get("name"), [{k: _text(v) for k, v in o.items()} for o in origin], s2))
+        if completion.get("item_lineage") is None:
+            return problems + ["the typed run's RunCompletion has item_lineage null"], origins, 0
+        lineage = typed.read_block(_text(completion["item_lineage"]))
+        if lineage.get("input_set") is None or _text(lineage["input_set"]) != _text(completion["input_set"]):
+            problems.append("the typed run's ItemLineage names input_set %s, not the RunCompletion's"
+                            % (lineage.get("input_set") and _text(lineage["input_set"])))
+        by_item = {_text(d["item"]): d for d in lineage.get("items") or []}
+        published = []
+        for link in completion.get("collections") or []:
+            collection = typed.read_block(_text(link))
+            if collection.get("name") == "hashes":
+                published += [_text(i) for i in collection.get("items") or []]
+        if not published:
+            problems.append("the typed run published no hashes items")
+        for item in published:
+            d = by_item.get(item)
+            if d is None:
+                problems.append("the ItemLineage does not list hashes item %s" % item)
+                continue
+            if len(d.get("inputs") or []) != 1 or not 0 <= d["inputs"][0] < len(input_set.get("inputs") or []):
+                problems.append("hashes item %s has input positions %s, expected exactly one into the InputSet"
+                                % (item, d.get("inputs")))
+            tasks = d.get("tasks") or []
+            if len(tasks) != 1 or not str(tasks[0].get("process", "")).endswith("HASH"):
+                problems.append("hashes item %s has %d task(s) %s, expected 1 task whose process ends in HASH"
+                                % (item, len(tasks), [t.get("process") for t in tasks]))
+        return problems, origins, len(published)
+
     def b18():
         problems, shown = ran_snippet("typed", "selection-typed")
         if shown and not shown.startswith("nextflow.Channel.fromStore("):
@@ -929,10 +998,14 @@ def evaluate(root):
         problems += once_each("typed", "selection-typed")
         if got != want_hashes:
             problems.append("the typed consumer staged %s, expected %s" % (json.dumps(got, sort_keys=True), json.dumps(want_hashes, sort_keys=True)))
+        lineage_problems, origins, derived = typed_lineage(_saved(observed, "B.second"))
+        problems += lineage_problems
         if problems:
             return FAIL, "; ".join(problems)
         return PASS, ("the page's typed snippet (%s), run verbatim with nextflow.enable.types, handed a Sample and a Kit record "
-                      "to every task without an invalid argument type warning, and A, B and C hash as expected" % shown)
+                      "to every task without an invalid argument type warning, and A, B and C hash as expected; its InputSet "
+                      "(schema 2) has %d task input(s) whose Origins are each one item of S2 selected by S2, and its "
+                      "ItemLineage lists %d hashes item(s) with one input and one HASH task each" % (shown, origins, derived))
 
     def b19():
         cli = expected["cli"]

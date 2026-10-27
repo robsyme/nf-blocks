@@ -107,6 +107,11 @@ class World(object):
         self.store_typed = os.path.join(self.out, "store-typed")
         self.typed_hashes = {"%s.sha256" % f["name"]: f["sha256"] for f in FILES.values()}
         self.typed_exit = "0"
+        self.typed_completion_schema = 3
+        self.typed_input_set_schema = 2
+        self.typed_origins = True       # every task input names the S2 item it read
+        self.typed_item_lineage = True  # False writes item_lineage: None
+        self.typed_lineage_tasks = {k: [("HASH", "%032x" % n)] for n, k in enumerate("ABC")}
         # B21 (layout B): the items view's filtered call on cold's aligned, run verbatim in selection-where.
         self.where_call = "channel.fromStore(run: 'lid://cold', output: 'aligned', where: [sample: 'A'])"
         self.where_exit = "0"
@@ -356,6 +361,7 @@ class World(object):
         dump("observed.json", {"steps": list(self.steps.values())})
         self.hash_store(self.store_out, self.hashes)
         self.hash_store(self.store_typed, {"typed": self.typed_hashes})
+        self.typed_run_blocks()
         staged = ("A", "B") if self.where_hashes_extra else ("A",)
         self.hash_store(self.store_where, {"fromstore": {"%s.sha256" % FILES[k]["name"]: FILES[k]["sha256"] for k in staged}})
         with open(os.path.join(self.out, "selection-where.exit"), "w") as fh:
@@ -385,6 +391,36 @@ class World(object):
                 with open(os.path.join(task, ".command.run"), "w") as fh:
                     fh.write("#!/bin/bash\n### ---\n### name: 'HASH (%s)'\n### outputs:\n" % tag)
         return self.root
+
+    def typed_run_blocks(self):
+        """The typed consumer's RunCompletion: an InputSet whose task inputs name S2's items, and the ItemLineage
+        of its three published hashes items, each made from one input by one HASH task."""
+        root = self.store_typed
+        files = {k: FILES[k] for k in "ABC"}
+        origin = lambda k: {"item": cas.Cid(ITEMS[k]), "collection": cas.Cid(COLLS["aligned"]), "selection": cas.Cid(self.s2)}
+        inputs = [{"role": "asset", "name": "main.nf", "address": cas.Cid(cas.cid_raw(b"main")), "size": 4,
+                   "sample": None, "reason": None}]
+        for k in "ABC":
+            task = {"role": "task", "name": files[k]["name"], "address": cas.Cid(files[k]["cid"]), "size": 1,
+                    "sample": k, "reason": None}
+            if self.typed_origins and self.typed_input_set_schema >= 2:
+                task["from"] = [origin(k)]
+            inputs.append(task)
+        input_set = B._put_block(root, {"kind": "InputSet", "schema": self.typed_input_set_schema, "asserted_by": "gate",
+                                        "inputs": inputs})
+        published = {k: B._put_block(root, {"kind": "OutputItem", "schema": 2, "value": {
+            "kind": "Leaf", "name": "%s.sha256" % files[k]["name"], "address": cas.Cid(cas.cid_raw(k.encode())),
+            "size": 1, "reason": None}}) for k in "ABC"}
+        collection = B._put_block(root, {"kind": "OutputCollection", "schema": 1, "asserted_by": "gate", "name": "hashes",
+                                         "items": [cas.Cid(published[k]) for k in "ABC"]})
+        derived = [{"item": cas.Cid(published[k]), "inputs": [1 + "ABC".index(k)],
+                    "tasks": [{"hash": h, "process": p, "tag": None} for p, h in self.typed_lineage_tasks[k]]}
+                   for k in "ABC"]
+        lineage = B._put_block(root, {"kind": "ItemLineage", "schema": 1, "asserted_by": "gate",
+                                      "input_set": cas.Cid(input_set), "items": derived})
+        B._put_block(root, {"kind": "RunCompletion", "schema": self.typed_completion_schema, "asserted_by": "gate",
+                            "collections": [cas.Cid(collection)], "input_set": cas.Cid(input_set), "status": "succeeded",
+                            "item_lineage": cas.Cid(lineage) if self.typed_item_lineage else None})
 
     @staticmethod
     def hash_store(root, hashes):
@@ -795,6 +831,36 @@ class CheckTest(unittest.TestCase):
     def test_b18_an_item_staged_twice_fails(self):
         self.w.typed_tasks.append("typed:B.bam")
         self.assertFail(18, "typed:B.bam")
+
+    def test_b18_passes_with_origins(self):
+        status, message = self.status(18)
+        self.assertEqual(status, B.PASS, message)
+        self.assertIn("Origins", message)
+        self.assertIn("ItemLineage", message)
+
+    def test_b18_fails_without_origins(self):
+        self.w.typed_origins = False
+        self.assertFail(18, "A.bam")
+
+    def test_b18_fails_with_a_schema_1_input_set(self):
+        self.w.typed_input_set_schema = 1
+        self.assertFail(18, "InputSet is schema 1")
+
+    def test_b18_fails_with_a_schema_2_completion(self):
+        self.w.typed_completion_schema = 2
+        self.assertFail(18, "RunCompletion is schema 2")
+
+    def test_b18_fails_without_item_lineage(self):
+        self.w.typed_item_lineage = False
+        self.assertFail(18, "item_lineage")
+
+    def test_b18_fails_when_a_hashes_item_has_no_hash_task(self):
+        self.w.typed_lineage_tasks["B"] = [("FASTQC", "f" * 32)]
+        self.assertFail(18, "HASH")
+
+    def test_b18_fails_when_a_hashes_item_has_two_tasks(self):
+        self.w.typed_lineage_tasks["C"] = [("HASH", "e" * 32), ("PIPE:HASH", "d" * 32)]
+        self.assertFail(18, "1 task")
 
     # -- B19 --------------------------------------------------------------
     def test_b19_the_whole_world_passes(self):
