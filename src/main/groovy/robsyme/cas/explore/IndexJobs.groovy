@@ -524,14 +524,14 @@ class IndexJobs {
         indexedLocally(run)
     }
 
-    /** Explore's catch-up, under Put as every writer of the cache; the member's own failure fails the job. */
+    /** Explore's catch-up, under Put as every writer of the cache; the member's own failure fails the job, with its cause. */
     private void catchUp(String alias) {
-        final Set<String> failed
+        final Exception cause
         synchronized( putLock ) {
-            failed = session.catchUpIndex(shared)
+            cause = session.catchUpIndex(shared).contains(alias) ? session.lastFailure(alias) : null
         }
-        if( failed.contains(alias) )
-            throw new IOException("could not catch up the index from store member '${alias}'".toString())
+        if( cause != null )
+            throw new IOException("could not catch up the index from store member '${alias}': ${cause.message}".toString(), cause)
     }
 
     private void indexedLocally(Run run) {

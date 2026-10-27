@@ -24,6 +24,7 @@ import robsyme.cas.core.StoreLogKind
 import robsyme.cas.s3.MemoryS3Ops
 import robsyme.cas.s3.S3BlockStore
 import robsyme.cas.s3.S3Failures
+import robsyme.cas.s3.S3Head
 import robsyme.cas.s3.S3Ops
 import software.amazon.awssdk.services.s3.model.S3Exception
 import spock.lang.Specification
@@ -339,6 +340,30 @@ class IndexJobsTest extends Specification {
         !tmp.toFile().list().any { it.startsWith('nf-blocks-index-') }
     }
 
+    def 'a refresh whose catch-up is refused ends failed with the credentials wording'() {
+        given: 'cloud in a bucket, indexed on this machine'
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        logRun(new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp), 'cloud-1')
+        open(cfg)
+        jobs.startQueued()
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        assert jobs.stateOf('cloud').state == 'local'
+        and: 'every read of the bucket refused from now on'
+        bucket.refuseAll = true
+
+        when: 'a copy into cloud queues a refresh'
+        jobs.copied('cloud')
+        jobs.awaitIdle(30_000)
+
+        then:
+        jobs.stateOf('cloud').state == 'failed'
+        jobs.stateOf('cloud').reason == S3Failures.REFUSED
+        jobs.stateOf('cloud').local && jobs.localSnapshot('cloud') != null
+    }
+
     def 'restart: a locally indexed member is local at once and a refresh rebuilds its snapshot'() {
         given:
         jobs.start('cloud', 'local')
@@ -466,23 +491,37 @@ class IndexJobsTest extends Specification {
     static class RefusingS3 extends MemoryS3Ops {
         volatile boolean armed
         volatile boolean listed
+        /** Every list, HEAD and GET answers 403, as when credentials have expired. */
+        volatile boolean refuseAll
         volatile int refused
 
         RefusingS3(String bucket) { super(bucket) }
 
+        private void refuse() {
+            refused++
+            throw S3Exception.builder().statusCode(403).message('Access Denied').build()
+        }
+
         @Override
         List list(String prefix, int maxKeys) {
+            if( refuseAll )
+                refuse()
             if( armed && prefix.contains('blocks/') )
                 listed = true
             return super.list(prefix, maxKeys)
         }
 
         @Override
+        S3Head head(String key) {
+            if( refuseAll )
+                refuse()
+            return super.head(key)
+        }
+
+        @Override
         InputStream get(String key, String ifMatch, long start, long length) {
-            if( listed && key.contains('/blocks/') ) {
-                refused++
-                throw S3Exception.builder().statusCode(403).message('Access Denied').build()
-            }
+            if( refuseAll || (listed && key.contains('/blocks/')) )
+                refuse()
             return super.get(key, ifMatch, start, length)
         }
     }

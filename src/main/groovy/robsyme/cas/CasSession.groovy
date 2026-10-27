@@ -381,6 +381,7 @@ class CasSession {
             final String alias = member.alias()
             if( leftOut.contains(alias) )
                 continue
+            catchUpFailures.remove(alias)
             try {
                 if( unindexedLeftOut && alias != config.writableAlias && !index.isIndexed(alias) ) {
                     if( !seededOrLeftOut(index, member) )
@@ -393,10 +394,19 @@ class CasSession {
             }
             catch( Exception e ) {
                 failed.add(alias)
+                catchUpFailures.put(alias, e)
                 log.warn("could not catch up the index from store member '${alias}'; it is derived: ${e.message}", e)
             }
         }
         return failed
+    }
+
+    /** alias -> what the member's last {@link #catchUpIndex} threw, until a later one succeeds. */
+    private final ConcurrentHashMap<String, Exception> catchUpFailures = new ConcurrentHashMap<>()
+
+    /** What the last {@link #catchUpIndex} of {@code alias} threw, or null when it did not fail. */
+    Exception lastFailure(String alias) {
+        return catchUpFailures.get(alias)
     }
 
     /** Whether {@link #catchUpIndex} leaves out the members this cache does not hold and cannot seed; set once by {@link #leaveUnindexedOut}. */
