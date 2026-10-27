@@ -23,6 +23,7 @@ import { leafReasonText } from '../words.js'
 import { readHead } from './block.js'
 import { holds, keepPanel, pickButton } from './common.js'
 import { projectControl } from './addproject.js'
+import { hrefIn } from '../members.js'
 
 const SHOWN_PAIRS = 8
 // A fold that would hide fewer pills than this costs more than it saves: show them all.
@@ -178,6 +179,48 @@ const sumOf = (rows) => rows.reduce((n, r) => n + (r.size ?? 0), 0)
 
 export { keepPanel }
 
+/** The item's heading: its label fields, else its file names, else 'Item'. */
+export function itemTitle(it) {
+  const files = it.leaves.map(l => l.name).filter(Boolean)
+  const all = pairsOf(it.view)
+  const { duplicates } = itemTable([{ pairs: all, files }])
+  const pairs = withoutDuplicates(all, duplicates)
+  return labelText({ pairs, files }, labelPaths([{ pairs }], 1)) || 'Item'
+}
+
+/**
+ * The node for one Origin: the upstream item read from the first member that
+ * holds its block, with the run that made it and the Selection that picked it.
+ * What no member can read is not named beyond its short CID.
+ */
+async function originNode(ex, ctx, pres, origin) {
+  const { item_cid: itemCid, collection_cid: collection, selection_cid: selection } = origin
+  const coll = collection ?? '-'
+  const probe = await Promise.resolve(ex.item(coll, itemCid)).catch(() => null)
+  const states = await pres.states(itemCid, { hereHeld: probe !== null }).catch(() => [])
+  const holder = states.find(s => s.state === 'held')?.alias ?? null
+  const reader = !holder || holder === pres.open ? ex : await Promise.resolve(ctx.members?.explorer?.(holder)).catch(() => null) ?? ex
+  const it = !holder ? null : reader === ex ? probe : await Promise.resolve(reader.item(coll, itemCid)).catch(() => null)
+  const label = collection ? await Promise.resolve(reader.runLabel(collection)).catch(() => null) : null
+  const names = selection ? (await Promise.resolve(reader.claimStates?.([selection])).catch(() => null))?.get(selection)?.names ?? [] : []
+
+  const title = it ? itemTitle(it) : null
+  const head = !holder ? [h('code', { class: 'cid', title: itemCid }, shortCid(itemCid)), ' · not in any store here']
+    : link(hrefIn(ctx, holder, `#/item/${coll}/${itemCid}`), collection ? `${label?.output ?? 'item'} · ${title ?? shortCid(itemCid)}` : `${title ?? shortCid(itemCid)} · picked by query`)
+  const via = selection ? h('span', { class: 'muted small' }, ' via Selection ',
+    names.length ? `"${names.join(' / ')}"` : h('code', { class: 'cid', title: selection }, shortCid(selection))) : null
+  const run = label?.completion ? runFact(label, label.completion) : null
+  return { text: h('span', {}, head, run || via ? h('div', { class: 'row', style: 'gap:8px' }, run, via) : null) }
+}
+
+/** An input's upstream nodes, one per Origin, then the file's own node (dashed when no member holds it). */
+async function inputNodes(ex, ctx, pres, input) {
+  const upstream = await Promise.all((input.origins ?? []).map(o => originNode(ex, ctx, pres, o)))
+  const held = input.address ? (await pres.states(input.address).catch(() => [])).some(s => s.state === 'held') : false
+  const name = input.name ?? shortCid(input.address)
+  return [...upstream, { text: name, href: input.address ? `#/content/${input.address}` : null, ext: !held }]
+}
+
 export async function item(ex, collectionCid, itemCid, ctx) {
   const it = await ex.item(collectionCid, itemCid)
   const producers = await Promise.all(it.leaves.filter(l => l.address).map(async l => [l, await ex.producersOf(l.address.toString(), ctx.progress)]))
@@ -200,7 +243,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const all = pairsOf(it.view)
   const { duplicates } = itemTable([{ pairs: all, files }])
   const pairs = withoutDuplicates(all, duplicates)
-  const title = labelText({ pairs, files }, labelPaths([{ pairs }], 1)) || 'Item'
+  const title = itemTitle(it)
   const target = from?.completion ? { completion: from.completion, output: from.output, where: [] } : null
   const store = storeOf(ctx)
   const pres = presenceOf(ctx)
@@ -281,9 +324,18 @@ export async function item(ex, collectionCid, itemCid, ctx) {
       h('tbody', {}, body))))
 
   const inputs = it.leaves.filter(l => l.reason === 'never_published' && l.name).map(l => l.name)
-  const lineage = panel({ title: 'Lineage' }, thread([
-    ...(inputs.length ? [{ text: `${inputs.join(', ')} · input, referenced by path`, ext: true }] : []),
-    { text: `${from?.output ?? 'item'} · ${title}`, here: true }]))
+  const unpublished = inputs.length ? [{ text: `${inputs.join(', ')} · input, referenced by path`, ext: true }] : []
+  const self = { text: `${from?.output ?? 'item'} · ${title}`, here: true }
+  // Lineage is one run's fact: the URL's run, or every run that recorded one when the URL says `-`.
+  const lineageRuns = collectionCid === '-' || from?.completion
+    ? await Promise.resolve(ex.itemLineage?.(itemCid, collectionCid === '-' ? null : from.completion)).catch(() => []) ?? []
+    : []
+  const chains = await Promise.all(lineageRuns.map(async run => ({ run, nodes: (await Promise.all(run.inputs.map(i => inputNodes(ex, ctx, pres, i)))).flat() })))
+  const groups = chains.length < 2 ? null : await Promise.all(chains.map(async ({ run, nodes }) => {
+    const identity = await Promise.resolve(ex.runIdentity?.(run.completion_cid)).catch(() => null)
+    return h('div', { 'data-lineage-run': run.completion_cid }, runFact(identity, run.completion_cid), thread([...unpublished, ...nodes, self]))
+  }))
+  const lineage = panel({ title: 'Lineage' }, groups ? h('div', {}, groups) : thread([...unpublished, ...(chains[0]?.nodes ?? []), self]))
 
   const runs = new Map()
   // How many of this item's stored files each run produced.
