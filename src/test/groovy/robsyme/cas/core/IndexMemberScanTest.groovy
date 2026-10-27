@@ -4,6 +4,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CancellationException
 
+import ch.qos.logback.classic.Level
+import ch.qos.logback.classic.Logger
+import ch.qos.logback.classic.spi.ILoggingEvent
+import ch.qos.logback.core.read.ListAppender
+import org.slf4j.LoggerFactory
 import spock.lang.Specification
 import spock.lang.TempDir
 
@@ -31,7 +36,14 @@ class IndexMemberScanTest extends Specification {
         index = Index.open(tmp.resolve('cache.sqlite'))
     }
 
-    def cleanup() { index?.close() }
+    /** What Index logged, for a test that attaches it. */
+    ListAppender<ILoggingEvent> logged
+
+    def cleanup() {
+        index?.close()
+        if( logged != null )
+            ((Logger) LoggerFactory.getLogger(Index)).detachAppender(logged)
+    }
 
     /** A succeeded run with one item, logged at `at`; returns its completion. */
     private Cid run(String name, String sample, long at) {
@@ -186,6 +198,29 @@ class IndexMemberScanTest extends Specification {
         e.message == 'expired'
         phases.contains('ingesting')
         !index.isIndexed('cloud') && index.watermark('cloud') == null && index.metaValue('block_scan:cloud') == null
+    }
+
+    def 'a read that fails while ingesting is not also logged as a block that could not be decoded'() {
+        given: 'a store whose reads all fail once the run collections have been read in the reading phase'
+        Set<Cid> runCollections = collections.values() as Set<Cid>
+        final BlockStore failing = new IndexTest.Counting(cloud) {
+            int collectionOpens = 0
+            @Override InputStream open(Cid cid) {
+                if( cid in runCollections && ++collectionOpens > runCollections.size() ) throw new IOException('expired')
+                return super.open(cid)
+            }
+        }
+        logged = new ListAppender<ILoggingEvent>()
+        logged.start()
+        ((Logger) LoggerFactory.getLogger(Index)).addAppender(logged)
+
+        when:
+        index.indexMember(failing, StoreLog.of(cloud), 'cloud', cloud, { String p, long d, long t -> } as IndexProgress)
+
+        then:
+        thrown(IOException)
+        !logged.list.any { it.formattedMessage.contains('could not be decoded') }
+        !logged.list.any { it.level == Level.WARN }
     }
 
     def 'a block that vanishes between the listing and its read is skipped'() {

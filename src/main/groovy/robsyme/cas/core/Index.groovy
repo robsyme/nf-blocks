@@ -1248,7 +1248,9 @@ class Index implements Closeable {
      * by its read (a sweep) is skipped, and one a record names is `missing`,
      * as in catch-up. One that reads but does not decode is skipped. Whatever
      * {@code progress} throws stops it too. Only at the end does one
-     * transaction set the watermark and `block_scan`.
+     * transaction set the watermark and `block_scan`; the rows ingested before
+     * a failure stay committed, so a caller scans into a scratch Index and
+     * seeds its own cache from that.
      */
     void indexMember(BlockStore store, StoreLog storeLog, String member, BlockStore holders, IndexProgress progress) throws IOException {
         // The ingest paths keep going past a read that fails, as catch-up needs; this one
@@ -1295,10 +1297,13 @@ class Index implements Closeable {
      * is not read to the end before {@link #rethrow} stops the scan.
      */
     private static final class ReadFailures implements BlockStore {
-        private final BlockStore delegate
+        private final BlockStore store
         private Exception failure
 
-        ReadFailures(BlockStore delegate) { this.delegate = delegate }
+        ReadFailures(BlockStore store) { this.store = store }
+
+        /** True once a read has failed, after which every read fails the same way. */
+        boolean failed() { failure != null }
 
         /** Throws the first read failure, if there was one. */
         void rethrow() throws IOException {
@@ -1324,19 +1329,19 @@ class Index implements Closeable {
             }
         }
 
-        @Override String alias() { delegate.alias() }
-        @Override boolean has(Cid cid) { read { delegate.has(cid) } }
-        @Override long size(Cid cid) { read { delegate.size(cid) } }
-        @Override long lastModifiedMillis(Cid cid) { read { delegate.lastModifiedMillis(cid) } }
-        @Override Stream<Cid> listBlocks() { read { delegate.listBlocks() } }
-        @Override boolean isWritable() { delegate.isWritable() }
-        @Override void put(Cid cid, InputStream input, long expectedSize) { delegate.put(cid, input, expectedSize) }
-        @Override Cid putStreaming(InputStream input) { delegate.putStreaming(input) }
-        @Override Cid putDagCbor(Object value) { delegate.putDagCbor(value) }
+        @Override String alias() { store.alias() }
+        @Override boolean has(Cid cid) { read { store.has(cid) } }
+        @Override long size(Cid cid) { read { store.size(cid) } }
+        @Override long lastModifiedMillis(Cid cid) { read { store.lastModifiedMillis(cid) } }
+        @Override Stream<Cid> listBlocks() { read { store.listBlocks() } }
+        @Override boolean isWritable() { store.isWritable() }
+        @Override void put(Cid cid, InputStream input, long expectedSize) { store.put(cid, input, expectedSize) }
+        @Override Cid putStreaming(InputStream input) { store.putStreaming(input) }
+        @Override Cid putDagCbor(Object value) { store.putDagCbor(value) }
 
         @Override
         InputStream open(Cid cid) {
-            final InputStream input = read { delegate.open(cid) }
+            final InputStream input = read { store.open(cid) }
             return new FilterInputStream(input) {
                 @Override int read() throws IOException { ReadFailures.this.read { input.read() } }
                 @Override int read(byte[] b, int off, int len) throws IOException { ReadFailures.this.read { input.read(b, off, len) } }
@@ -3067,13 +3072,20 @@ class Index implements Closeable {
         catch( IOException | UncheckedIOException e ) {
             if( ioFails )
                 throw e
-            log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
+            if( !failedRead(store) )
+                log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
             return null
         }
         catch( Exception e ) {
-            log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
+            if( !failedRead(store) )
+                log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
             return null
         }
+    }
+
+    /** True when {@code store} is an indexMember scan whose reads have failed: indexMember throws that failure, so a block it stopped is not a decoding problem. */
+    private static boolean failedRead(BlockStore store) {
+        return store instanceof ReadFailures && ((ReadFailures) store).failed()
     }
 
     /** Every Leaf in an item's value, depth first (DESIGN.md §6). */
