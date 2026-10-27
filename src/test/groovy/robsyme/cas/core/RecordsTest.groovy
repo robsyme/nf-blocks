@@ -267,7 +267,7 @@ class RecordsTest extends Specification {
         return args
     }
 
-    def 'providers are sorted by name, each list by address, without duplicates, and written at schema 2'() {
+    def 'providers are sorted by name, each list by address, without duplicates, and written at schema 3'() {
         given:
         final RunCompletion rc = new RunCompletion(providerArgs(providers: [
             's3-copy'  : [raw('b'), raw('a'), raw('b')],
@@ -275,7 +275,7 @@ class RecordsTest extends Specification {
         ]))
 
         expect:
-        rc.toCbor().schema == 2L
+        rc.toCbor().schema == 3L
         (rc.toCbor().providers as Map).keySet().toList() == ['head-node', 's3-copy']
         rc.providers['s3-copy'] == [raw('a'), raw('b')].sort { it.toString() }
         RunCompletion.fromCbor(roundTrip(rc.toCbor())) == rc
@@ -303,6 +303,38 @@ class RecordsTest extends Specification {
         RunCompletion.fromCbor(v1)
         then:
         thrown(IllegalArgumentException)
+    }
+
+    def 'a RunCompletion is written at schema 3 with item_lineage, null allowed'() {
+        given:
+        final Cid lineage = dag([kind: 'ItemLineage'])
+        final RunCompletion withLineage = new RunCompletion(providerArgs(itemLineage: lineage))
+        final RunCompletion withoutLineage = new RunCompletion(providerArgs())
+        expect:
+        withLineage.toCbor().schema == 3L
+        withLineage.toCbor().item_lineage == lineage
+        withoutLineage.toCbor().containsKey('item_lineage') && withoutLineage.toCbor().item_lineage == null
+        RunCompletion.fromCbor(roundTrip(withLineage.toCbor())).itemLineage == lineage
+        RunCompletion.fromCbor(roundTrip(withoutLineage.toCbor())).itemLineage == null
+    }
+
+    def 'a schema 3 RunCompletion without item_lineage is refused'() {
+        given:
+        final Map block = new RunCompletion(providerArgs()).toCbor()
+        block.remove('item_lineage')
+        when:
+        RunCompletion.fromCbor(block)
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def 'a schema 2 RunCompletion still reads, with no item lineage'() {
+        given:
+        final Map schema2 = new RunCompletion(providerArgs()).toCbor()
+        schema2.schema = 2L
+        schema2.remove('item_lineage')
+        expect:
+        RunCompletion.fromCbor(schema2).itemLineage == null
     }
 
     // ---- OutputItem ----

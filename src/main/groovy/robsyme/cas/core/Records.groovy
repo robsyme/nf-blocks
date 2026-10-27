@@ -33,6 +33,7 @@ class Records {
     static final String FORGET = 'Forget'
     static final String TRANSFER = 'Transfer'
     static final String INPUT_SET = 'InputSet'
+    static final String ITEM_LINEAGE = 'ItemLineage'
     static final String PROJECT = 'Project'
     static final String HANDOFF = 'Handoff'
 
@@ -1091,9 +1092,12 @@ class RunCompletion {
 
     private static final Set<String> STATUSES = [SUCCEEDED, FAILED] as Set
 
-    /** Written at schema 2 since 2026-09-28 (ticket 16): it carries {@link #providers}. */
-    static final int SCHEMA = 2
-    static final List<Integer> READABLE = [1, 2].asImmutable()
+    /**
+     * Written at schema 3 since 2026-10-26: it links item_lineage. Schema 2
+     * (2026-09-28, ticket 16) added {@link #providers}.
+     */
+    static final int SCHEMA = 3
+    static final List<Integer> READABLE = [1, 2, 3].asImmutable()
 
     final String assertedBy
     final Cid run
@@ -1108,6 +1112,8 @@ class RunCompletion {
     final String error
     /** Provider name to every address of the run it supplied, sorted (DESIGN.md §6, ticket 16). */
     final Map<String, List<Cid>> providers
+    /** The ItemLineage block naming where each output item came from, or null when none was written. */
+    final Cid itemLineage
 
     RunCompletion(Map args) {
         this.assertedBy = str(args, 'assertedBy')
@@ -1132,6 +1138,7 @@ class RunCompletion {
         // never leaks the launch location into a portable block (DESIGN.md §6).
         this.error = Records.scrubText((String) args.get('error'))
         this.providers = normaliseProviders((Map) args.get('providers') ?: Collections.emptyMap())
+        this.itemLineage = (Cid) args.get('itemLineage')
     }
 
     private static String str(Map args, String field) {
@@ -1174,6 +1181,7 @@ class RunCompletion {
         final Map<String, Object> byProvider = new LinkedHashMap<String, Object>()
         providers.each { String name, List<Cid> cids -> byProvider.put(name, new ArrayList<Object>(cids)) }
         map.put('providers', byProvider)
+        map.put('item_lineage', itemLineage)
         return map
     }
 
@@ -1195,6 +1203,7 @@ class RunCompletion {
             anomalies         : Anomalies.fromCbor((Map) Records.require(block, 'anomalies')),
             error             : Records.string(Records.require(block, 'error'), 'error'),
             providers         : providers.collectEntries { k, v -> [(k): ((List) v).collect { Object c -> Records.cid(c, 'providers') }] },
+            itemLineage       : schema < 3 ? null : Records.cid(Records.require(block, 'item_lineage'), 'item_lineage'),
         ])
     }
 }
