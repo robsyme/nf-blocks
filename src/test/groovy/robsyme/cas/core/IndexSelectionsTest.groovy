@@ -85,6 +85,33 @@ class IndexSelectionsTest extends Specification {
         index.selectionItems(inner) == [itemA, itemB].sort { it.toString() }
     }
 
+    def 'selectionVias gives each item its via collections, [] when picked by query'() {
+        given:
+        final Cid inner = logged(new Selection('ada', [Selection.item(itemA, [coll1]), Selection.item(itemB, [coll1])], []))
+        final Cid outer = logged(new Selection('ada', [Selection.selection(inner), Selection.item(itemB, [coll2]), Selection.item(itemC, [])], []))
+        catchUp()
+
+        expect:
+        index.selectionVias(outer).keySet() as List == index.selectionItems(outer)
+        index.selectionVias(outer)[itemA] == [coll1]
+        index.selectionVias(outer)[itemB] == [coll1, coll2].sort { it.toString() }
+        index.selectionVias(outer)[itemC] == []
+    }
+
+    def 'selectionVias refuses a Selection the index does not hold, as selectionItems does'() {
+        given:
+        final Cid absent = Fixtures.cidOf([kind: 'Selection', n: 99])
+        final Cid outer = logged(new Selection('ada', [Selection.selection(absent), Selection.item(itemC, [])], []))
+        catchUp()
+
+        when:
+        index.selectionVias(outer)
+
+        then:
+        final IllegalStateException e = thrown()
+        e.message.contains(absent.toString())
+    }
+
     def 'a nested Selection the index does not hold fails, naming it (Review Focus 5)'() {
         given:
         final Cid absent = Fixtures.cidOf([kind: 'Selection', n: 99])

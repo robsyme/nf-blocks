@@ -23,6 +23,7 @@ import robsyme.cas.core.DirectoryManifest
 import robsyme.cas.core.ManifestEntry
 import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
+import robsyme.cas.core.InputSet
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputCollection
 import robsyme.cas.core.OutputItem
@@ -393,6 +394,90 @@ class CasExtensionTest extends Specification {
         final Map<Cid, Map> metaOf = [(a): [sample: 'A'], (b): [sample: 'B'], (c): [sample: 'C']]
         items.collect { (it as List)[0] } == [a, b, c].sort { it.toString() }.collect { metaOf[it] }
         items.every { (it as List)[1] instanceof CasPath }
+    }
+
+    private static Path pathIn(Object item) { (item as List)[1] as Path }
+
+    def 'run/output: each emitted path carries the item and its collection, no selection'() {
+        given:
+        final Map run = alignedRun()
+        final Cid coll = alignedCollectionOf((Cid) run.completion)
+        final Map<Cid, Cid> content = [(itemOf((Cid) run.completion, 'A')): rawCid(1), (itemOf((Cid) run.completion, 'B')): rawCid(2),
+                                       (itemOf((Cid) run.completion, 'C')): rawCid(3)]
+
+        when:
+        final List items = drain(ext.fromStore(run: "cas://${run.completion}".toString(), output: 'aligned'))
+
+        then:
+        items.size() == 3
+        content.each { Cid item, Cid raw ->
+            final Path p = items.collect { pathIn(it) }.find { it.toString().contains(raw.toString()) }
+            assert cas.origins[p] == [new InputSet.Origin(item, coll, null)] as Set
+        }
+        cas.origins.size() == 3
+    }
+
+    def 'selection: one origin per via, the selection the call named'() {
+        given:
+        final Map run = alignedRun()
+        final Cid coll = alignedCollectionOf((Cid) run.completion)
+        final Cid otherColl = Fixtures.cidOf([kind: 'OutputCollection', n: 7])
+        final Cid a = itemOf((Cid) run.completion, 'A'), b = itemOf((Cid) run.completion, 'B'), c = itemOf((Cid) run.completion, 'C')
+        final Cid inner = storeSelection([Selection.item(a, [coll])])
+        final Cid outer = storeSelection([Selection.selection(inner), Selection.item(b, [coll, otherColl]), Selection.item(c, [])])
+
+        when:
+        final List items = drain(ext.fromStore(selection: outer.toString()))
+        final Map<String, Path> pathOf = items.collectEntries { [(pathIn(it).toString()): pathIn(it)] } as Map<String, Path>
+
+        then:
+        cas.origins[pathOf["cas://${rawCid(1)}/A.bam".toString()]] == [new InputSet.Origin(a, coll, outer)] as Set
+        cas.origins[pathOf["cas://${rawCid(2)}/B.bam".toString()]] ==
+            [new InputSet.Origin(b, coll, outer), new InputSet.Origin(b, otherColl, outer)] as Set
+        cas.origins[pathOf["cas://${rawCid(3)}/C.bam".toString()]] == [new InputSet.Origin(c, null, outer)] as Set
+    }
+
+    def 'a raw leaf two items share gives one path with both origins'() {
+        given:
+        final Map run = storeRun(
+            pipeline: 'p', nfHash: 'nfhashS', output: 'shared', withCompletion: true,
+            items: [
+                [meta: [sample: 'A'], name: 'x.bam', content: rawCid(9), size: 1L, path: 'shared/A/x.bam'],
+                [meta: [sample: 'B'], name: 'x.bam', content: rawCid(9), size: 1L, path: 'shared/B/x.bam'],
+            ])
+        final Cid one = itemOf2((Cid) run.completion, 'shared', 'A'), two = itemOf2((Cid) run.completion, 'shared', 'B')
+
+        when:
+        final List items = drain(ext.fromStore(run: 'lid://nfhashS', output: 'shared'))
+
+        then:
+        items.size() == 2
+        pathIn(items[0]) == pathIn(items[1])
+        cas.origins.size() == 1
+        cas.origins[pathIn(items[0])]*.item as Set == [one, two] as Set
+    }
+
+    def 'a declined leaf records no origins'() {
+        given:
+        storeRun(
+            pipeline: 'p', nfHash: 'nfhashN', output: 'maybe', withCompletion: true,
+            items: [[meta: [sample: 'A'], name: null, reason: Leaf.DECLINED, path: null]])
+
+        when:
+        drain(ext.fromStore(run: 'lid://nfhashN', output: 'maybe'))
+
+        then:
+        cas.origins.isEmpty()
+    }
+
+    private Cid itemOf2(Cid completion, String output, String sample) {
+        final Index index = Index.open(indexFile)
+        try {
+            return index.items(completion, output, [sample: sample])[0]
+        }
+        finally {
+            index.close()
+        }
     }
 
     def 'a bare cid works, and a Selection whose block was never logged is read too'() {

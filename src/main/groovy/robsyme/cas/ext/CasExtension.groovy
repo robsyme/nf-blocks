@@ -1,5 +1,7 @@
 package robsyme.cas.ext
 
+import java.nio.file.Path
+
 import groovy.transform.CompileStatic
 import groovy.util.logging.Slf4j
 import groovyx.gpars.dataflow.DataflowWriteChannel
@@ -16,6 +18,7 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.ClaimState
 import robsyme.cas.core.DagCbor
 import robsyme.cas.core.Index
+import robsyme.cas.core.InputSet
 import robsyme.cas.core.Leaf
 import robsyme.cas.core.OutputItem
 import robsyme.cas.core.Records
@@ -92,11 +95,11 @@ class CasExtension extends PluginExtensionPoint {
             cas.catchUpIndex(index)
             final Cid completion = resolveRun(index, opts)
             final List<Object> items = new ArrayList<Object>()
-            for( Cid itemCid : index.items(completion, output, where) ) {
-                final OutputItem item = loadItem(itemCid)
+            for( Index.ItemRef ref : index.itemRefs(completion, output, where) ) {
+                final OutputItem item = loadItem(ref.item)
                 if( item == null )
-                    throw new IllegalStateException("output item ${itemCid} of output '${output}' is not in the store")
-                items.add(restore(item.value, itemCid, records))
+                    throw new IllegalStateException("output item ${ref.item} of output '${output}' is not in the store")
+                items.add(restore(item.value, ref.item, records, [new InputSet.Origin(ref.item, ref.collection, null)]))
             }
             return items
         }
@@ -155,11 +158,14 @@ class CasExtension extends PluginExtensionPoint {
             else if( state.deletion == ClaimState.CONFLICTED )
                 log.warn("selection ${selection} has a conflicted deletion (${state.deletionClaims.join(', ')}); emitting its items")
             final List<Object> items = new ArrayList<Object>()
-            for( Cid itemCid : index.selectionItems(selection) ) {
+            for( Map.Entry<Cid, List<Cid>> entry : index.selectionVias(selection).entrySet() ) {
+                final Cid itemCid = entry.key
                 final OutputItem item = loadItem(itemCid)
                 if( item == null )
                     throw new IllegalStateException("output item ${itemCid} of selection ${selection} is not in any member of this composition")
-                items.add(restore(item.value, itemCid, records))
+                // One Origin per collection the item was picked through; one with no collection when it was picked by query.
+                final List<Cid> vias = entry.value ?: [(Cid) null]
+                items.add(restore(item.value, itemCid, records, vias.collect { Cid via -> new InputSet.Origin(itemCid, via, selection) }))
             }
             return items
         }
@@ -185,23 +191,23 @@ class CasExtension extends PluginExtensionPoint {
      * before this, so it is never one) is returned as an immutable RecordMap;
      * lists stay lists either way.
      */
-    private Object restore(Object value, Cid itemCid, boolean records) {
-        return restore(value, itemCid, records, leafNamesUnique(value, new HashSet<String>()))
+    private Object restore(Object value, Cid itemCid, boolean records, Collection<InputSet.Origin> origins) {
+        return restore(value, itemCid, records, origins, leafNamesUnique(value, new HashSet<String>()))
     }
 
-    private Object restore(Object value, Cid itemCid, boolean records, boolean namesUnique) {
+    private Object restore(Object value, Cid itemCid, boolean records, Collection<InputSet.Origin> origins, boolean namesUnique) {
         if( value instanceof Leaf )
-            return pathFor((Leaf) value, itemCid, namesUnique)
+            return pathFor((Leaf) value, itemCid, origins, namesUnique)
         if( value instanceof Map ) {
             final LinkedHashMap<String, Object> out = new LinkedHashMap<String, Object>()
             for( Map.Entry e : ((Map) value).entrySet() )
-                out.put(String.valueOf(e.key), restore(e.value, itemCid, records, namesUnique))
+                out.put(String.valueOf(e.key), restore(e.value, itemCid, records, origins, namesUnique))
             return records ? new RecordMap(out) : out
         }
         if( value instanceof List ) {
             final List<Object> out = new ArrayList<Object>()
             for( Object element : (List) value )
-                out.add(restore(element, itemCid, records, namesUnique))
+                out.add(restore(element, itemCid, records, origins, namesUnique))
             return out
         }
         return value
@@ -218,7 +224,8 @@ class CasExtension extends PluginExtensionPoint {
         return true
     }
 
-    private Object pathFor(Leaf leaf, Cid itemCid, boolean namesUnique) {
+    /** The path of an addressed leaf, remembered on the session with the Origins of the item it came from. */
+    private Object pathFor(Leaf leaf, Cid itemCid, Collection<InputSet.Origin> origins, boolean namesUnique) {
         if( leaf.isAddressed() ) {
             final Cid cid = leaf.address
             // A raw block is presented under its published name. A directory is
@@ -233,7 +240,9 @@ class CasExtension extends PluginExtensionPoint {
                 uri = CAS_PREFIX + itemCid + '/' + leaf.name
             else
                 uri = CAS_PREFIX + cid
-            return CasPlugin.provider().getPath(URI.create(uri))
+            final Path path = CasPlugin.provider().getPath(URI.create(uri))
+            cas.addOrigins(path, origins)
+            return path
         }
         if( leaf.reason == Leaf.DECLINED )
             return null

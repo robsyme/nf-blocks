@@ -14,6 +14,7 @@ import java.sql.Statement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.stream.Stream
 
+import groovy.transform.Canonical
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
 import groovy.util.logging.Slf4j
@@ -51,6 +52,11 @@ class Index implements Closeable {
     static final String SQL_SELECTION_ITEMS = '''WITH RECURSIVE reach(cid) AS (
             SELECT ? UNION SELECT s.child_cid FROM selection_child s JOIN reach r ON s.parent_cid = r.cid)
         SELECT DISTINCT ci.item_cid FROM collection_item ci JOIN reach r ON ci.collection_cid = r.cid ORDER BY ci.item_cid'''
+
+    /** {@link #SQL_SELECTION_ITEMS} with the collections each item was picked through; a NULL via is a pick by query. */
+    private static final String SQL_SELECTION_VIAS = '''WITH RECURSIVE reach(cid) AS (
+            SELECT ? UNION SELECT s.child_cid FROM selection_child s JOIN reach r ON s.parent_cid = r.cid)
+        SELECT DISTINCT ci.item_cid, ci.via_cid FROM collection_item ci JOIN reach r ON ci.collection_cid = r.cid ORDER BY ci.item_cid, ci.via_cid'''
 
     private static final String SQL_SELECTIONS_NOT_INDEXED = '''WITH RECURSIVE reach(cid) AS (
             SELECT ? UNION SELECT s.child_cid FROM selection_child s JOIN reach r ON s.parent_cid = r.cid)
@@ -1809,14 +1815,36 @@ class Index implements Closeable {
      * arrived, or held in a member this composition does not include) fails.
      */
     List<Cid> selectionItems(Cid selectionCid) {
+        requireSelectionsIndexed(selectionCid)
+        final List<Cid> items = new ArrayList<Cid>()
+        query(SQL_SELECTION_ITEMS, [selectionCid.toString()]) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
+        return items
+    }
+
+    /**
+     * Every item the Selection reaches, in {@link #selectionItems} order, each
+     * with the distinct collections it was picked through, sorted; {@code []}
+     * when it was picked by query only. Refuses a partial answer as
+     * {@code selectionItems} does.
+     */
+    Map<Cid, List<Cid>> selectionVias(Cid selectionCid) {
+        requireSelectionsIndexed(selectionCid)
+        final Map<Cid, List<Cid>> vias = new LinkedHashMap<Cid, List<Cid>>()
+        query(SQL_SELECTION_VIAS, [selectionCid.toString()]) { ResultSet rs ->
+            final List<Cid> forItem = vias.computeIfAbsent(Cid.parse(rs.getString(1))) { Cid k -> new ArrayList<Cid>() }
+            final String via = rs.getString(2)
+            if( via != null )
+                forItem.add(Cid.parse(via))
+        }
+        return vias
+    }
+
+    private void requireSelectionsIndexed(Cid selectionCid) {
         final List<String> absent = new ArrayList<String>()
         query(SQL_SELECTIONS_NOT_INDEXED, [selectionCid.toString()]) { ResultSet rs -> absent.add(rs.getString(1)) }
         if( absent )
             throw new IllegalStateException("selection ${selectionCid} reaches ${absent.size() == 1 ? 'a Selection' : 'Selections'} " +
                 "this index does not hold: ${absent.join(', ')}; it may be in a member this composition does not include")
-        final List<Cid> items = new ArrayList<Cid>()
-        query(SQL_SELECTION_ITEMS, [selectionCid.toString()]) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
-        return items
     }
 
     /** decision 4: a string as itself, null as NULL, anything else as DAG-JSON text. */
@@ -2136,6 +2164,18 @@ class Index implements Closeable {
      * intersect. An empty predicate is every item.
      */
     List<Cid> items(Cid completion, String outputName, Map<String, Object> where) {
+        return itemRefs(completion, outputName, where)*.item
+    }
+
+    /** An item of one output of a run, with the collection that holds it. */
+    @Canonical
+    static final class ItemRef {
+        Cid item
+        Cid collection
+    }
+
+    /** {@link #items} with each item's collection; the same predicate, the same order. */
+    List<ItemRef> itemRefs(Cid completion, String outputName, Map<String, Object> where) {
         final StringBuilder sql = new StringBuilder(SQL_ITEMS_BASE)
         final List<Object> parameters = new ArrayList<Object>([completion.toString(), outputName] as List<Object>)
         for( Map.Entry<String, Object> entry : (where ?: [:]).entrySet() ) {
@@ -2175,10 +2215,8 @@ class Index implements Closeable {
             }
         }
         sql.append(SQL_ITEMS_ORDER)
-        // SQL_ITEMS_BASE also selects ci.collection_cid; only column 1 (item_cid)
-        // is read here, since Index.items returns items, not (item, collection) pairs.
-        final List<Cid> items = new ArrayList<Cid>()
-        query(sql.toString(), parameters) { ResultSet rs -> items.add(Cid.parse(rs.getString(1))) }
+        final List<ItemRef> items = new ArrayList<ItemRef>()
+        query(sql.toString(), parameters) { ResultSet rs -> items.add(new ItemRef(Cid.parse(rs.getString(1)), Cid.parse(rs.getString(2)))) }
         return items
     }
 

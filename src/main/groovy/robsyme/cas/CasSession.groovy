@@ -31,6 +31,7 @@ import robsyme.cas.core.IdentifiedStore
 import robsyme.cas.core.Index
 import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
+import robsyme.cas.core.InputSet
 import robsyme.cas.core.LiveWriter
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.LocalSnapshotStorage
@@ -227,6 +228,18 @@ class CasSession {
      * RunCompletion without re-reading the manifest.
      */
     final ConcurrentHashMap<String, Anomalies> uploadAnomalies = new ConcurrentHashMap<>()
+
+    /**
+     * path -> the fromStore items it was read from, with the collection and
+     * Selection each came through. Beside the emitted path, never in it, so a
+     * task hash does not change; the run's input recorder reads it at the join.
+     */
+    final ConcurrentHashMap<Path, Set<InputSet.Origin>> origins = new ConcurrentHashMap<>()
+
+    /** Adds {@code found} to the Origins of {@code path}; two items sharing a raw leaf share a path. */
+    void addOrigins(Path path, Collection<InputSet.Origin> found) {
+        origins.computeIfAbsent(path) { Path k -> ConcurrentHashMap.<InputSet.Origin>newKeySet() }.addAll(found)
+    }
 
     /** Nextflow's own WorkflowRun key (LinObserver.executionHash), seen on the first save. */
     private final AtomicReference<String> nfRunKey = new AtomicReference<>()
