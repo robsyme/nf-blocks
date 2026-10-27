@@ -65,14 +65,18 @@ class ExploreCommand {
 
     /** The exit hook's body: stops serving, ends a running index job, closes the index, rewrites the snapshot. */
     static void stop(Started started, PrintStream err) {
-        started.server.stop()
-        // A job that is mid-scan leaves its member as it was; the bound keeps the exit prompt.
-        started.jobs.stop(10_000)
-        // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
-        synchronized( started.put ) {
-            started.index.close()
+        try {
+            started.server.stop()
+            // A job that is mid-scan leaves its member as it was; the bound keeps the exit prompt.
+            started.jobs.stop(10_000)
         }
-        refresh(started.cas, err)
+        finally {
+            // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
+            synchronized( started.put ) {
+                started.index.close()
+            }
+            refresh(started.cas, err)
+        }
     }
 
     static Started start(List<String> args, Map config, PrintStream out, PrintStream err) {

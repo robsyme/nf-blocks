@@ -13,6 +13,7 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.Fixtures
 import robsyme.cas.core.Index
 import robsyme.cas.core.LocalBlockStore
+import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.StoreLog
 import robsyme.cas.core.StoreLogKind
 import robsyme.cas.cli.CasCommands
@@ -29,8 +30,11 @@ class ExploreCommandTest extends Specification {
     ExploreCommand.Started started
     ByteArrayOutputStream out = new ByteArrayOutputStream()
     ByteArrayOutputStream err = new ByteArrayOutputStream()
+    /** Holds an index job until the spec ends. */
+    CountDownLatch never = new CountDownLatch(1)
 
     def cleanup() {
+        never.countDown()
         try {
             started?.server?.stop()
         }
@@ -136,7 +140,6 @@ class ExploreCommandTest extends Specification {
         logRun(tempDir.resolve('cloud'), 'cloud-1')
         started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
         final CountDownLatch reading = new CountDownLatch(1)
-        final CountDownLatch never = new CountDownLatch(1)
         started.jobs.onReport = { String phase, long done, long total ->
             if( phase == 'reading' ) {
                 reading.countDown()
@@ -159,6 +162,27 @@ class ExploreCommandTest extends Specification {
         finally {
             fresh.close()
         }
+    }
+
+    def 'the exit closes the index and rewrites the snapshot even when stopping the jobs throws'() {
+        given:
+        started = ExploreCommand.start(['--port', '0'], config(), new PrintStream(out, true), new PrintStream(err, true))
+        final IndexJobs throwing = new IndexJobs(started.cas, started.index, started.put, tempDir.resolve('local'), [:]) {
+            @Override void stop(long waitMillis) { throw new IllegalStateException('could not stop') }
+        }
+        final ExploreCommand.Started failing = new ExploreCommand.Started(started.server, started.cas, started.index, started.put, throwing, started.identity)
+        and: 'a run lab logged after the start'
+        logRun(tempDir.resolve('lab'), 'lab-late')
+
+        when:
+        ExploreCommand.stop(failing, new PrintStream(err, true))
+
+        then:
+        thrown(IllegalStateException)
+        new LocalSnapshotStorage(tempDir.resolve('lab')).base(tempDir).runs == 1
+
+        cleanup:
+        started.jobs.stop(5_000)
     }
 
     def 'explore listens before identity resolves; stdout is the URL line and the signing line goes to stderr'() {
