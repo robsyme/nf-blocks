@@ -224,6 +224,8 @@ class InputRecorder {
      * file system: the stats and hashes are queued. The task's storeDir is
      * noted first, so a later task reading what this one stored there does
      * not count it.
+     *
+     * @return the staged files it recorded, empty for a null task
      */
     List<Staged> recordTask(TaskRun task) {
         if( task == null )
@@ -485,8 +487,9 @@ class InputRecorder {
 
     /** Queues {@code work} once per source key; every entry naming that source shares the job. */
     private String add(String role, String name, String sample, Path origin, String sourceKey, Closure<Addressed> work) {
-        if( entries.containsKey(entryKey(role, name, sample, sourceKey)) )
-            return entryKey(role, name, sample, sourceKey)
+        final String key = entryKey(role, name, sample, sourceKey)
+        if( entries.containsKey(key) )
+            return key
         return put(role, name, sample, origin, sourceKey, jobs.computeIfAbsent(sourceKey) { String k -> submit(name, work) })
     }
 

@@ -533,14 +533,30 @@ class InputRecorderTest extends Specification {
         recorder.close()
     }
 
+    /** A provider whose every path reads as one directory with a fixed address, as two items holding identical directories do. */
+    private static class SameDirectory extends CasFileSystemProvider {
+        final Cid address
+
+        SameDirectory(Cid address) {
+            this.address = address
+        }
+
+        @Override
+        <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, java.nio.file.LinkOption... options) {
+            return (A) new robsyme.cas.nio.CasAttributes(0L, false, true, false, false, 0L, address.toString())
+        }
+    }
+
     def 'two directory paths from two items stay two inputs'() {
-        given: 'cas://<item1>/qc and cas://<item2>/qc, each with its own origin'
-        Cid c1 = blockOf('qc1', 'one')
-        Cid c2 = blockOf('qc2', 'two')
-        Path p1 = casPath(c1, 'qc')
-        Path p2 = casPath(c2, 'qc')
-        InputSet.Origin o1 = new InputSet.Origin(blockOf('i1', 'item1'), null, null)
-        InputSet.Origin o2 = new InputSet.Origin(blockOf('i2', 'item2'), null, null)
+        given: 'cas://<item1>/qc and cas://<item2>/qc with the same manifest behind both'
+        Cid manifest = blockOf('manifest', 'qc manifest')
+        Cid item1 = Cid.of(Cid.DAG_CBOR, new byte[32])
+        Cid item2 = Cid.of(Cid.DAG_CBOR, ([1] + [0] * 31) as byte[])
+        SameDirectory provider = new SameDirectory(manifest)
+        Path p1 = provider.getPath(URI.create("cas://${item1}/qc"))
+        Path p2 = provider.getPath(URI.create("cas://${item2}/qc"))
+        InputSet.Origin o1 = new InputSet.Origin(item1, null, null)
+        InputSet.Origin o2 = new InputSet.Origin(item2, null, null)
         InputRecorder recorder = new InputRecorder(tempDir.resolve('work'), [:], true)
         recorder.recordStaged([staged(p1, p1, null), staged(p2, p2, null)])
         recorder.origins = [(p1): [o1] as Set, (p2): [o2] as Set]
@@ -548,9 +564,11 @@ class InputRecorderTest extends Specification {
         when:
         InputSet set = new InputSet('rob', recorder.collect(-1))
 
-        then:
+        then: 'the inputs differ only in from'
         set.inputs.size() == 2
-        set.inputs*.from.collect { it[0] } as Set == [o1, o2] as Set
+        set.inputs*.name == ['qc', 'qc']
+        set.inputs*.address == [manifest, manifest]
+        set.inputs*.from as Set == [[o1], [o2]] as Set
 
         cleanup:
         recorder.close()
