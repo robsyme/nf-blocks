@@ -644,7 +644,7 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
         jobs.running = null
         jobs.last = last
         if (wrote(last)) {
-          try { forget(to) } catch (e) { console.error('copy: could not refresh the app after the copy', e) }
+          try { forget(to, result?.index) } catch (e) { console.error('copy: could not refresh the app after the copy', e) }
         }
         return last
       })
@@ -728,10 +728,15 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
     return n
   }
 
-  /** Each listener on its own: one that throws does not stop the others. */
-  function forget(alias) {
+  /**
+   * Each listener on its own: one that throws does not stop the others. The
+   * destination's `index` from the copy's answer goes to the watch last, so a
+   * refresh the copy queued is followed to its end (final review Important 2).
+   */
+  function forget(alias, index = null) {
     const errors = []
-    for (const f of [() => ctx.presence?.invalidate?.(), () => ctx.members?.invalidate?.(alias), () => ctx.sizes?.forget?.(alias)]) {
+    for (const f of [() => ctx.presence?.invalidate?.(), () => ctx.members?.invalidate?.(alias), () => ctx.sizes?.forget?.(alias),
+      () => { if (index) ctx.indexing?.track?.(alias, index) }]) {
       try { f() } catch (e) { errors.push(e) }
     }
     if (errors.length) throw errors[0]
