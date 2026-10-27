@@ -30,7 +30,14 @@ class IndexItemLineageTest extends Specification {
         lineageFixture = new LineageFixture(f)
     }
 
-    def cleanup() { index?.close() }
+    /** Index's log, captured by a test that checks a warning. */
+    ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender
+
+    def cleanup() {
+        index?.close()
+        if( appender != null )
+            ((ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Index)).detachAppender(appender)
+    }
 
     private Cid getPeople() { lineageFixture.people }
     private Map<String, Cid> getPersons() { lineageFixture.persons }
@@ -58,6 +65,17 @@ class IndexItemLineageTest extends Specification {
     }
 
     private String meta(String key) { index.metaValue(key) }
+
+    private static ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> capture() {
+        final appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>()
+        appender.start()
+        ((ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(Index)).addAppender(appender)
+        return appender
+    }
+
+    private static int warnings(ch.qos.logback.core.read.ListAppender appender, String containing) {
+        return appender.list.count { e -> e.level == ch.qos.logback.classic.Level.WARN && e.formattedMessage.contains(containing) } as int
+    }
 
     private int count(String table) { index.countRows(table) }
 
@@ -194,6 +212,53 @@ class IndexItemLineageTest extends Specification {
         and: 'the rest of the run is indexed'
         count('input_origin') == 4
         index.isRunIndexed((Cid) run.completion)
+    }
+
+    /** Datafiles' block with its inputs written in reverse, out of canonical order. */
+    private Map reversedBlock() {
+        final Map block = datafiles().toCbor()
+        block.inputs = ((List) block.inputs).reverse()
+        return block
+    }
+
+    def 'an InputSet written out of canonical order is refused: no inputs and no lineage, with one warning'() {
+        given:
+        final Cid reversed = f.store.putDagCbor(reversedBlock())
+        final Map run = introsRun(datafiles(), [setCid: reversed])
+        appender = capture()
+
+        when:
+        index.ingestRun(f.store, (Cid) run.completion, 'lab')
+        index.ingestRun(f.store, (Cid) run.completion, 'lab')
+
+        then:
+        index.isRunIndexed((Cid) run.completion)
+        count('run_input') == 0
+        count('input_origin') == 0
+        count('consumer') == 0
+        count('item_input') == 0
+        count('item_task') == 0
+        meta("${Index.INPUTSET_WAIT}${run.completion}") == null
+        meta("${Index.ITEMLINEAGE_WAIT}${run.completion}") == null
+        warnings(appender, reversed.toString()) == 1
+    }
+
+    def 'an out-of-order InputSet that arrives after its lineage drops the lineage rows'() {
+        given:
+        final Map block = reversedBlock()
+        final Map run = introsRun(datafiles(), [setCid: Fixtures.cidOf(block)])
+        index.ingestRun(f.store, (Cid) run.completion, 'lab')
+        assert count('item_input') == 2
+
+        when:
+        f.store.putDagCbor(block)
+        index.catchUp(f.store, StoreLog.of(f.store), 'lab')
+
+        then:
+        count('run_input') == 0
+        count('item_input') == 0
+        count('item_task') == 0
+        meta("${Index.INPUTSET_WAIT}${run.completion}") == null
     }
 
     def 'a malformed ItemLineage is skipped with the run still indexed, and is not retried'() {

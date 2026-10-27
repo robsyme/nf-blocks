@@ -204,13 +204,28 @@ class InputSet {
     }
 
     static InputSet fromCbor(Map block) {
+        final List<Input> inputs = written(block)
+        return new InputSet(Records.string(Records.require(block, 'asserted_by'), 'asserted_by'), inputs)
+    }
+
+    /**
+     * Whether {@code block}, the block this set was read from, lists its
+     * inputs as {@link #inputs} does: in canonical order with no two equal.
+     * A position into a block that does not (written out of order, or holding
+     * a schema-1 entry whose stray `from` is dropped so it reads back equal to
+     * another) is not the same position here.
+     */
+    boolean sameOrderAs(Map block) {
+        return inputs == written(block)
+    }
+
+    /** The block's inputs in the order written. */
+    private static List<Input> written(Map block) {
         Records.expectKind(block, Records.INPUT_SET)
         final int schema = Records.schemaOf(block, READABLE)
         final Object inputs = Records.require(block, 'inputs')
         if( !(inputs instanceof List) )
             throw new IllegalArgumentException("field 'inputs' should be a list")
-        return new InputSet(
-            Records.string(Records.require(block, 'asserted_by'), 'asserted_by'),
-            ((List) inputs).collect { Object i -> Input.fromCbor(i, schema >= 2) })
+        return ((List) inputs).collect { Object i -> Input.fromCbor(i, schema >= 2) }
     }
 }

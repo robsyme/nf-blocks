@@ -654,10 +654,9 @@ class Index implements Closeable {
                 ingestCollection(store, completion, collectionCid)
             }
             final Cid inputSet = asCid(completionBlock.get('input_set'))
-            if( inputSet != null )
-                ingestInputSet(store, completion, inputSet)
+            final boolean positioned = inputSet == null || ingestInputSet(store, completion, inputSet)
             final Cid itemLineage = asCid(completionBlock.get('item_lineage'))
-            if( itemLineage != null )
+            if( itemLineage != null && positioned )
                 ingestItemLineage(store, completion, itemLineage, inputSet)
             clearAbsentNamedBy(store, completion, member)
         }
@@ -784,16 +783,34 @@ class Index implements Closeable {
      * `input_origin` row per Origin of each, and one `consumer` row per
      * distinct (address, name, role) of the addressed ones, `how` the role.
      * Waits and warns as {@link #readRunRecord} says; the run is indexed
-     * either way. The caller owns the transaction.
+     * either way. A block whose inputs are not in canonical order (or hold
+     * two equal) is warned about once and nothing of it is written: an
+     * ItemLineage's positions index the block's list, the rows would index
+     * the sorted one. False then, and the run's lineage rows and wait record
+     * go too, so the caller indexes no lineage; true otherwise. The caller
+     * owns the transaction.
      */
-    private void ingestInputSet(BlockStore store, Cid completion, Cid inputSetCid) {
+    private boolean ingestInputSet(BlockStore store, Cid completion, Cid inputSetCid) {
         final String c = completion.toString()
         update('DELETE FROM run_input WHERE completion_cid = ?', [(Object) c])
         update('DELETE FROM input_origin WHERE completion_cid = ?', [(Object) c])
         update('DELETE FROM consumer WHERE completion_cid = ?', [(Object) c])
-        final InputSet set = readRunRecord(store, completion, inputSetCid, INPUT_SET_RECORD) { Map block -> InputSet.fromCbor(block) }
+        boolean reordered = false
+        final InputSet set = readRunRecord(store, completion, inputSetCid, INPUT_SET_RECORD) { Map block ->
+            final InputSet parsed = InputSet.fromCbor(block)
+            reordered = !parsed.sameOrderAs(block)
+            parsed
+        }
+        if( reordered ) {
+            warnOnce("input-set-order:${inputSetCid}".toString(), "input set ${inputSetCid} of run ${completion} does not list its inputs in canonical order, " +
+                "so its positions cannot be trusted; the run is indexed without its inputs or item lineage")
+            update('DELETE FROM item_input WHERE completion_cid = ?', [(Object) c])
+            update('DELETE FROM item_task WHERE completion_cid = ?', [(Object) c])
+            update('DELETE FROM meta WHERE key = ?', [(Object) (ITEMLINEAGE_WAIT + c)])
+            return false
+        }
         if( set == null )
-            return
+            return true
         final Set<List<String>> consumers = new LinkedHashSet<List<String>>()
         for( int position = 0; position < set.inputs.size(); position++ ) {
             final InputSet.Input input = set.inputs.get(position)
@@ -807,6 +824,7 @@ class Index implements Closeable {
         }
         for( List<String> each : consumers )
             update('INSERT INTO consumer(content_cid, completion_cid, name, how) VALUES (?, ?, ?, ?)', [(Object) each[0], c, each[1], each[2]])
+        return true
     }
 
     /**

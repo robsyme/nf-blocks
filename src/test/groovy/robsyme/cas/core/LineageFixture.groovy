@@ -40,9 +40,9 @@ class LineageFixture {
         })
     }
 
-    /** A downstream run: the intro of Dev read input 3, the circle read all four. */
+    /** A downstream run: the intro of Dev read input 3, the circle read all four. `setCid` links another InputSet block than `set`'s own. */
     Map introsRun(InputSet set, Map options = [:]) {
-        final Cid setCid = f.store.putDagCbor(set.toCbor())
+        final Cid setCid = (Cid) options.setCid ?: f.store.putDagCbor(set.toCbor())
         final Cid introRaw = f.raw('intro of Dev')
         final Cid circleRaw = f.raw('the circle')
         final Cid introDev = item('intro', introRaw)
