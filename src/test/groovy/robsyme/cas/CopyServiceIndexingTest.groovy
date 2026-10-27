@@ -65,8 +65,7 @@ class CopyServiceIndexingTest extends Specification {
     private Index copyCache() { Index.open(tmp.resolve('cache/index.sqlite')) }
 
     /** A snapshot of {@code alias} built by a scan in a cache of its own, kept under {@code root}. */
-    private Path buildLocalSnapshot(String alias, Path memberRoot) {
-        final Path root = tmp.resolve("local/${alias}")
+    private Path buildLocalSnapshot(String alias, Path memberRoot, Path root = tmp.resolve("local/${alias}")) {
         final Index scratch = Index.open(tmp.resolve("scratch-${UUID.randomUUID()}.sqlite"))
         try {
             final LocalBlockStore member = new LocalBlockStore(memberRoot, alias, false)
@@ -121,7 +120,54 @@ class CopyServiceIndexingTest extends Specification {
         cache?.close()
     }
 
+    def 'a copy into a destination indexed only on this machine writes it no snapshot'() {
+        given:
+        final Path root = buildLocalSnapshot('cloud', cloudRoot)
+
+        when:
+        final CopyService.Outcome out = run([root: "run:${completion}".toString(), to: 'cloud', from: 'lab'],
+            new CopyService.Indexing([:], [cloud: root]))
+
+        then:
+        out.status == 200 && out.body.snapshot == 'not_indexed'
+        !Files.exists(cloudRoot.resolve('index/v7.sqlite'))
+    }
+
+    def 'a copy into a member outside cas.resolve with no snapshot of its own does not scan it and says so'() {
+        when:
+        final CopyService.Outcome out = run([root: "run:${completion}".toString(), to: 'cloud', from: 'lab'],
+            new CopyService.Indexing([:], [:]))
+        final Index cache = copyCache()
+
+        then:
+        out.status == 200 && out.body.snapshot == 'not_indexed'
+        !Files.exists(cloudRoot.resolve('index/v7.sqlite'))
+        !cache.isIndexed('cloud')
+
+        cleanup:
+        cache?.close()
+    }
+
+    def 'a copy from a member the explorer does not hold, of a run only the cache can resolve, says why'() {
+        given: 'cloud, outside cas.resolve, holds a logged run and no snapshot'
+        final LocalBlockStore cloud = new LocalBlockStore(cloudRoot, 'cloud', true)
+        final Cid manifest = cloud.putDagCbor(Fixtures.runManifest(run_name: 'cloud-1', nf_run_hash: 'cloud-1'))
+        StoreLog.append(cloud, StoreLogKind.RUN, cloud.putDagCbor(Fixtures.runCompletion(manifest, [])), now += 1000)
+
+        when: 'the run is named by its RunManifest'
+        final CopyService.Outcome out = run([root: manifest.toString(), to: 'other', from: 'cloud'], new CopyService.Indexing([:], [:]))
+
+        then:
+        out.status == 400
+        out.body.error == 'not_indexed'
+        out.body.message == "'cloud' has no Index Snapshot, so this copy cannot find ${manifest} in it; " +
+            "index it from the explorer's Storage page, or run nf-blocks:snapshot against it"
+    }
+
     def 'a member the explorer lists as not indexed is left out of the copy catch-up'() {
+        given: 'cloud has a snapshot of its own'
+        buildLocalSnapshot('cloud', cloudRoot, cloudRoot)
+
         when:
         final CopyService.Outcome out = run([root: "run:${completion}".toString(), to: 'cloud', from: 'lab'],
             new CopyService.Indexing([other: 'absent'], [:]))

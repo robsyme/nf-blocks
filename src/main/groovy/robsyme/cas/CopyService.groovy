@@ -75,6 +75,8 @@ class CopyService {
     static final String BAD_REQUEST_CODE = 'bad_request'
     /** A member's `cas.stores.<alias>.readOnly` is not true or false. */
     static final String BAD_CONFIG = 'bad_config'
+    /** The root resolves only through the cache, and the source is a member the explorer's cache does not hold. */
+    static final String SOURCE_NOT_INDEXED = 'not_indexed'
     /** The 400s that say the request was malformed, rather than naming something that cannot be copied: exit 2 at the CLI. */
     static final Set<String> USAGE_ERRORS = Collections.unmodifiableSet(
         [BAD_ROOT, UNKNOWN_MEMBER, SAME_MEMBER, BAD_DEPTH, BAD_CLAIMS, BAD_REQUEST_CODE] as Set<String>)
@@ -343,11 +345,14 @@ class CopyService {
                 cas.seedFrom(local.key, new LocalSnapshotStorage(local.value))
         }
         final Map<String, String> roots = CopyErrors.rootsOf(config)
-        // A destination the explorer has not indexed gets no snapshot from this copy (spec §6.3).
-        final boolean notIndexed = indexing != null && (indexing.unindexed.containsKey(ask.to) || indexing.localRoots.containsKey(ask.to))
         final BlockStore dest = cas.members()[0]
         // Taken before any catch-up, so the snapshot guard covers it (CasSession.snapshotBase). A read.
         final SnapshotBase base = dryRun ? null : cas.snapshotBase()
+        // A destination the explorer has not indexed gets no snapshot from this copy (spec §6.3): one it lists
+        // as not indexed or indexed only on this machine, or one with no snapshot of its own, whose snapshot
+        // would need a scan of it.
+        final boolean notIndexed = indexing != null && (indexing.unindexed.containsKey(ask.to) || indexing.localRoots.containsKey(ask.to)
+            || (!dryRun && base == null))
         final Index index = cas.openIndex()
         try {
             // The plan asks the destination `has`, and reads its Store Log and the Claims that log
@@ -356,7 +361,7 @@ class CopyService {
             final Set<String> failed = cas.catchUpIndex(index, true, Collections.singleton(ask.to))
             if( failed )
                 err.println("nf-blocks:copy: could not catch up the index from ${failed.join(', ')}; the plan may miss what they announced")
-            final CopyClosure.Root root = root(ask.root, cas, index)
+            final CopyClosure.Root root = rootFrom(ask, cas, index)
             final BlockStore source = source(cas, ask.from, root.cid)
             final CopyClosure.Result all = CopyClosure.compute(source, index, source.alias(), root, CopyClosure.ALL,
                 new LinkedHashSet<String>(ask.claims), lineageOf(source))
@@ -413,6 +418,26 @@ class CopyService {
         }
         finally {
             index.close()
+        }
+    }
+
+    /**
+     * {@link #root}, saying why when the root was not found because the
+     * source is a member the explorer's catch-up left out: a run named by
+     * lid:// or by its RunManifest resolves only through the cache. The CLI
+     * leaves no member out, so its message is unchanged.
+     */
+    private static CopyClosure.Root rootFrom(Ask ask, CasSession cas, Index index) {
+        try {
+            return root(ask.root, cas, index)
+        }
+        catch( Refused r ) {
+            final String reason = ask.from != null && r.code == ROOT_NOT_FOUND ? cas.unindexed().get(ask.from) : null
+            if( reason == null )
+                throw r
+            final String what = reason == 'absent' ? "'${ask.from}' has no Index Snapshot" : "'${ask.from}' is not indexed (${reason})"
+            throw new Refused(SOURCE_NOT_INDEXED, "${what}, so this copy cannot find ${ask.root} in it; " +
+                "index it from the explorer's Storage page, or run nf-blocks:snapshot against it")
         }
     }
 
