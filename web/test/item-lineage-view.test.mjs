@@ -246,3 +246,26 @@ test('a consumer both members recorded is listed once, linked in the open member
   assert.equal(panel.querySelectorAll('a').filter(a => a.getAttribute('href').includes('#/item/')).length, 2)
   assert.equal(panel.querySelectorAll('a').some(a => a.getAttribute('href').startsWith('?member=')), false)
 })
+
+test('two consumer runs give two groups', async () => {
+  const row = (completion_cid, item_cid, collection_cid) => ({ completion_cid, via_cid: PEOPLE, selection_cid: FRIENDS, item_cid, collection_cid })
+  const ex = usedByEx({ rows: [row(CONSUMER, INTRO_DEV, CONSUMER_INTROS), row(CONSUMER_2, CIRCLE, CONSUMER_CIRCLE)] })
+  const panel = usedByPanel(await page(ex, PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] })))
+  assert.deepEqual(panel.querySelectorAll('[data-used-by-run]').map(g => g.getAttribute('data-used-by-run')), [CONSUMER, CONSUMER_2])
+})
+
+test('a row with no via collection is dropped under a run and kept under -', async () => {
+  const rows = [{ completion_cid: CONSUMER, via_cid: null, selection_cid: FRIENDS, item_cid: INTRO_DEV, collection_cid: CONSUMER_INTROS }]
+  const ctx = () => ctxWith({ held: allHeld, members: ['roblab'] })
+  assert.equal(usedByPanel(await page(usedByEx({ rows }), PEOPLE, PEOPLE_DEV, ctx())), undefined)
+  assert.ok(usedByPanel(await page(usedByEx({ rows }), '-', PEOPLE_DEV, ctx())))
+})
+
+test('an unnamed Selection shows its short CID', async () => {
+  const ex = usedByEx()
+  ex.claimStates = async (cids) => new Map(cids.map(c => [c, claimState([])]))
+  const panel = usedByPanel(await page(ex, PEOPLE, PEOPLE_DEV, ctxWith({ held: allHeld, members: ['roblab'] })))
+  assert.match(panel.textContent, /via Selection/)
+  assert.equal(panel.textContent.includes('"'), false)
+  assert.ok(panel.querySelectorAll('code').some(c => c.getAttribute('title') === FRIENDS))
+})

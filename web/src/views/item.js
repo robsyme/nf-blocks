@@ -205,12 +205,18 @@ async function readOrigin(ex, ctx, pres, origin) {
   return { itemCid, collection, selection, coll, holder, title: it ? itemTitle(it) : null, label, names }
 }
 
+/** ` via Selection "<names>"`, or its short CID when no Claim names it. */
+const viaSelection = (selection, names) => h('span', { class: 'muted small' }, ' via Selection ',
+  names.length ? `"${names.join(' / ')}"` : h('code', { class: 'cid', title: selection }, shortCid(selection)))
+
+/** An item link's text: `<output> · <title>`, the short CID until the item reads. */
+const itemLinkText = (label, title, itemCid) => `${label?.output ?? 'item'} \u00b7 ${title ?? shortCid(itemCid)}`
+
 /** The thread node for one read Origin; each position gets its own elements. What no member can read is not named beyond its short CID. */
 function originNode(ctx, { itemCid, collection, selection, coll, holder, title, label, names }) {
   const head = !holder ? [h('code', { class: 'cid', title: itemCid }, shortCid(itemCid)), ' · not in any store here']
-    : link(hrefIn(ctx, holder, `#/item/${coll}/${itemCid}`), collection ? `${label?.output ?? 'item'} · ${title ?? shortCid(itemCid)}` : `${title ?? shortCid(itemCid)} · picked by query`)
-  const via = selection ? h('span', { class: 'muted small' }, ' via Selection ',
-    names.length ? `"${names.join(' / ')}"` : h('code', { class: 'cid', title: selection }, shortCid(selection))) : null
+    : link(hrefIn(ctx, holder, `#/item/${coll}/${itemCid}`), collection ? itemLinkText(label, title, itemCid) : `${title ?? shortCid(itemCid)} · picked by query`)
+  const via = selection ? viaSelection(selection, names) : null
   const run = label?.completion ? runFact(label, label.completion) : null
   return { text: h('span', {}, head, run || via ? h('div', { class: 'row', style: 'gap:8px' }, run, via) : null) }
 }
@@ -273,9 +279,8 @@ function usedByPanel(ctx, used) {
   return panel({ title: 'Used by' }, [...byRun].map(([completion, list]) => h('div', { 'data-used-by-run': completion },
     runFact(list.find(u => u.label)?.label ?? null, completion),
     h('ul', {}, list.map(({ alias, row, title, label, names }) => h('li', {},
-      link(hrefIn(ctx, alias, `#/item/${row.collection_cid}/${row.item_cid}`), `${label?.output ?? 'item'} \u00b7 ${title ?? shortCid(row.item_cid)}`),
-      row.selection_cid ? h('span', { class: 'muted small' }, ' via Selection ',
-        names.length ? `"${names.join(' / ')}"` : h('code', { class: 'cid', title: row.selection_cid }, shortCid(row.selection_cid))) : null))))))
+      link(hrefIn(ctx, alias, `#/item/${row.collection_cid}/${row.item_cid}`), itemLinkText(label, title, row.item_cid)),
+      row.selection_cid ? viaSelection(row.selection_cid, names) : null))))))
 }
 
 export async function item(ex, collectionCid, itemCid, ctx) {
@@ -383,6 +388,8 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   const inputs = it.leaves.filter(l => l.reason === 'never_published' && l.name).map(l => l.name)
   const unpublished = inputs.length ? [{ text: `${inputs.join(', ')} · input, referenced by path`, ext: true }] : []
   const self = { text: `${from?.output ?? 'item'} · ${title}`, here: true }
+  // Started with the Lineage reads, awaited after them.
+  const usedByRead = usedByRows(ex, ctx, pres, itemCid, collectionCid)
   // Lineage is one run's fact: the URL's run, or every run that recorded one when the URL says `-`.
   const lineageRuns = collectionCid === '-' || from?.completion
     ? await Promise.resolve(ex.itemLineage?.(itemCid, collectionCid === '-' ? null : from.completion)).catch(() => []) ?? []
@@ -395,7 +402,7 @@ export async function item(ex, collectionCid, itemCid, ctx) {
   }))
   const lineage = panel({ title: 'Lineage' }, groups ? h('div', {}, groups) : thread([...unpublished, ...(chains[0]?.nodes ?? []), self]))
 
-  const usedBy = usedByPanel(ctx, await usedByRows(ex, ctx, pres, itemCid, collectionCid))
+  const usedBy = usedByPanel(ctx, await usedByRead)
 
   const runs = new Map()
   // How many of this item's stored files each run produced.
