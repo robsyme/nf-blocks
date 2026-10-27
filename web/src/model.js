@@ -449,14 +449,14 @@ export class Explorer {
    * `completionCid`, only that run. A snapshot run answers from its
    * item_input, run_input and input_origin rows (no rows, no lineage); a
    * tail run reads its ItemLineage and InputSet blocks, and an unreadable
-   * block leaves that run out.
+   * block, a lineage naming another InputSet or a position the InputSet does
+   * not have leaves that run out.
    */
   async itemLineage(itemCid, completionCid = null) {
     const runs = []
     const snapshot = (await this.db.query(SQL.itemInputsOf, [itemCid])).filter(r => completionCid === null || r.completion_cid === completionCid)
     for (const r of snapshot) {
-      const positions = JSON.stringify(JSON.parse(r.positions))
-      const params = [r.completion_cid, positions]
+      const params = [r.completion_cid, r.positions]
       const origins = Map.groupBy(await this.db.query(SQL.originsAt, params), o => o.position)
       const inputs = (await this.db.query(SQL.runInputsAt, params)).map(i => ({ ...i,
         origins: (origins.get(i.position) ?? []).map(o => ({ item_cid: o.item_cid, collection_cid: o.collection_cid, selection_cid: o.selection_cid })) }))
@@ -472,6 +472,8 @@ export class Explorer {
         const mine = derived.items.find(d => text(d.item) === itemCid)
         if (!mine || text(derived.input_set) !== text(s.completion.input_set)) continue
         const set = (await this.blocks.ofKind(text(derived.input_set), 'InputSet')).value
+        // A position the InputSet does not have leaves the run out rather than failing every run's answer.
+        if (!mine.inputs.every(position => set.inputs[position])) continue
         const inputs = mine.inputs.map(position => {
           const i = set.inputs[position]
           return { position, role: i.role, name: i.name ?? null, address: text(i.address), size: i.size ?? null, sample: i.sample ?? null,

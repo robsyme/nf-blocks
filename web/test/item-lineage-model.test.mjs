@@ -55,8 +55,11 @@ const statements = [
   `INSERT INTO item_input(completion_cid, item_cid, positions) VALUES ('${CONSUMER_2}', '${INTRO_DEV}', '[0]')`,
 ]
 
-/** A tail consumer run whose ItemLineage names INTRO_DEV, and a tail run whose item_lineage is null. */
-function tailRuns({ put, at }) {
+/**
+ * A tail consumer run whose ItemLineage names INTRO_DEV, and a tail run whose item_lineage is null.
+ * `positions` are INTRO_DEV's in the lineage; `otherSet` makes the lineage name another InputSet than the run's.
+ */
+function tailRuns({ put, at }, { positions = [0], otherSet = false } = {}) {
   const manifest = (name) => put({ kind: 'RunManifest', schema: 1, asserted_by: 'test', pipeline: 'consumer', repository: null, revision: null,
     commit_id: null, run_name: name, nf_run_hash: `hash-${name}`, session_id: 's', resumed: false,
     nextflow_version: '26.04.6', params: {}, config: {}, script: null, started_at: '2026-09-04T00:00:00.000Z' })
@@ -68,23 +71,25 @@ function tailRuns({ put, at }) {
     { role: 'task', name: 'Dev_Patel.dat', address: cid('Dev_Patel.dat'), size: 10, sample: null, reason: null,
       from: [{ item: cid('people-Dev'), collection: cid('people-collection'), selection: cid('friends-selection') }] },
     { role: 'task', name: 'Ana.dat', address: cid('Dev_Patel.dat'), size: 10, sample: null, reason: null }] })
-  const lineage = put({ kind: 'ItemLineage', schema: 1, asserted_by: 'test', input_set: inputSet,
-    items: [{ item: cid('intro-Dev'), inputs: [0], tasks: [] }] })
+  const named = otherSet ? put({ kind: 'InputSet', schema: 2, asserted_by: 'test', inputs: [] }) : inputSet
+  const lineage = put({ kind: 'ItemLineage', schema: 1, asserted_by: 'test', input_set: named,
+    items: [{ item: cid('intro-Dev'), inputs: positions, tasks: [] }] })
   const tail = completion('tail_run', lineage, inputSet)
   const none = completion('no_lineage_run', null, null)
-  return { tail: tail.toString(), none: none.toString(),
+  return { tail: tail.toString(), none: none.toString(), inputSet: inputSet.toString(),
     log: [entryName(at.R3 + 10, 'run', tail.toString()), entryName(at.R3 + 20, 'run', none.toString())] }
 }
 
-async function open() {
+/** `tailOptions` go to tailRuns; `blocks(member, tail)` replaces the member's blocks the Explorer reads. */
+async function open({ tailOptions = {}, blocks = (member) => member.blocks } = {}) {
   const sqlite3 = await loadSqlite()
   const snapshot = makeDb(sqlite3, statements)
   let tail
-  const member = await buildMember({ extra: (parts) => { tail = tailRuns(parts); return { log: tail.log, rows: null } } })
+  const member = await buildMember({ extra: (parts) => { tail = tailRuns(parts, tailOptions); return { log: tail.log, rows: null } } })
   const ex = await Explorer.open({
     base: 'http://h/m/lab/',
     openDb: async () => snapshotDb(snapshot),
-    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(member.blocks) }),
+    blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(blocks(member, tail)) }),
     listFn: async () => ({ names: member.log, readable: true }),
   })
   return { ex, tail, member }
@@ -142,6 +147,24 @@ test('a tail run whose lineage block is unreadable is left out', async () => {
     blocks: new BlockFetcher('http://h/m/lab/', { fetchFn: blockFetch(bad) }), listFn: async () => ({ names: member.log, readable: true }) })
   assert.deepEqual(await broken.itemLineage(INTRO_DEV, tail.tail), [])
   assert.deepEqual((await broken.itemLineage(INTRO_DEV)).map(r => r.completion_cid), [CONSUMER, CONSUMER_2].sort())
+})
+
+/** The tail run is left out of its own answer and of the item's; the snapshot runs still answer. */
+async function leftOut({ ex, tail }) {
+  assert.deepEqual(await ex.itemLineage(INTRO_DEV, tail.tail), [])
+  assert.deepEqual((await ex.itemLineage(INTRO_DEV)).map(r => r.completion_cid), [CONSUMER, CONSUMER_2].sort())
+}
+
+test('a tail run whose lineage names a position its InputSet does not have is left out', async () => {
+  await leftOut(await open({ tailOptions: { positions: [0, 2] } }))
+})
+
+test('a tail run whose lineage names another InputSet than the run is left out', async () => {
+  await leftOut(await open({ tailOptions: { otherSet: true } }))
+})
+
+test('a tail run whose InputSet block is unreadable is left out', async () => {
+  await leftOut(await open({ blocks: (member, tail) => new Map([...member.blocks, [tail.inputSet, new Uint8Array([0xa0])]]) }))
 })
 
 test('usedBy lists each derived item with its collection, the via and the Selection', async () => {
