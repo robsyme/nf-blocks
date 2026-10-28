@@ -148,6 +148,8 @@ class IndexJobs {
     @PackageScope Closure onSeeded
 
     private final Map<String, State> states = new ConcurrentHashMap<String, State>()
+    /** Held members served as their own because their own snapshot could not be looked at (a refused HEAD); see {@link #recheckUnread}. */
+    private final Set<String> unread = ConcurrentHashMap.<String> newKeySet()
 
     /** Guards {@link #queued}, {@link #running} and {@link #started}; notified when a job ends. */
     private final Object lock = new Object()
@@ -228,7 +230,10 @@ class IndexJobs {
     }
 
     private void classifyHeld(String alias) {
-        final String unusable = session.ownSnapshotUnusable(alias, shared)
+        classifyHeld(alias, session.ownSnapshotUnusable(alias, shared))
+    }
+
+    private void classifyHeld(String alias, String unusable) {
         if( unusable == null ) {
             deleteLocal(alias)
             states.put(alias, new State(SNAPSHOT, null, null, null, false))
@@ -237,6 +242,7 @@ class IndexJobs {
         // A snapshot that could not be looked at (a refused HEAD) is served as before indexing existed, and fails there if it must.
         if( unusable == CasSession.UNREADABLE ) {
             states.put(alias, new State(SNAPSHOT, null, null, null, false))
+            unread.add(alias)
             return
         }
         final Path file = localFile(alias)
@@ -246,6 +252,32 @@ class IndexJobs {
             states.put(alias, new State(INDEXING, null, null, MODE_LOCAL, false, IndexProgress.LOG, -1L, -1L, clock.call()))
         synchronized( lock ) {
             queued.add(alias)
+        }
+    }
+
+    /**
+     * Looks again at each member whose own snapshot could not be looked at
+     * when the explorer started, and classifies it as {@link #classify}
+     * would have once it can be: members.json asks, so a reload after
+     * signing in sees the member as it is. A refresh it queues begins at once.
+     */
+    void recheckUnread() {
+        for( String alias : new ArrayList<String>(unread) ) {
+            final String memberId
+            // Asked outside the job lock: a caller holding Put may wait on that lock (copied).
+            synchronized( putLock ) {
+                memberId = shared.storeIdOf(alias)
+            }
+            final String unusable = session.ownSnapshotUnusable(alias, memberId)
+            if( unusable == CasSession.UNREADABLE )
+                continue
+            synchronized( lock ) {
+                // Another reload may have looked meanwhile.
+                if( !unread.remove(alias) )
+                    continue
+                classifyHeld(alias, unusable)
+                next()
+            }
         }
     }
 

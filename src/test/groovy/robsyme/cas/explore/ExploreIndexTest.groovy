@@ -134,6 +134,18 @@ class ExploreIndexTest extends Specification {
         json(get('/members.json')).members.find { it.alias == 'lab' }.index.state == 'snapshot'
     }
 
+    def 'members.json looks again at members refused at start, so a reload after signing in sees them as they are'() {
+        given:
+        jobs = Spy(jobs)
+        serve()
+
+        when:
+        get('/members.json')
+
+        then:
+        1 * jobs.recheckUnread()
+    }
+
     def 'members.json has no index key on a server without indexing'() {
         given:
         serve(false)

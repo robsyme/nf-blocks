@@ -463,6 +463,62 @@ class IndexJobsTest extends Specification {
         again.servesOwn('cloud') && again.localSnapshot('cloud') == null
     }
 
+    def 'a member refused at start is looked at again once its reads work: with no own snapshot it is indexed locally'() {
+        given: 'cloud indexed on this machine, with no snapshot of its own in the bucket'
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        logRun(new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp), 'cloud-1')
+        open(cfg)
+        jobs.start('cloud', 'local')
+        jobs.awaitIdle(30_000)
+        assert jobs.stateOf('cloud').state == 'local'
+        and: 'the explorer starts again before the user has signed in'
+        bucket.refuseAll = true
+        final IndexJobs again = open(cfg)
+        again.startQueued()
+        assert again.stateOf('cloud').state == 'snapshot'
+
+        when: 'a reload while every read is still refused'
+        again.recheckUnread()
+
+        then:
+        again.stateOf('cloud').state == 'snapshot'
+
+        when: 'a reload once the user has signed in'
+        bucket.refuseAll = false
+        again.recheckUnread()
+        again.awaitIdle(30_000)
+
+        then:
+        again.stateOf('cloud').state == 'local'
+        again.localSnapshot('cloud') != null
+        !again.servesOwn('cloud')
+    }
+
+    def 'a member refused at start whose own snapshot is usable is looked at once more, then not again'() {
+        given: 'cloud with a usable snapshot of its own'
+        final RefusingS3 bucket = new RefusingS3('member-bucket')
+        CasSession.s3OpsFactory = { Map c, String name -> bucket } as Closure<S3Ops>
+        final CasConfig cfg = config([location: 's3://member-bucket/cloud'])
+        logRun(new S3BlockStore(bucket, cfg.remoteOf('cloud').prefix, 'cloud', true, tmp), 'cloud-1')
+        open(cfg)
+        jobs.start('cloud', 'push')
+        jobs.awaitIdle(30_000)
+        bucket.refuseAll = true
+        final IndexJobs again = open(cfg)
+        bucket.refuseAll = false
+
+        when:
+        again.recheckUnread()
+        bucket.calls.clear()
+        again.recheckUnread()
+
+        then:
+        again.stateOf('cloud').state == 'snapshot' && again.servesOwn('cloud')
+        bucket.calls.isEmpty()
+    }
+
     def 'index and push replaces an own snapshot from an earlier incarnation that lists more runs'() {
         given: 'cloud has an own snapshot with no store_id whose watermark is not in its Store Log'
         final LocalBlockStore elsewhere = new LocalBlockStore(tmp.resolve('elsewhere'), 'cloud', true)

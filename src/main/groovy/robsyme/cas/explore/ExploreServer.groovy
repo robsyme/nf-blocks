@@ -355,6 +355,8 @@ class ExploreServer {
             return
         }
         if( path == '/members.json' ) {
+            // A page load: a member refused at start is looked at again, so a reload after signing in sees it as it is.
+            jobs?.recheckUnread()
             bytes(exchange, 200, 'application/json', membersJson())
             return
         }
