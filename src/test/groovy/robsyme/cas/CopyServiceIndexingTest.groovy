@@ -120,7 +120,7 @@ class CopyServiceIndexingTest extends Specification {
         cache?.close()
     }
 
-    def 'a copy into a destination indexed only on this machine writes it no snapshot'() {
+    def 'a copy into a destination indexed only on this machine writes it no snapshot and says it is indexed here'() {
         given:
         final Path root = buildLocalSnapshot('cloud', cloudRoot)
 
@@ -129,8 +129,11 @@ class CopyServiceIndexingTest extends Specification {
             new CopyService.Indexing([:], [cloud: root]))
 
         then:
-        out.status == 200 && out.body.snapshot == 'not_indexed'
+        out.status == 200 && out.body.snapshot == 'local'
         !Files.exists(cloudRoot.resolve('index/v7.sqlite'))
+        lines().contains("nf-blocks:copy: 'cloud' is indexed on this machine only, so this copy did not write its snapshot; " +
+            "its local index is refreshed. Push it from the Storage page to write one")
+        !lines().contains("nf-blocks:copy: 'cloud' has no Index Snapshot")
     }
 
     def 'a copy into a member outside cas.resolve with no snapshot of its own does not scan it and says so'() {

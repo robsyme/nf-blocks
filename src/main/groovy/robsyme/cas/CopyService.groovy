@@ -348,11 +348,13 @@ class CopyService {
         final BlockStore dest = cas.members()[0]
         // Taken before any catch-up, so the snapshot guard covers it (CasSession.snapshotBase). A read.
         final SnapshotBase base = dryRun ? null : cas.snapshotBase()
-        // A destination the explorer has not indexed gets no snapshot from this copy (spec §6.3): one it lists
-        // as not indexed or indexed only on this machine, or one with no snapshot of its own, whose snapshot
-        // would need a scan of it.
-        final boolean notIndexed = indexing != null && (indexing.unindexed.containsKey(ask.to) || indexing.localRoots.containsKey(ask.to)
-            || (!dryRun && base == null))
+        // A destination the explorer has not indexed gets no snapshot from this copy (spec §6.3): one indexed only
+        // on this machine (SNAPSHOT_LOCAL; writing one would be a push), or one it lists as not indexed or with no
+        // snapshot of its own, whose snapshot would need a scan of it (SNAPSHOT_NOT_INDEXED). Null otherwise.
+        final String noSnapshot = indexing == null ? null
+            : indexing.localRoots.containsKey(ask.to) ? SNAPSHOT_LOCAL
+            : indexing.unindexed.containsKey(ask.to) || (!dryRun && base == null) ? SNAPSHOT_NOT_INDEXED
+            : null
         final Index index = cas.openIndex()
         try {
             // The plan asks the destination `has`, and reads its Store Log and the Claims that log
@@ -390,7 +392,7 @@ class CopyService {
                 // Nothing to transfer and no entry to add: the copy writes nothing, so it needs no Live Writer
                 // (a PUT and a DELETE on S3), no clock check and no second `has`. announce answers null.
                 if( !anythingToWrite(dest, view, present, missing) )
-                    return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, notIndexed)
+                    return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, noSnapshot)
                 // A clock far from S3's would misdate the log entries this writes (ticket 03 decision 2).
                 cas.checkClock()
                 // DESIGN.md §19 rule 1: no sweep beside a Live Writer. Registering waits out a sweep
@@ -404,9 +406,9 @@ class CopyService {
                     ])
                     final Set<Cid> still = presentAt(dest, present, pool)
                     if( still.size() == present.size() )
-                        return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, notIndexed)
+                        return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, noSnapshot)
                     final Map<String, Object> again = CopyService.body(ask, root, source.alias(), view, still, missing, audit, destination, dryRun)
-                    return copy(cas, index, base, source, ask, root, view, still, missing, again, pool, err, roots, notIndexed)
+                    return copy(cas, index, base, source, ask, root, view, still, missing, again, pool, err, roots, noSnapshot)
                 }
                 finally {
                     cas.stopLiveWriter()
@@ -904,7 +906,7 @@ class CopyService {
 
     private Outcome copy(CasSession cas, Index index, SnapshotBase base, BlockStore source, Ask ask, CopyClosure.Root root,
                          CopyClosure.Result view, Set<Cid> present, Set<Cid> missing, Map<String, Object> body,
-                         ExecutorService pool, PrintStream err, Map<String, String> roots, boolean notIndexed) {
+                         ExecutorService pool, PrintStream err, Map<String, String> roots, String noSnapshot) {
         final BlockStore dest = cas.members()[0]
         final List<CopyClosure.Entry> entries = view.entries
         final List<List<CopyClosure.Entry>> steps = new ArrayList<List<CopyClosure.Entry>>()
@@ -968,7 +970,12 @@ class CopyService {
         final Cid transfer = announce(dest, root, view, present, missing, ask, source.alias(), assertedBy, copied.get(), bytes.get())
         body.put('transfer_entry', transfer?.toString())
         body.put('failures', new ArrayList<Map<String, Object>>())
-        if( notIndexed ) {
+        if( noSnapshot == SNAPSHOT_LOCAL ) {
+            err.println("nf-blocks:copy: '${ask.to}' is indexed on this machine only, so this copy did not write its snapshot; " +
+                "its local index is refreshed. Push it from the Storage page to write one")
+            body.put('snapshot', SNAPSHOT_LOCAL)
+        }
+        else if( noSnapshot == SNAPSHOT_NOT_INDEXED ) {
             err.println("nf-blocks:copy: '${ask.to}' has no Index Snapshot, so this copy did not write one; index it from the explorer's Storage page")
             body.put('snapshot', SNAPSHOT_NOT_INDEXED)
         }
@@ -1066,6 +1073,8 @@ class CopyService {
     static final String SNAPSHOT_SKIPPED = 'skipped'
     /** The destination is a member the explorer has not indexed, so the copy writes it no snapshot. */
     static final String SNAPSHOT_NOT_INDEXED = 'not_indexed'
+    /** The destination is indexed only on this machine: no snapshot is written, and the explorer refreshes its local one. */
+    static final String SNAPSHOT_LOCAL = 'local'
 
     /**
      * "written", "skipped" (the reason goes to err) or "failed: <message>"

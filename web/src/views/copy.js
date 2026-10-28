@@ -747,6 +747,7 @@ export async function copyView(ex, kind, cid, ctx, { to = null, depth = 'results
     const snapshot = r.snapshot === 'written' ? `${to}'s snapshot rewritten`
       : r.snapshot === 'skipped' ? 'not rewritten; the next snapshot of ' + to + ' picks this up'
         : r.snapshot === 'not_indexed' ? `not written: ${to} is not indexed yet; index it from the Storage page`
+        : r.snapshot === 'local' ? `not written: ${to} is indexed on this machine; its local index was refreshed. Push to store writes one`
         : r.snapshot ? `not rewritten (${String(r.snapshot).replace(/^failed:\s*/, '')}); the copy still stands` : null
     const pres = presenceOf(ctx)
     const node = panel({ title: failed ? `Copy to ${to} stopped` : `Copied to ${to}`, meta: failed ? null : 'each block verified against its address' },

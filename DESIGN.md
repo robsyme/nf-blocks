@@ -3139,7 +3139,7 @@ except after the seed (step 4), and reports nothing as failed; a
 `CancellationException` from anywhere else is a failure. A job submitted
 but not yet started when the stop comes is dropped, its state put back. A copy
 into a member that serves a local snapshot queues a refresh of it
-(`copied`). All of this text is generic: no profile names or login
+(`copied`), and the copy's `snapshot` is `local` (§21). All of this text is generic: no profile names or login
 commands, and no store name but the member's own alias.
 
 The exit. The hook calls `ExploreCommand.stop(started, err)`: `server.stop()`
@@ -5624,12 +5624,19 @@ it directly (`presentAt`, `destinationState`). When the destination is in
 `unindexed` or `localRoots`, or has no snapshot of its own (a member outside
 `cas.resolve` among them), the final catch-up and the snapshot step are
 skipped, since writing the snapshot would mean scanning the destination
-inside the request, or a push the user did not ask for. The body's
-`snapshot` is then `not_indexed` (`CopyService.SNAPSHOT_NOT_INDEXED`) and
-stderr gets `nf-blocks:copy: '<to>' has no Index Snapshot, so this copy did
-not write one; index it from the explorer's Storage page`. The copy has
-succeeded and its Transfer entry is written whatever the snapshot says (§0
-rule 3). After a real copy into a member served from a local snapshot, the
+inside the request, or a push the user did not ask for. For a destination
+in `localRoots` the body's `snapshot` is then `local`
+(`CopyService.SNAPSHOT_LOCAL`) and stderr gets `nf-blocks:copy: '<to>' is
+indexed on this machine only, so this copy did not write its snapshot; its
+local index is refreshed. Push it from the Storage page to write one`; the
+page's result reads `not written: <to> is indexed on this machine; its local
+index was refreshed. Push to store writes one`. For the others it is
+`not_indexed` (`CopyService.SNAPSHOT_NOT_INDEXED`), stderr gets
+`nf-blocks:copy: '<to>' has no Index Snapshot, so this copy did not write
+one; index it from the explorer's Storage page`, and the page reads `not
+written: <to> is not indexed yet; index it from the Storage page`. The copy
+has succeeded and its Transfer entry is written whatever the snapshot says
+(§0 rule 3). After a real copy into a member served from a local snapshot, the
 explorer queues a refresh of that snapshot (§15). A root that only the cache
 resolves (`run:lid://...`, or a RunManifest) from a `from` the copy's
 catch-up left out is refused with `400 not_indexed`
