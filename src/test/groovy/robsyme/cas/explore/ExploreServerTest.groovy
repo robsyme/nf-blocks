@@ -196,6 +196,14 @@ class ExploreServerTest extends Specification {
         get("/m/lab/blocks/${CID[-2..-1]}/${CID}").headers['etag'] ==~ /^"[0-9a-z-]+"$/
     }
 
+    def 'a snapshot is never kept in the browser cache, while blocks stay immutable (acceptance F1)'() {
+        expect: 'explore rewrites a snapshot in place, so a cached page of the old file would mix two versions'
+        get('/m/lab/index/v3.sqlite').headers['cache-control'] == 'no-store'
+        get('/m/lab/index/v3.sqlite', [Range: 'bytes=0-4095']).headers['cache-control'] == 'no-store'
+        RawHttp.send(server.port, 'HEAD', '/m/lab/index/v3.sqlite').headers['cache-control'] == 'no-store'
+        get("/m/lab/blocks/${CID[-2..-1]}/${CID}").headers['cache-control'] == 'public, max-age=31536000, immutable'
+    }
+
     def 'an opened member file keeps the size, tag and bytes of the file it opened'() {
         given:
         final Path file = tempDir.resolve('lab/index/v3.sqlite')

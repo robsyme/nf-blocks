@@ -2841,10 +2841,13 @@ Upload `index/v<N>.sqlite` with `Cache-Control: no-cache` (a revalidation per
 load; blocks may be `immutable`): a snapshot uploaded without it can be served
 stale from a browser's heuristic cache after it is rewritten, and the page
 then fails with `snapshot_changed` rather than answering wrongly, but a user
-sees an error they did not need. `nf-blocks:explore` sends `no-cache` for the
+sees an error they did not need. `nf-blocks:explore` sends `no-store` for the
 snapshot and `public, max-age=31536000, immutable` for a block
-(`ExploreServer.groovy`); `gate/cloud/s3tier.py`'s `upload` sends the same
-pair for a directly browsed bucket. *Amended 2026-09-28:* a writable S3
+(`ExploreServer.groovy`): explore rewrites a snapshot under an open page (Index
+and push, a refresh, a copy into a member indexed on this machine), and with
+`no-cache` Chromium still answered some of the page's ranged reads from its
+cache with the old file's bytes. `gate/cloud/s3tier.py`'s `upload` sends
+`no-cache` and `immutable` for a directly browsed bucket. *Amended 2026-09-28:* a writable S3
 member's own writes set the same headers (§5, above), and on S3 the page is
 `no-cache` and rewritten only when its stored `ChecksumSHA256` differs.
 

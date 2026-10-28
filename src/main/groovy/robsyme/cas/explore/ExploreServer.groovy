@@ -384,7 +384,7 @@ class ExploreServer {
             return
         }
         if( SNAPSHOT.matcher(rel).matches() ) {
-            file(exchange, files, rel, 'application/vnd.sqlite3', 'no-cache')
+            file(exchange, files, rel, 'application/vnd.sqlite3', 'no-store')
             return
         }
         text(exchange, 404, 'not found')
