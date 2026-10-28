@@ -178,7 +178,7 @@ Today's item page, rearranged:
   hold the same files ("same files also in: …"), from query 1 as today.
   The producing task's name is optional: add it only if it comes from the
   `nf_record` table without a request per file (§11).
-- Folded **Details**: item address, leaf addresses, the raw Meta Map.
+- Folded **Address**: item address, leaf addresses (the fields stay in the page head).
 
 ### 5.6 Selections, `#/selections` and `#/selection/<cid>`
 

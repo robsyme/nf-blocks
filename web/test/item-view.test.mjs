@@ -445,3 +445,18 @@ test('file page: a file whose block is missing (block_missing) still says Missin
   assert.ok(head.querySelector('[data-download-elsewhere]'))
   assert.equal(page.querySelector('[data-read-error]'), null)
 })
+
+test('item page: the Address fold lists addresses and says why they hold; the fields stay in the page head', async () => {
+  installDom(); resetFolds()
+  const page = await item(itemEx(), COLL, ITEM, ctxFor())
+  await frame()
+  const fold = page.querySelector('[data-fold="details"]')
+  assert.ok(fold, 'the Address fold is there')
+  assert.equal(fold.querySelector('summary').textContent, 'Address')
+  assert.equal(fold.querySelectorAll('.pill').length, 0, 'no field chips in the fold')
+  assert.equal(fold.querySelectorAll('.field').length, 0, 'no field chips in the fold')
+  assert.match(fold.textContent, /Computed from the item's fields and files\. It resolves in any store that holds the item, so the link survives copies and moves\./)
+  const addresses = fold.querySelectorAll('[data-address]').map(a => a.dataset.address)
+  for (const cid of [ITEM, COLL, ZIP, LOG]) assert.ok(addresses.includes(cid), `${cid} is a row in the fold`)
+  assert.ok(page.querySelectorAll('.field').length > 0, 'the page head still shows the fields')
+})

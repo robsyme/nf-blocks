@@ -526,8 +526,8 @@ export async function item(ex, collectionCid, itemCid, ctx) {
       intro: from?.run_name ? ['It stays while ', h('b', {}, from.run_name), ' is held. Pinning keeps it in ', h('b', {}, store.name), ' even if the run is released.']
         : ['Pinning keeps it in ', h('b', {}, store.name), ' even if the run that wrote it is released.'] }),
     fold(`details:${itemCid}`, 'Address',
+      h('p', { class: 'muted small' }, "Computed from the item's fields and files. It resolves in any store that holds the item, so the link survives copies and moves."),
       kv([['Item', addrChip(itemCid)],
         ...(collectionCid !== '-' ? [['In output', addrChip(collectionCid, { ref: `cas://${collectionCid}/${itemCid}` })]] : []),
-        ...it.leaves.filter(l => l.address).map(l => [l.name ?? 'file', addrChip(String(l.address))])]),
-      all.length ? pairsNode(all, target, { size: 'row' }) : null))
+        ...it.leaves.filter(l => l.address).map(l => [l.name ?? 'file', addrChip(String(l.address))])])))
 }
