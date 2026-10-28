@@ -85,8 +85,12 @@ stack as before.
 distinct runs that head a group (§5.3), N counts the run's input positions for
 this item (each position once, however many groups it appears in). Singular
 and plural follow the counts ("1 upstream run · 4 inputs"). When R is 0 the
-meta is `<N> input(s)` alone; when the panel has no inputs at all there is no
-meta.
+meta is `<N> input(s)` alone; when N is 0 there is no meta. The item's own
+never-published leaves (§5.6) have no position and do not count toward N.
+
+In the every-run view (§5.8) with two or more trees, the panel meta is
+`<C> runs recorded lineage`, and each tree's wrapper carries its own
+`<R> upstream run(s) · <N> input(s)` line above the tree, muted.
 
 ### 5.3 Run group
 
@@ -96,15 +100,26 @@ collection (from `runLabel(collection)`). In order:
 1. Group head, on the tree's main rail with a hollow node: the run chip
    (`runFact(label, completion)`, linked to the run page in the member that
    holds it, as `originNode` does today with `hrefIn`), then muted
-   `<pipeline> · <age>` (the age as `ago(finished_at)` gives it).
+   `<pipeline> · <age>`. The age is what `ago(finished_at)` returns ("2d";
+   the mockup's "2 days ago" is a shortcut). `runLabel` carries no pipeline,
+   so the pipeline comes from one `runIdentity(completion)` call per upstream
+   run, asked of the member that holds the run; when it cannot be read the
+   head shows the age alone.
 2. One line per (collection, Selection) pair this run's rows came through,
    indented under the head: the output as `ref('output', <output name>, #/collection/<collection>,
    { cid: collection })` (linked in the member that holds it), muted `<k> of <m> items, via`,
    then the Selection as `ref('selection', "<name>", #/selection/<cid>, { cid })`
    with its name from Claims (short CID when unnamed, as today). k counts the
    distinct upstream items in the rows under this line; m is the collection's
-   item count (the existing `collectionItemCount` query). When m cannot be
-   read, the line says `<k> item(s), via`.
+   item count. The view cannot reach the `collectionItemCount` SQL
+   (`web/src/queries.json`, used only inside `model.js`), and
+   `Explorer.collection()` is too heavy to call per line, so this needs a new
+   light Explorer method, asked of the member that holds the collection. For
+   a collection only in the Store Log tail the SQL answers 0 rather than
+   failing; the method must then count the block's `items`, as the tail branch
+   of `Explorer.collection()` does, or answer null. When m is null, or when
+   the method is absent, the line says `<k> item(s), via`; it never says
+   "of 0".
 3. Under each such line, one row per input position, on a branch rail with a
    short tick per row.
 
@@ -151,7 +166,9 @@ groups:
   as `· input, referenced by path`, go in a last group headed muted `Read by
   path`, file rows only (no item column), dashed when no member holds the
   bytes. An input with neither name nor address keeps today's fixed label
-  (`unnamed input`).
+  (`unnamed input`). A never-published leaf whose name equals an Origin-less
+  input's name is that input: one row, not two. The other leaves get a row
+  each, in leaf order, after the inputs.
 
 ### 5.7 Long groups
 
@@ -186,17 +203,24 @@ shows only the unpublished inputs and the item.
   function over `itemLineage`'s result plus the labels `readOrigin` reads, so
   it can be tested without a DOM.
 - The mockup's CSS (`mockup.js`) is a starting point, not a contract. The
-  contract is the picture and this text.
+  contract is the picture and this text, and where they differ the text wins.
+  Known differences: the age wording (§5.3), and Amina's "also 3 other runs",
+  whose two made-up runs (keen_hopper, brave_lovelace) would each head a group
+  of their own under §5.3, giving 4 upstream runs. The picture leaves those
+  groups out to show the tag without a long page.
 
 ## 7. Verification
 
-- Unit tests: `web/test/item-lineage-view.test.mjs` covers today's cases
-  (scoping, held nowhere, picked by query, no Origin, two members, repeated
-  Origins, an unnamed Selection). Each keeps a test against the new layout,
-  plus new ones for: grouping by run, a row under two runs with the one-run
-  tag, the collapsed `n other runs` tag with its title, the `k of m` line and
-  its fallback, the header counts, the fold, and the page placement (Lineage
-  outside the `grid-2`, Produced by and Used by inside it).
+- Unit tests: `web/test/item-lineage-view.test.mjs` covers today's Lineage
+  cases (scoping, held nowhere, picked by query, no Origin, two members,
+  repeated Origins). Each keeps a test against the new layout, plus new ones
+  for: grouping by run, a row under two runs with the one-run tag, the
+  collapsed `n other runs` tag with its title, the `k of m` line and its
+  fallback (including a tail collection), an unnamed Selection on the line
+  (today's unnamed-Selection test is Used by's, not Lineage's), the header
+  counts in both views, never-published leaves merged with a path input, the
+  fold, and the page placement (Lineage outside the `grid-2`, Produced by and
+  Used by inside it).
 - Visual check against `mockup.png`, on the real page, for both example items
   at a 1280px window and once at 900px. Never point anything at
   `/tmp/cas-exploration/store` (the user's roblab store, read-only for agents);
@@ -214,8 +238,9 @@ shows only the unpublished inputs and the item.
   The copied store already holds an index snapshot (`index/v7.sqlite`), so no
   indexing is needed and nothing writes to `~/.cache`. The Range server is
   required; `python -m http.server` will not do.
-- The gate's browser tier (`gate/browser_b_assert.py`) reads the Lineage
-  panel's DOM; run it and update what it reads if the contract moved.
+- The gate does not read the Lineage panel's DOM (`gate/browser_b_assert.py`
+  checks the lineage blocks only), so no gate step changes and the gate does
+  not check this layout; the unit tests and the visual check do.
 
 ## 8. Calls made without asking
 
@@ -229,3 +254,9 @@ Marked so they can be overruled while reading:
   of each tree's `made by` node.
 - The row's item shows its title only, the output being named on the line
   above.
+- The every-run view's counts: `<C> runs recorded lineage` on the panel,
+  per-tree counts on each wrapper (§5.2).
+- Never-published leaves merge with a same-named path input and do not count
+  as inputs (§5.2, §5.6).
+- The group head shows the pipeline, at the cost of one `runIdentity` call per
+  upstream run (§5.3).
