@@ -55,9 +55,11 @@ body{padding:24px 16px}
 .pg .gh{position:relative;display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:32px}
 .pg .gh::before,.ptree .here::before{content:"";position:absolute;left:-20px;top:16px;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
 .pg .sub{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin:4px 0 0 12px;font-size:var(--fs-sm)}
-.pitems{margin:6px 0 0 12px;padding-left:16px;border-left:2px solid var(--line)}
+.pitems{margin:6px 0 0 12px;padding-left:18px}
 .pitem{position:relative;display:grid;grid-template-columns:minmax(90px,max-content) minmax(140px,max-content) 1fr auto;gap:14px;align-items:center;padding:4px 0;font-size:var(--fs-sm)}
 .pitem::before{content:"";position:absolute;left:-16px;top:14px;width:10px;border-top:2px solid var(--line)}
+.pitem::after{content:"";position:absolute;left:-18px;top:0;bottom:0;width:2px;background:var(--line)}
+.pitem:last-child::after{bottom:auto;height:16px}
 .pitem .sz{color:var(--ink-3);font-variant-numeric:tabular-nums;font-size:12px;text-align:right}
 .pitem .tag{display:flex;gap:5px;align-items:center}
 .also{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;color:var(--ink-3);border:1px solid var(--line);border-radius:var(--r-sm);padding:1px 6px 1px 3px;white-space:nowrap}
