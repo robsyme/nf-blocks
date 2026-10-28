@@ -170,7 +170,7 @@ export const APP_CSS = `
   .file-pill-tip[data-open=false] { display: none; }
   .file-pill-tip .tip-path { font-family: var(--font-mono); font-weight: 600; } .file-pill-tip .tip-name { opacity: .85; word-break: break-all; }
   .file-pill-tip .tip-size { opacity: .7; } .file-pill-tip .tip-reason { font-family: var(--font-mono); font-size: 10.5px; opacity: .85; }
-  .ext { display: inline-block; font-family: var(--font-mono); font-size: 10.5px; padding: 0 5px; margin-right: 3px; border: 1px solid var(--line);
+  span.ext { display: inline-block; font-family: var(--font-mono); font-size: 10.5px; padding: 0 5px; margin-right: 3px; border: 1px solid var(--line);
     border-radius: 3px; color: var(--ink-2); background: var(--surface); }
   .fileb .ext { display: inline; padding: 0; margin: 0; border: 0; background: none; color: var(--ink-3); font-size: 10px; }
   .index-link { margin-left: 6px; }
