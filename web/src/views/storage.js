@@ -274,8 +274,16 @@ function storeCards(ctx, viewer, open) {
     // The figures are read again only when the state, time or local flag moves, not on a progress tick.
     let figsFor = null
     const draw = () => body.replaceChildren(...notes, ...figs)
+    // A phase without counters reports the same index on every poll, so the
+    // elapsed time is repainted on a clock of its own, while the card shows.
+    let ticking = null
+    const clock = (idx) => {
+      if (idx?.state === 'indexing') ticking ??= setInterval(() => { if (card.isConnected) paintBody(); else clock(null) }, 1000)
+      else if (ticking !== null) { clearInterval(ticking); ticking = null }
+    }
     const paintBody = () => {
       const idx = indexing?.stateOf(m.alias) ?? null
+      clock(idx)
       notes = [...indexNotes(idx, m.alias), refused ? said(refused, { 'data-index-error': '' }) : null].filter(Boolean)
       if (shown) figs = open.stats ? figures(open.stats, yoursOf(open.people, viewer), open.stale) : [noFigures()]
       else if (!opensSnapshot(idx)) { figs = []; figsFor = null }

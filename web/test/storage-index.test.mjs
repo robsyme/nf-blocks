@@ -285,3 +285,53 @@ test('a member indexed on this machine whose snapshot does not open says it coul
   assert.match(text(card), /Could not be read \(no Index Snapshot\)\./)
   assert.doesNotMatch(text(card), /No snapshot yet/)
 })
+
+/** Fake setInterval and Date from `now` on, for the elapsed-time tests; settle's setTimeout stays real. */
+function clockAt(t, now) {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'], now })
+  return (ms) => t.mock.timers.tick(ms)
+}
+const listing = (startedAt) => index('indexing', { mode: 'local', progress: { phase: 'listing', done: -1, total: -1, startedAt: new Date(startedAt).toISOString() } })
+const progressOf = (card) => text(card.querySelector('[data-index-progress]'))
+
+test('an indexing card counts its elapsed time about once a second while the server reports the same phase (acceptance F4)', async (t) => {
+  const t0 = Date.parse('2026-10-27T10:00:00.000Z')
+  const tick = clockAt(t, t0)
+  const { cardOf } = await page({ cloud: { index: listing(t0) }, runningAlias: 'cloud' })
+  const card = cardOf('cloud')
+  Object.defineProperty(card, 'isConnected', { get: () => true })
+  assert.equal(progressOf(card), 'Listing blocks… · 0s')
+  tick(1000)
+  assert.equal(progressOf(card), 'Listing blocks… · 1s')
+  tick(2000)
+  assert.equal(progressOf(card), 'Listing blocks… · 3s')
+})
+
+test('an indexing card stops counting once its job settles', async (t) => {
+  const t0 = Date.parse('2026-10-27T10:00:00.000Z')
+  const tick = clockAt(t, t0)
+  const { cardOf, change, state } = await page({ cloud: { index: listing(t0) }, runningAlias: 'cloud' })
+  const card = cardOf('cloud')
+  Object.defineProperty(card, 'isConnected', { get: () => true })
+  state.runningAlias = null
+  change('cloud', index('none', { reason: 'absent' }))
+  const note = card.querySelector('[data-storage-card-note]')
+  tick(5000)
+  assert.equal(card.querySelector('[data-storage-card-note]'), note, 'nothing repaints the card')
+})
+
+test('an indexing card stops counting once it is no longer on the page', async (t) => {
+  const t0 = Date.parse('2026-10-27T10:00:00.000Z')
+  const tick = clockAt(t, t0)
+  const { cardOf } = await page({ cloud: { index: listing(t0) }, runningAlias: 'cloud' })
+  const card = cardOf('cloud')
+  let connected = true
+  Object.defineProperty(card, 'isConnected', { get: () => connected })
+  tick(1000)
+  assert.equal(progressOf(card), 'Listing blocks… · 1s')
+  connected = false
+  tick(1000)
+  const note = card.querySelector('[data-index-progress]')
+  tick(5000)
+  assert.equal(card.querySelector('[data-index-progress]'), note, 'a removed card is not repainted')
+})
