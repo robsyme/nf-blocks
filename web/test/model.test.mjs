@@ -220,6 +220,16 @@ test('allItems lists every item of a collection past the page size without fetch
   assert.deepEqual(await tail.allItems(member.runs.R2.collection), [member.item.B, member.item.C].sort())
 })
 
+test('collectionItemCount counts a snapshot collection without a block read, a tail collection from its block, and is null for one neither has', async () => {
+  const big = await openBig()
+  assert.equal(await big.collectionItemCount(bigCollCid), 1200)
+  assert.equal(big.blocks.fetches, 0, 'a snapshot collection is counted by the SQL alone')
+  const { explorer, member } = await open()
+  assert.equal(await explorer.collectionItemCount(member.runs.R1.collection), 2)
+  assert.equal(await explorer.collectionItemCount(member.runs.R2.collection), 2, 'a tail collection: the SQL would say 0, the block says 2')
+  assert.equal(await explorer.collectionItemCount(rawCid('held elsewhere').toString()), null)
+})
+
 test('an item\'s view keeps its floats floats, so its pairs are typed as the index types them', async () => {
   const { explorer, member } = await open()
   const it = await explorer.item(member.runs.R1.collection, member.item.A)

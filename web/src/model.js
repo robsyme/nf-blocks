@@ -997,6 +997,15 @@ export class Explorer {
     return (await this.blocks.ofKind(collectionCid, 'OutputCollection')).value.items.filter(Boolean).map(text)
   }
 
+  /** How many items a collection holds: the snapshot's count, else its OutputCollection block's (a tail collection), else null. Reads no OutputItem. */
+  async collectionItemCount(cid) {
+    const [row] = await this.db.query(SQL.collectionByCid, [cid])
+    if (row) return (await this.db.query(SQL.collectionItemCount, [cid]))[0].n
+    return this.blocks.ofKind(cid, 'OutputCollection').then(
+      (b) => b.value.items.filter(Boolean).length,
+      (e) => { if (e instanceof BlockError) return null; throw e })
+  }
+
   // ---- storage (P2: the snapshot's per-store figures) ------------------------
   // Every figure belongs to this member's store. A lean snapshot
   // (storageOmitted) has none: storeStats and rootStorage are null there, the
