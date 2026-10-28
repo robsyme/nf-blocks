@@ -9,6 +9,7 @@ import { seal } from './seal.js'
 import { dayText, fullWhenText, runTone, statusText, statusTone, whenText } from './words.js'
 import { isAnon, principalKey } from './identity.js'
 import { KINDS, sealed } from './icons.js'
+import { fold } from './folds.js'
 
 /** The kit's short form: `bafy…26ocxq` for a CID, `lid://e25b…b06f` for a lineage id. */
 export function shortCid(text) {
@@ -242,6 +243,25 @@ export function thread(nodes) {
   return h('div', { class: 'thread' },
     nodes.map(n => h('div', { class: ['node', n.here ? 'here' : null, n.ext ? 'ext' : null].filter(Boolean).join(' ') },
       n.href ? h('a', { href: n.href }, n.text) : n.here ? h('b', {}, n.text) : n.text)))
+}
+
+const treeRow = ({ key, cells, ext = false }) => h('div', { class: ext ? 'tree-row ext' : 'tree-row', 'data-row': key },
+  ['item', 'file', 'tag', 'size'].map((name, i) => h('span', { class: `tree-${name}` }, cells[i])))
+
+const treeLine = ({ key, head, rows, folded = [], foldKey }) => h('div', { class: 'tree-line', 'data-line': key },
+  head == null ? null : h('div', { class: 'tree-sub' }, head),
+  h('div', { class: [...rows, ...folded].every(r => r.cells[0] == null) ? 'tree-rows no-item' : 'tree-rows' },
+    rows.map(treeRow),
+    folded.length ? fold(foldKey, `+${folded.length} more`, h('div', { class: 'tree-more' }, folded.map(treeRow))) : null))
+
+/**
+ * A provenance tree: each group a head on the main rail with a hollow node, its lines indented under it,
+ * each line's rows on a branch rail with a tick per row (dashed when `ext`); ends on `here`, the filled node.
+ */
+export function tree(groups, here) {
+  return h('div', { class: 'tree' },
+    groups.map(g => h('div', { class: 'tree-group', 'data-group': g.key }, h('div', { class: 'tree-head' }, g.head), g.lines.map(treeLine))),
+    h('div', { class: 'tree-here' }, here))
 }
 
 const share = (part, total) => `${(part / total * 100).toFixed(2)}%`

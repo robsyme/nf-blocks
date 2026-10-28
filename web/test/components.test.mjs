@@ -3,7 +3,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { installDom } from './dom.mjs'
-import { addrChip, age, avatar, shortCid, toneFor, claimTag, factTag, fileChip, kindChip, note, pageHead, panel, presence, status, storageBar, tabs } from '../src/components.js'
+import { addrChip, age, avatar, shortCid, toneFor, claimTag, factTag, fileChip, kindChip, note, pageHead, panel, presence, status, storageBar, tabs, tree } from '../src/components.js'
+import { resetFolds } from '../src/folds.js'
+import { KIT_CSS } from '../src/kit-css.js'
+import { kit } from '../src/views/kit.js'
+import { readFileSync } from 'node:fs'
 import { sealSvg } from '../src/seal.js'
 import { samePrincipal } from '../src/identity.js'
 import { APP_CSS } from '../src/styles.js'
@@ -206,4 +210,58 @@ test('status: a run neither succeeded nor failed is neutral, with its own word',
     assert.doesNotMatch(el.querySelector('.ico').innerHTML, /m9 9 6 6/, 'no X')
   }
   assert.ok(status({ status: 'failed', possibly_incomplete: 1 }).classList.contains('fail'))
+})
+
+const treeRow = (key, item, file, ext = false) => ({ key, cells: [item, file, null, '10 B'], ext })
+
+test('tree: groups, lines and rows carry data-group, data-line and data-row; four cells a row; the item last', () => {
+  installDom(); resetFolds()
+  const node = tree([
+    { key: 'run:r1', head: 'fabulous_bartik', lines: [{ key: 'c1:s1', head: 'people', rows: [treeRow('0', 'Amina', 'Amina.dat'), treeRow('1', 'Dev', 'Dev.dat', true)] }] },
+    { key: 'path', head: 'Read by path', lines: [{ key: 'path', head: null, rows: [treeRow('leaf', null, 'in.fq', true)] }] },
+  ], 'circle · 4')
+  assert.ok(node.classList.contains('tree'))
+  assert.deepEqual(node.children.map(c => c.getAttribute('class')), ['tree-group', 'tree-group', 'tree-here'])
+  const [run, path] = node.querySelectorAll('[data-group]')
+  assert.deepEqual([run.getAttribute('data-group'), path.getAttribute('data-group')], ['run:r1', 'path'])
+  assert.equal(run.querySelector('.tree-head').textContent, 'fabulous_bartik')
+  assert.equal(run.querySelector('.tree-line').getAttribute('data-line'), 'c1:s1')
+  assert.equal(run.querySelector('.tree-sub').textContent, 'people')
+  const rows = run.querySelectorAll('.tree-row')
+  assert.deepEqual(rows.map(r => r.getAttribute('data-row')), ['0', '1'])
+  assert.deepEqual(rows[0].children.map(c => c.getAttribute('class')), ['tree-item', 'tree-file', 'tree-tag', 'tree-size'])
+  assert.deepEqual(rows[0].children.map(c => c.textContent), ['Amina', 'Amina.dat', '', '10 B'])
+  assert.deepEqual(rows.map(r => r.classList.contains('ext')), [false, true])
+  assert.equal(path.querySelector('.tree-sub'), null, 'a line with no head has no sub line')
+  assert.ok(path.querySelector('.tree-rows').classList.contains('no-item'))
+  assert.equal(run.querySelector('.tree-rows').classList.contains('no-item'), false)
+  assert.equal(node.querySelector('.tree-here').textContent, 'circle · 4')
+  assert.equal(node.querySelector('details'), null, 'nothing folded, no fold')
+})
+
+test('tree: folded rows sit behind +n more in a lineage fold, after the shown rows', () => {
+  installDom(); resetFolds()
+  const rows = Array.from({ length: 7 }, (_, i) => treeRow(String(i), `P${i}`, `P${i}.dat`))
+  const node = tree([{ key: 'run:r1', head: 'r1', lines: [{ key: 'c1:s1', head: 'people', rows: rows.slice(0, 2), folded: rows.slice(2), foldKey: 'lineage:c1:s1' }] }], 'x')
+  const box = node.querySelector('.tree-rows')
+  assert.deepEqual(box.children.map(c => c.tagName), ['DIV', 'DIV', 'DETAILS'])
+  const more = box.querySelector('details')
+  assert.equal(more.getAttribute('data-fold'), 'lineage')
+  assert.equal(more.querySelector('summary').textContent, '+5 more')
+  assert.ok(more.querySelector('.tree-more'))
+  assert.deepEqual(more.querySelectorAll('.tree-row').map(r => r.getAttribute('data-row')), ['2', '3', '4', '5', '6'])
+})
+
+test('the Lineage tree rules in kit-css.js are kit.css\'s, verbatim', () => {
+  const css = readFileSync(new URL('../../docs/design/mockups/src/kit.css', import.meta.url), 'utf8')
+  const block = css.match(/\/\* -+ Lineage tree -+ \*\/\n[\s\S]*?\n\n/)?.[0]
+  assert.ok(block, 'kit.css has a Lineage tree block followed by a blank line')
+  assert.ok(KIT_CSS.includes(block))
+})
+
+test('the kit page shows a Lineage tree row', () => {
+  installDom(); resetFolds()
+  const page = kit()
+  assert.ok(page.querySelectorAll('h2').some(t => t.textContent === 'Lineage tree'))
+  assert.equal(page.querySelectorAll('.tree').length, 1)
 })

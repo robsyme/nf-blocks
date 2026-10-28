@@ -5,12 +5,12 @@
 // nav; it reads nothing from the store.
 import { h } from '../html.js'
 import { seal } from '../seal.js'
-import { icon, sealed } from '../icons.js'
+import { icon, ref, sealed } from '../icons.js'
 import { identityChip } from './identity.js'
 import { formatValue } from '../format.js'
 import {
   addrChip, avatar, button, claimTag, durability, empty, factTag, fieldChip, fileChip, kindChip, kv, minibar, note,
-  pageHead, panel, presence, status, storageBar, tabs, thread,
+  pageHead, panel, presence, runFact, status, storageBar, tabs, thread, tree,
 } from '../components.js'
 
 const RAW = 'bafkreibxyh4xa4v5od634co6m4wcvs3yrh7s4vhsz2hgiybzwkahgz3oym'
@@ -77,6 +77,19 @@ export function kit() {
     row('Lineage thread', 'thread([{ text, href, here, ext }])', 'Inputs at top, current node highlighted, consumers below. Dashed node: not stored.',
       h('div', { class: 'kit-block' }, thread([{ text: [h('span', {}, 'WT_REP1_1.fastq.gz'), ' ', h('span', { class: 'muted' }, '· input, by path')], ext: true },
         { text: 'preprocessed · WT_REP1' }, { text: 'quant_salmon · WT_REP1', here: true }, { text: 'quant_merged · all_samples' }]))),
+    row('Lineage tree', 'tree(groups, here)', 'One group per upstream run: its run chip, then each output and Selection it was read through, then a row per input. Ends on the item. Dashed tick: no store holds the file.',
+      h('div', { class: 'kit-block' }, tree([{
+        key: 'run:demo', head: [runFact({ run_name: 'fabulous_bartik', status: 'succeeded', possibly_incomplete: 0 }, RUN, null, { href: '#/kit' }), muted('scratch-workflow · 2d')],
+        lines: [{
+          key: 'people:friends',
+          head: [ref('output', 'people', '#/kit', { cid: MANIFEST }), muted('2 of 9 items, via'), ref('selection', '"Friends"', '#/kit', { cid: SELECTION })],
+          rows: [
+            { key: '0', cells: [ref('item', 'Amina', '#/kit', { cid: MANIFEST }), ref('file', 'Amina_Okafor.dat', '#/kit', { cid: RAW }), null, '34 B'] },
+            { key: '1', ext: true, cells: [ref('item', 'Dev', '#/kit', { cid: MANIFEST }), ref('file', 'Dev_Patel.dat', '#/kit', { cid: RAW_2 }),
+              [muted('also'), h('a', { class: 'also', href: '#/kit' }, seal(RUN, { size: 12 }), 'sleepy_williams')], '28 B'] },
+          ],
+        }],
+      }], [ref('item', h('b', {}, 'circle · 4'), null, { cid: MANIFEST }), muted('made by'), runFact({ run_name: 'goofy_dubinsky', status: 'succeeded', possibly_incomplete: 0 }, RUN, null, { href: '#/kit' })]))),
     row('Buttons', "button(label, { kind, size })", 'Primary: the one forward action. Danger: release or delete. Labels state the outcome.',
       button('Copy 13 blocks', { kind: 'primary' }), button('Pin…'), button('Release (frees 63.7 MB)', { kind: 'danger' }), button('+ Add filter', { kind: 'ghost' }),
       button('Pick', { size: 'sm' }), button('Pin 5.29 MB', { disabled: true })),
