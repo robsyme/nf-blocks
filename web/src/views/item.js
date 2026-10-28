@@ -244,7 +244,9 @@ async function lineageTree(ex, ctx, pres, run, { leaves, here, cache, now, itemC
   let grouped
   try {
     const origins = run ? run.inputs.flatMap(i => i.origins ?? []) : []
-    const reads = new Map(await Promise.all(origins.map(async o => [originKey(o), await readOnce(o)])))
+    // An Origin that cannot be read is left out, which groupLineage reads as "nothing read".
+    const read = await Promise.all(origins.map(async o => [originKey(o), await readOnce(o).catch(() => null)]))
+    const reads = new Map(read.filter(([, r]) => r))
     grouped = groupLineage(run?.inputs ?? [], reads, leaves)
   } catch {
     grouped = groupLineage([], new Map(), leaves)
@@ -286,7 +288,7 @@ async function lineageTree(ex, ctx, pres, run, { leaves, here, cache, now, itemC
     ? ref('file', input.name ?? shortCid(input.address), `#/content/${input.address}`, { cid: input.address })
     : input?.name ?? leaf ?? 'unnamed input'
   const tagCell = (also) => !also.length ? null : [h('span', { class: 'muted small' }, 'also'), also.length === 1
-    ? h('a', { class: 'also', href: inHolder(ctx, also[0].holder, `#/run/${also[0].completion}`) }, seal(also[0].completion, { size: 12 }), also[0].label?.run_name ?? 'unnamed run')
+    ? h('a', { class: 'also', href: inHolder(ctx, also[0].holder, `#/run/${also[0].completion}`), title: also[0].label?.run_name ?? 'unnamed run' }, seal(also[0].completion, { size: 12 }), also[0].label?.run_name ?? 'unnamed run')
     : h('span', { class: 'also', title: also.map(a => a.label?.run_name ?? 'unnamed run').join(', ') }, `${also.length} other runs`)]
   // Each row builds its own elements: the same Origin may sit under several positions.
   const row = ({ input, leaf, read, also }) => ({ key: input ? String(input.position) : 'leaf',
@@ -297,7 +299,7 @@ async function lineageTree(ex, ctx, pres, run, { leaves, here, cache, now, itemC
     const rows = line.rows.map(row)
     const folds = rows.length - SHOWN_PAIRS >= MIN_FOLDED
     return { key: line.key, head: sub(g, line), rows: folds ? rows.slice(0, SHOWN_PAIRS) : rows, folded: folds ? rows.slice(SHOWN_PAIRS) : [],
-      foldKey: g.kind === 'path' ? `lineage:path:${itemCid}` : `lineage:${line.key}` }
+      foldKey: `lineage:${itemCid}:${line.key}` }
   }
   return { node: tree(groups.map(g => ({ key: g.key, head: head(g), lines: g.lines.map(l => treeLine(g, l)) })), here), runs, inputs }
 }

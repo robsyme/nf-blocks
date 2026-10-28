@@ -325,6 +325,7 @@ test('two upstream runs: a group each, by lowest position; a row under both name
   assert.equal(tag(0, '1').children[0].textContent, 'also')
   assert.equal(tag(0, '1').querySelector('a.also').textContent, 'sleepy_williams')
   assert.equal(tag(0, '1').querySelector('a.also').getAttribute('href'), `#/run/${SLEEPY_RUN}`)
+  assert.equal(tag(0, '1').querySelector('a.also').getAttribute('title'), 'sleepy_williams')
   assert.equal(tag(1, '1').querySelector('a.also').textContent, 'infallible_spence')
   assert.equal(tag(0, '0').textContent, '')
   assert.equal(metaOf(node), '2 upstream runs · 4 inputs')
@@ -547,4 +548,17 @@ test('Lineage spans the column above a grid-2 of Produced by and Used by; withou
   assert.deepEqual(grid.children.map(p => p.querySelector('h2').textContent), ['Produced by', 'Used by'])
   const alone = await page(lineageEx(), CONSUMER_INTROS, INTRO_DEV, ctxWith({ held: allHeld }))
   assert.deepEqual(alone.children.find(c => c.classList.contains('grid-2')).children.map(p => p.querySelector('h2').textContent), ['Produced by'])
+})
+
+test('one Origin that fails to read degrades only that Origin: the path row and the other input still draw', async () => {
+  const inputs = [input(0, 'Dev.dat', [from(PEOPLE_DEV)]), input(1, 'Ana.dat', [from(PEOPLE_ITEMS[1][1])]), input(2, 'by_path.dat')]
+  const ex = lineageEx({ inputs })
+  const read = ex.item
+  // An item with no leaves makes itemTitle throw, the one way readOrigin rejects.
+  ex.item = async (coll, cid) => cid === PEOPLE_ITEMS[1][1] ? { cid, value: {}, view: {}, state: claimState([]) } : read(coll, cid)
+  const node = await page(ex, CONSUMER_CIRCLE, CIRCLE, ctxWith({ held: allHeld }))
+  const rows = rowsOf(lineagePanel(node))
+  assert.deepEqual(rows.map(r => r.getAttribute('data-row')).sort(), ['0', '1', '2'])
+  assert.ok(groupKeys(node).includes('path'))
+  assert.equal(rows.find(r => r.getAttribute('data-row') === '0').children[1].textContent, 'Dev.dat')
 })

@@ -175,7 +175,7 @@ groups:
 A (collection, Selection) line with more rows than the item page's metadata
 fold allows shows the first rows and folds the rest behind `+<n> more`, with
 the same constants and `fold()` call as the metadata pairs (`SHOWN_PAIRS`,
-`MIN_FOLDED` in `views/item.js`; fold key `lineage:<collection>:<selection>`).
+`MIN_FOLDED` in `views/item.js`; fold key `lineage:<item>:<collection>:<selection>`, and `lineage:<item>:path` for Read by path).
 
 ### 5.8 Every-run view
 
