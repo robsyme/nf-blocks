@@ -15,6 +15,7 @@ import robsyme.cas.core.Cid
 import robsyme.cas.core.CoordinateTree
 import robsyme.cas.core.HandoffWriter
 import robsyme.cas.core.Index
+import robsyme.cas.core.IndexPaths
 import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.Put
 import robsyme.cas.core.Samplesheet
@@ -38,10 +39,11 @@ class ExploreCommand {
         final CasSession cas
         final Index index
         final Put put
+        final IndexJobs jobs
         /** The nf-blocks-identity thread, so a test can join it before its identity seams are put back. */
         @PackageScope final Thread identity
-        Started(ExploreServer server, CasSession cas, Index index, Put put, Thread identity) {
-            this.server = server; this.cas = cas; this.index = index; this.put = put; this.identity = identity
+        Started(ExploreServer server, CasSession cas, Index index, Put put, IndexJobs jobs, Thread identity) {
+            this.server = server; this.cas = cas; this.index = index; this.put = put; this.jobs = jobs; this.identity = identity
         }
     }
 
@@ -51,12 +53,7 @@ class ExploreCommand {
         final CountDownLatch stopped = new CountDownLatch(1)
         Runtime.runtime.addShutdownHook(new Thread({
             try {
-                started.server.stop()
-                // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
-                synchronized( started.put ) {
-                    started.index.close()
-                }
-                refresh(started.cas, err)
+                stop(started, err)
             }
             finally {
                 stopped.countDown()
@@ -64,6 +61,37 @@ class ExploreCommand {
         } as Runnable, 'nf-blocks-explore-exit'))
         stopped.await()
         return 0
+    }
+
+    /** The exit hook's body: stops serving, ends a running index job, closes the index, rewrites the snapshot. */
+    static void stop(Started started, PrintStream err) {
+        // Each step runs whatever the one before it threw; the first failure is raised, the later ones ride on it.
+        Throwable failed = attempt(null) { -> started.server.stop() }
+        // A job that is mid-scan leaves its member as it was; the bound keeps the exit prompt.
+        failed = attempt(failed) { -> started.jobs.stop(10_000) }
+        // Waits for an in-flight write or export, which also holds this lock (deferred minor, Task 10 review).
+        failed = attempt(failed) { ->
+            synchronized( started.put ) {
+                started.index.close()
+            }
+        }
+        failed = attempt(failed) { -> refresh(started.cas, err) }
+        if( failed != null )
+            throw failed
+    }
+
+    /** Runs {@code step}; returns {@code failed}, or what the step threw, added to {@code failed} as suppressed when there is one. */
+    private static Throwable attempt(Throwable failed, Closure step) {
+        try {
+            step.call()
+            return failed
+        }
+        catch( Throwable e ) {
+            if( failed == null )
+                return e
+            failed.addSuppressed(e)
+            return failed
+        }
     }
 
     static Started start(List<String> args, Map config, PrintStream out, PrintStream err) {
@@ -76,10 +104,14 @@ class ExploreCommand {
         // Ticket 03 decision 2; a ClockSkewException reaches CasCommands.run, which prints it and exits 1.
         session.checkClock()
         warnShadowed(session, err)
+        // A member the cache does not hold and cannot seed is left out, not scanned; the Storage page indexes it.
+        session.leaveUnindexedOut([:])
         refresh(session, err)
         final Index index = session.openIndex()
         final String token = ExploreServer.newToken()
         final Put put = session.newPut(index)
+        final IndexJobs jobs = new IndexJobs(session, index, put, IndexPaths.localSnapshotsDir(index.file), memberInfoOf(cas))
+        jobs.classify()
         final ExploreServer.Exporter exporter = { Cid selection, String format ->
             synchronized( put ) {
                 session.catchUpIndex(index)
@@ -91,11 +123,15 @@ class ExploreCommand {
                 return (format == 'csv' ? sheet.csv() : sheet.json()).getBytes('UTF-8')
             }
         } as ExploreServer.Exporter
-        final LinkedHashMap<String, MemberFiles> members = membersOf(cas, { String bucket -> CasSession.s3OpsFactory.call(config, bucket) } as Closure<S3Ops>)
+        final LinkedHashMap<String, MemberFiles> own = membersOf(cas, { String bucket -> CasSession.s3OpsFactory.call(config, bucket) } as Closure<S3Ops>)
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        for( Map.Entry<String, MemberFiles> e : own.entrySet() )
+            members.put(e.key, new LocalSnapshotFiles(e.key, e.value, jobs))
         // members.json and a write wait on the session's one resolution; nothing else does.
         final ExploreServer server = new ExploreServer(members, cas.writableAlias, IndexSnapshot.bundledPage(), put, token, exporter,
             { -> session.principal } as Supplier<Principal>)
             .memberInfo(memberInfoOf(cas))
+            .indexing(jobs)
             // members.json greys out an S3 copy target it cannot reach now, saying what to do.
             .memberProbe(new MemberProbe(members))
             // POST /api/copy: each copy builds its own composition from the loaded config (CopyService).
@@ -106,12 +142,13 @@ class ExploreCommand {
             .start(options.intFlag('port', 0))
         out.println("nf-blocks explorer: ${server.launchUrl}")
         out.flush()
+        jobs.startQueued()
         // Listening and the URL out first, then resolve off the main thread, so the signing line or the
         // warning reaches stderr after the URL. Platform (5 s) and git (2 s) bound the wait.
         final Thread resolving = new Thread({ -> session.principal } as Runnable, 'nf-blocks-identity')
         resolving.daemon = true
         resolving.start()
-        return new Started(server, session, index, put, resolving)
+        return new Started(server, session, index, put, jobs, resolving)
     }
 
     /** Catches the index up and rewrites the writable member's snapshot at any size. Derived: a failure warns. */

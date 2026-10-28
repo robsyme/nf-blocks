@@ -196,6 +196,14 @@ class ExploreServerTest extends Specification {
         get("/m/lab/blocks/${CID[-2..-1]}/${CID}").headers['etag'] ==~ /^"[0-9a-z-]+"$/
     }
 
+    def 'a snapshot is never kept in the browser cache, while blocks stay immutable (acceptance F1)'() {
+        expect: 'explore rewrites a snapshot in place, so a cached page of the old file would mix two versions'
+        get('/m/lab/index/v3.sqlite').headers['cache-control'] == 'no-store'
+        get('/m/lab/index/v3.sqlite', [Range: 'bytes=0-4095']).headers['cache-control'] == 'no-store'
+        RawHttp.send(server.port, 'HEAD', '/m/lab/index/v3.sqlite').headers['cache-control'] == 'no-store'
+        get("/m/lab/blocks/${CID[-2..-1]}/${CID}").headers['cache-control'] == 'public, max-age=31536000, immutable'
+    }
+
     def 'an opened member file keeps the size, tag and bytes of the file it opened'() {
         given:
         final Path file = tempDir.resolve('lab/index/v3.sqlite')
@@ -316,6 +324,62 @@ class ExploreServerTest extends Specification {
 
         cleanup:
         probed?.stop()
+    }
+
+    /** An S3 member whose every open fails with {@code failure}. */
+    private ExploreServer failing(Throwable failure) {
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        members.put('cloud', [open: { String rel -> throw failure }, list: { String d -> [] }, describe: { -> 's3://bucket/cas/' }] as MemberFiles)
+        return new ExploreServer(members, 'lab', page).start(0)
+    }
+
+    def 'a read AWS refuses for credentials is 503 and says what to do, without the request ids'() {
+        given:
+        final ExploreServer refused = failing(software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(403)
+            .message('Forbidden (Service: S3, Status Code: 403, Request ID: W3K6TW6M7N1V63K1)').build())
+
+        when:
+        final RawHttp.Response r = RawHttp.send(refused.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 503
+        r.headers['content-type'].startsWith('text/plain')
+        r.text().trim() == "${robsyme.cas.s3.S3Failures.REFUSED}. Refresh your AWS credentials, then reload this page".toString()
+
+        cleanup:
+        refused?.stop()
+    }
+
+    def 'any other failure is 500 with its cause, without the request ids'() {
+        given:
+        final ExploreServer broken = failing(software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(500)
+            .message('We encountered an internal error (Service: S3, Status Code: 500, Request ID: X)').build())
+
+        when:
+        final RawHttp.Response r = RawHttp.send(broken.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 500
+        r.text().trim() == 'internal error: We encountered an internal error'
+
+        cleanup:
+        broken?.stop()
+    }
+
+    def 'a failure told to the page names no local path'() {
+        given:
+        final ExploreServer broken = failing(new IllegalStateException("${System.getProperty('java.io.tmpdir')}/nf-blocks-spool/x: No space left on device"))
+
+        when:
+        final RawHttp.Response r = RawHttp.send(broken.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 500
+        r.text().trim() == 'internal error: [local path]: No space left on device'
+
+        cleanup:
+        broken?.stop()
     }
 
     def 'members.json asks nothing when this server cannot copy'() {

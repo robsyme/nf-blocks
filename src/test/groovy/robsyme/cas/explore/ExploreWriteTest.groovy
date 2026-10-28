@@ -381,7 +381,7 @@ class ExploreWriteTest extends Specification {
 
         then:
         r.status == 500
-        r.text().trim() == 'internal error'
+        r.text().trim() == 'internal error: Forbidden'
         final String said = terminal.toString('UTF-8')
         said.contains('nf-blocks:explore: POST /api/put failed: Forbidden (Service: S3, Status Code: 403)')
         !said.contains(token)

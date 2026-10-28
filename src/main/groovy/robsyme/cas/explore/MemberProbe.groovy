@@ -70,16 +70,19 @@ class MemberProbe {
         return out
     }
 
+    /** What the page says of a failure about the user's AWS credentials; null for any other failure. */
+    static String credentialsReason(Throwable e) {
+        final String credentials = S3Failures.credentials(e)
+        return credentials == null ? null : "${credentials}. Refresh your AWS credentials, then ${RELOAD}".toString()
+    }
+
     private static String reasonFor(MemberFiles files) {
         try {
             files.open('store-id')?.close()
             return null
         }
         catch( Exception e ) {
-            final String credentials = S3Failures.credentials(e)
-            if( credentials != null )
-                return "${credentials}. Refresh your AWS credentials, then ${RELOAD}".toString()
-            return unreached(S3Failures.cause(e))
+            return credentialsReason(e) ?: unreached(S3Failures.cause(e))
         }
     }
 

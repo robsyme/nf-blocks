@@ -12,7 +12,7 @@ function refuseFile(base) {
 
 /** A members.json entry with the fields an older server leaves out read as null/false. */
 const normalizeMember = (m) => ({ ...m, kind: m.kind ?? null, location: m.location ?? null,
-  copy_target: m.copy_target === true, copy_reason: m.copy_reason ?? null })
+  copy_target: m.copy_target === true, copy_reason: m.copy_reason ?? null, index: m.index ?? null })
 
 export async function resolveStore(href, { fetchFn = (...a) => fetch(...a) } = {}) {
   const url = new URL(href)

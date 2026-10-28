@@ -357,7 +357,7 @@ for (const all of [true, false]) {
     assert.ok(cards[0].classList.contains('on'))
     assert.equal(cards[0].getAttribute('aria-current'), 'true')
     assert.equal(cards[0].tagName, 'DIV', 'the card broken down below is not a link')
-    assert.equal(cards[1].getAttribute('href'), `${PAGE}?member=org-s3#/storage`)
+    assert.equal(cards[1].querySelector('a[data-storage-card-open]').getAttribute('href'), `${PAGE}?member=org-s3#/storage`)
     assert.equal(text(cards[0].querySelector('[data-storage-summary]')), '142 MB stored · 220 MB referenced · 1.55×')
     assert.match(text(cards[0]), /local · writable/)
     assert.equal(text(cards[1].querySelector('[data-storage-summary]')), '1.82 TB stored · 5.6 TB referenced · 3.08×')

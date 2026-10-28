@@ -27,6 +27,7 @@ import { ICON_CSS } from './icons.js'
 import { createPanel, showsRail, useLabel } from './panel.js'
 import { argsOf, routeOf } from './routes.js'
 import { createNav, drawStores } from './nav.js'
+import { createIndexing, indexChangeHandler, indexClient } from './indexing.js'
 import { createSizes, memberHref, mountSwitcher } from './views/switcher.js'
 import { agoText, fullWhenText, snapshotModeText, staleText } from './words.js'
 
@@ -44,6 +45,8 @@ let members = null
 let presence = null
 let sizes = null
 let storesLoader = null
+let redrawStores = null
+let indexing = null
 let busy = false
 let panel = null
 let nav = null
@@ -105,7 +108,7 @@ async function render() {
   let rendered = false
   const ctx = {
     progress: (done, total) => { if (mine === sequence) progress.textContent = `fetched ${done} of ${total} blocks`; updateStale() },
-    tray, write, copy, sizes, sources, trayChanged: updateTray, rerender: render, members, presence,
+    tray, write, copy, sizes, sources, trayChanged: updateTray, rerender: render, members, presence, indexing,
     // Who is signing: the server's report, and the principal alone (null when unknown or anonymous).
     identity: store.identity ?? null, viewer: viewerOf(store.identity),
     // What the view shows, for the panel (layout B spec §6); redrawn when it changes after the render.
@@ -290,6 +293,7 @@ function renderStores(store) {
   const el = document.getElementById('members')
   const draw = () => drawStores(el, { store, members: members.list, figure: sizes.get, href: (alias) => memberHref(location.href, alias) })
   draw()
+  redrawStores = draw
   // Other members' sizes load after the first render, and only when there are others.
   sizes.onChange(draw)
   storesLoader = () => (members.list.length > 1 ? sizes.loadAll() : null)
@@ -346,6 +350,17 @@ async function start() {
     members = createMembers(store, { openExplorer: open })
     presence = createPresence(members, { pageUrl: location.href, here: { name: storeName(store), key: storeKey(store), base: store.base } })
     renderStores(store)
+    // Index jobs run on the server (POST /api/index); the page starts them and polls while one runs.
+    if (store.members && token) {
+      indexing = createIndexing(members, {
+        client: indexClient({ endpoint: new URL('api/index', location.href).href.split('?')[0], token }),
+        fetchStatus: () => fetch('api/index', { cache: 'no-store' }).then(r => r.json()),
+      })
+      // The primary's snapshot is the page's own open file: a job that rewrites it reloads the page (final review Important 1).
+      indexing.onChange(indexChangeHandler({ primary: store.member, sizes, redrawStores, presence, render, reload: () => location.reload(),
+        storageShowing: () => (location.hash || '').startsWith('#/storage') }))
+      indexing.watch()
+    }
     // The primary is opened here, once; the other members only when something asks members.explorer(alias).
     explorer = await (store.members ? members.explorer(store.member) : open({ alias: null, base: store.base }))
     const modeEl = document.getElementById('snapshot-mode')

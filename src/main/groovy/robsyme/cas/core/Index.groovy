@@ -1189,28 +1189,164 @@ class Index implements Closeable {
      * (DESIGN.md §20 decision 8).
      */
     void catchUp(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir, Set<String> quietFor, BlockStore holders) {
-        // Ticket 04 decision 6: an absent watermark alone triggers seeding.
-        if( snapshots != null && meta(watermarkKey(member)) == null ) {
-            Path file = null
-            try {
-                file = snapshots.fetch(tempDir)
-                if( file == null ) throw new SnapshotUnusable('absent')
-                seedFrom(file, member, storeLog)
-            }
-            catch( SnapshotUnusable e ) {
-                warnUnusable(storeLog, member, e.reason, quietFor)
-            }
-            catch( Exception e ) {
-                // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
-                // leaves the snapshot unreadable, and the full scan below still runs (ticket 04 decision 2).
-                warnUnusable(storeLog, member, 'unreadable', quietFor)
-                log.debug("fetching the Index Snapshot of '${member}' failed", e)
-            }
-            finally {
-                if( file != null ) Files.deleteIfExists(file)
-            }
+        if( snapshots != null ) {
+            // Without a usable snapshot the full scan below still runs (ticket 04 decision 2).
+            final String reason = trySeed(store, storeLog, member, snapshots, tempDir)
+            if( reason != null )
+                warnUnusable(storeLog, member, reason, quietFor)
         }
         catchUp(store, storeLog, member, holders)
+    }
+
+    /**
+     * Seeds {@code member} from its snapshot when this cache has no watermark
+     * for it (ticket 04 decision 6: an absent watermark alone triggers
+     * seeding). Null once seeded, or when the member already has a watermark;
+     * else why the snapshot could not be used: `absent`, `unreadable`,
+     * `schema_version <n>`, or that it is from another incarnation of the
+     * member. Never scans and never warns: the caller decides what an
+     * unusable snapshot means.
+     */
+    String trySeed(BlockStore store, StoreLog storeLog, String member, SnapshotStorage snapshots, Path tempDir) {
+        if( meta(watermarkKey(member)) != null )
+            return null
+        Path file = null
+        try {
+            file = snapshots.fetch(tempDir)
+            if( file == null )
+                return 'absent'
+            seedFrom(file, member, storeLog)
+            return null
+        }
+        catch( SnapshotUnusable e ) {
+            return e.reason
+        }
+        catch( Exception e ) {
+            // An SDK refusal (a 403 on index/*, a 5xx after retries) is unchecked; any of them
+            // leaves the snapshot unreadable.
+            log.debug("fetching the Index Snapshot of '${member}' failed", e)
+            return 'unreadable'
+        }
+        finally {
+            if( file != null ) Files.deleteIfExists(file)
+        }
+    }
+
+    /** Whether this cache holds {@code member}: a watermark for it, or a block scan of it, however it got there. */
+    boolean isIndexed(String member) {
+        return meta(watermarkKey(member)) != null || meta(META_SCANNED + ':' + member) != null
+    }
+
+    /**
+     * Indexes {@code member} from every block, telling {@code progress} how
+     * far it has got (background store indexing, spec §6.3): the listing,
+     * each metadata block read, each record ingested, then the Store Log.
+     * Unlike catch-up's scan, a block that cannot be read stops it, while
+     * listing, reading or ingesting, so a member whose reads start failing
+     * part way (expired credentials) is never left marked as indexed in part
+     * (spec §4). A block that is absent is not a failure: one listed but gone
+     * by its read (a sweep) is skipped, and one a record names is `missing`,
+     * as in catch-up. One that reads but does not decode is skipped. Whatever
+     * {@code progress} throws stops it too. Only at the end does one
+     * transaction set the watermark and `block_scan`; the rows ingested before
+     * a failure stay committed, so a caller scans into a scratch Index and
+     * seeds its own cache from that.
+     */
+    void indexMember(BlockStore store, StoreLog storeLog, String member, BlockStore holders, IndexProgress progress) throws IOException {
+        // The ingest paths keep going past a read that fails, as catch-up needs; this one
+        // remembers the first such failure and indexMember rethrows it after each step.
+        final ReadFailures reads = new ReadFailures(store)
+        final Map<String, List<Cid>> found = blocksOfKinds(reads, SCANNED_KINDS, progress)
+        long total = 0L
+        for( List<Cid> cids : found.values() )
+            total += cids.size()
+        long done = 0L
+        progress.report(IndexProgress.INGESTING, done, total)
+        for( String kind : SCANNED_KINDS ) {
+            for( Cid cid : found.get(kind) ) {
+                ingestLogged(reads, SCANNED_LOG_KINDS.get(kind), cid, member, holders)
+                reads.rethrow()
+                progress.report(IndexProgress.INGESTING, ++done, total)
+            }
+        }
+        progress.report(IndexProgress.LOG, -1L, -1L)
+        retryMissingLogged(reads, member, holders)
+        retryMissingContent(reads)
+        retryMissingInputSets(reads, member)
+        retryMissingItemLineages(reads, member)
+        reads.rethrow()
+        final List<StoreLogEntry> entries = storeLog.entriesSince(null)
+        // entriesSince is newest first; ingest in the order they were written.
+        for( int i = entries.size() - 1; i >= 0; i-- ) {
+            ingestEntry(reads, entries[i], member, holders)
+            reads.rethrow()
+        }
+        final String scanned = total == 0L ? SCANNED_EMPTY : 'done'
+        withTransaction {
+            if( entries )
+                setMeta(watermarkKey(member), entries[0].name)
+            setMeta(META_SCANNED + ':' + member, scanned)
+        }
+    }
+
+    /**
+     * A store that remembers the first read of it that failed for any reason
+     * but absence ({@link NoSuchBlockException}), which the ingest paths
+     * record as `missing` and pass over. Once one has failed, every later
+     * read fails the same way at once, so a member whose credentials expired
+     * is not read to the end before {@link #rethrow} stops the scan.
+     */
+    private static final class ReadFailures implements BlockStore {
+        private final BlockStore store
+        private Exception failure
+
+        ReadFailures(BlockStore store) { this.store = store }
+
+        /** True once a read has failed, after which every read fails the same way. */
+        boolean failed() { failure != null }
+
+        /** Throws the first read failure, if there was one. */
+        void rethrow() throws IOException {
+            if( failure instanceof IOException )
+                throw (IOException) failure
+            if( failure instanceof RuntimeException )
+                throw (RuntimeException) failure
+            if( failure != null )
+                throw new IOException(failure.message, failure)
+        }
+
+        private <T> T read(Closure<T> call) {
+            rethrow()
+            try {
+                return call.call()
+            }
+            catch( NoSuchBlockException e ) {
+                throw e
+            }
+            catch( Exception e ) {
+                failure = e
+                throw e
+            }
+        }
+
+        @Override String alias() { store.alias() }
+        @Override boolean has(Cid cid) { read { store.has(cid) } }
+        @Override long size(Cid cid) { read { store.size(cid) } }
+        @Override long lastModifiedMillis(Cid cid) { read { store.lastModifiedMillis(cid) } }
+        @Override Stream<Cid> listBlocks() { read { store.listBlocks() } }
+        @Override boolean isWritable() { store.isWritable() }
+        @Override void put(Cid cid, InputStream input, long expectedSize) { store.put(cid, input, expectedSize) }
+        @Override Cid putStreaming(InputStream input) { store.putStreaming(input) }
+        @Override Cid putDagCbor(Object value) { store.putDagCbor(value) }
+
+        @Override
+        InputStream open(Cid cid) {
+            final InputStream input = read { store.open(cid) }
+            return new FilterInputStream(input) {
+                @Override int read() throws IOException { ReadFailures.this.read { input.read() } }
+                @Override int read(byte[] b, int off, int len) throws IOException { ReadFailures.this.read { input.read(b, off, len) } }
+            }
+        }
     }
 
     /**
@@ -1301,6 +1437,24 @@ class Index implements Closeable {
     private static final String SEED_ITEMLINEAGE_WAITS = """INSERT OR REPLACE INTO main.meta(key, value)
         SELECT key, value FROM snap.meta WHERE key GLOB '${ITEMLINEAGE_WAIT}*' AND substr(key, ${ITEMLINEAGE_WAIT.length() + 1}) IN seed_run""".toString()
 
+    private static final String OTHER_INCARNATION = 'written for another incarnation of the member'
+    private static final String EARLIER_INCARNATION = 'so it may be from an earlier incarnation'
+
+    /** Why a snapshot whose store_id is not the member's is refused (DESIGN.md §20 decision 5). */
+    static String otherIncarnation(String snapshotId, String memberId) {
+        return "${OTHER_INCARNATION} (store_id ${snapshotId}, the member's is ${memberId})".toString()
+    }
+
+    /** Why a snapshot with no store_id whose watermark the member's Store Log lacks is refused (DESIGN.md §20 decision 9). */
+    static String earlierIncarnation(String watermark) {
+        return "its watermark ${watermark} is not in the member's Store Log, ${EARLIER_INCARNATION}".toString()
+    }
+
+    /** True for a reason from {@link #otherIncarnation} or {@link #earlierIncarnation}. */
+    static boolean isIncarnationReason(String reason) {
+        return reason != null && (reason.startsWith(OTHER_INCARNATION) || reason.endsWith(EARLIER_INCARNATION))
+    }
+
     /**
      * Copies a member's Index Snapshot into this index (ticket 04 decision 1).
      * Trusted when its schema_version matches (decision 10); claim_current is
@@ -1343,10 +1497,10 @@ class Index implements Closeable {
             final String snapId = snapMeta[IndexSnapshot.STORE_ID_KEY]
             final String memberId = storeIdOf(member)
             if( snapId != null && memberId != null && snapId != memberId )
-                throw new SnapshotUnusable("written for another incarnation of the member (store_id ${snapId}, the member's is ${memberId})")
+                throw new SnapshotUnusable(otherIncarnation(snapId, memberId))
             final String snapWatermark = snapMeta[IndexSnapshot.WATERMARK_KEY]
             if( snapId == null && snapWatermark != null && storeLog != null && !storeLog.has(snapWatermark) )
-                throw new SnapshotUnusable("its watermark ${snapWatermark} is not in the member's Store Log, so it may be from an earlier incarnation")
+                throw new SnapshotUnusable(earlierIncarnation(snapWatermark))
             try {
                 withTransaction {
                     for( String sql : SEED_TRANSFERS + SEED_P4_ROOTS )
@@ -1444,25 +1598,17 @@ class Index implements Closeable {
             return
         final Map<String, List<Cid>> found
         try {
-            found = blocksOfKinds(store, SCANNED_KINDS)
+            found = blocksOfKinds(store, SCANNED_KINDS, null)
         }
         catch( IOException | UncheckedIOException e ) {
             // Not marked done, so the next catch-up scans again.
             log.warn("could not scan the blocks of store member '$member' (${e.message}); will retry")
             return
         }
-        for( Cid completion : found.get(Records.RUN_COMPLETION) )
-            ingestLogged(store, StoreLogKind.RUN, completion, member, store)
-        for( Cid selection : found.get(Records.SELECTION) )
-            ingestLogged(store, StoreLogKind.SELECTION, selection, member, store)
-        for( Cid claim : found.get(Records.CLAIM) )
-            ingestLogged(store, StoreLogKind.CLAIM, claim, member, store)
-        for( Cid transfer : found.get(Records.TRANSFER) )
-            ingestLogged(store, StoreLogKind.TRANSFER, transfer, member, store)
-        for( Cid project : found.get(Records.PROJECT) )
-            ingestLogged(store, StoreLogKind.PROJECT, project, member, store)
-        for( Cid handoff : found.get(Records.HANDOFF) )
-            ingestLogged(store, StoreLogKind.HANDOFF, handoff, member, store)
+        for( String kind : SCANNED_KINDS ) {
+            for( Cid cid : found.get(kind) )
+                ingestLogged(store, SCANNED_LOG_KINDS.get(kind), cid, member, store)
+        }
         setMeta(key, found.values().every { List<Cid> cids -> cids.isEmpty() } ? SCANNED_EMPTY : 'done')
     }
 
@@ -2027,6 +2173,19 @@ class Index implements Closeable {
     String storeIdOf(String member) { meta(META_STORE_ID + ':' + member) }
 
     /**
+     * Records {@code id} as the store-id of {@code member} when this cache has
+     * none for it, without {@link #reconcileStoreIds}'s look at the rows it
+     * holds: for a writer that has just given the member its first id and
+     * knows those rows came from that member (an explorer push, background
+     * store indexing spec §6.5). A different recorded id is left for
+     * {@link #reconcileStoreIds} to judge.
+     */
+    void adoptStoreId(String member, String id) {
+        if( id != null && storeIdOf(member) == null )
+            setMeta(META_STORE_ID + ':' + member, id)
+    }
+
+    /**
      * Empties every table but schema_version, meta included: a cold cache (plan
      * decision 1). The one meta row kept is `block_present_generation`, moved
      * on by one, so a build in another process that read it before the reset
@@ -2053,6 +2212,28 @@ class Index implements Closeable {
             }
             update('INSERT INTO meta(key, value) VALUES (?, ?)',
                 [(Object) PRESENT_GENERATION_KEY, String.valueOf(generation + 1)])
+        }
+        deleteLocalSnapshots()
+    }
+
+    /** The local Index Snapshots beside this cache describe what it held, so they go with a reset (spec §6.4). */
+    private void deleteLocalSnapshots() {
+        final Path dir = IndexPaths.localSnapshotsDir(file)
+        if( !Files.exists(dir) )
+            return
+        try {
+            final Stream<Path> paths = Files.walk(dir)
+            try {
+                for( Path each : paths.sorted(Comparator.reverseOrder()).toList() )
+                    Files.delete(each)
+            }
+            finally {
+                paths.close()
+            }
+        }
+        catch( IOException | UncheckedIOException e ) {
+            // Never served once the cache no longer holds the member, so a leftover file does no harm.
+            log.debug("could not delete the local Index Snapshots in ${dir}: ${e.message}")
         }
     }
 
@@ -2154,7 +2335,7 @@ class Index implements Closeable {
         deleteDatabase(temp)
         final Index fresh = Index.open(temp)
         try {
-            final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS)
+            final Map<String, List<Cid>> found = blocksOfKinds(store, SCANNED_KINDS, null)
             for( Cid completion : found.get(Records.RUN_COMPLETION) )
                 fresh.ingestRun(store, completion, member)
             for( Cid selection : found.get(Records.SELECTION) )
@@ -2208,24 +2389,40 @@ class Index implements Closeable {
         }
     }
 
-    /** The blocks of the kinds a store announces, found by decoding every `bafy…` block once. */
-    private static Map<String, List<Cid>> blocksOfKinds(BlockStore store, Collection<String> kinds) {
+    /**
+     * The blocks of the kinds a store announces, found by decoding every
+     * `bafy…` block once. Without {@code progress}, a block that cannot be read
+     * is passed over (catch-up's scan and rebuild); with it, the read failure
+     * propagates and each step is reported.
+     */
+    private static Map<String, List<Cid>> blocksOfKinds(BlockStore store, Collection<String> kinds, IndexProgress progress) {
         final Map<String, List<Cid>> found = new LinkedHashMap<String, List<Cid>>()
         for( String kind : kinds )
             found.put(kind, new ArrayList<Cid>())
+        if( progress != null )
+            progress.report(IndexProgress.LISTING, -1L, -1L)
+        final List<Cid> metadata = new ArrayList<Cid>()
         final Stream<Cid> blocks = store.listBlocks()
         try {
             for( Object element : blocks.toList() ) {
                 final Cid cid = (Cid) element
-                if( !cid.isDagCbor() )
-                    continue
-                final String kind = kindAt(store, cid)
-                if( kind != null && found.containsKey(kind) )
-                    found.get(kind).add(cid)
+                if( cid.isDagCbor() )
+                    metadata.add(cid)
             }
         }
         finally {
             blocks.close()
+        }
+        final long total = metadata.size()
+        long done = 0L
+        if( progress != null )
+            progress.report(IndexProgress.READING, done, total)
+        for( Cid cid : metadata ) {
+            final String kind = progress == null ? kindAt(store, cid) : readKind(store, cid)
+            if( kind != null && found.containsKey(kind) )
+                found.get(kind).add(cid)
+            if( progress != null )
+                progress.report(IndexProgress.READING, ++done, total)
         }
         for( List<Cid> list : found.values() )
             Collections.sort(list)
@@ -2235,16 +2432,31 @@ class Index implements Closeable {
     /** The kind of a metadata block, or null when it cannot be read or has none. */
     private static String kindAt(BlockStore store, Cid cid) {
         try {
+            return readKind(store, cid)
+        }
+        catch( Exception e ) {
+            return null
+        }
+    }
+
+    /**
+     * The kind of a metadata block, or null when it is absent (listed, then
+     * swept before this read), too large to be a record, does not decode, or
+     * has none. A block that is there but cannot be read throws.
+     */
+    private static String readKind(BlockStore store, Cid cid) throws IOException {
+        final byte[] bytes
+        try {
             if( store.size(cid) > MAX_BLOCK_BYTES )
                 return null
-            final InputStream input = store.open(cid)
-            try {
-                final Object value = DagCbor.decode(input.readAllBytes())
-                return value instanceof Map ? Records.kindOf((Map) value) : null
-            }
-            finally {
-                input.close()
-            }
+            bytes = store.open(cid).withCloseable { InputStream input -> input.readAllBytes() }
+        }
+        catch( NoSuchBlockException e ) {
+            return null
+        }
+        try {
+            final Object value = DagCbor.decode(bytes)
+            return value instanceof Map ? Records.kindOf((Map) value) : null
         }
         catch( Exception e ) {
             return null
@@ -2259,6 +2471,11 @@ class Index implements Closeable {
      */
     private static final List<String> SCANNED_KINDS = [Records.RUN_COMPLETION, Records.SELECTION, Records.CLAIM, Records.TRANSFER,
                                                        Records.PROJECT, Records.HANDOFF]
+
+    /** The Store Log kind each scanned record is ingested as. */
+    private static final Map<String, StoreLogKind> SCANNED_LOG_KINDS = [
+        (Records.RUN_COMPLETION): StoreLogKind.RUN, (Records.SELECTION): StoreLogKind.SELECTION, (Records.CLAIM): StoreLogKind.CLAIM,
+        (Records.TRANSFER): StoreLogKind.TRANSFER, (Records.PROJECT): StoreLogKind.PROJECT, (Records.HANDOFF): StoreLogKind.HANDOFF]
 
     // --------------------------------------------------------------- queries
 
@@ -2855,13 +3072,20 @@ class Index implements Closeable {
         catch( IOException | UncheckedIOException e ) {
             if( ioFails )
                 throw e
-            log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
+            if( !failedRead(store) )
+                log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
             return null
         }
         catch( Exception e ) {
-            log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
+            if( !failedRead(store) )
+                log.warn("block $cid could not be decoded as $expectedKind: ${e.message}")
             return null
         }
+    }
+
+    /** True when {@code store} is an indexMember scan whose reads have failed: indexMember throws that failure, so a block it stopped is not a decoding problem. */
+    private static boolean failedRead(BlockStore store) {
+        return store instanceof ReadFailures && ((ReadFailures) store).failed()
     }
 
     /** Every Leaf in an item's value, depth first (DESIGN.md §6). */

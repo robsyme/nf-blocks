@@ -19,6 +19,14 @@ class S3AccessTest extends Specification {
         ((SdkS3Ops) ops).options == new S3WriteOptions('ONEZONE_IA', 'AES256', null, true)
     }
 
+    def 'with no credentials to be found, the client is one that opens again once there are some'() {
+        given:
+        final Map config = [aws: [profile: 'nf-blocks-test-no-such-profile', region: 'eu-west-1']]
+
+        expect:
+        S3Access.open(config, 'member-bucket') instanceof ReopeningS3Ops
+    }
+
     def 'no aws scope: no per-request fields'() {
         expect:
         S3Access.writeOptions([:]) == S3WriteOptions.NONE

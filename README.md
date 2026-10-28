@@ -418,6 +418,17 @@ work: a browser will not fetch from `file://`, and the page says so
 (`file_protocol`). A member served straight from a bucket needs the bucket
 policy and CORS rule in `DESIGN.md` §15.
 
+`explore` serves at once and does not scan a member that has no Index
+Snapshot. Such a member is listed as not indexed, with its runs and
+Selections left out, and `explore` names it once on stderr. Open the Storage
+page and choose Index locally to scan it on this machine (nothing is written
+to the member, and the result is kept across restarts), or Index and push to
+scan it and also write the snapshot into the member for everyone who uses it.
+A member indexed only on this machine gets a Push to store button. One store
+is indexed at a time, with its progress on its card, and the member becomes
+available when the job ends. `nf-blocks:snapshot` writes a member's snapshot
+without the explorer.
+
 `nextflow plugin nf-blocks:reindex` deletes this machine's cache index for the
 configured store and rebuilds it, seeding from each member's Index Snapshot
 (`--seed false` scans every block instead), then rewrites the writable member's

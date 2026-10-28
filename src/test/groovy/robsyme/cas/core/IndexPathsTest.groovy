@@ -66,4 +66,9 @@ class IndexPathsTest extends Specification {
         then:
         thrown(IllegalStateException)
     }
+
+    def 'local snapshots sit in a directory named after the cache file'() {
+        expect:
+        IndexPaths.localSnapshotsDir(Path.of('/c/nf-blocks/ab12.sqlite')) == Path.of('/c/nf-blocks/ab12.sqlite.snapshots')
+    }
 }

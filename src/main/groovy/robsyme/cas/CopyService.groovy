@@ -1,5 +1,6 @@
 package robsyme.cas
 
+import java.nio.file.Path
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
@@ -23,6 +24,7 @@ import robsyme.cas.core.IndexSnapshot
 import robsyme.cas.core.LineageRecords
 import robsyme.cas.core.LocalBlockStore
 import robsyme.cas.core.LocalLineageRecords
+import robsyme.cas.core.LocalSnapshotStorage
 import robsyme.cas.core.NoSuchBlockException
 import robsyme.cas.core.Records
 import robsyme.cas.core.RunManifestAudit
@@ -73,6 +75,8 @@ class CopyService {
     static final String BAD_REQUEST_CODE = 'bad_request'
     /** A member's `cas.stores.<alias>.readOnly` is not true or false. */
     static final String BAD_CONFIG = 'bad_config'
+    /** The root resolves only through the cache, and the source is a member the explorer's cache does not hold. */
+    static final String SOURCE_NOT_INDEXED = 'not_indexed'
     /** The 400s that say the request was malformed, rather than naming something that cannot be copied: exit 2 at the CLI. */
     static final Set<String> USAGE_ERRORS = Collections.unmodifiableSet(
         [BAD_ROOT, UNKNOWN_MEMBER, SAME_MEMBER, BAD_DEPTH, BAD_CLAIMS, BAD_REQUEST_CODE] as Set<String>)
@@ -106,6 +110,24 @@ class CopyService {
         Outcome(int status, Map<String, Object> body) {
             this.status = status
             this.body = body
+        }
+    }
+
+    /**
+     * What the explorer knows about which members are indexed (background
+     * store indexing, spec §6.3), for a copy it runs: {@code unindexed} is
+     * alias to reason for the members it lists as not indexed, and
+     * {@code localRoots} maps an alias to the directory holding
+     * {@code index/v7.sqlite} built on this machine. The CLI passes none.
+     */
+    @CompileStatic
+    static final class Indexing {
+        final Map<String, String> unindexed
+        final Map<String, Path> localRoots
+
+        Indexing(Map<String, String> unindexed, Map<String, Path> localRoots) {
+            this.unindexed = unindexed
+            this.localRoots = localRoots
         }
     }
 
@@ -166,12 +188,26 @@ class CopyService {
      * null supplier, or a null answer, resolves from the config instead.
      */
     static Outcome execute(Map config, Map request, boolean dryRun, PrintStream err, Supplier<Principal> signer) {
-        return new CopyService({ -> System.currentTimeMillis() } as Closure<Long>, signer).run(config, request, dryRun, err)
+        return execute(config, request, dryRun, err, signer, null)
+    }
+
+    /**
+     * As the 5-argument execute, under the explorer's view of which members
+     * are indexed: the copy leaves {@code indexing.unindexed} out of its
+     * catch-up, seeds a member from its local snapshot, and writes no
+     * snapshot to a destination the explorer has not indexed. Null changes nothing.
+     */
+    static Outcome execute(Map config, Map request, boolean dryRun, PrintStream err, Supplier<Principal> signer, Indexing indexing) {
+        return new CopyService({ -> System.currentTimeMillis() } as Closure<Long>, signer).run(config, request, dryRun, err, indexing)
     }
 
     Outcome run(Map config, Map request, boolean dryRun, PrintStream err) {
+        return run(config, request, dryRun, err, null)
+    }
+
+    Outcome run(Map config, Map request, boolean dryRun, PrintStream err, Indexing indexing) {
         try {
-            return plan(config, ask(request), dryRun, err)
+            return plan(config, ask(request), dryRun, err, indexing)
         }
         catch( Refused r ) {
             final Map<String, Object> body = new LinkedHashMap<String, Object>()
@@ -283,7 +319,7 @@ class CopyService {
         return copy
     }
 
-    private Outcome plan(Map config, Ask ask, boolean dryRun, PrintStream err) {
+    private Outcome plan(Map config, Ask ask, boolean dryRun, PrintStream err, Indexing indexing) {
         final List<String> aliases = configured(config)
         if( !aliases.contains(ask.to) )
             throw new Refused(UNKNOWN_MEMBER, "'${ask.to}' is not a configured store; configured: ${aliases.join(', ') ?: 'none'}")
@@ -303,10 +339,22 @@ class CopyService {
             throw new Refused(NOT_A_TARGET, "'${ask.to}' is not a copy target: ${judgement.reason}")
 
         final CasSession cas = CasSession.forCommand(cfg, err)
+        if( indexing != null ) {
+            cas.leaveUnindexedOut(indexing.unindexed)
+            for( Map.Entry<String, Path> local : indexing.localRoots.entrySet() )
+                cas.seedFrom(local.key, new LocalSnapshotStorage(local.value))
+        }
         final Map<String, String> roots = CopyErrors.rootsOf(config)
         final BlockStore dest = cas.members()[0]
         // Taken before any catch-up, so the snapshot guard covers it (CasSession.snapshotBase). A read.
         final SnapshotBase base = dryRun ? null : cas.snapshotBase()
+        // A destination the explorer has not indexed gets no snapshot from this copy (spec §6.3): one indexed only
+        // on this machine (SNAPSHOT_LOCAL; writing one would be a push), or one it lists as not indexed or with no
+        // snapshot of its own, whose snapshot would need a scan of it (SNAPSHOT_NOT_INDEXED). Null otherwise.
+        final String noSnapshot = indexing == null ? null
+            : indexing.localRoots.containsKey(ask.to) ? SNAPSHOT_LOCAL
+            : indexing.unindexed.containsKey(ask.to) || (!dryRun && base == null) ? SNAPSHOT_NOT_INDEXED
+            : null
         final Index index = cas.openIndex()
         try {
             // The plan asks the destination `has`, and reads its Store Log and the Claims that log
@@ -315,7 +363,7 @@ class CopyService {
             final Set<String> failed = cas.catchUpIndex(index, true, Collections.singleton(ask.to))
             if( failed )
                 err.println("nf-blocks:copy: could not catch up the index from ${failed.join(', ')}; the plan may miss what they announced")
-            final CopyClosure.Root root = root(ask.root, cas, index)
+            final CopyClosure.Root root = rootFrom(ask, cas, index)
             final BlockStore source = source(cas, ask.from, root.cid)
             final CopyClosure.Result all = CopyClosure.compute(source, index, source.alias(), root, CopyClosure.ALL,
                 new LinkedHashSet<String>(ask.claims), lineageOf(source))
@@ -344,7 +392,7 @@ class CopyService {
                 // Nothing to transfer and no entry to add: the copy writes nothing, so it needs no Live Writer
                 // (a PUT and a DELETE on S3), no clock check and no second `has`. announce answers null.
                 if( !anythingToWrite(dest, view, present, missing) )
-                    return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots)
+                    return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, noSnapshot)
                 // A clock far from S3's would misdate the log entries this writes (ticket 03 decision 2).
                 cas.checkClock()
                 // DESIGN.md §19 rule 1: no sweep beside a Live Writer. Registering waits out a sweep
@@ -358,9 +406,9 @@ class CopyService {
                     ])
                     final Set<Cid> still = presentAt(dest, present, pool)
                     if( still.size() == present.size() )
-                        return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots)
+                        return copy(cas, index, base, source, ask, root, view, present, missing, body, pool, err, roots, noSnapshot)
                     final Map<String, Object> again = CopyService.body(ask, root, source.alias(), view, still, missing, audit, destination, dryRun)
-                    return copy(cas, index, base, source, ask, root, view, still, missing, again, pool, err, roots)
+                    return copy(cas, index, base, source, ask, root, view, still, missing, again, pool, err, roots, noSnapshot)
                 }
                 finally {
                     cas.stopLiveWriter()
@@ -372,6 +420,26 @@ class CopyService {
         }
         finally {
             index.close()
+        }
+    }
+
+    /**
+     * {@link #root}, saying why when the root was not found because the
+     * source is a member the explorer's catch-up left out: a run named by
+     * lid:// or by its RunManifest resolves only through the cache. The CLI
+     * leaves no member out, so its message is unchanged.
+     */
+    private static CopyClosure.Root rootFrom(Ask ask, CasSession cas, Index index) {
+        try {
+            return root(ask.root, cas, index)
+        }
+        catch( Refused r ) {
+            final String reason = ask.from != null && r.code == ROOT_NOT_FOUND ? cas.unindexed().get(ask.from) : null
+            if( reason == null )
+                throw r
+            final String what = reason == 'absent' ? "'${ask.from}' has no Index Snapshot" : "'${ask.from}' is not indexed (${reason})"
+            throw new Refused(SOURCE_NOT_INDEXED, "${what}, so this copy cannot find ${ask.root} in it; " +
+                "index it from the explorer's Storage page, or run nf-blocks:snapshot against it")
         }
     }
 
@@ -838,7 +906,7 @@ class CopyService {
 
     private Outcome copy(CasSession cas, Index index, SnapshotBase base, BlockStore source, Ask ask, CopyClosure.Root root,
                          CopyClosure.Result view, Set<Cid> present, Set<Cid> missing, Map<String, Object> body,
-                         ExecutorService pool, PrintStream err, Map<String, String> roots) {
+                         ExecutorService pool, PrintStream err, Map<String, String> roots, String noSnapshot) {
         final BlockStore dest = cas.members()[0]
         final List<CopyClosure.Entry> entries = view.entries
         final List<List<CopyClosure.Entry>> steps = new ArrayList<List<CopyClosure.Entry>>()
@@ -902,7 +970,16 @@ class CopyService {
         final Cid transfer = announce(dest, root, view, present, missing, ask, source.alias(), assertedBy, copied.get(), bytes.get())
         body.put('transfer_entry', transfer?.toString())
         body.put('failures', new ArrayList<Map<String, Object>>())
-        if( transfer == null ) {
+        if( noSnapshot == SNAPSHOT_LOCAL ) {
+            err.println("nf-blocks:copy: '${ask.to}' is indexed on this machine only, so this copy did not write its snapshot; " +
+                "its local index is refreshed. Push it from the Storage page to write one")
+            body.put('snapshot', SNAPSHOT_LOCAL)
+        }
+        else if( noSnapshot == SNAPSHOT_NOT_INDEXED ) {
+            err.println("nf-blocks:copy: '${ask.to}' has no Index Snapshot, so this copy did not write one; index it from the explorer's Storage page")
+            body.put('snapshot', SNAPSHOT_NOT_INDEXED)
+        }
+        else if( transfer == null ) {
             // Nothing was written, so the destination's snapshot already says all there is.
             err.println("nf-blocks:copy: '${ask.to}' already holds every block and entry of this copy; no Transfer was written and its Index Snapshot stands")
             body.put('snapshot', SNAPSHOT_SKIPPED)
@@ -994,6 +1071,10 @@ class CopyService {
 
     static final String SNAPSHOT_WRITTEN = 'written'
     static final String SNAPSHOT_SKIPPED = 'skipped'
+    /** The destination is a member the explorer has not indexed, so the copy writes it no snapshot. */
+    static final String SNAPSHOT_NOT_INDEXED = 'not_indexed'
+    /** The destination is indexed only on this machine: no snapshot is written, and the explorer refreshes its local one. */
+    static final String SNAPSHOT_LOCAL = 'local'
 
     /**
      * "written", "skipped" (the reason goes to err) or "failed: <message>"

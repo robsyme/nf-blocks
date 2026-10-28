@@ -2,6 +2,7 @@
 // GET, then read pages through the VFS in a Worker, or, when the server
 // ignores Range, download the whole file if it is under the cap.
 import { CHUNK_BYTES, DEFAULT_CAP_BYTES } from './config.js'
+import { failureText } from './said.js'
 
 export class SnapshotError extends Error {
   constructor(code, message) { super(message); this.code = code }
@@ -27,7 +28,7 @@ export async function probeSnapshot(url, { cap = DEFAULT_CAP_BYTES, fetchFn = fe
   if (res.status === 200) return { mode: 'whole', ...(await readCapped(url, res, cap, abort)) }
   if (res.status === 403 || res.status === 404)
     throw new SnapshotError('no_snapshot', `no Index Snapshot at ${url} (HTTP ${res.status})`)
-  throw new SnapshotError('fetch_failed', `${url} answered HTTP ${res.status}`)
+  throw new SnapshotError('fetch_failed', (await failureText(res)) || `${url} answered HTTP ${res.status}`)
 }
 
 async function readCapped(url, res, cap, abort) {

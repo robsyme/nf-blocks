@@ -30,6 +30,15 @@ class IndexPaths {
         return cacheRoot(env).resolve(DIRECTORY).resolve(nameFor(memberLocations))
     }
 
+    /**
+     * Where the explorer keeps the Index Snapshots it builds for members that
+     * have none of their own: beside the cache file, one `<alias>/index/v7.sqlite`
+     * per member (background store indexing, spec §6.4).
+     */
+    static Path localSnapshotsDir(Path cacheFile) {
+        return cacheFile.resolveSibling(cacheFile.fileName.toString() + '.snapshots')
+    }
+
     /** The file name: the first 16 hex of the sha256 of the locations joined by newline. */
     static String nameFor(List<String> memberLocations) {
         final byte[] digest = Hashing.sha256((memberLocations ?: []).join('\n').getBytes('UTF-8'))

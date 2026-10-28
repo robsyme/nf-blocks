@@ -4,6 +4,7 @@ import groovy.transform.CompileStatic
 import nextflow.cloud.aws.AwsClientFactory
 import nextflow.cloud.aws.config.AwsConfig
 import nextflow.cloud.aws.nio.util.S3SyncClientConfiguration
+import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider
 import software.amazon.awssdk.services.s3.S3Client
 
 /**
@@ -20,8 +21,27 @@ class S3Access {
 
     private S3Access() {}
 
+    /**
+     * When no credentials could be found, nf-amazon's client signs nothing
+     * for as long as it lives; the ReopeningS3Ops around it opens the client
+     * again once a call is refused for credentials (a sign-in since).
+     */
     static S3Ops open(Map config, String bucket) {
         final AwsConfig aws = awsConfig(config)
+        final S3Client client = newClient(aws)
+        final S3Ops ops = new SdkS3Ops(client, bucket, writeOptionsOf(aws))
+        if( aws.s3Config.anonymous || !unsigned(client) )
+            return ops
+        return new ReopeningS3Ops(ops, { ->
+            final S3Client again = newClient(aws)
+            if( !unsigned(again) )
+                return new SdkS3Ops(again, bucket, writeOptionsOf(aws))
+            again.close()
+            return null
+        } as Closure<S3Ops>)
+    }
+
+    private static S3Client newClient(AwsConfig aws) {
         final Properties props = new Properties()
         for( Map.Entry e : (aws.getS3LegacyProperties() as Map).entrySet() )
             if( e.value != null )
@@ -29,8 +49,12 @@ class S3Access {
         // As S3FileSystemProvider.java:763-766: `global` would override a custom endpoint.
         final boolean global = !aws.s3Config.isCustomEndpoint()
         final AwsClientFactory factory = new AwsClientFactory(aws, aws.resolveS3Region())
-        final S3Client client = factory.getS3Client(S3SyncClientConfiguration.create(props), global)
-        return new SdkS3Ops(client, bucket, writeOptionsOf(aws))
+        return factory.getS3Client(S3SyncClientConfiguration.create(props), global)
+    }
+
+    /** True when nf-amazon found no credentials and fell back to anonymous access. */
+    private static boolean unsigned(S3Client client) {
+        return client.serviceClientConfiguration().credentialsProvider() instanceof AnonymousCredentialsProvider
     }
 
     static S3WriteOptions writeOptions(Map config) {

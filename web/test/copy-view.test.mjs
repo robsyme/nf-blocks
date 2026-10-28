@@ -80,6 +80,7 @@ function ctxFor({ client = fakeClient(), list = LIST, write = { available: true,
     members: { primary: 'roblab', list, invalidate: (a) => forgot.push(['members', a]) },
     presence: { several: false, invalidate: () => forgot.push(['presence']), dots: () => null },
     sizes: { forget: (a) => forgot.push(['sizes', a]) },
+    indexing: { track: (a, index) => forgot.push(['track', a, index.state]) },
     copy: copy ?? { ...copyAvailability(store, { token: 't' }), client },
     // The explore server's writable member is the open one (roblab) unless a test says otherwise.
     write: { hrefFor: (x) => x, writable: 'roblab', ...write },
@@ -1120,4 +1121,34 @@ test('with no project in the address, the first store that can take a copy is st
   await ready(el)
   assert.equal(el.querySelector('[data-copy-dest]').dataset.copyDest, 'org-s3')
   assert.equal(client.asked[0][1].to, 'org-s3')
+})
+
+test('a copy into a member that is not indexed says so in its result', async () => {
+  const client = fakeClient({ copy: (r) => ({ ...answer(r), dry_run: false, copied: 114, copied_bytes: 1279431, transfer_entry: 'bafyreitransfer', failures: [], snapshot: 'not_indexed' }) })
+  const { el } = await page({ client })
+  await ready(el)
+  await el.querySelector('[data-copy-go]').click()
+  const result = el.querySelector('[data-copy-result]')
+  assert.match(result.textContent, /not written: org-s3 is not indexed yet; index it from the Storage page/)
+})
+
+test('a copy into a member indexed on this machine says its local index was refreshed (acceptance F5)', async () => {
+  const client = fakeClient({ copy: (r) => ({ ...answer(r), dry_run: false, copied: 114, copied_bytes: 1279431, transfer_entry: 'bafyreitransfer', failures: [], snapshot: 'local' }) })
+  const { el } = await page({ client })
+  await ready(el)
+  await el.querySelector('[data-copy-go]').click()
+  const result = el.querySelector('[data-copy-result]')
+  assert.match(result.textContent, /not written: org-s3 is indexed on this machine; its local index was refreshed\. Push to store writes one/)
+  assert.doesNotMatch(result.textContent, /not indexed yet/)
+})
+
+test('a copy whose answer carries the destination index hands it to the watch after forgetting the destination', async () => {
+  const index = { state: 'indexing', at: '2026-10-27T10:05:00.000Z', progress: { phase: 'log', done: -1, total: -1, startedAt: '2026-10-27T10:06:00.000Z' },
+    reason: null, mode: 'local', local: true }
+  const client = fakeClient({ copy: (r) => ({ ...answer(r), dry_run: false, copied: 114, copied_bytes: 1279431, transfer_entry: 'bafyreitransfer', failures: [], snapshot: 'not_indexed', index }) })
+  const { el, ctx } = await page({ client })
+  await ready(el)
+  await el.querySelector('[data-copy-go]').click()
+  await until(() => el.querySelector('[data-copy-result]'), 'the result')
+  assert.deepEqual(ctx.forgot, [['presence'], ['members', 'org-s3'], ['sizes', 'org-s3'], ['track', 'org-s3', 'indexing']])
 })

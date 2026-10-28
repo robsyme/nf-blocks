@@ -118,7 +118,10 @@ const projectBlockRow = (cid, v) => ({ cid, blockName: v?.name ?? null, descript
 export class Explorer {
   constructor({ base, db, blocks, now, sizeConcurrency = SIZE_CONCURRENCY, pipelineSizeRuns = PIPELINE_SIZE_RUNS }) {
     this.base = base
-    this.db = db
+    // The open snapshot file; `db` is how every answer reads it (#query).
+    this.snapshot = db
+    this.db = { query: (sql, params) => this.#query(sql, params) }
+    this.reopening = null
     this.memo = new Map()
     this.blocks = blocks
     this.now = now
@@ -163,30 +166,79 @@ export class Explorer {
   }
 
   static async open({ base, openDb, hasFile = async () => false, blocks, listFn, now = () => Date.now(), ...options }) {
-    const db = await openCurrent(base, openDb, hasFile)
-    const explorer = new Explorer({ base, db, blocks, now, ...options })
-    explorer.watermark = (await db.query(SQL.watermark))[0]?.value ?? null
-    // When the snapshot was written (IndexSnapshot.WRITTEN_AT_KEY), for the left column's "Snapshot 2 min ago".
-    explorer.snapshotWrittenAt = (await db.query("SELECT value FROM meta WHERE key = 'snapshot_written_at'"))[0]?.value ?? null
-    const lean = new Map((await db.query(SQL.storageOmitted)).map(r => [r.key, r.value]))
-    explorer.storageOmitted = lean.get('storage_omitted') || null
-    const cap = Number(lean.get('snapshot_max_bytes') ?? NaN)
-    explorer.snapshotCapBytes = Number.isFinite(cap) && cap > 0 ? cap : null
-    await explorer.refreshTail(listFn)
+    const explorer = new Explorer({ base, db: null, blocks, now, ...options })
+    explorer.openSnapshot = () => openCurrent(base, openDb, hasFile)
+    explorer.listFn = listFn
+    await explorer.load(await explorer.openSnapshot())
     return explorer
+  }
+
+  /** Reads `db`'s meta and the tail past its watermark, then answers from `db`. */
+  async load(db) {
+    this.watermark = (await db.query(SQL.watermark))[0]?.value ?? null
+    // When the snapshot was written (IndexSnapshot.WRITTEN_AT_KEY), for the left column's "Snapshot 2 min ago".
+    this.snapshotWrittenAt = (await db.query("SELECT value FROM meta WHERE key = 'snapshot_written_at'"))[0]?.value ?? null
+    const lean = new Map((await db.query(SQL.storageOmitted)).map(r => [r.key, r.value]))
+    this.storageOmitted = lean.get('storage_omitted') || null
+    const cap = Number(lean.get('snapshot_max_bytes') ?? NaN)
+    this.snapshotCapBytes = Number.isFinite(cap) && cap > 0 ? cap : null
+    await this.refreshTail(this.listFn, db)
+    this.snapshot = db
+  }
+
+  /**
+   * One snapshot read. A read that meets a rewritten snapshot (explore's push,
+   * refresh or copy into this member) re-opens the member and asks once more;
+   * a second rewrite during that retry is the caller's snapshot_changed.
+   */
+  async #query(sql, params) {
+    const db = this.snapshot
+    try {
+      return await db.query(sql, params)
+    } catch (e) {
+      if (e?.code !== 'snapshot_changed' || !this.openSnapshot) throw e
+      await this.reopen(db)
+      return this.snapshot.query(sql, params)
+    }
+  }
+
+  /**
+   * The member's snapshot opened afresh in place of `failed`; every read that
+   * met the same rewrite waits on one re-open. One that fails is forgotten,
+   * so a later read tries again.
+   */
+  reopen(failed) {
+    if (this.snapshot !== failed) return Promise.resolve()
+    if (this.reopening?.failed !== failed) {
+      const promise = (async () => {
+        const db = await this.openSnapshot()
+        try {
+          await this.load(db)
+        } catch (e) {
+          db.close().catch(() => {})
+          throw e
+        }
+        this.memo.clear()
+        this.sizeCache.clear()
+        failed.close().catch(() => {})
+      })()
+      promise.catch(() => { if (this.reopening?.promise === promise) this.reopening = null })
+      this.reopening = { failed, promise }
+    }
+    return this.reopening.promise
   }
 
   get staleCount() { return this.stale.length }
 
   get notice() { return this.stale.length > STALE_RUNS_NOTICE || this.fetchesForQuery > CLOSURE_FETCH_NOTICE }
 
-  async refreshTail(listFn) {
+  async refreshTail(listFn, db = this.db) {
     const { names, readable } = await listFn(this.base, { watermark: this.watermark, nowMillis: this.now() })
     this.logReadable = readable
     const since = entriesSince(names, this.watermark, this.now())
     const unique = (kind) => [...new Map(since.filter(e => e.kind === kind).map(e => [e.cid, e])).values()]
     const known = async (sql, entries, column) => (entries.length === 0 ? new Set()
-      : new Set((await this.db.query(sql, [JSON.stringify(entries.map(e => e.cid))])).map(r => r[column])))
+      : new Set((await db.query(sql, [JSON.stringify(entries.map(e => e.cid))])).map(r => r[column])))
     const runs = unique('run')
     const selections = unique('selection')
     const claims = unique('claim')

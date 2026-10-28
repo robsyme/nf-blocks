@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { installDom } from './dom.mjs'
-import { createNav } from '../src/nav.js'
+import { createNav, drawStores } from '../src/nav.js'
 
 const PROJECTS = ['Liver', 'Kidney', 'Lung', 'Heart', 'Brain', 'Skin'].map((name, i) => ({ cid: `bafyproj${i}`, name }))
 
@@ -153,4 +153,13 @@ test('reloadAfterWrite reads the projects again, so a new project shows after it
   ex.projects = async () => ({ rows: [{ cid: 'bafynew', name: 'Fresh' }, ...PROJECTS], hiddenCount: 0 })
   await nav.reloadAfterWrite()
   assert.equal(el.querySelector('[data-nav-project]').textContent, 'Fresh')
+})
+
+test('the Stores section says indexing… for a member being indexed', () => {
+  installDom()
+  const el = document.createElement('div')
+  const members = [{ alias: 'lab', key: 'a', writable: true, index: null }, { alias: 'cloud', key: 'b', writable: false, index: { state: 'indexing' } }]
+  drawStores(el, { store: { member: 'lab', all: false }, members, figure: () => ({ state: 'no_snapshot', stored: null }), href: a => a })
+  assert.equal(el.querySelector('[data-store-entry="cloud"]').textContent, 'cloudindexing…')
+  assert.equal(el.querySelector('[data-store-entry="lab"]').textContent, 'labno snapshot')
 })
