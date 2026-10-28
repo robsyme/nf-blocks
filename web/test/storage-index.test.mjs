@@ -3,7 +3,7 @@
 // state and offers Index locally, Index and push, Push to store and Retry.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { frame, installDom } from './dom.mjs'
+import { frame, installDom, strayTexts } from './dom.mjs'
 import { Tray } from '../src/tray.js'
 import { createMembers } from '../src/members.js'
 import { IndexError } from '../src/indexing.js'
@@ -102,6 +102,17 @@ test('a member with its own snapshot shows figures and no buttons', async () => 
   assert.match(text(card), /1\.82 TB stored/)
   assert.doesNotMatch(text(card), /Not indexed|Indexed on this machine/)
   assert.deepEqual(modes(card), [])
+})
+
+test('no card shows "null" where a figure has no stale or partial note (acceptance F2)', async () => {
+  const { node } = await page({ cloud: { index: index('snapshot', { at: minutesAgo(5) }) }, open: true,
+    others: { 'org-s3': { index: local(minutesAgo(1)) } } })
+  const cards = node.querySelectorAll('[data-storage-card]')
+  assert.equal(cards.length, 3)
+  for (const card of cards) {
+    assert.deepEqual(strayTexts(card), [], `${card.dataset.storageCard}'s card`)
+    assert.doesNotMatch(text(card), /null/)
+  }
 })
 
 test('push is disabled with the reason on a member a copy cannot write', async () => {

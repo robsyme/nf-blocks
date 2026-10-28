@@ -69,7 +69,7 @@ function storeHead(store, writable, lockReason, where = null) {
     h('b', {}, h('span', { class: `dot ${store.key ?? 'a'}` }), ' ', store.name), right)
 }
 
-/** The figures under a store's head: stored, referenced and dedup, the stacked bar and the Yours bar. */
+/** The figures under a store's head: stored, referenced and dedup, the stacked bar and the Yours bar, and only the notes that apply. */
 function figures(stats, yours, stale) {
   const dedup = stats.dedup == null ? null : ratioText(stats.dedup)
   return [
@@ -79,7 +79,7 @@ function figures(stats, yours, stale) {
         ['stored', `${bytes(stats.referenced)} referenced`, dedup].filter(Boolean).join(' · '))),
     storageBar({ total: stats.stored, pinned: stats.pinned, held: stats.held, releasing: stats.releasing, yours }),
     stale ? h('p', { class: 'muted storage-bar-asof', 'data-storage-bar-asof': '' }, 'Pinned, Held and Releasing are as of the snapshot.') : null,
-    stats.partial ? note('Some sizes are missing, so these figures are at least what is shown.', 'warn') : null]
+    stats.partial ? note('Some sizes are missing, so these figures are at least what is shown.', 'warn') : null].filter(Boolean)
 }
 
 function summary(stats, yours, store, writable, write, stale) {
