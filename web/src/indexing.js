@@ -155,8 +155,8 @@ export function createIndexing(members, { client, fetchStatus, interval = 1000, 
     running,
     async start(alias, mode) {
       const index = await client.start(alias, mode)
-      const member = find(alias)
-      if (member) member.index = index
+      // The listeners hear of it now, so the other cards disable before the first poll.
+      apply(alias, index)
       failures = 0
       watch()
       return index

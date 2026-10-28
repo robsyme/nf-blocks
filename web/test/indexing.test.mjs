@@ -150,6 +150,17 @@ test('start stores the answer and begins the watch', async () => {
   assert.equal(timer.pending(), true)
 })
 
+test('start tells the listeners at once, so other cards disable before the first poll (acceptance F3)', async () => {
+  const before = settled('none')
+  const cloud = { alias: 'cloud', index: before }
+  const members = { list: [cloud, { alias: 'org', index: settled('none') }], invalidate() { throw new Error('a start is not a job end') } }
+  const heard = []
+  const indexing = createIndexing(members, { client: { start: async () => at('listing', -1, -1) }, fetchStatus: async () => ({ members: {} }), ...manualTimer() })
+  indexing.onChange((alias, index, was) => heard.push([alias, index.state, was, indexing.running()]))
+  await indexing.start('cloud', 'local')
+  assert.deepEqual(heard, [['cloud', 'indexing', before, 'cloud']])
+})
+
 test('three failed polls in a row stop the watch', async () => {
   const members = { list: [{ alias: 'cloud', index: at('reading', 1, 9) }], invalidate() {} }
   let polls = 0
