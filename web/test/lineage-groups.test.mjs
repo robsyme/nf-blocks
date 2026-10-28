@@ -72,6 +72,7 @@ test('no collection goes in a query group by its Selection, an unreadable run la
     ['collection:coll-gone', [['coll-gone:sel-community', [1]]]], ['query:-', [['-:-', [3]]]]])
   assert.deepEqual(out.groups.map(g => g.kind), ['run', 'query', 'collection', 'query'])
   assert.equal(out.groups[1].selection, 'sel-friends')
+  assert.equal(out.groups[2].collection, 'coll-gone')
   assert.deepEqual(out.groups[1].names, ['Community'])
   assert.deepEqual([out.runs, out.inputs], [1, 4])
 })

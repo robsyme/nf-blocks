@@ -22,13 +22,13 @@ function groupOf(read) {
 const newGroup = (kind, key, read) => ({
   kind, key,
   completion: kind === 'run' ? read.label.completion : null,
-  collection: null, selection: null, names: null,
+  collection: kind === 'collection' ? read.collection : null, selection: null, names: null,
   label: kind === 'run' ? read.label : null,
-  holder: read.holder, reader: read.reader, lines: [],
+  holder: read.holder, reader: read.reader, lines: [], lineByKey: new Map(),
   ...(kind === 'query' ? { selection: read.selection, names: read.names } : {}),
 })
 
-const newLine = (key, read) => ({ key, collection: read.collection, selection: read.selection, names: read.names, label: read.label, holder: read.holder, reader: read.reader, items: 0, rows: [] })
+const newLine = (key, read) => ({ key, collection: read.collection, selection: read.selection, names: read.names, label: read.label, holder: read.holder, reader: read.reader, items: 0, rows: [], seen: new Set() })
 
 /** Inputs and their Origin reads as run groups, lines and rows (lineage provenance tree spec §5.3, §5.6). */
 export function groupLineage(inputs, reads, leaves = []) {
@@ -43,25 +43,38 @@ export function groupLineage(inputs, reads, leaves = []) {
       if (!groups.has(key)) groups.set(key, newGroup(kind, key, read))
       const group = groups.get(key)
       const lineKey = `${read.collection ?? '-'}:${read.selection ?? '-'}`
-      let line = group.lines.find(l => l.key === lineKey)
-      if (!line) group.lines.push(line = newLine(lineKey, read))
-      if (line.rows.some(r => r.position === input.position && r.read.itemCid === read.itemCid)) continue
+      let line = group.lineByKey.get(lineKey)
+      if (!line) {
+        group.lines.push(line = newLine(lineKey, read))
+        group.lineByKey.set(lineKey, line)
+      }
+      const rowKey = `${input.position} ${read.itemCid}`
+      if (line.seen.has(rowKey)) continue
+      line.seen.add(rowKey)
       line.rows.push({ position: input.position, input, leaf: null, read, also: [] })
     }
   }
   const ordered = [...groups.values()]
   const result = [...ordered.filter(g => g.kind === 'run'), ...ordered.filter(g => g.kind !== 'run')]
   const runGroups = result.filter(g => g.kind === 'run')
+  const holding = new Map()
+  for (const g of runGroups) {
+    for (const line of g.lines) for (const row of line.rows) {
+      if (!holding.has(row.position)) holding.set(row.position, new Set())
+      holding.get(row.position).add(g)
+    }
+  }
   for (const g of result) {
     for (const line of g.lines) {
       line.rows.sort((a, b) => a.position - b.position || byText(a.read.itemCid, b.read.itemCid))
       line.items = new Set(line.rows.map(r => r.read.itemCid)).size
       for (const row of line.rows) {
-        row.also = runGroups
-          .filter(o => o.completion !== g.completion && o.lines.some(l => l.rows.some(r => r.position === row.position)))
+        row.also = runGroups.filter(o => o !== g && holding.get(row.position)?.has(o))
           .map(o => ({ completion: o.completion, label: o.label, holder: o.holder }))
       }
+      delete line.seen
     }
+    delete g.lineByKey
   }
   const path = pathGroup(loose, leaves)
   if (path) result.push(path)
