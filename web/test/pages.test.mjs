@@ -48,7 +48,7 @@ test('the item page: a de-duplicated title, sizes, downloads, produced-by, and t
   assert.equal(page.querySelector('[data-pick]').getAttribute('aria-label'), 'Pick this item')
   assert.deepEqual(c.used.at(-1), { completion: 'bafyrun', output: 'markdup', where: [], count: null })
   assert.ok(page.querySelector('[data-retention]'))
-  const facts = page.querySelectorAll('.fact').map(f => f.textContent)
+  const facts = page.querySelectorAll('section.panel').find(p => p.querySelector('h2')?.textContent === 'Produced by').querySelectorAll('.fact').map(f => f.textContent)
   assert.match(facts[0], /high_jang$/, 'the run it came from, a chip like the others, no status word as it succeeded')
   assert.match(facts[1], /happy_rubens failed/, 'the other run, by name')
 })

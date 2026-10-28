@@ -6068,34 +6068,50 @@ followed (§21 `input_set` ruling).
 ### Explorer: Lineage and Used by (2026-10-26)
 
 Spec `docs/superpowers/specs/2026-10-26-cross-run-item-lineage-design.md`
-sections 5.5 and 5.6; the code is `web/src/views/item.js`. The ItemLineage
-and InputSet blocks are read by the page only for tail runs (a run the
-snapshot has not caught up with); otherwise the panels read the snapshot's
-`item_input` and `input_origin`.
+sections 5.5 and 5.6; the code is `web/src/views/item.js`. The Lineage
+panel's layout is
+`docs/superpowers/specs/2026-10-28-lineage-provenance-tree-design.md`.
+The ItemLineage and InputSet blocks are read by the page only for tail runs
+(a run the snapshot has not caught up with); otherwise the panels read the
+snapshot's `item_input` and `input_origin`.
 
-- The Lineage panel keeps its thread, inputs on top and the item
-  highlighted, and gains upstream nodes. An input with Origins shows each
-  upstream item above its file: the item linked to
-  `#/item/<collection>/<item>`, the run chip and the Selection's name from
-  its Claims (short CID when unnamed). Several Origins on one file show as
-  several upstream nodes. An input with no Origin shows the file only,
-  dashed when no member holds its bytes. The page never names an upstream
-  item it did not read from a record.
+- The Lineage panel spans the main column, above a row holding Produced
+  by and Used by, and draws a tree. Each upstream run heads a group: its
+  run chip, linked in the member that holds it, then the pipeline and the
+  age. Under it is a line per output and Selection the run's rows came
+  through (`<k> of <m> items, via` and the Selection's name from its
+  Claims, short CID when unnamed), then a row per input position: the
+  upstream item's title, the file, an `also` tag naming the one other run
+  that holds the position or counting two or more, and the size. The tree
+  ends on the item, `made by` its run. The header says
+  `<R> upstream run(s) · <N> input(s)`; a row may repeat across groups, and
+  the header counts inputs, not rows. Groups are ordered by their lowest
+  input position. A line longer than the metadata fold allows folds behind
+  `+<n> more`. The page never names an upstream item or run it did not
+  read from a record.
 - An Origin with a null `collection` does not name a run, since the item
-  CID alone matches every run that published identical content. Its node
-  links to `#/item/-/<item>`, reads "picked by query", and shows the
-  Selection with no run chip.
-- An upstream item held by a member is linked there (`hrefIn`). When no
-  member holds it the node shows its short CID and "not in any store here"
-  with no link, and the run and Selection labels when they can be read.
+  CID alone matches every run that published identical content. Its rows
+  go in a group headed by the Selection and "picked by query", with no run
+  chip, and link to `#/item/-/<item>`.
+- An upstream item held by a member is linked there (`hrefIn`). One held
+  by no member keeps its run group when the run label can be read, its row
+  showing the short CID and "not in any store here" with no link. When the
+  run label cannot be read either, the group is headed by the collection's
+  short CID and "run not in any store here".
 - Run scoping: lineage is a fact about one run. With a collection in the
   URL the panel shows that run's lineage only, so an older run's page is
   unchanged even when a newer run recorded lineage for the same item CID.
-  With `-` in the URL the panel shows every run that recorded lineage for
-  the item, grouped under a run chip per run, ungrouped when there is one.
-- Runs without an ItemLineage (written before this change, or
-  `item_lineage: null`) show the panel as before. The generic block page
-  names the new kind "a block of kind ItemLineage".
+  With `-` in the URL the panel draws a tree per run that recorded lineage
+  for the item, each in its own wrapper with its own counts and its own
+  `made by`, and the panel says `<C> runs recorded lineage`. One run draws
+  one tree.
+- Inputs with no Origin and the item's never-published leaves go in a last
+  `Read by path` group, file only, dashed when no member holds the bytes. A
+  leaf named like such an input is that input's row, and leaves do not
+  count as inputs. Runs without an ItemLineage (written before this change,
+  or `item_lineage: null`), or whose lineage cannot be drawn, show only that
+  group and the item. The generic block page names the new kind "a block of
+  kind ItemLineage".
 - Used by lists the downstream items whose runs recorded an Origin naming
   this item, each as `output · title` under its run chip, with the
   Selection the consumer read it through when there was one. Other members

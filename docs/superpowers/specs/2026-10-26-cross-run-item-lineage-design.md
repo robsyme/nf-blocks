@@ -257,6 +257,12 @@ writes `block`, `block_ref` or `missing` rows. Page queries go in
 
 ### 5.5 Explorer: the Lineage panel
 
+*Layout superseded on 2026-10-28 by
+`docs/superpowers/specs/2026-10-28-lineage-provenance-tree-design.md`: the
+panel draws one group per upstream run instead of one chain per input. The
+rules below about what may be named (no guessing, picked by query, held
+nowhere, run scoping) still hold.*
+
 The panel keeps its thread (inputs on top, the item highlighted). Above the
 item it lists the item's inputs from `item_input` (snapshot) or the run's
 ItemLineage and InputSet blocks (tail run). Per input:

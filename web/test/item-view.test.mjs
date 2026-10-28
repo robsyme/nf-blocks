@@ -92,7 +92,7 @@ test('item page: Produced by names the runs; the pin says its bytes and waits fo
   const calls = []
   const page = await item(itemEx(), COLL, ITEM, ctxFor({ calls }))
   await frame()
-  const facts = page.querySelectorAll('.fact').map(f => f.textContent)
+  const facts = page.querySelectorAll('section.panel').find(p => p.querySelector('h2')?.textContent === 'Produced by').querySelectorAll('.fact').map(f => f.textContent)
   assert.equal(facts.length, 3, 'the run it came from is a chip like the other two')
   assert.ok(facts[0].includes('distraught_murdock'))
   assert.ok(facts.some(f => f.includes('sad_yonath')))
