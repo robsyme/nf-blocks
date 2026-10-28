@@ -6,6 +6,7 @@ import { CID } from 'multiformats/cid'
 import { blockPath, verifies } from './cid.js'
 import { validBlock, validLeaf, validLeafV1 } from './schema.js'
 import { leavesOf } from './metadata.js'
+import { failureText } from './said.js'
 
 export class BlockError extends Error {
   constructor(code, cid, message) { super(message); this.code = code; this.cid = cid }
@@ -115,8 +116,9 @@ export class BlockFetcher {
       return { bytes: new Uint8Array(0), size: Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || 0 }
     }
     if (res.status !== 206) {
+      const said = await failureText(res)
       await drop()
-      throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
+      throw new BlockError('fetch_failed', cidText, `block ${cidText}: ${said || `HTTP ${res.status}`}`)
     }
     const size = Number((res.headers.get('Content-Range') ?? '').split('/')[1]) || null
     return { bytes: new Uint8Array(await res.arrayBuffer()), size }
@@ -151,7 +153,7 @@ export class BlockFetcher {
     this.fetches++
     if (res.status === 404 || res.status === 403)
       throw new BlockError('block_missing', cidText, `block ${cidText} is not in this member; it may be held in another one`)
-    if (!res.ok) throw new BlockError('fetch_failed', cidText, `block ${cidText}: HTTP ${res.status}`)
+    if (!res.ok) throw new BlockError('fetch_failed', cidText, `block ${cidText}: ${(await failureText(res)) || `HTTP ${res.status}`}`)
     const bytes = new Uint8Array(await res.arrayBuffer())
     if (!verifies(cidText, bytes))
       throw new BlockError('hash_mismatch', cidText, `block ${cidText} does not hash to its address; it was refused`)

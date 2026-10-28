@@ -73,3 +73,17 @@ test('a network failure is fetch_failed, not a crash', async () => {
   const fetchFn = async () => { throw new TypeError('Failed to fetch') }
   await assert.rejects(probeSnapshot(URL_, { cap: 1, fetchFn }), e => e.code === 'fetch_failed')
 })
+
+const REFUSED = 'AWS refused the credentials for this store: they may have expired, or may not grant access to it. Refresh your AWS credentials, then reload this page'
+
+test('a failure the server explains in plain text is told in its words, not as a status', async () => {
+  const fetchFn = async () => response(503, `${REFUSED}\n`, { 'Content-Type': 'text/plain; charset=utf-8' })
+  await assert.rejects(probeSnapshot(URL_, { cap: 1, fetchFn }), e => e.code === 'fetch_failed' && e.message === REFUSED)
+})
+
+test('a failure with no plain-text explanation is told by its status', async () => {
+  for (const [body, type] of [['<html>oops</html>', 'text/html'], ['', 'text/plain']]) {
+    const fetchFn = async () => response(500, body, { 'Content-Type': type })
+    await assert.rejects(probeSnapshot(URL_, { cap: 1, fetchFn }), e => e.message === `${URL_} answered HTTP 500`)
+  }
+})

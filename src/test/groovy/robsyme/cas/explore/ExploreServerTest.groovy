@@ -326,6 +326,62 @@ class ExploreServerTest extends Specification {
         probed?.stop()
     }
 
+    /** An S3 member whose every open fails with {@code failure}. */
+    private ExploreServer failing(Throwable failure) {
+        final LinkedHashMap<String, MemberFiles> members = new LinkedHashMap<>()
+        members.put('lab', new LocalMemberFiles(tempDir.resolve('lab')))
+        members.put('cloud', [open: { String rel -> throw failure }, list: { String d -> [] }, describe: { -> 's3://bucket/cas/' }] as MemberFiles)
+        return new ExploreServer(members, 'lab', page).start(0)
+    }
+
+    def 'a read AWS refuses for credentials is 503 and says what to do, without the request ids'() {
+        given:
+        final ExploreServer refused = failing(software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(403)
+            .message('Forbidden (Service: S3, Status Code: 403, Request ID: W3K6TW6M7N1V63K1)').build())
+
+        when:
+        final RawHttp.Response r = RawHttp.send(refused.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 503
+        r.headers['content-type'].startsWith('text/plain')
+        r.text().trim() == "${robsyme.cas.s3.S3Failures.REFUSED}. Refresh your AWS credentials, then reload this page".toString()
+
+        cleanup:
+        refused?.stop()
+    }
+
+    def 'any other failure is 500 with its cause, without the request ids'() {
+        given:
+        final ExploreServer broken = failing(software.amazon.awssdk.services.s3.model.S3Exception.builder().statusCode(500)
+            .message('We encountered an internal error (Service: S3, Status Code: 500, Request ID: X)').build())
+
+        when:
+        final RawHttp.Response r = RawHttp.send(broken.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 500
+        r.text().trim() == 'internal error: We encountered an internal error'
+
+        cleanup:
+        broken?.stop()
+    }
+
+    def 'a failure told to the page names no local path'() {
+        given:
+        final ExploreServer broken = failing(new IllegalStateException("${System.getProperty('java.io.tmpdir')}/nf-blocks-spool/x: No space left on device"))
+
+        when:
+        final RawHttp.Response r = RawHttp.send(broken.port, 'GET', '/m/cloud/index/v7.sqlite')
+
+        then:
+        r.status == 500
+        r.text().trim() == 'internal error: [local path]: No space left on device'
+
+        cleanup:
+        broken?.stop()
+    }
+
     def 'members.json asks nothing when this server cannot copy'() {
         given:
         final MemberProbeTest.Fake cloud = new MemberProbeTest.Fake()

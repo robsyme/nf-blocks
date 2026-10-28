@@ -190,3 +190,12 @@ test('a full schema 3 RunCompletion passes validBlock', () => {
   assert.equal(validBlock(full), true)
   assert.equal(validKind(full), true)
 })
+
+test('a block read the server explains in plain text is told in its words, whole or partial', async () => {
+  const cid = rawCid('boom').toString()
+  const said = 'AWS refused the credentials for this store: they may have expired, or may not grant access to it. Refresh your AWS credentials, then reload this page'
+  const fetchFn = async () => new Response(`${said}\n`, { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } })
+  const fetcher = new BlockFetcher('http://h/', { fetchFn })
+  await assert.rejects(fetcher.get(cid), (e) => e.code === 'fetch_failed' && e.message === `block ${cid}: ${said}`)
+  await assert.rejects(fetcher.partial(cid, 4096), (e) => e.code === 'fetch_failed' && e.message === `block ${cid}: ${said}`)
+})

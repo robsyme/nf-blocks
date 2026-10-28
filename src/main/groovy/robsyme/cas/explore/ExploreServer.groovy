@@ -26,9 +26,11 @@ import robsyme.cas.CopyService
 import robsyme.cas.Principal
 import robsyme.cas.core.Cid
 import robsyme.cas.core.HandoffWriter
+import robsyme.cas.core.Leaks
 import robsyme.cas.core.Multibase
 import robsyme.cas.core.Put
 import robsyme.cas.core.PutError
+import robsyme.cas.s3.S3Failures
 
 /**
  * The explorer's loopback server (DESIGN.md §15, block explorer spec sections
@@ -327,8 +329,14 @@ class ExploreServer {
                 err.println("nf-blocks:${failed}")
                 err.flush()
             }
+            // The page shows this text: a credentials failure says what to do, anything else its cause,
+            // redacted as a copy failure is (CopyErrors).
+            final String credentials = MemberProbe.credentialsReason(e)
             try {
-                text(exchange, 500, 'internal error')
+                if( credentials != null )
+                    text(exchange, 503, credentials)
+                else
+                    text(exchange, 500, "internal error: ${CopyErrors.redact(Leaks.redactCredentials(S3Failures.cause(e)), Collections.<String, String> emptyMap())}".toString())
             }
             catch( Exception ignored ) {
                 // The response had already started.
