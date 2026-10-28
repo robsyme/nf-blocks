@@ -53,7 +53,7 @@ body{padding:24px 16px}
 .pg{position:relative;padding:4px 0 8px}
 .pg + .pg{margin-top:4px}
 .pg .gh{position:relative;display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:32px}
-.pg .gh::before,.ptree .here::before{content:"";position:absolute;left:-18px;top:16px;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
+.pg .gh::before,.ptree .here::before{content:"";position:absolute;left:-20px;top:16px;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
 .pg .sub{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin:4px 0 0 12px;font-size:var(--fs-sm)}
 .pitems{margin:6px 0 0 12px;padding-left:16px;border-left:2px solid var(--line)}
 .pitem{position:relative;display:grid;grid-template-columns:minmax(90px,max-content) minmax(140px,max-content) 1fr auto;gap:14px;align-items:center;padding:4px 0;font-size:var(--fs-sm)}

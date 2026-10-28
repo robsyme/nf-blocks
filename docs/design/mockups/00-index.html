@@ -280,7 +280,7 @@ pre.code .k{color:var(--accent-ink)} pre.code .s{color:var(--store-a)} pre.code 
 .thread{display:grid;position:relative;padding-left:22px}
 .thread::before{content:"";position:absolute;left:8px;top:14px;bottom:14px;width:2px;background:var(--line-2)}
 .thread .node{position:relative;padding:6px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:var(--fs-sm)}
-.thread .node::before{content:"";position:absolute;left:-18px;top:50%;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
+.thread .node::before{content:"";position:absolute;left:-20px;top:50%;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
 .thread .node.here::before{background:var(--accent);border-color:var(--accent-ink)}
 .thread .node.ext::before{border-style:dashed}
 
@@ -290,7 +290,7 @@ pre.code .k{color:var(--accent-ink)} pre.code .s{color:var(--store-a)} pre.code 
 .tree-group{position:relative;padding:4px 0 8px}
 .tree-group + .tree-group{margin-top:4px}
 .tree-head{position:relative;display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-height:32px}
-.tree-head::before,.tree-here::before{content:"";position:absolute;left:-18px;top:16px;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
+.tree-head::before,.tree-here::before{content:"";position:absolute;left:-20px;top:16px;width:10px;height:10px;margin-top:-5px;border-radius:50%;background:var(--surface);border:2px solid var(--ink-3)}
 .tree-sub{display:flex;gap:6px 8px;align-items:center;flex-wrap:wrap;margin:4px 0 0 12px;font-size:var(--fs-sm)}
 .tree-rows{display:grid;grid-template-columns:minmax(min(90px,20%),max-content) minmax(min(140px,30%),max-content) minmax(min(96px,20%),1fr) auto;column-gap:14px;margin:6px 0 0 12px;padding-left:16px;border-left:2px solid var(--line)}
 .tree-rows.no-item{grid-template-columns:minmax(min(140px,40%),max-content) minmax(min(96px,25%),1fr) auto}
