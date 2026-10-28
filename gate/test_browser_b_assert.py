@@ -111,7 +111,7 @@ class World(object):
         self.typed_input_set_schema = 2
         self.typed_origins = True       # every task input names the S2 item it read
         self.typed_item_lineage = True  # False writes item_lineage: None
-        self.typed_origin_edit = None      # callable(key, origin dict) -> list of Origins for that task input
+        self.typed_origin_edit = None      # callable(key, list of Origins) -> list of Origins for that task input
         self.typed_lineage_other_input_set = False   # the ItemLineage names a different InputSet
         self.typed_positions = {}          # key -> input positions replacing the default one
         self.typed_unlisted = None         # key whose hashes item the ItemLineage leaves out
@@ -401,14 +401,17 @@ class World(object):
         of its three published hashes items, each made from one input by one HASH task."""
         root = self.store_typed
         files = {k: FILES[k] for k in "ABC"}
-        origin = lambda k: {"item": cas.Cid(ITEMS[k]), "collection": cas.Cid(COLLS["aligned"]), "selection": cas.Cid(self.s2)}
+        # One Origin per collection S2 reaches the item through: B through S1's aligned and its own again.
+        vias = {"A": ["aligned"], "B": ["aligned", "again"], "C": ["stats"]}
+        origins = lambda k: [{"item": cas.Cid(ITEMS[k]), "collection": cas.Cid(COLLS[c]), "selection": cas.Cid(self.s2)}
+                             for c in vias[k]]
         inputs = [{"role": "asset", "name": "main.nf", "address": cas.Cid(cas.cid_raw(b"main")), "size": 4,
                    "sample": None, "reason": None}]
         for k in "ABC":
             task = {"role": "task", "name": files[k]["name"], "address": cas.Cid(files[k]["cid"]), "size": 1,
                     "sample": k, "reason": None}
             if self.typed_origins and self.typed_input_set_schema >= 2:
-                task["from"] = self.typed_origin_edit(k, origin(k)) if self.typed_origin_edit else [origin(k)]
+                task["from"] = self.typed_origin_edit(k, origins(k)) if self.typed_origin_edit else origins(k)
             inputs.append(task)
         input_set = B._put_block(root, {"kind": "InputSet", "schema": self.typed_input_set_schema, "asserted_by": "gate",
                                         "inputs": inputs})
@@ -861,19 +864,27 @@ class CheckTest(unittest.TestCase):
         self.assertFail(18, "item_lineage")
 
     def test_b18_fails_when_an_origin_item_is_not_in_s2(self):
-        self.w.typed_origin_edit = lambda k, o: [dict(o, item=cas.Cid(dcid("an item S2 lacks")))] if k == "A" else [o]
+        self.w.typed_origin_edit = lambda k, os_: [dict(o, item=cas.Cid(dcid("an item S2 lacks"))) for o in os_] if k == "A" else os_
         self.assertFail(18, "A.bam")
 
     def test_b18_fails_when_an_origin_selection_is_not_s2(self):
-        self.w.typed_origin_edit = lambda k, o: [dict(o, selection=cas.Cid(self.w.s1))] if k == "B" else [o]
+        self.w.typed_origin_edit = lambda k, os_: [os_[0], dict(os_[1], selection=cas.Cid(self.w.s1))] if k == "B" else os_
         self.assertFail(18, "B.bam")
 
     def test_b18_fails_when_an_origin_has_no_selection(self):
-        self.w.typed_origin_edit = lambda k, o: [dict(o, selection=None)] if k == "B" else [o]
+        self.w.typed_origin_edit = lambda k, os_: [os_[0], dict(os_[1], selection=None)] if k == "B" else os_
         self.assertFail(18, "B.bam")
 
-    def test_b18_fails_with_two_origins_on_one_input(self):
-        self.w.typed_origin_edit = lambda k, o: [o, dict(o, item=cas.Cid(ITEMS["B"]))] if k == "C" else [o]
+    def test_b18_fails_when_one_input_names_two_items(self):
+        self.w.typed_origin_edit = lambda k, os_: os_ + [dict(os_[0], item=cas.Cid(ITEMS["B"]))] if k == "C" else os_
+        self.assertFail(18, "C.stats")
+
+    def test_b18_fails_when_a_collection_s2_reaches_an_item_through_has_no_origin(self):
+        self.w.typed_origin_edit = lambda k, os_: os_[:1] if k == "B" else os_
+        self.assertFail(18, "B.bam")
+
+    def test_b18_fails_when_an_origin_names_a_collection_s2_does_not_reach_its_item_through(self):
+        self.w.typed_origin_edit = lambda k, os_: [dict(o, collection=cas.Cid(COLLS["aligned"])) for o in os_] if k == "C" else os_
         self.assertFail(18, "C.stats")
 
     def test_b18_fails_when_the_item_lineage_names_another_input_set(self):

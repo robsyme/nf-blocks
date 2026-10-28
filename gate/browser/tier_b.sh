@@ -25,6 +25,13 @@ python3 "$REPO/gate/browser_b_assert.py" prepare "$GATE_ROOT"
 plugins_json="$("$REPO/gate/browser/plugin-repo.sh" "$REPO" "$B")"
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 
+# explore lists `shared` only once it has an Index Snapshot; write one, as a
+# member's owner would, with shared as the writable member.
+( cd "$B" && unset NXF_OFFLINE && XDG_CACHE_HOME="$B/cache-shared" \
+  NXF_PLUGINS_TEST_REPOSITORY="file://$plugins_json" \
+  exec "$NEXTFLOW" -q -c "$B/shared.config" plugin nf-blocks:snapshot ) > "$B/shared-snapshot.log" 2>&1 \
+  || { echo "browser tier B: nf-blocks:snapshot over shared failed, see $B/shared-snapshot.log" >&2; exit 2; }
+
 # SIGTERM, not SIGINT: a non-interactive shell starts `&` jobs with SIGINT
 # ignored, and the JVM then never runs its shutdown hook (DESIGN.md section 15).
 S=''

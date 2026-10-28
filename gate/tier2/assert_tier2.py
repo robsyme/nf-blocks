@@ -692,7 +692,7 @@ def t5(ctx):
             problems.append("t5 staged other bytes than t4")
     cache = cas.Index.locate_for_pipeline(os.path.join(ctx.root, "cache-consumer"), CONSUMER)
     seeded = _sqlite_meta(cache).get("seeded_from:lab")
-    lab = ctx.member("cas").download("index/v6.sqlite", ctx.evidence("cas-v6.sqlite"))
+    lab = ctx.member("cas").download("index/v7.sqlite", ctx.evidence("cas-v7.sqlite"))
     written = _sqlite_meta(lab).get("snapshot_written_at")
     if not seeded or seeded != written:
         problems.append("t5's cache says seeded_from:lab %r; lab's snapshot was written at %r" % (seeded, written))
@@ -743,7 +743,7 @@ def t6(ctx):
             problems.append("t6-items.txt lists no occurrence of %s's aligned collection" % run.manifest.get("run_name"))
     log_runs = len(m.completions())
     try:
-        rows = s3gate.snapshot_runs(m.download("index/v6.sqlite", ctx.evidence("cas-t6-v6.sqlite")))
+        rows = s3gate.snapshot_runs(m.download("index/v7.sqlite", ctx.evidence("cas-t6-v7.sqlite")))
         if rows != log_runs:
             problems.append("cas-t6's snapshot has %d run rows, its Store Log %d run entries" % (rows, log_runs))
     except Exception as exc:

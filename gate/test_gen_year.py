@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gen_year  # noqa: E402
 
-# A schema-6 stand-in with the tables gen_year writes, shaped as Index.groovy's.
+# A schema-7 stand-in with the tables gen_year writes, shaped as Index.groovy's.
 SCHEMA = [
     "CREATE TABLE schema_version(version INTEGER NOT NULL)",
     "CREATE TABLE run(completion_cid TEXT PRIMARY KEY, manifest_cid TEXT, pipeline TEXT, revision TEXT,"
@@ -51,7 +51,7 @@ SCHEMA = [
 ]
 
 
-def make_schema(path, version=6):
+def make_schema(path, version=7):
     con = sqlite3.connect(path)
     for sql in SCHEMA:
         con.execute(sql)
@@ -91,7 +91,7 @@ class GenYearTest(unittest.TestCase):
         self.assertEqual(len(rows["collection_item"]), 200)
         self.assertEqual(len(rows["producer"]), 600)
         self.assertEqual(len(rows["item_attr"]), 3000)
-        self.assertEqual(rows["schema_version"], [(6,)])
+        self.assertEqual(rows["schema_version"], [(7,)])
 
     def test_snapshot_shape(self):
         out = self.build("a.sqlite")
@@ -116,7 +116,7 @@ class GenYearTest(unittest.TestCase):
         self.assertIn("collection_item_collection", names)
 
     def test_refuses_another_schema_version(self):
-        for version in (1, 3, 4, 5):
+        for version in (1, 3, 4, 5, 6):
             old = os.path.join(self.tmp, "old%d.sqlite" % version)
             make_schema(old, version=version)
             with self.assertRaises(SystemExit):

@@ -165,7 +165,7 @@ SHA-256, `fromstore`'s equals B.bam's, and the `dir` listing equals the Gate's
 listing of t2b's `A_qc` with `alias.txt` holding `summary.txt`'s bytes.
 
 T5 (ticket 04 on S3). t5 exited 0 and staged t4's bytes; its fresh cache's
-`seeded_from:lab` equals the `snapshot_written_at` of `cas/index/v6.sqlite`;
+`seeded_from:lab` equals the `snapshot_written_at` of `cas/index/v7.sqlite`;
 no fallback warning in `logs/t5/`; `cas-out`'s snapshot run count
 (`x-amz-meta-runs` and a `count(*)` of the downloaded file) did not drop from
 after t4 to after t5.

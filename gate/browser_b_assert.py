@@ -156,13 +156,21 @@ def prepare(root):
     os.makedirs(os.path.join(out, "cache"))
     os.makedirs(os.path.join(out, "store-out"))
     os.makedirs(os.path.join(out, "store-typed"))
-    # `shared`: a second, read-only member (only blocks/ and log/, which is all a member's reader lists).
+    # `shared`: a second, read-only member (blocks/ and log/, which is all a member's reader lists).
+    # explore lists a member other than the writable one only once it has an Index Snapshot
+    # (DESIGN.md, `nf-blocks:explore`, amended 2026-10-27), so tier_b.sh runs nf-blocks:snapshot
+    # over it with shared.config, where shared is the writable member, before explore starts.
     shared = os.path.join(out, "shared")
     os.makedirs(shared)
+    os.makedirs(os.path.join(out, "cache-shared"))
     with open(os.path.join(out, "explore.config"), "w") as fh:
         fh.write("lineage.enabled = true\nlineage.store.location = 'cas://lab'\n"
                  "cas {\n  stores {\n    lab { location = '%s' }\n    shared { location = '%s' }\n  }\n"
                  "  asserted_by = '%s'\n  index { path = '%s' }\n}\n" % (store, shared, ASSERTED_BY, os.path.join(out, "cache", "index.sqlite")))
+    with open(os.path.join(out, "shared.config"), "w") as fh:
+        fh.write("lineage.enabled = true\nlineage.store.location = 'cas://shared'\n"
+                 "cas {\n  stores {\n    shared { location = '%s' }\n  }\n"
+                 "  asserted_by = '%s'\n  index { path = '%s' }\n}\n" % (shared, ASSERTED_BY, os.path.join(out, "cache-shared", "index.sqlite")))
     cold, again = gate.run("cold"), gate.run("again")
     coll = {name: cid for name, (cid, _b) in cold.collections(gate).items()}
     again_aligned = again.collections(gate)["aligned"][0]
@@ -911,16 +919,19 @@ def evaluate(root):
         return PASS, ("a pick from query 3 carried cold's aligned as its via, Add all put all %d items of stats in the tray "
                       "with stats as theirs, and the saved Selection has the Gate's address with every via kept" % len(stats_items))
 
-    def s2_items(selection, seen_selections=()):
-        """The item addresses a Selection holds, through its nested Selections."""
+    def s2_vias(selection, seen_selections=()):
+        """{item address: set of collections} a Selection reaches each item through, nested included;
+        None for an item picked with no via."""
         if selection in seen_selections:
-            return set()
-        found = set()
+            return {}
+        found = {}
         for member in store.read_block(selection).get("members") or []:
             if "selection" in member:
-                found |= s2_items(_text(member["selection"]), seen_selections + (selection,))
+                for item, colls in s2_vias(_text(member["selection"]), seen_selections + (selection,)).items():
+                    found.setdefault(item, set()).update(colls)
             else:
-                found.add(_text(member["item"]["address"]))
+                via = [_text(v) for v in member["item"].get("via") or []] or [None]
+                found.setdefault(_text(member["item"]["address"]), set()).update(via)
         return found
 
     def typed_lineage(s2):
@@ -939,19 +950,26 @@ def evaluate(root):
             return problems + ["the typed run's RunCompletion has no input_set"], 0, 0
         if input_set.get("schema") != 2:
             problems.append("the typed run's InputSet is schema %r, expected 2" % input_set.get("schema"))
-        members = s2_items(s2) if s2 else set()
+        vias = s2_vias(s2) if s2 else {}
         task_inputs = [i for i in input_set.get("inputs") or [] if i.get("role") == "task"]
         if not task_inputs:
             problems.append("the typed run's InputSet has no input with role task")
         origins = 0
         for i in task_inputs:
-            origin = i.get("from") or []
-            good = len(origin) == 1 and _text(origin[0].get("item")) in members and _text(origin[0].get("selection")) == s2
+            origin = [{k: _text(v) for k, v in o.items()} for o in i.get("from") or []]
+            items = {o.get("item") for o in origin}
+            item = next(iter(items)) if len(items) == 1 else None
+            # One Origin per collection S2 reaches the item through, each naming S2 (DESIGN.md §13).
+            want = sorted((c or "") for c in vias.get(item, ()))
+            got = sorted((o.get("collection") or "") for o in origin)
+            good = (item in vias and got == want and all(o.get("selection") == s2 for o in origin))
             if good:
                 origins += 1
             else:
-                problems.append("the task input %s has from %s, expected exactly one Origin naming an item of S2 and S2 %s"
-                                % (i.get("name"), [{k: _text(v) for k, v in o.items()} for o in origin], s2))
+                problems.append("the task input %s has from %s, expected one Origin naming S2 %s per collection S2 "
+                                "reaches its item through (%s)"
+                                % (i.get("name"), origin, s2,
+                                   ", ".join("%s: %s" % (k, sorted(c or "null" for c in v)) for k, v in sorted(vias.items()))))
         if completion.get("item_lineage") is None:
             return problems + ["the typed run's RunCompletion has item_lineage null"], origins, 0
         lineage = typed.read_block(_text(completion["item_lineage"]))
@@ -1007,8 +1025,8 @@ def evaluate(root):
             return FAIL, "; ".join(problems)
         return PASS, ("the page's typed snippet (%s), run verbatim with nextflow.enable.types, handed a Sample and a Kit record "
                       "to every task without an invalid argument type warning, and A, B and C hash as expected; its InputSet "
-                      "(schema 2) has %d task input(s) whose Origins are each one item of S2 selected by S2, and its "
-                      "ItemLineage lists %d hashes item(s) with one input and one HASH task each" % (shown, origins, derived))
+                      "(schema 2) has %d task input(s) whose Origins are one per collection S2 reaches their item through, each "
+                      "selected by S2, and its ItemLineage lists %d hashes item(s) with one input and one HASH task each" % (shown, origins, derived))
 
     def b19():
         cli = expected["cli"]

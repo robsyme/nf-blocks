@@ -23,7 +23,7 @@ import random
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 ITEMS = 100
 OUTPUTS = ['aligned', 'qc', 'variants', 'reports']
 LEAVES = 3
@@ -45,7 +45,7 @@ def size_of(content):
 
 
 def ddl_of(schema_path):
-    """CREATE statements of a schema-6 database, in creation order."""
+    """CREATE statements of a schema-7 database, in creation order."""
     con = sqlite3.connect('file:%s?mode=ro' % schema_path, uri=True)
     try:
         row = con.execute('SELECT version FROM schema_version').fetchone()

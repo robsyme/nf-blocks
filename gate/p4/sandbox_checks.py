@@ -40,7 +40,7 @@ def nulls_first(row):
 
 
 def main(store_dir, inputs):
-    snapshot = os.path.join(store_dir, 'index', 'v6.sqlite')
+    snapshot = os.path.join(store_dir, 'index', 'v7.sqlite')
     # The sqlite3 module creates a missing file even read only; ask first.
     check(os.path.isfile(snapshot), f'no snapshot at {snapshot}')
     db = sqlite3.connect(f'file:{snapshot}?mode=ro', uri=True)

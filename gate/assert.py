@@ -1653,7 +1653,7 @@ def assert_thirteen(gate):
         if got != baseline:
             problems.append("%s staged %s, the first consumer %s: the answer changed"
                             % (name, got, baseline))
-    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v7.sqlite")
     seeding = _seeding_problems(gate.store, before["watermark"], _snapshot_completions(lab))
     problems.extend(seeding)
     seeded_log = _read(os.path.join(gate.root, "logs", "consumer-seeded", "nextflow.log"))
@@ -1678,7 +1678,7 @@ def assert_thirteen(gate):
             and "nf-blocks:snapshot" in scan_out):
         problems.append("consumer-scan printed no fallback warning naming lab and "
                         "nf-blocks:snapshot")
-    out_runs = _snapshot_runs(os.path.join(gate.store_out.root, "index", "v6.sqlite"))
+    out_runs = _snapshot_runs(os.path.join(gate.store_out.root, "index", "v7.sqlite"))
     if out_runs < before["out_runs_before"]:
         problems.append("store-out's snapshot fell from %d to %d runs"
                         % (before["out_runs_before"], out_runs))
@@ -1796,13 +1796,13 @@ def _consumer_hashes_of_run(gate, name):
 def seeding_before(gate):
     """seeding.json: lab's snapshot watermark, run count and write time, and
     store-out's snapshot run count, before the two cold-cache consumers."""
-    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v7.sqlite")
     meta = _snapshot_meta(lab)
     return {"watermark": meta.get("store_log_watermark"),
             "runs": _snapshot_runs(lab),
             "written_at": meta.get("snapshot_written_at"),
             "out_runs_before": _snapshot_runs(
-                os.path.join(gate.store_out.root, "index", "v6.sqlite"))}
+                os.path.join(gate.store_out.root, "index", "v7.sqlite"))}
 
 
 def delete_consumer_cache(gate):
@@ -1850,7 +1850,7 @@ def seeding_lock(gate):
     """Block paths of every RunManifest, RunCompletion and OutputCollection of
     the runs lab's Store Log lists at or before its snapshot's watermark,
     derived from the log, not from the snapshot's own run rows."""
-    lab = os.path.join(gate.store.root, "index", "v6.sqlite")
+    lab = os.path.join(gate.store.root, "index", "v7.sqlite")
     watermark = _snapshot_meta(lab).get("store_log_watermark")
     return gate.store.metadata_blocks_of_runs(_store_log_runs_through(gate.store, watermark))
 
@@ -2616,8 +2616,8 @@ def _cache_runs(cache_home):
 
 
 def _snapshot(store_root):
-    """(sorted run completion cids, meta store_id or None) of the member's index/v6.sqlite."""
-    path = os.path.join(store_root, "index", "v6.sqlite")
+    """(sorted run completion cids, meta store_id or None) of the member's index/v7.sqlite."""
+    path = os.path.join(store_root, "index", "v7.sqlite")
     if not os.path.isfile(path):
         raise cas.GateError("no Index Snapshot at %s" % path)
     con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
